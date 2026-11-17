@@ -119,9 +119,10 @@ export const dateFns: FnDef[] = [
       case 'months': return months
       case 'quarters': return Math.trunc(months / 3)
       case 'years': return b.getFullYear() - a.getFullYear()
-      case 'hours': return Math.floor(b.getTime() / 3600000) - Math.floor(a.getTime() / 3600000)
-      case 'minutes': return Math.floor(b.getTime() / 60000) - Math.floor(a.getTime() / 60000)
-      default: return Math.floor(b.getTime() / 1000) - Math.floor(a.getTime() / 1000)
+      // Boundaries are counted on the local clock (not UTC), so half-hour time zones such as IST agree.
+      case 'hours': return Math.floor(localMs(b) / 3600000) - Math.floor(localMs(a) / 3600000)
+      case 'minutes': return Math.floor(localMs(b) / 60000) - Math.floor(localMs(a) / 60000)
+      default: return Math.floor(localMs(b) / 1000) - Math.floor(localMs(a) / 1000)
     }
   }),
   def('Date', 'Date(year, month, day)', 'Builds a date. Months and days may overflow into the next month or year.', 3, 3, (c) => {
@@ -213,3 +214,8 @@ export const dateFns: FnDef[] = [
     return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
   }),
 ]
+
+/** Milliseconds since the epoch as read on the local clock. */
+function localMs(d: Date): number {
+  return d.getTime() - d.getTimezoneOffset() * 60000
+}
