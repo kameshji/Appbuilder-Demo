@@ -4,7 +4,7 @@ import { ENUM_RECORDS, ENUM_SET } from './enums'
 import { FxError, fail, type Span } from './errors'
 import { lookupFunction, suggestFunction } from './functions'
 import { addDays } from './functions/dates'
-import type { CallCtx, Session } from './functions/types'
+import { NOT_PURE, type CallCtx, type Session } from './functions/types'
 import { parse } from './parser'
 import { compareValues, describe, hasOwn, isRecord, looseEq, setField, toBool, toNumber, toRows, toText } from './values'
 
@@ -12,6 +12,8 @@ interface Frame {
   parent: Frame | null
   record: FxRecord
   as?: string
+  /** record fields are visible but ThisRecord is not changed */
+  noThis?: boolean
 }
 
 const ORDINALS = ['first', 'second', 'third', 'fourth', 'fifth']
@@ -37,7 +39,7 @@ class Evaluator {
 
   constructor(scope: FxScope, host: FxHost | undefined) {
     this.host = host
-    this.session = { scope, host, vars: new Map(), colls: new Map() }
+    this.session = { scope, host, vars: new Map(), colls: new Map(), depth: 0 }
   }
 
   run(n: Node): FxValue {
@@ -91,7 +93,9 @@ class Evaluator {
   private lookup(n: IdNode, env: Frame | null): FxValue {
     const name = n.name
     for (let f = env; f; f = f.parent) if (hasOwn(f.record, name)) return f.record[name]!
-    if (name === 'ThisRecord' && env) return env.record
+    if (name === 'ThisRecord') {
+      for (let f = env; f; f = f.parent) if (!f.noThis) return f.record
+    }
     for (let f = env; f; f = f.parent) if (f.as === name) return f.record
     if (hasOwn(ENUM_RECORDS, name)) return ENUM_RECORDS[name]!
     const sv = this.session.vars.get(name)
@@ -125,6 +129,14 @@ class Evaluator {
   private member(n: MemberNode, env: Frame | null): FxValue {
     const o = this.eval(n.obj, env)
     if (o === null) return null
+    if (Array.isArray(o)) {
+      // Table.Column -> single-column table
+      const rows = toRows(o)
+      if (rows.length > 0 && !rows.some((r) => hasOwn(r, n.name))) {
+        fail({ start: n.nameStart, end: n.nameEnd }, `Can't read .${n.name} from a table: it has no column called ${n.name}`)
+      }
+      return rows.map((r) => ({ [n.name]: hasOwn(r, n.name) ? r[n.name]! : null }))
+    }
     if (isRecord(o)) {
       if (hasOwn(o, n.name)) return o[n.name]!
       if (ENUM_SET.has(o)) {
@@ -200,8 +212,13 @@ class Evaluator {
     if (!def) return fail(nameSpan, unknownFunctionMessage(n.name), true)
     const msg = arityMessage(def.name, def.min, def.max, n.args.length)
     if (msg) fail(n, msg, true)
+    const ctx = this.ctx(n, env)
+    if (def.tryPure) {
+      const r = def.tryPure(ctx)
+      if (r !== NOT_PURE) return r
+    }
     if (def.kind === 'behaviour' && !this.host) fail(nameSpan, 'Behaviour function in a non-behaviour property', true)
-    return def.run(this.ctx(n, env))
+    return def.run(ctx)
   }
 
   private ctx(n: CallNode, env: Frame | null): CallCtx {
@@ -223,6 +240,12 @@ class Evaluator {
         const a = arg(i)
         if (a.t === 'as') return { value: ev.eval(a.expr, env), as: a.name }
         return { value: ev.eval(a, env) }
+      },
+      fields(i, record) {
+        return ev.eval(arg(i), { parent: env, record, noThis: true })
+      },
+      scoped(node, record) {
+        return ev.eval(node, { parent: null, record, noThis: true })
       },
       row(i, record, as) {
         return ev.eval(arg(i), { parent: env, record, as })

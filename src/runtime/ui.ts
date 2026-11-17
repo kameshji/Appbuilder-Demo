@@ -2,10 +2,10 @@ import { create } from 'zustand'
 
 export interface Rect { x: number; y: number; w: number; h: number }
 export interface Guide { axis: 'x' | 'y'; pos: number; from: number; to: number }
-export type Pane = 'tree' | 'insert' | 'data' | 'vars'
+export type Pane = 'tree' | 'insert' | 'data' | 'vars' | 'debug'
 
 const THEME_KEY = 'appbuilder-theme'
-export const MIN_ZOOM = 0.25
+export const MIN_ZOOM = 0.1
 export const MAX_ZOOM = 2
 
 export function initialTheme(): 'light' | 'dark' {
@@ -24,6 +24,8 @@ interface UiState {
   zoom: number
   pan: { x: number; y: number }
   viewport: { w: number; h: number }
+  /** canvas viewing size; null = the app's design size (editable) */
+  viewSize: { w: number; h: number } | null
   fitEpoch: number
   spaceDown: boolean
   hoverId: string | null
@@ -32,9 +34,17 @@ interface UiState {
   dragging: boolean
   guides: Guide[]
   dropTargetId: string | null
+  /** auto-layout reorder: the dragged child and the insertion line (frame coordinates) */
+  flowDragId: string | null
+  flowLine: Rect | null
+  flowGhost: Rect | null
+  marquee: Rect | null
   insertGhost: { type: string; x: number; y: number } | null
   lastProp: Record<string, string>
   focusToken: number
+  locked: string[]
+  settingsOpen: boolean
+  packageOpen: 'export' | 'import' | null
   setTheme(t: 'light' | 'dark'): void
   toggleTheme(): void
   setPane(p: Pane | null): void
@@ -48,6 +58,7 @@ interface UiState {
   clearDrag(): void
   setLastProp(type: string, prop: string): void
   focusFormula(type: string, prop: string): void
+  toggleLock(id: string): void
 }
 
 const clamp = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
@@ -58,6 +69,7 @@ export const useUi = create<UiState>((set, get) => ({
   zoom: 1,
   pan: { x: 40, y: 40 },
   viewport: { w: 0, h: 0 },
+  viewSize: null,
   fitEpoch: 0,
   spaceDown: false,
   hoverId: null,
@@ -65,9 +77,16 @@ export const useUi = create<UiState>((set, get) => ({
   dragging: false,
   guides: [],
   dropTargetId: null,
+  flowDragId: null,
+  flowLine: null,
+  flowGhost: null,
+  marquee: null,
   insertGhost: null,
   lastProp: {},
   focusToken: 0,
+  locked: [],
+  settingsOpen: false,
+  packageOpen: null,
   setTheme: (theme) => {
     try {
       localStorage.setItem(THEME_KEY, theme)
@@ -97,7 +116,8 @@ export const useUi = create<UiState>((set, get) => ({
   },
   requestFit: () => set((s) => ({ fitEpoch: s.fitEpoch + 1 })),
   set: (p) => set(p),
-  clearDrag: () => set({ dragRects: {}, dragging: false, guides: [], dropTargetId: null }),
+  clearDrag: () => set({ dragRects: {}, dragging: false, guides: [], dropTargetId: null, flowDragId: null, flowLine: null, flowGhost: null, marquee: null }),
   setLastProp: (type, prop) => set((s) => ({ lastProp: { ...s.lastProp, [type]: prop } })),
   focusFormula: (type, prop) => set((s) => ({ lastProp: { ...s.lastProp, [type]: prop }, focusToken: s.focusToken + 1 })),
+  toggleLock: (id) => set((s) => ({ locked: s.locked.includes(id) ? s.locked.filter((x) => x !== id) : [...s.locked, id] })),
 }))

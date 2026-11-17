@@ -1,15 +1,17 @@
 import { SquareDashed } from 'lucide-react'
 import type { ControlRenderProps, ControlType } from '@/contracts'
 import { borderStyle, toBool, toColor, toNum } from './util'
+import { LayoutBox, layoutProps } from './display/helpers'
 
 function ContainerRender({ props, mode, children }: ControlRenderProps) {
   return (
-    <div
-      className="relative box-border size-full"
+    <LayoutBox
+      props={props}
+      mode={mode}
+      className="size-full"
       style={{
         background: toColor(props.Fill) ?? '#fff',
         borderRadius: toNum(props.Radius, 12),
-        overflow: mode === 'design' ? 'visible' : 'hidden',
         boxShadow: toBool(props.Shadow, true)
           ? '0 1px 3px rgba(0,0,0,0.10), 0 1px 2px rgba(0,0,0,0.06)'
           : undefined,
@@ -17,7 +19,7 @@ function ContainerRender({ props, mode, children }: ControlRenderProps) {
       }}
     >
       {children}
-    </div>
+    </LayoutBox>
   )
 }
 
@@ -32,6 +34,7 @@ export const Container: ControlType = {
     { name: 'BorderColor', kind: 'color', group: 'Style', default: '=RGBA(228, 228, 231, 1)' },
     { name: 'BorderWidth', kind: 'number', group: 'Style', default: '=1' },
     { name: 'Shadow', kind: 'boolean', group: 'Style', default: '=true' },
+    ...layoutProps({ layout: 'manual', gap: 16, padding: 0 }),
   ],
   outputs: [],
   defaultSize: { width: 320, height: 240 },

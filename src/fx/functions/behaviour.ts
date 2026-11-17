@@ -1,6 +1,7 @@
-import type { FxRecord } from '@/contracts'
+import type { FxRecord, FxValue } from '@/contracts'
 import { isRecord, toRows, withoutId } from '../values'
-import { def, MANY, type CallCtx, type FnDef } from './types'
+import { FxError } from '../errors'
+import { def, MANY, NOT_PURE, type CallCtx, type FnDef } from './types'
 
 /** Items for Collect: records stay records, scalars become { Value }, tables are flattened. __id is dropped so the host assigns fresh ids. */
 function itemsFrom(c: CallCtx, from: number): FxRecord[] {
@@ -129,7 +130,8 @@ export const behaviourFns: FnDef[] = [
     c.session.colls.set(name, next)
     return null
   }, 'behaviour'),
-  def('Patch', 'Patch(collection, base, changes)', 'Changes a record, or creates a new one when base is Defaults(collection). Returns the stored record.', 2, MANY, (c) => {
+  {
+    ...def('Patch', 'Patch(collection, base, changes) or Patch(record, changes)', 'Changes a record, or creates a new one when base is Defaults(collection). Returns the stored record. With a record as the first argument it only merges the records and returns the result.', 2, MANY, (c) => {
     const name = c.nameOf(0)
     const baseV = c.value(1)
     if (baseV !== null && !isRecord(baseV)) return c.fail(1, 'Patch needs a record as its second argument, like Defaults(Contacts) or a row')
@@ -140,6 +142,25 @@ export const behaviourFns: FnDef[] = [
     c.session.colls.set(name, upsert(cur, stored))
     return stored
   }, 'behaviour'),
+    tryPure(c) {
+      // Patch(record, record, ...): a pure merge. Anything that is not clearly a record uses the collection form.
+      let first: FxValue
+      try {
+        first = c.value(0)
+      } catch {
+        return NOT_PURE
+      }
+      if (!isRecord(first)) return NOT_PURE
+      const out: FxRecord = { ...first }
+      for (let i = 1; i < c.argc; i++) {
+        const v = c.value(i)
+        if (v === null) continue
+        if (!isRecord(v)) return c.fail(i, 'The changes must be a record, like {Name: "Asha"}')
+        for (const k of Object.keys(v)) if (k !== '__id' && k !== '__proto__') out[k] = v[k]!
+      }
+      return out
+    },
+  },
   def('Navigate', 'Navigate(Screen)', 'Goes to another screen.', 1, 2, (c) => {
     c.host!.navigate(c.nameOf(0))
     return null
@@ -163,8 +184,38 @@ export const behaviourFns: FnDef[] = [
     c.host!.reset(c.nameOf(0))
     return null
   }, 'behaviour'),
-  def('Refresh', 'Refresh(collection)', 'Does nothing here: collections are always current.', 1, 1, (c) => {
-    c.nameOf(0)
+  def('Refresh', 'Refresh(table)', 'Reloads a table from storage.', 1, 1, (c) => {
+    c.host!.refresh(c.nameOf(0))
+    return null
+  }, 'behaviour'),
+  def('SubmitForm', 'SubmitForm(Form)', 'Saves the data entered in a form.', 1, 1, (c) => { c.host!.form('submit', c.nameOf(0)); return null }, 'behaviour'),
+  def('ResetForm', 'ResetForm(Form)', 'Puts every field of a form back to its starting value.', 1, 1, (c) => { c.host!.form('reset', c.nameOf(0)); return null }, 'behaviour'),
+  def('NewForm', 'NewForm(Form)', 'Switches a form to New mode with empty fields.', 1, 1, (c) => { c.host!.form('new', c.nameOf(0)); return null }, 'behaviour'),
+  def('EditForm', 'EditForm(Form)', 'Switches a form to Edit mode.', 1, 1, (c) => { c.host!.form('edit', c.nameOf(0)); return null }, 'behaviour'),
+  def('ViewForm', 'ViewForm(Form)', 'Switches a form to View mode.', 1, 1, (c) => { c.host!.form('view', c.nameOf(0)); return null }, 'behaviour'),
+  def('Select', 'Select(control)', 'Runs the OnSelect of a control.', 1, 1, (c) => { c.host!.select(c.nameOf(0)); return null }, 'behaviour'),
+  def('SetFocus', 'SetFocus(control)', 'Moves the keyboard focus to a control.', 1, 1, (c) => { c.host!.setFocus(c.nameOf(0)); return null }, 'behaviour'),
+  def('Launch', 'Launch(url)', 'Opens a web address.', 1, 1, (c) => { c.host!.launch(c.text(0)); return null }, 'behaviour'),
+  def('Download', 'Download(url)', 'Starts a download from a web address.', 1, 1, (c) => { c.host!.launch(c.text(0)); return null }, 'behaviour'),
+  def('Copy', 'Copy(text)', 'Copies text to the clipboard.', 1, 1, (c) => { c.host!.copy(c.text(0)); return null }, 'behaviour'),
+  def('Trace', 'Trace(message [, data])', 'Writes a line to the debug console.', 1, 2, (c) => {
+    const msg = c.text(0)
+    if (c.argc > 1) c.host!.trace(msg, c.value(1))
+    else c.host!.trace(msg)
+    return null
+  }, 'behaviour'),
+  def('Exit', 'Exit()', 'Closes the running app.', 0, 0, (c) => { c.host!.exit(); return null }, 'behaviour'),
+  def('Concurrent', 'Concurrent(action1, action2, ...)', 'Runs several actions. Every action runs even when one fails; the first failure is then reported.', 1, MANY, (c) => {
+    let first: unknown
+    for (let i = 0; i < c.argc; i++) {
+      try {
+        c.value(i)
+      } catch (e) {
+        if (!(e instanceof FxError) || e.fatal) throw e
+        if (first === undefined) first = e
+      }
+    }
+    if (first !== undefined) throw first
     return null
   }, 'behaviour'),
 ]

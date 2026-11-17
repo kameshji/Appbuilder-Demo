@@ -183,4 +183,95 @@ export const tableFns: FnDef[] = [
     if (c.argNode(0).t !== 'id') c.value(0)
     return {}
   }),
+  def('GroupBy', 'GroupBy(table, "column" [, "column2", ...], "GroupName")', 'Groups rows that share the same values in the listed columns. Each result row has those columns plus GroupName: a table of the rows in the group.', 3, MANY, (c) => {
+    const { rows } = c.rows(0, 'GroupBy')
+    const cols: string[] = []
+    for (let i = 1; i < c.argc - 1; i++) cols.push(colName(c, i))
+    const groupName = colName(c, c.argc - 1)
+    if (cols.includes(groupName)) return c.fail(c.argc - 1, 'The group name must be different from the grouping columns')
+    const get = (r: FxRecord, k: string): FxValue => (hasOwn(r, k) ? r[k]! : null)
+    const groups = new Map<string, { head: FxRecord; items: FxRecord[] }>()
+    for (const r of rows) {
+      const key = cols.map((k) => valueKey(get(r, k))).join('|')
+      let g = groups.get(key)
+      if (!g) {
+        const head: FxRecord = {}
+        for (const k of cols) setField(head, k, get(r, k))
+        g = { head, items: [] }
+        groups.set(key, g)
+      }
+      g.items.push(r)
+    }
+    return [...groups.values()].map((g) => {
+      const out: FxRecord = { ...g.head }
+      setField(out, groupName, g.items)
+      return out
+    })
+  }),
+  def('Ungroup', 'Ungroup(table, "GroupName")', 'Flattens the groups made by GroupBy back into one table of rows.', 2, 2, (c) => {
+    const { rows } = c.rows(0, 'Ungroup')
+    const name = colName(c, 1)
+    const out: FxRecord[] = []
+    for (const r of rows) {
+      const g = hasOwn(r, name) ? r[name]! : undefined
+      if (g === undefined) return c.fail(1, `The table has no column called ${name}`)
+      if (g === null) continue
+      if (!Array.isArray(g)) return c.fail(1, `${name} isn't a table, so it can't be ungrouped`)
+      const outer: FxRecord = {}
+      for (const k of Object.keys(r)) if (k !== name && k !== '__id') outer[k] = r[k]!
+      for (const inner of toRows(g)) out.push({ ...outer, ...inner })
+    }
+    return out
+  }),
+  def('Shuffle', 'Shuffle(table)', 'The rows in random order.', 1, 1, (c) => {
+    const out = [...c.rows(0, 'Shuffle').rows]
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      const t = out[i]!
+      out[i] = out[j]!
+      out[j] = t
+    }
+    return out
+  }),
+  def('RenameColumns', 'RenameColumns(table, "old", "new" [, "old2", "new2", ...])', 'Renames columns.', 3, MANY, (c) => {
+    if (c.argc % 2 === 0) return c.fail(null, 'RenameColumns needs an old and a new name for each column')
+    const { rows } = c.rows(0, 'RenameColumns')
+    const map = new Map<string, string>()
+    for (let i = 1; i < c.argc; i += 2) {
+      const from = colName(c, i)
+      if (rows.length > 0 && !rows.some((r) => hasOwn(r, from))) return c.fail(i, `The table has no column called ${from}`)
+      map.set(from, colName(c, i + 1))
+    }
+    return rows.map((r) => {
+      const out: FxRecord = {}
+      for (const k of Object.keys(r)) setField(out, map.get(k) ?? k, r[k]!)
+      return out
+    })
+  }),
+  def('Choices', 'Choices(table, "column") or Choices(Table.Column)', 'A one-column table (Value) of the different values in a column, without blanks.', 1, 2, (c) => {
+    let v = c.value(0)
+    if (typeof v === 'string') {
+      const cur = c.currentRows(v)
+      if (cur === undefined) return c.fail(0, `Name isn't recognised: ${v}`)
+      v = cur
+    }
+    const rows = v === null ? [] : Array.isArray(v) ? toRows(v) : c.fail(0, 'Choices needs a table as its first argument')
+    let col: string | undefined
+    if (c.argc > 1) col = colName(c, 1)
+    const seen = new Set<string>()
+    const out: FxRecord[] = []
+    for (const r of rows) {
+      let k = col
+      if (k === undefined) {
+        const keys = Object.keys(r).filter((x) => x !== '__id')
+        if (keys.length !== 1) return c.fail(0, 'This table has several columns. Say which one to use, like Choices(Contacts, "City")')
+        k = keys[0]!
+      }
+      const x = hasOwn(r, k) ? r[k]! : null
+      if (x === null || x === '') continue
+      const key = valueKey(x)
+      if (!seen.has(key)) { seen.add(key); out.push({ Value: x }) }
+    }
+    return out
+  }),
 ]

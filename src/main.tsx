@@ -5,4 +5,8 @@ import { initialTheme } from '@/runtime/ui'
 import App from './App'
 
 document.documentElement.classList.toggle('dark', initialTheme() === 'dark')
-createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>)
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)

@@ -1,105 +1,81 @@
-import type { AppDef, ControlNode, FxRecord } from '@/contracts'
+import type { ControlNode } from '@/contracts'
 
-const KEY = 'appbuilder-demo:v1'
+/* ------------------------------------------------------------------ clipboard (across screens, apps and tabs) */
 
-export interface Persisted { app: AppDef; collections: Record<string, FxRecord[]> | null }
-
-function stringify(value: unknown, space?: number): string {
-  return JSON.stringify(
-    value,
-    function (this: Record<string, unknown>, key: string, v: unknown) {
-      const raw = this[key]
-      if (raw instanceof Date) return { $date: raw.toISOString() }
-      return v
-    },
-    space,
-  )
-}
-
-function parse(text: string): unknown {
-  return JSON.parse(text, (_k, v) => {
-    if (v && typeof v === 'object' && !Array.isArray(v) && typeof (v as { $date?: unknown }).$date === 'string' && Object.keys(v).length === 1) {
-      return new Date((v as { $date: string }).$date)
-    }
-    return v
-  })
-}
+const CLIP_KEY = 'appbuilder-clipboard'
+let memClip: ControlNode[] | null = null
 
 function isNode(n: unknown): n is ControlNode {
   if (typeof n !== 'object' || n === null) return false
   const o = n as Record<string, unknown>
-  return (
-    typeof o.id === 'string' &&
-    typeof o.name === 'string' &&
-    typeof o.type === 'string' &&
-    typeof o.props === 'object' &&
-    o.props !== null &&
-    Array.isArray(o.children) &&
-    o.children.every(isNode)
-  )
+  return typeof o.id === 'string' && typeof o.name === 'string' && typeof o.type === 'string' && typeof o.props === 'object' && o.props !== null && Array.isArray(o.children) && o.children.every(isNode)
 }
 
-export function isAppDef(x: unknown): x is AppDef {
-  if (typeof x !== 'object' || x === null) return false
-  const o = x as Record<string, unknown>
-  return (
-    o.formatVersion === 1 &&
-    typeof o.name === 'string' &&
-    typeof o.width === 'number' &&
-    typeof o.height === 'number' &&
-    typeof o.appProps === 'object' &&
-    Array.isArray(o.screens) &&
-    o.screens.length > 0 &&
-    o.screens.every((s) => isNode(s) && s.type === 'Screen')
-  )
-}
-
-export function readImport(text: string): Persisted {
-  const data = parse(text) as Record<string, unknown>
-  if (isAppDef(data)) return { app: data, collections: null }
-  if (data && isAppDef(data.app)) {
-    const c = data.collections
-    return { app: data.app, collections: c && typeof c === 'object' ? (c as Record<string, FxRecord[]>) : null }
-  }
-  throw new Error('Not an Appbuilder file')
-}
-
-export function loadPersisted(): Persisted | null {
+export function writeClipboard(nodes: ControlNode[]) {
+  memClip = nodes
   try {
-    const t = localStorage.getItem(KEY)
-    return t ? readImport(t) : null
+    localStorage.setItem(CLIP_KEY, JSON.stringify({ kind: 'appbuilder/controls', nodes }))
   } catch {
-    return null
+    /* storage unavailable: in-memory only */
   }
 }
 
-export function savePersisted(app: AppDef, collections: Record<string, FxRecord[]>) {
+export function readClipboard(): ControlNode[] | null {
   try {
-    localStorage.setItem(KEY, stringify({ app, collections }))
+    const t = localStorage.getItem(CLIP_KEY)
+    if (t) {
+      const v = JSON.parse(t) as { nodes?: unknown }
+      if (Array.isArray(v.nodes) && v.nodes.every(isNode)) return v.nodes
+    }
   } catch {
-    /* quota or private mode: ignore */
+    /* ignore */
   }
+  return memClip
 }
 
-export function clearPersisted() {
+/* ------------------------------------------------------------------ per-app UI prefs */
+
+export interface AppPrefs { locked: string[]; viewport: { w: number; h: number } | null; zoom?: number }
+const prefKey = (appId: string) => `appbuilder-ui:${appId}`
+
+export function loadPrefs(appId: string): AppPrefs {
   try {
-    localStorage.removeItem(KEY)
+    const t = localStorage.getItem(prefKey(appId))
+    if (t) {
+      const v = JSON.parse(t) as Partial<AppPrefs>
+      return { locked: Array.isArray(v.locked) ? v.locked.filter((x) => typeof x === 'string') : [], viewport: v.viewport && typeof v.viewport.w === 'number' ? v.viewport : null }
+    }
+  } catch {
+    /* ignore */
+  }
+  return { locked: [], viewport: null }
+}
+
+export function savePrefs(appId: string, prefs: AppPrefs) {
+  try {
+    localStorage.setItem(prefKey(appId), JSON.stringify(prefs))
   } catch {
     /* ignore */
   }
 }
 
-export function downloadJson(app: AppDef, collections: Record<string, FxRecord[]>) {
-  const text = stringify({ app, collections }, 2)
-  // Sandboxed hosts block downloads; the clipboard copy is the fallback there.
-  try { void navigator.clipboard?.writeText(text).catch(() => {}) } catch { /* ignore */ }
-  const blob = new Blob([text], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${app.name.replace(/[^\w-]+/g, '_') || 'app'}.appbuilder.json`
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
+/* ------------------------------------------------------------------ download (sandboxed hosts may block it; callers also offer Copy) */
+
+export function downloadText(fileName: string, text: string, mime = 'text/plain') {
+  try {
+    const blob = new Blob([text], { type: mime })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = fileName
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1500)
+    return true
+  } catch {
+    return false
+  }
 }
+
+export const safeFileName = (s: string) => s.replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '') || 'app'

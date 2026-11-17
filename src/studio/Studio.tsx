@@ -1,9 +1,15 @@
 import { useEffect } from 'react'
+import { CircleAlert, Loader2 } from 'lucide-react'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { Button } from '@/components/ui/button'
 import { controls } from '@/controls'
-import { getEvaluator } from '@/runtime/evaluator'
-import { useStore } from '@/runtime/store'
+import { go } from '@/router'
+import { evaluatorOf, setRunSurface, useStore } from '@/runtime/store'
 import { useUi } from '@/runtime/ui'
+import { loadPrefs, savePrefs } from '@/runtime/persist'
+import { loadAppDef, startStudioSession } from '@/runtime/session'
+import { AppSettingsDialog } from './AppSettings'
+import { PackageDialog } from './PackageDialog'
 import { Canvas } from './Canvas'
 import { CommandBar } from './CommandBar'
 import { FormulaBar } from './FormulaBar'
@@ -27,8 +33,10 @@ function useShortcuts() {
       if (st.mode !== 'design' || isTyping(e.target)) return
       const mod = e.ctrlKey || e.metaKey
       const key = e.key.toLowerCase()
-      const ev = getEvaluator(st.app, st.runtime)
+      const ev = evaluatorOf(st)
+      const lockedIds = useUi.getState().locked
       const real = st.selection.filter((id) => ev.byId.get(id)?.node.type !== 'Screen')
+      const movable = real.filter((id) => !lockedIds.includes(id))
 
       if (e.code === 'Space' && !mod) {
         e.preventDefault()
@@ -74,12 +82,12 @@ function useShortcuts() {
         if (first?.parent) st.select([first.parent.id])
         else if (first && first.node.type !== 'Screen') st.select([first.screen.id])
       } else if (key.startsWith('arrow') && !mod) {
-        if (!real.length) return
+        if (!movable.length || useUi.getState().viewSize) return
         e.preventDefault()
         const step = e.shiftKey ? 8 : 1
         const dx = key === 'arrowleft' ? -step : key === 'arrowright' ? step : 0
         const dy = key === 'arrowup' ? -step : key === 'arrowdown' ? step : 0
-        st.nudge(real, dx, dy)
+        st.nudge(movable, dx, dy)
       }
     }
     const up = (e: KeyboardEvent) => {
@@ -120,12 +128,65 @@ function InsertGhost() {
   )
 }
 
-export function Studio() {
+function usePrefs(appId: string) {
+  const ready = useStore((s) => s.appId === appId && s.loadState === 'ready')
+  useEffect(() => {
+    if (!ready) return
+    const p = loadPrefs(appId)
+    useUi.setState({ locked: p.locked, viewSize: p.viewport })
+    return useUi.subscribe((s, prev) => {
+      if (s.locked !== prev.locked || s.viewSize !== prev.viewSize) savePrefs(appId, { locked: s.locked, viewport: s.viewSize })
+    })
+  }, [appId, ready])
+}
+
+export function Studio({ appId }: { appId: string }) {
   const theme = useUi((s) => s.theme)
+  const loadState = useStore((s) => s.loadState)
+  const loadedId = useStore((s) => s.appId)
+  const loadError = useStore((s) => s.loadError)
   useShortcuts()
+  usePrefs(appId)
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')
   }, [theme])
+
+  useEffect(() => {
+    setRunSurface(false)
+    let alive = true
+    let stop: (() => void) | null = null
+    void loadAppDef(appId).then((def) => {
+      if (!alive || !def) return
+      useStore.getState().loadApp(appId, def)
+      useUi.setState({ viewSize: null, locked: [] })
+      useUi.getState().requestFit()
+      stop = startStudioSession(appId)
+    })
+    return () => {
+      alive = false
+      stop?.()
+    }
+  }, [appId])
+
+  if (loadState === 'missing' || loadState === 'error') {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-background text-center">
+        <CircleAlert className="size-6 text-muted-foreground" />
+        <p className="text-sm font-medium">{loadState === 'missing' ? 'This app does not exist' : 'The app could not be loaded'}</p>
+        {loadError && <p className="text-xs text-muted-foreground">{loadError}</p>}
+        <Button size="sm" variant="outline" onClick={() => go({ page: 'apps' })}>
+          Back to apps
+        </Button>
+      </div>
+    )
+  }
+  if (loadedId !== appId || loadState !== 'ready') {
+    return (
+      <div className="grid h-full place-items-center bg-background text-muted-foreground" data-testid="studio-loading">
+        <Loader2 className="size-5 animate-spin" />
+      </div>
+    )
+  }
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -143,6 +204,8 @@ export function Studio() {
         <Preview />
         <Toasts />
         <InsertGhost />
+        <AppSettingsDialog />
+        <PackageDialog />
       </div>
     </TooltipProvider>
   )

@@ -8,6 +8,8 @@ export class FxError extends Error {
   end: number
   /** fatal errors (unknown names, behaviour in data property...) are not swallowed by IfError */
   fatal: boolean
+  /** already re-pointed at a user-defined function call site */
+  remapped = false
   constructor(message: string, at: Span, fatal = false) {
     super(message)
     this.start = at.start

@@ -22,6 +22,36 @@ function dateArg(c: CallCtx, i: number): Date | null {
   return c.fail(i, `Can't use ${describe(v)} as a date`)
 }
 
+/** Date text including a time part. Local time unless the text says otherwise. */
+export function parseDateTimeText(s: string): Date | null {
+  const t = s.trim()
+  const d = parseDateText(t)
+  if (d) return d
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(t)
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] ?? 0))
+  return null
+}
+
+function dateTimeArg(c: CallCtx, i: number): Date | null {
+  const v: FxValue = c.value(i)
+  if (v === null || v === '') return null
+  if (v instanceof Date) return v
+  if (typeof v === 'string') {
+    const d = parseDateTimeText(v)
+    if (d) return d
+    return c.fail(i, `Can't turn ${describe(v)} into a date`)
+  }
+  return c.fail(i, `Can't use ${describe(v)} as a date`)
+}
+
+function isoWeek(d: Date): number {
+  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
+  const dow = t.getUTCDay() || 7
+  t.setUTCDate(t.getUTCDate() + 4 - dow)
+  const y0 = Date.UTC(t.getUTCFullYear(), 0, 1)
+  return Math.ceil(((t.getTime() - y0) / 86400000 + 1) / 7)
+}
+
 const UNITS = ['days', 'months', 'years', 'hours', 'minutes', 'seconds', 'quarters', 'weeks'] as const
 type Unit = (typeof UNITS)[number]
 
@@ -117,5 +147,69 @@ export const dateFns: FnDef[] = [
     if (type === 2) return dow === 0 ? 7 : dow
     if (type === 3) return dow === 0 ? 6 : dow - 1
     return dow + 1
+  }),
+  def('Second', 'Second(date)', 'The second, 0 to 59.', 1, 1, (c) => dateArg(c, 0)?.getSeconds() ?? null),
+  def('Time', 'Time(hour, minute, second)', 'Today at the given time. Values may overflow into the next day.', 3, 3, (c) => {
+    const n = new Date()
+    n.setHours(Math.trunc(c.num(0)), Math.trunc(c.num(1)), Math.trunc(c.num(2)), 0)
+    return n
+  }),
+  def('DateValue', 'DateValue(text [, language])', 'Turns text such as "2024-03-05" into a date (time removed).', 1, 2, (c) => {
+    const d = dateTimeArg(c, 0)
+    return d ? new Date(d.getFullYear(), d.getMonth(), d.getDate()) : null
+  }),
+  def('DateTimeValue', 'DateTimeValue(text [, language])', 'Turns text such as "2024-03-05 14:30" into a date and time.', 1, 2, (c) => dateTimeArg(c, 0)),
+  def('TimeValue', 'TimeValue(text [, language])', 'Turns text such as "2:30 PM" or "14:30:15" into a time (on today\'s date).', 1, 2, (c) => {
+    const v = c.value(0)
+    if (v === null) return null
+    if (v instanceof Date) return v
+    if (typeof v !== 'string') return c.fail(0, `Can't use ${describe(v)} as a time`)
+    const m = /^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?\s*([ap]m?)?\s*$/i.exec(v)
+    if (m) {
+      let h = Number(m[1])
+      const mer = m[4]?.toLowerCase()
+      if (mer) {
+        if (h < 1 || h > 12) return c.fail(0, `Can't turn ${describe(v)} into a time`)
+        h = (h % 12) + (mer.startsWith('p') ? 12 : 0)
+      }
+      if (h > 23 || Number(m[2]) > 59 || Number(m[3] ?? 0) > 59) return c.fail(0, `Can't turn ${describe(v)} into a time`)
+      const n = new Date()
+      n.setHours(h, Number(m[2]), Number(m[3] ?? 0), 0)
+      return n
+    }
+    const d = parseDateTimeText(v)
+    if (d && /\d:\d/.test(v)) return d
+    return c.fail(0, `Can't turn ${describe(v)} into a time`)
+  }),
+  def('EDate', 'EDate(date, months)', 'The same day some months earlier or later (clamped to the end of a short month).', 2, 2, (c) => {
+    const d = dateArg(c, 0)
+    return d ? addMonths(d, Math.trunc(c.num(1))) : null
+  }),
+  def('EOMonth', 'EOMonth(date, months)', 'The last day of the month, some months earlier or later.', 2, 2, (c) => {
+    const d = dateArg(c, 0)
+    if (!d) return null
+    const r = addMonths(new Date(d.getFullYear(), d.getMonth(), 1), Math.trunc(c.num(1)))
+    return new Date(r.getFullYear(), r.getMonth() + 1, 0)
+  }),
+  def('WeekNum', 'WeekNum(date [, startOfWeek])', 'Week of the year. Week 1 holds 1 January. Start of week: 1 Sunday (default), 2 Monday, 11-17 Monday..Sunday, 21 ISO 8601 weeks.', 1, 2, (c) => {
+    const d = dateArg(c, 0)
+    if (!d) return null
+    const sw = c.argc > 1 ? Math.trunc(c.num(1)) : 1
+    if (sw === 21) return isoWeek(d)
+    let startDow: number
+    if (sw === 1) startDow = 0
+    else if (sw === 2) startDow = 1
+    else if (sw >= 11 && sw <= 17) startDow = (sw - 10) % 7
+    else return c.fail(1, 'Start of week must be 1, 2, 11 to 17 or 21')
+    const jan1 = new Date(d.getFullYear(), 0, 1)
+    const offset = (jan1.getDay() - startDow + 7) % 7
+    const dayOfYear = dayNumber(d) - dayNumber(jan1)
+    return Math.floor((dayOfYear + offset) / 7) + 1
+  }),
+  def('IsToday', 'IsToday(date)', 'True when the date is today.', 1, 1, (c) => {
+    const d = dateArg(c, 0)
+    if (!d) return false
+    const n = new Date()
+    return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
   }),
 ]

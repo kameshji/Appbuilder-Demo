@@ -143,7 +143,7 @@ describe('behaviour functions with a host', () => {
   it('Back / Reset / Refresh', () => {
     const { host, calls } = fakeHost()
     val('=Back(); Reset(NameInput); Refresh(Contacts)', {}, host)
-    expect(calls).toEqual([{ fn: 'back', args: [] }, { fn: 'reset', args: ['NameInput'] }])
+    expect(calls).toEqual([{ fn: 'back', args: [] }, { fn: 'reset', args: ['NameInput'] }, { fn: 'refresh', args: ['Contacts'] }])
   })
   it('Notify maps notification kinds', () => {
     const { host, calls } = fakeHost()

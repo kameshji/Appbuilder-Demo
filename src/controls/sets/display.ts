@@ -1,3 +1,29 @@
-// STUB. Owned by the Display controls agent.
 import type { ControlType } from '@/contracts'
-export const displayControls: ControlType[] = []
+import { Row, Column, Grid, Card, ScrollArea, Divider, Spacer } from '../display/layout'
+import { Dialog, Sheet, Accordion, Tabs } from '../display/tabs-overlays'
+import {
+  Heading, RichText, BadgeControl, Avatar, AvatarGroup, IconControl, Shape, TagList, StatCard, Timeline,
+} from '../display/basics'
+import { DataTable, ListControl } from '../display/data'
+import { CalendarControl, Video, Audio } from '../display/media'
+import { Breadcrumb, Pagination, NavMenu, TopBar, Steps } from '../display/nav'
+import { ProgressControl, CircularProgress, Spinner, Skeleton, Alert, EmptyState } from '../display/feedback'
+import { Chart, Sparkline } from '../display/charts'
+
+/** Insert-pane order: Layout -> Display -> Data -> Navigation -> Feedback -> Media -> Charts. */
+export const displayControls: ControlType[] = [
+  // Layout (Container and Gallery are registered by the architect before this list)
+  Row, Column, Grid, Card, ScrollArea, Divider, Spacer, Dialog, Sheet, Accordion,
+  // Display
+  Heading, RichText, BadgeControl, Avatar, AvatarGroup, IconControl, Shape, TagList, StatCard, Timeline,
+  // Data
+  DataTable, ListControl, CalendarControl,
+  // Navigation
+  Tabs, Breadcrumb, Pagination, NavMenu, TopBar, Steps,
+  // Feedback
+  ProgressControl, CircularProgress, Spinner, Skeleton, Alert, EmptyState,
+  // Media
+  Video, Audio,
+  // Charts
+  Chart, Sparkline,
+]

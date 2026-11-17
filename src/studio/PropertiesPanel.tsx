@@ -3,8 +3,8 @@ import { Copy, Trash2, SlidersHorizontal } from 'lucide-react'
 import type { ControlNode, FxValue, PropMeta } from '@/contracts'
 import { controls } from '@/controls'
 import { fx } from '@/fx'
-import { getEvaluator, type Evaluator } from '@/runtime/evaluator'
-import { useStore } from '@/runtime/store'
+import { type Evaluator } from '@/runtime/evaluator'
+import { evaluatorOf, useStore } from '@/runtime/store'
 import { useUi } from '@/runtime/ui'
 import { normFormula, parseBoolLiteral, parseNumberLiteral, parseTextLiteral, quote, round2 } from '@/runtime/util'
 import { Button } from '@/components/ui/button'
@@ -14,7 +14,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
+import { usePlatform } from '@/platform'
+import { parseFormulas } from '@/runtime/evaluator'
+import * as Lucide from 'lucide-react'
 
 const GROUPS = ['Content', 'Data', 'Layout', 'Style', 'Behaviour'] as const
 
@@ -22,8 +26,9 @@ export function PropertiesPanel() {
   const selection = useStore((s) => s.selection)
   const app = useStore((s) => s.app)
   const rt = useStore((s) => s.runtime)
+  const env = useStore((s) => s.env)
   const mode = useStore((s) => s.mode)
-  const ev = getEvaluator(app, rt)
+  const ev = evaluatorOf({ ...useStore.getState(), app, runtime: rt, env })
   const node = selection.length === 1 ? ev.byId.get(selection[0])?.node : undefined
 
   return (
@@ -124,7 +129,8 @@ function NodePanel({ node, ev }: { node: ControlNode; ev: Evaluator }) {
                     onCommit={(f) => useStore.getState().setProp(node.id, m.name, f, `adv:${node.id}:${m.name}`)}
                   />
                 ))}
-              {isScreen && 'OnStart'.toLowerCase().includes(search.toLowerCase()) && <AppPropRow />}
+              {isScreen && 'onstart'.includes(search.toLowerCase()) && <AppPropRow />}
+              {isScreen && 'formulas'.includes(search.toLowerCase()) && <AppFormulasRow />}
             </div>
           </ScrollArea>
         </TabsContent>
@@ -136,6 +142,40 @@ function NodePanel({ node, ev }: { node: ControlNode; ev: Evaluator }) {
 function AppPropRow() {
   const f = useStore((s) => s.app.appProps.OnStart ?? '=')
   return <AdvancedRow label="App.OnStart" stored={f} onCommit={(v) => useStore.getState().setAppProp('OnStart', v)} />
+}
+
+function AppFormulasRow() {
+  const stored = useStore((s) => s.app.appProps.Formulas ?? '')
+  const [v, setV] = useState(stored)
+  const focused = useRef(false)
+  useEffect(() => {
+    if (!focused.current) setV(stored)
+  }, [stored])
+  const parsed = parseFormulas(v)
+  return (
+    <div>
+      <div className="mb-1 text-xs text-foreground/80">App.Formulas</div>
+      <Textarea
+        value={v}
+        rows={5}
+        spellCheck={false}
+        data-testid="adv-App.Formulas"
+        placeholder={'Total = Sum(Orders, Amount);\nTax(x: Number): Number = x * 0.2;'}
+        onFocus={() => (focused.current = true)}
+        onBlur={() => {
+          focused.current = false
+          if (v !== stored) useStore.getState().setAppProp('Formulas', v)
+        }}
+        className="font-mono text-[11px]"
+      />
+      {parsed.errors.map((e, i) => (
+        <div key={i} className="mt-0.5 text-[11px] leading-tight text-destructive">
+          {e.message}
+        </div>
+      ))}
+      <div className="mt-0.5 text-[11px] text-muted-foreground">Applied when the field loses focus.</div>
+    </div>
+  )
 }
 
 /* ------------------------------------------------------------------ name */
@@ -390,6 +430,17 @@ function SimpleRow({ node, meta, ev, nodeEval, compact }: { node: ControlNode; m
       )
       break
     }
+    case 'tableName': {
+      const lit = parseTextLiteral(formula)
+      editor = lit !== null ? <TableEditor value={lit} onChange={(v) => set(quote(v))} testId={`prop-${meta.name}`} /> : <FxPill node={node} meta={meta} formula={formula} />
+      break
+    }
+    case 'icon': {
+      const m = /^=\s*Icon\.(\w+)\s*$/.exec(formula)
+      const lit = m ? m[1] : parseTextLiteral(formula)
+      editor = lit !== null ? <IconEditor value={lit} onChange={(v) => set(`=Icon.${v}`)} testId={`prop-${meta.name}`} /> : <FxPill node={node} meta={meta} formula={formula} />
+      break
+    }
     default:
       editor = (
         <div className="space-y-1">
@@ -491,5 +542,88 @@ function AdvancedRow({ label, stored, error, onCommit }: { label: string; stored
       </div>
       {msg && <div className="mt-0.5 text-[11px] leading-tight text-destructive">{msg}</div>}
     </div>
+  )
+}
+
+/* ------------------------------------------------------------------ table + icon editors */
+
+function TableEditor({ value, onChange, testId }: { value: string; onChange: (v: string) => void; testId: string }) {
+  const tables = usePlatform((s) => s.tables)
+  const known = tables.some((t) => t.name === value)
+  return (
+    <Select
+      value={value || '__none'}
+      onValueChange={(v) => {
+        if (v === '__none') return onChange('')
+        onChange(v)
+        useStore.getState().addDataSource(v)
+      }}
+    >
+      <SelectTrigger size="sm" className="h-7 w-full text-xs" data-testid={testId}>
+        <SelectValue placeholder="Choose a table" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="__none">(none)</SelectItem>
+        {!known && value && <SelectItem value={value}>{value} (missing)</SelectItem>}
+        {tables.map((t) => (
+          <SelectItem key={t.id} value={t.name}>
+            {t.displayName} <span className="font-mono text-muted-foreground">{t.name !== t.displayName ? t.name : ''}</span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
+const lucideBag = Lucide as unknown as Record<string, React.ComponentType<{ className?: string }> | undefined>
+function iconComp(name: string) {
+  const c = lucideBag[name]
+  return typeof c === 'function' || (typeof c === 'object' && c !== null) ? c : undefined
+}
+
+function IconEditor({ value, onChange, testId }: { value: string; onChange: (v: string) => void; testId: string }) {
+  const [q, setQ] = useState('')
+  const [open, setOpen] = useState(false)
+  let names: string[] = []
+  try {
+    names = fx.enums().Icon ?? []
+  } catch {
+    names = []
+  }
+  const list = names.filter((n) => n.toLowerCase().includes(q.toLowerCase()))
+  const Cur = iconComp(value)
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button type="button" data-testid={testId} className="flex h-7 w-full items-center gap-2 rounded-md border border-input bg-background px-1.5 text-left text-xs hover:bg-accent/50">
+          {Cur ? <Cur className="size-4 text-primary" /> : <span className="size-4 rounded border border-dashed border-border" />}
+          <span className="truncate">{value || 'Choose an icon'}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[268px] p-2">
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search icons" className="mb-2 h-7 text-xs" data-testid="icon-search" autoFocus />
+        <div className="grid max-h-56 grid-cols-7 gap-1 overflow-auto">
+          {list.map((n) => {
+            const C = iconComp(n)
+            return (
+              <button
+                key={n}
+                type="button"
+                title={n}
+                data-testid={`icon-${n}`}
+                onClick={() => {
+                  onChange(n)
+                  setOpen(false)
+                }}
+                className={cn('grid size-8 place-items-center rounded-md border border-transparent hover:border-border hover:bg-accent', n === value && 'border-primary bg-primary/10 text-primary')}
+              >
+                {C ? <C className="size-4" /> : <span className="text-[9px]">{n.slice(0, 3)}</span>}
+              </button>
+            )
+          })}
+          {list.length === 0 && <p className="col-span-7 p-2 text-center text-xs text-muted-foreground">No icons</p>}
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }

@@ -1,64 +1,126 @@
-import { useCallback, useEffect, type CSSProperties, type ReactNode } from 'react'
-import type { ControlNode, FxRecord, FxValue } from '@/contracts'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
+import type { ControlNode, ControlType, FxRecord, FxValue } from '@/contracts'
 import { controls } from '@/controls'
-import { getEvaluator, ROOT_CTX, type Evaluator, type NodeCtx } from './evaluator'
-import { useStore } from './store'
+import { enumName, isTemplateType, ROOT_CTX, type Evaluator, type LayoutKind, type NodeCtx } from './evaluator'
+import { evaluatorOf, useStore } from './store'
 import { useUi } from './ui'
+import { placeStyle, themeOf } from './layout'
 
 export type RenderMode = 'design' | 'run'
 
-interface Props { node: ControlNode; ctx: NodeCtx; mode: RenderMode; ev: Evaluator }
-
 const num = (v: FxValue | undefined, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
 
-/** One control: positioned wrapper + registry renderer. Used by the design canvas and the preview. */
-export function RenderNode({ node, ctx, mode, ev }: Props) {
-  const rect = useUi((s) => s.dragRects[node.id])
-  const beingDragged = useUi((s) => s.dragging && s.dragRects[node.id] !== undefined)
+/**
+ * Size of a container's children box ([data-layout]) in design coordinates. The box may be smaller
+ * than the control (Card / Dialog header), so it is measured: design box = actual box minus how much
+ * the control itself grew beyond its design size.
+ */
+function useChildBox(ref: RefObject<HTMLDivElement | null>, designW: number, designH: number, fallback: { w: number; h: number }, enabled: boolean) {
+  const [box, setBox] = useState<{ w: number; h: number } | null>(null)
+  useLayoutEffect(() => {
+    if (!enabled) return
+    const wrap = ref.current
+    if (!wrap) return
+    const find = (): HTMLElement | null => {
+      for (const el of wrap.querySelectorAll<HTMLElement>('[data-layout]')) if (el.closest('[data-node-id]') === wrap) return el
+      return null
+    }
+    const measure = () => {
+      const b = find()
+      if (!b) {
+        setBox((p) => (p === null ? p : null))
+        return
+      }
+      const w = Math.max(0, b.clientWidth - (wrap.offsetWidth - designW))
+      const h = Math.max(0, b.clientHeight - (wrap.offsetHeight - designH))
+      setBox((p) => (p && Math.abs(p.w - w) < 0.5 && Math.abs(p.h - h) < 0.5 ? p : { w, h }))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(wrap)
+    const b = find()
+    if (b) ro.observe(b)
+    return () => ro.disconnect()
+  }, [ref, enabled, designW, designH])
+  return enabled && box ? box : fallback
+}
+
+function getDef(type: string): ControlType | undefined {
+  try {
+    return controls.get(type)
+  } catch {
+    return undefined
+  }
+}
+
+interface Props {
+  node: ControlNode
+  ctx: NodeCtx
+  mode: RenderMode
+  ev: Evaluator
+  /** parent layout kind and children-box design size */
+  pk: LayoutKind
+  pdw: number
+  pdh: number
+  pai: string
+}
+
+/** One control: positioned wrapper + registry renderer. Used by the design canvas, the preview and the player. */
+export const RenderNode = memo(function RenderNode({ node, ctx, mode, ev, pk, pdw, pdh, pai }: Props) {
+  const nk = ev.nodeKey(node, ctx)
+  // re-render only when something this node reads changed
+  useStore((s) => evaluatorOf(s).versionOf(nk))
+  const rect = useUi((s) => (ctx.inert ? undefined : s.dragRects[node.id]))
+  const beingDragged = useUi((s) => s.dragging && !ctx.inert && s.dragRects[node.id] !== undefined)
+  const flowGhost = useUi((s) => s.flowDragId === node.id)
+  const wrapRef = useRef<HTMLDivElement>(null)
   const outKey = ev.outKey(node, ctx)
-  const setOutput = useCallback(
-    (name: string, value: FxValue) => useStore.getState().setOutput(outKey, name, value),
-    [outKey],
+  const setOutput = useCallback((name: string, value: FxValue) => useStore.getState().setOutput(outKey, name, value), [outKey])
+  const design = mode === 'design'
+  const fire = useCallback(
+    (event: string) => {
+      if (design) return
+      useStore.getState().fire(node.id, event, ctx)
+    },
+    [design, node.id, ctx],
   )
 
-  let def
-  try {
-    def = controls.get(node.type)
-  } catch {
-    return null
-  }
-  const design = mode === 'design'
+  const def = getDef(node.type)
   const ne = ev.evalNode(node, ctx)
   const p = ne.props
-  const x = rect?.x ?? num(p.X, 0)
-  const y = rect?.y ?? num(p.Y, 0)
-  const w = rect?.w ?? num(p.Width, def.defaultSize.width)
-  const h = rect?.h ?? num(p.Height, def.defaultSize.height)
+  const dw = def?.defaultSize.width ?? 100
+  const dh = def?.defaultSize.height ?? 40
+  const g = rect ?? { x: num(p.X, 0), y: num(p.Y, 0), w: num(p.Width, dw), h: num(p.Height, dh) }
+  const isTemplate = !!def && (!!def.isTemplate || isTemplateType(node.type))
+  const lay = def?.isContainer && !isTemplate ? ev.layoutOf(node, ctx) : null
+  const box = useChildBox(wrapRef, g.w, g.h, { w: g.w, h: g.h }, !!lay)
+  if (!def) return null
+
   const visible = p.Visible !== false
-  const errorList = Object.entries(ne.errors)
-
-  const fire = (event: string) => {
-    if (design) return
-    useStore.getState().fire(node.id, event, ctx)
+  const overlayRun = !!def.isOverlay && !design
+  let style: CSSProperties
+  if (overlayRun) {
+    style = { position: 'absolute', left: 0, top: 0, width: 0, height: 0, zIndex: 200 }
+  } else {
+    style = placeStyle({ kind: pk, dw: pdw, dh: pdh, alignItems: pai }, g, {
+      anchorH: enumName(p.AnchorH),
+      anchorV: enumName(p.AnchorV),
+      grow: num(p.Grow, 0),
+      alignSelf: enumName(p.AlignSelf) || 'auto',
+      exact: !!rect,
+    })
   }
-
-  const style: CSSProperties = {
-    position: 'absolute',
-    left: x,
-    top: y,
-    width: w,
-    height: h,
-    pointerEvents: ctx.inert || beingDragged ? 'none' : 'auto',
-  }
+  style.pointerEvents = ctx.inert || beingDragged ? 'none' : 'auto'
   if (!visible) {
     if (design) style.opacity = 0.4
     else style.display = 'none'
   }
+  if (flowGhost) style.opacity = 0.35
 
-  const isGallery = node.type === 'Gallery'
   let children: ReactNode = undefined
   let renderTemplate: ((item: FxRecord, index: number) => ReactNode) | undefined
-  if (isGallery) {
+  if (isTemplate) {
+    const inner = ev.innerSize(node, ctx)
     renderTemplate = (item, index) => {
       const rowCtx: NodeCtx = {
         rows: [...ctx.rows, { galleryId: node.id, index, item }],
@@ -71,22 +133,29 @@ export function RenderNode({ node, ctx, mode, ev }: Props) {
           style={{ position: 'relative', width: '100%', height: '100%', opacity: design && index > 0 ? 0.5 : undefined }}
         >
           {node.children.map((c) => (
-            <RenderNode key={c.id} node={c} ctx={rowCtx} mode={mode} ev={ev} />
+            <RenderNode key={c.id} node={c} ctx={rowCtx} mode={mode} ev={ev} pk="manual" pdw={inner.w} pdh={inner.h} pai="auto" />
           ))}
         </div>
       )
     }
-  } else if (def.isContainer) {
-    children = node.children.map((c) => <RenderNode key={c.id} node={c} ctx={ctx} mode={mode} ev={ev} />)
+  } else if (def.isContainer && lay) {
+    children = node.children.map((c) => (
+      <RenderNode key={c.id} node={c} ctx={ctx} mode={mode} ev={ev} pk={lay.kind} pdw={box.w} pdh={box.h} pai={lay.alignItems} />
+    ))
   }
 
+  const tooltip = !design && typeof p.Tooltip === 'string' && p.Tooltip ? p.Tooltip : undefined
+  const errorList = Object.entries(ne.errors)
   const Render = def.render
   return (
     <div
+      ref={wrapRef}
       data-testid={`control-${node.name}`}
       data-node-id={node.id}
       data-node-type={node.type}
       data-container={def.isContainer ? '1' : undefined}
+      data-flow={pk !== 'manual' ? pk : undefined}
+      title={tooltip}
       style={style}
     >
       <Render
@@ -98,6 +167,7 @@ export function RenderNode({ node, ctx, mode, ev }: Props) {
         setOutput={setOutput}
         fire={fire}
         renderTemplate={renderTemplate}
+        focusToken={design ? undefined : ev.focusKey(node.id)}
       >
         {children}
       </Render>
@@ -111,35 +181,46 @@ export function RenderNode({ node, ctx, mode, ev }: Props) {
       )}
     </div>
   )
-}
+})
 
-/** A whole screen at design size. Subscribes to the store so every runtime change re-renders it. */
-export function ScreenView({ screenId, mode, testId = 'screen-frame' }: { screenId: string; mode: RenderMode; testId?: string }) {
+/** A whole screen at `width` x `height` (actual size). */
+export function ScreenView({ screenId, mode, width, height, testId = 'screen-frame' }: { screenId: string; mode: RenderMode; width: number; height: number; testId?: string }) {
+  const ev = useStore((s) => evaluatorOf(s))
   const app = useStore((s) => s.app)
-  const rt = useStore((s) => s.runtime)
-  const ev = getEvaluator(app, rt)
   const screen = app.screens.find((s) => s.id === screenId) ?? app.screens[0]
+  useStore((s) => evaluatorOf(s).versionOf(screen.id))
+  const wrapRef = useRef<HTMLDivElement>(null)
   const def = controls.get('Screen')
   const ne = ev.evalNode(screen, ROOT_CTX)
-  const noop = useCallback(() => {}, [])
+  const lay = ev.layoutOf(screen, ROOT_CTX)
+  const box = useChildBox(wrapRef, app.width, app.height, { w: app.width, h: app.height }, true)
   const setOutput = useCallback(() => {}, [])
+  const fire = useCallback(
+    (event: string) => {
+      if (mode === 'run') useStore.getState().fire(screen.id, event, ROOT_CTX)
+    },
+    [mode, screen.id],
+  )
 
   useEffect(() => {
     if (mode === 'run') useStore.getState().fire(screen.id, 'OnVisible')
   }, [mode, screen.id])
 
+  const theme = themeOf(app)
   const Render = def.render
   return (
     <div
+      ref={wrapRef}
       data-testid={testId}
       data-node-id={screen.id}
       data-node-type="Screen"
       data-container="1"
-      style={{ position: 'relative', width: app.width, height: app.height, overflow: 'hidden', isolation: 'isolate' }}
+      className={theme.className}
+      style={{ ...theme.style, position: 'relative', width, height, overflow: 'hidden', isolation: 'isolate', transform: 'translateZ(0)' }}
     >
-      <Render node={screen} props={ne.props} mode={mode} outputs={ne.outputs} setOutput={setOutput} fire={noop}>
+      <Render node={screen} props={ne.props} mode={mode} outputs={ne.outputs} setOutput={setOutput} fire={fire}>
         {screen.children.map((c) => (
-          <RenderNode key={c.id} node={c} ctx={ROOT_CTX} mode={mode} ev={ev} />
+          <RenderNode key={c.id} node={c} ctx={ROOT_CTX} mode={mode} ev={ev} pk={lay.kind} pdw={box.w} pdh={box.h} pai={lay.alignItems} />
         ))}
       </Render>
     </div>

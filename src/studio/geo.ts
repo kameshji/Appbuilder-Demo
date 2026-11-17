@@ -30,15 +30,86 @@ export function originOfOffsetParent(el: HTMLElement | null, zoom: number): { x:
   return { x: (r.left - fr.left) / zoom + op.clientLeft, y: (r.top - fr.top) / zoom + op.clientTop }
 }
 
+/** the element children of a container are positioned in: its own [data-layout] box, else the wrapper */
+export function childBoxEl(id: string): HTMLElement | null {
+  const f = frameEl()
+  if (!f) return null
+  const row = f.querySelector<HTMLElement>(`[data-row-origin="${id}"]`)
+  if (row) return row
+  const el = f.getAttribute('data-node-id') === id ? f : f.querySelector<HTMLElement>(`[data-node-id="${id}"]`)
+  if (!el) return null
+  for (const b of el.querySelectorAll<HTMLElement>('[data-layout]')) if (b.closest('[data-node-id]') === el) return b
+  return el
+}
+
 export function containerOrigin(id: string, zoom: number): { x: number; y: number } {
   const f = frameEl()
-  if (!f) return { x: 0, y: 0 }
-  let el = f.querySelector<HTMLElement>(`[data-row-origin="${id}"]`)
-  if (!el) el = f.querySelector<HTMLElement>(`[data-node-id="${id}"]`)
-  if (!el || el === f) return { x: 0, y: 0 }
+  const el = childBoxEl(id)
+  if (!f || !el || el === f) return { x: 0, y: 0 }
   const fr = f.getBoundingClientRect()
   const r = el.getBoundingClientRect()
   return { x: (r.left - fr.left) / zoom + el.clientLeft, y: (r.top - fr.top) / zoom + el.clientTop }
+}
+
+/** frame-coordinate rect of a control's wrapper */
+export function nodeRect(id: string, zoom: number): { x: number; y: number; w: number; h: number } | null {
+  const f = frameEl()
+  if (!f) return null
+  const el = f.getAttribute('data-node-id') === id ? f : f.querySelector<HTMLElement>(`[data-node-id="${id}"]`)
+  if (!el) return null
+  const fr = f.getBoundingClientRect()
+  const r = el.getBoundingClientRect()
+  return { x: (r.left - fr.left) / zoom, y: (r.top - fr.top) / zoom, w: r.width / zoom, h: r.height / zoom }
+}
+
+/**
+ * Insertion point among the children of an auto-layout container: index into `ids` and the line
+ * to draw (frame coordinates).
+ */
+export function flowInsertion(
+  kind: 'row' | 'column' | 'grid',
+  containerId: string,
+  ids: string[],
+  px: number,
+  py: number,
+  zoom: number,
+): { index: number; line: { x: number; y: number; w: number; h: number } | null } {
+  const rects = ids.map((id) => nodeRect(id, zoom))
+  const box = (() => {
+    const f = frameEl()
+    const el = childBoxEl(containerId)
+    if (!f || !el) return null
+    const fr = f.getBoundingClientRect()
+    const r = el.getBoundingClientRect()
+    return { x: (r.left - fr.left) / zoom, y: (r.top - fr.top) / zoom, w: r.width / zoom, h: r.height / zoom }
+  })()
+  let index = ids.length
+  for (let i = 0; i < rects.length; i++) {
+    const r = rects[i]
+    if (!r) continue
+    const before =
+      kind === 'row' ? px < r.x + r.w / 2 : kind === 'column' ? py < r.y + r.h / 2 : py < r.y || (py <= r.y + r.h && px < r.x + r.w / 2)
+    if (before) {
+      index = i
+      break
+    }
+  }
+  const t = 3
+  let line: { x: number; y: number; w: number; h: number } | null = null
+  const ref = rects[index] ?? null
+  const prev = rects[index - 1] ?? null
+  if (kind === 'column') {
+    const y = ref ? ref.y - 4 : prev ? prev.y + prev.h + 4 : (box?.y ?? 0) + 8
+    const x = (ref ?? prev)?.x ?? (box?.x ?? 0) + 8
+    const w = (ref ?? prev)?.w ?? Math.max(24, (box?.w ?? 40) - 16)
+    line = { x, y: y - t / 2, w, h: t }
+  } else {
+    const x = ref ? ref.x - 4 : prev ? prev.x + prev.w + 4 : (box?.x ?? 0) + 8
+    const y = (ref ?? prev)?.y ?? (box?.y ?? 0) + 8
+    const h = (ref ?? prev)?.h ?? Math.max(24, (box?.h ?? 40) - 16)
+    line = { x: x - t / 2, y, w: t, h }
+  }
+  return { index, line }
 }
 
 /** topmost container (Screen/Container/Gallery) under the pointer that is not excluded */

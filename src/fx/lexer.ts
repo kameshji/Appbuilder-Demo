@@ -124,7 +124,7 @@ export function lex(src: string, from: number, to: number): Token[] {
   return toks
 }
 
-function readString(src: string, open: number, to: number): { text: string; end: number } {
+export function readString(src: string, open: number, to: number): { text: string; end: number } {
   let i = open + 1
   let text = ''
   while (i < to) {
@@ -139,7 +139,7 @@ function readString(src: string, open: number, to: number): { text: string; end:
   throw new ParseError('Text is missing its closing quote', open, to)
 }
 
-function readInterp(src: string, open: number, to: number): { parts: InterpPart[]; end: number } {
+export function readInterp(src: string, open: number, to: number): { parts: InterpPart[]; end: number } {
   // open points at '$', src[open+1] is the opening quote
   let i = open + 2
   const parts: InterpPart[] = []

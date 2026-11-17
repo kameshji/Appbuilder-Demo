@@ -47,6 +47,14 @@ export function fakeHost(): { host: FxHost; calls: Call[] } {
     back: rec('back'),
     notify: rec('notify'),
     reset: rec('reset'),
+    form: rec('form'),
+    select: rec('select'),
+    setFocus: rec('setFocus'),
+    launch: rec('launch'),
+    copy: rec('copy'),
+    trace: rec('trace'),
+    exit: rec('exit'),
+    refresh: rec('refresh'),
   }
   return { host, calls }
 }

@@ -7,6 +7,7 @@ import { mathFns } from './math'
 import { tableFns } from './table'
 import { textFns } from './text'
 import type { FnDef } from './types'
+import { bindBuiltinCheck, setUserFunctions, userDocs, userFunction, userFunctionNoCase } from './user'
 
 const ALL: FnDef[] = [...logicFns, ...textFns, ...mathFns, ...dateFns, ...tableFns, ...colorFns, ...behaviourFns]
 
@@ -17,12 +18,18 @@ for (const f of ALL) {
   BY_LOWER.set(f.name.toLowerCase(), f)
 }
 
-export function lookupFunction(name: string): FnDef | undefined { return BY_NAME.get(name) }
+bindBuiltinCheck((name) => BY_NAME.has(name))
+
+/** Built-in functions first, then user-defined ones. */
+export function lookupFunction(name: string): FnDef | undefined { return BY_NAME.get(name) ?? userFunction(name) }
 /** Case-insensitive match, for "Did you mean ...?" */
-export function suggestFunction(name: string): FnDef | undefined { return BY_LOWER.get(name.toLowerCase()) }
+export function suggestFunction(name: string): FnDef | undefined { return BY_LOWER.get(name.toLowerCase()) ?? userFunctionNoCase(name) }
 
 export function functionDocs(): FxFunctionDoc[] {
-  return ALL.map(({ name, signature, summary, kind }) => ({ name, signature, summary, kind })).sort((a, b) => a.name.localeCompare(b.name))
+  const builtin = ALL.map(({ name, signature, summary, kind }) => ({ name, signature, summary, kind }))
+  return [...builtin, ...userDocs()].sort((a, b) => a.name.localeCompare(b.name))
 }
+
+export { setUserFunctions }
 
 export type { FnDef }

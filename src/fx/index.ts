@@ -1,8 +1,10 @@
-import type { FxApi, FxDiagnostic, FxFunctionDoc, FxHost, FxResult, FxScope, Formula } from '@/contracts'
+import type { FxApi, FxDiagnostic, FxFunctionDoc, FxHost, FxNamedFormula, FxResult, FxScope, Formula } from '@/contracts'
 import { freeIdentifiers, childrenOf, type Node } from './ast'
 import { ENUM_RECORDS, enums as enumsImpl } from './enums'
 import { arityMessage, evaluateSource, unknownFunctionMessage } from './evaluate'
-import { functionDocs, lookupFunction } from './functions'
+import { functionDocs, lookupFunction, setUserFunctions as setUdfs } from './functions'
+import { parseNamedFormulas as parseNamed } from './named'
+import { signatureAt as sigAt } from './signature'
 import { parse } from './parser'
 
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -67,4 +69,16 @@ export function enums(): Record<string, string[]> {
   return enumsImpl()
 }
 
-export const fx: FxApi = { check, evaluate, referencedNames, renameIdentifier, functions, enums }
+export function parseNamedFormulas(source: string): { items: FxNamedFormula[]; errors: FxDiagnostic[] } {
+  return parseNamed(source)
+}
+
+export function setUserFunctions(defs: FxNamedFormula[]): void {
+  setUdfs(defs)
+}
+
+export function signatureAt(source: Formula, offset: number): { name: string; signature: string; summary: string; argIndex: number } | null {
+  return sigAt(source, offset)
+}
+
+export const fx: FxApi = { check, evaluate, referencedNames, renameIdentifier, functions, enums, parseNamedFormulas, setUserFunctions, signatureAt }

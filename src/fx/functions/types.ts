@@ -7,6 +7,8 @@ export interface Session {
   host: FxHost | undefined
   vars: Map<string, FxValue>
   colls: Map<string, FxRecord[]>
+  /** nesting depth of user-defined function calls */
+  depth: number
 }
 
 export interface CallCtx {
@@ -21,6 +23,10 @@ export interface CallCtx {
   withAs(i: number): { value: FxValue; as?: string }
   /** evaluate argument i lazily for one row (row fields, ThisRecord and `as` in scope) */
   row(i: number, record: FxRecord, as?: string): FxValue
+  /** evaluate argument i with the fields of `record` readable by name, without changing ThisRecord */
+  fields(i: number, record: FxRecord): FxValue
+  /** evaluate a node with a fresh root scope (only `record`'s fields visible by name): used by user-defined functions */
+  scoped(node: Node, record: FxRecord): FxValue
   /** like row() but coerced to true/false */
   rowBool(i: number, record: FxRecord, as?: string): boolean
   text(i: number): string
@@ -43,7 +49,14 @@ export interface FnDef {
   min: number
   max: number
   run(c: CallCtx): FxValue
+  /**
+   * Behaviour functions that also have a pure form (Patch(record, record)). Return NOT_PURE to use the
+   * behaviour form. Runs before the "non-behaviour property" check.
+   */
+  tryPure?(c: CallCtx): FxValue | typeof NOT_PURE
 }
+
+export const NOT_PURE: unique symbol = Symbol('not-pure')
 
 export function def(
   name: string,

@@ -1,0 +1,132 @@
+import { useEffect, useState } from 'react'
+import { ArrowLeft, Columns3, Settings2, Table2, Trash2 } from 'lucide-react'
+import { platform, usePlatform } from '@/platform'
+import { go } from '@/router'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ConfirmDialog, Empty, Field, Panel, fmtDate, useToast } from './kit'
+import { DataGrid } from './DataGrid'
+import { ColumnsPanel } from './ColumnsPanel'
+
+export function TableDesigner({ tableId }: { tableId: string }) {
+  const table = usePlatform((s) => s.tables.find((t) => t.id === tableId))
+  const dataVersion = usePlatform((s) => s.dataVersion)
+  const { fail, toast } = useToast()
+  const [tab, setTab] = useState('data')
+  const [name, setName] = useState('')
+  const [desc, setDesc] = useState('')
+  const [del, setDel] = useState(false)
+  useEffect(() => { setName(table?.displayName ?? ''); setDesc(table?.description ?? '') }, [table?.id, table?.displayName, table?.description])
+  useEffect(() => { setTab('data') }, [tableId])
+
+  const back = (
+    <button type="button" onClick={() => go({ page: 'tables' })} className="mb-2 inline-flex items-center gap-1 rounded text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40" data-testid="back-to-tables">
+      <ArrowLeft className="size-3.5" /> Tables
+    </button>
+  )
+
+  if (!table) {
+    return (
+      <div data-testid="page-table">
+        {back}
+        <Empty icon={Table2} title="Table not found" description="It may have been deleted." action={<Button onClick={() => go({ page: 'tables' })}>Back to tables</Button>} />
+      </div>
+    )
+  }
+
+  const commit = async (patch: { displayName?: string; description?: string }) => {
+    try {
+      await platform.tables.update(table.id, patch)
+    } catch (e) {
+      fail(e)
+      setName(table.displayName)
+      setDesc(table.description ?? '')
+    }
+  }
+  const rowCount = platform.tables.rows(table.name, { secure: false }).length
+  void dataVersion
+
+  return (
+    <div data-testid="page-table" className="flex min-h-0 flex-col">
+      {back}
+      <div className="mb-4 flex items-start gap-3">
+        <div className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-lg bg-accent text-accent-foreground"><Table2 className="size-[18px]" /></div>
+        <div className="min-w-0 flex-1">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => { const v = name.trim(); if (v && v !== table.displayName) void commit({ displayName: v }); else setName(table.displayName) }}
+            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { setName(table.displayName); (e.target as HTMLInputElement).blur() } }}
+            aria-label="Table name"
+            data-testid="table-title"
+            className="block h-8 w-full max-w-xl rounded-md border border-transparent bg-transparent px-1.5 text-xl font-semibold tracking-tight outline-none hover:border-border focus:border-ring focus:bg-background"
+          />
+          <input
+            value={desc}
+            onChange={(e) => setDesc(e.target.value)}
+            onBlur={() => { if (desc.trim() !== (table.description ?? '')) void commit({ description: desc.trim() }) }}
+            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+            placeholder="Add a description"
+            aria-label="Table description"
+            className="mt-0.5 block h-7 w-full max-w-xl rounded-md border border-transparent bg-transparent px-1.5 text-sm text-muted-foreground outline-none placeholder:text-muted-foreground/60 hover:border-border focus:border-ring focus:bg-background"
+          />
+        </div>
+        <div className="shrink-0 pt-1.5 text-right text-xs text-muted-foreground">
+          <div className="font-mono">{table.name}</div>
+          <div>Modified {fmtDate(table.modifiedOn)}</div>
+        </div>
+      </div>
+
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList className="h-9 self-start">
+          <TabsTrigger value="data" className="flex-none px-4" data-testid="tab-data"><Table2 /> Data</TabsTrigger>
+          <TabsTrigger value="columns" className="flex-none px-4" data-testid="tab-columns"><Columns3 /> Columns</TabsTrigger>
+          <TabsTrigger value="settings" className="flex-none px-4" data-testid="tab-settings"><Settings2 /> Settings</TabsTrigger>
+        </TabsList>
+        <TabsContent value="data" className="mt-2"><DataGrid table={table} /></TabsContent>
+        <TabsContent value="columns" className="mt-2"><ColumnsPanel table={table} /></TabsContent>
+        <TabsContent value="settings" className="mt-2">
+          <div className="grid max-w-2xl gap-4" data-testid="settings-tab">
+            <Panel className="grid gap-4 p-5">
+              <Field label="Primary column" hint="Shown for a row in lookups and titles.">
+                <Select value={table.primaryColumn} onValueChange={(v) => { platform.tables.update(table.id, { primaryColumn: v }).then(() => toast('Primary column updated', 'success')).catch(fail) }}>
+                  <SelectTrigger className="w-72" size="sm" data-testid="primary-column-select"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {table.columns.filter((c) => !c.system).map((c) => <SelectItem key={c.name} value={c.name}>{c.displayName}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <Field label="Formula name"><Input readOnly value={table.name} className="font-mono text-xs" /></Field>
+                <Field label="Table id"><Input readOnly value={table.id} className="font-mono text-xs" /></Field>
+                <Field label="Rows"><Input readOnly value={String(rowCount)} /></Field>
+                <Field label="Created"><Input readOnly value={fmtDate(table.createdOn)} /></Field>
+              </div>
+            </Panel>
+            <Panel className="flex items-center gap-4 border-destructive/30 p-5">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold">Delete this table</div>
+                <p className="mt-0.5 text-sm text-muted-foreground">Removes the table definition and all {rowCount} rows. Apps that use it will stop working.</p>
+              </div>
+              <Button variant="destructive" size="sm" onClick={() => setDel(true)} data-testid="delete-table-button"><Trash2 /> Delete table</Button>
+            </Panel>
+          </div>
+        </TabsContent>
+      </Tabs>
+
+      <ConfirmDialog
+        open={del}
+        onOpenChange={setDel}
+        title={`Delete table "${table.displayName}"?`}
+        description={`This permanently deletes ${rowCount} ${rowCount === 1 ? 'row' : 'rows'} and the schema. This cannot be undone.`}
+        onConfirm={async () => {
+          await platform.tables.remove(table.id)
+          toast(`Deleted table "${table.displayName}"`, 'success')
+          go({ page: 'tables' })
+        }}
+      />
+    </div>
+  )
+}
