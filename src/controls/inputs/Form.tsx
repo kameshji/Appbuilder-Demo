@@ -224,7 +224,17 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
   const formMode: FormModeName = toText(outputs.Mode).trim() === '' ? modeProp : parseFormMode(outputs.Mode)
 
   const fieldsProp = toText(props.Fields)
-  const cols = useMemo(() => (table ? visibleColumns(table, fieldsProp, formMode) : []), [table, fieldsProp, formMode])
+  /* column-level security (UX mirror of the server): hidden columns are left out, read-only ones are shown but not editable */
+  const colAccess = useMemo((): Record<string, string> => {
+    if (!table) return {}
+    return safe(() => platform.getState().session?.privileges.tables[table.id]?.columns ?? {}, {} as Record<string, string>)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [table, version])
+  const accessOf = (c: ColumnDef): string => (c.system ? 'read' : (colAccess[c.name] ?? 'update'))
+  const cols = useMemo(
+    () => (table ? visibleColumns(table, fieldsProp, formMode).filter((c) => (c.system ? 'read' : (colAccess[c.name] ?? 'update')) !== 'none') : []),
+    [table, fieldsProp, formMode, colAccess],
+  )
   const colsKey = cols.map((c) => `${c.name}:${c.type}`).join(',')
 
   const item: FxRecord | null = isRecord(props.Item) ? props.Item : null
@@ -301,6 +311,7 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
   const errors: Record<string, string> = {}
   if (formMode !== 'View') {
     for (const c of cols) {
+      if (accessOf(c) !== 'update') continue
       if (isFileType(c.type)) {
         const has = attachmentIds(values[c.name]).length > 0 || (pending[c.name]?.length ?? 0) > 0
         if (c.required && !has) errors[c.name] = `${c.displayName || c.name} is required`
@@ -318,7 +329,7 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
   const updates = useMemo(() => {
     const rec: FxRecord = {}
     for (const c of cols) {
-      if (c.type === 'autonumber') continue
+      if (c.type === 'autonumber' || accessOf(c) !== 'update') continue
       if (isFileType(c.type)) {
         // new files are uploaded after the row exists (see __files); only removed attachments are written here
         if (formMode === 'New') continue
@@ -332,7 +343,7 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
     }
     return rec
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cols, values, pSig, fileBase, formMode])
+  }, [cols, values, pSig, fileBase, formMode, colAccess])
 
   /* hidden __files output: { column: token } of the File objects to upload after save */
   const tokens = useRef<Record<string, string>>({})
@@ -415,8 +426,8 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
                 <span className="truncate">{c.displayName || c.name}</span>
                 {c.required && formMode !== 'View' && <span className="text-destructive" aria-hidden="true">*</span>}
               </Label>
-              {formMode === 'View' ? (
-                <div className="min-h-9 whitespace-pre-wrap rounded-md bg-muted/50 px-3 py-2 text-sm">
+              {formMode === 'View' || accessOf(c) !== 'update' ? (
+                <div className="min-h-9 whitespace-pre-wrap rounded-md bg-muted/50 px-3 py-2 text-sm" data-readonly={formMode === 'View' ? undefined : 'true'} title={formMode === 'View' ? undefined : 'Read-only for your role'}>
                   {isFileType(c.type) && attachmentIds(values[c.name]).length > 0 ? (
                     <AttachmentCell value={values[c.name]} thumb={40} max={6} />
                   ) : (

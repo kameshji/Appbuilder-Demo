@@ -296,11 +296,12 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
       }
       tables.push(entry)
     }
-    return { user, isAdmin: uc.privileges.isAdmin, isMaker: uc.privileges.isMaker, status: user.status ?? 'active', tables }
+    const items = tables.map((t) => ({ tableId: t.table, visibleRows: t.rowCount, hiddenColumns: t.hiddenColumns, readOnlyColumns: t.readOnlyColumns }))
+    return { user, isAdmin: uc.privileges.isAdmin, isMaker: uc.privileges.isMaker, status: user.status ?? 'active', items, tables }
   }, { auth: 'admin' })
 }
 
-/** GET /api/v1/security/preview?user= -> { user, isAdmin, isMaker, status, tables: SecurityPreviewTable[] } */
+/** GET /api/v1/security/preview?user= -> { user, isAdmin, isMaker, status, items: [{ tableId, visibleRows, hiddenColumns, readOnlyColumns }], tables: SecurityPreviewTable[] (richer) } */
 export interface SecurityPreviewTable {
   table: string
   name: string

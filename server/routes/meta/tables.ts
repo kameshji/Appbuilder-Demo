@@ -6,14 +6,16 @@ import type { ColumnDef, TableDef } from '../../../src/platform/contracts.ts'
 import type { QueryValue } from '../../../src/platform/http.ts'
 import { DEFAULT_ROW_CAP } from '../../../src/platform/http.ts'
 import { HttpError } from '../../core/contracts.ts'
+import { removeTableAttachments } from '../../core/attachments.ts'
+import type { CoreServices } from '../../core/services.ts'
 import type { Connector, ConnectionRecord, Router, Services } from '../../core/contracts.ts'
 import {
-  IDENT, MAX_COLUMNS, MAX_IDENT, SYSTEM_NAMES, bodyObj, buildColumn, clone, conflict, defaultFor, inferType, invalid, isAttachmentType, isBlankCell,
+  IDENT, me, MAX_COLUMNS, MAX_IDENT, SYSTEM_NAMES, bodyObj, buildColumn, clone, conflict, defaultFor, inferType, invalid, isAttachmentType, isBlankCell,
   jsonCellToCsv, normalizeForConversion, optString, parseCsvText, reqString, systemColumns, toIdentifier, tryCoerce, uniqueIdentifier, unparseCsv,
 } from './util.ts'
 import type { RoleX } from './util.ts'
 import {
-  FILES_CONNECTION_ID, audit, createPhysical, friendly, grantDefaults, lookupReferrers, me, pickSource, queryAll, requireTable, resolveConnection,
+  audit, createPhysical, friendly, grantDefaults, lookupReferrers, pickSource, queryAll, requireTable, resolveConnection,
   resolver, unregisterTable,
 } from './tables-core.ts'
 
@@ -235,6 +237,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
       }
     }
     await unregisterTable(s, def)
+    if ('internals' in s.data) await removeTableAttachments(s as CoreServices, def.id).catch(() => 0)
     await audit(s, ctx, 'table.delete', { name: def.name, dropSource: drop }, def.id)
     return { ok: true }
   }, { auth: 'maker' })
@@ -298,7 +301,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
     if ('choices' in p) merged.choices = [...new Set((p.choices ?? []).map((x) => String(x).trim()).filter(Boolean))]
     if ('lookupTable' in p) merged.lookupTable = p.lookupTable
     if ('prefix' in p) merged.prefix = p.prefix ?? ''
-    for (const k of ['multiple', 'accept', 'maxSizeMB'] as const) if (k in p) (merged as Record<string, unknown>)[k] = p[k]
+    for (const k of ['multiple', 'accept', 'maxSizeMB'] as const) if (k in p) (merged as unknown as Record<string, unknown>)[k] = p[k]
     // revalidate the merged column through the same rules as a new column
     const checked = buildColumn({ ...merged, name: undefined, displayName: merged.displayName }, {
       existing: def.columns.filter((c) => c.name !== old.name), selfName: def.name, resolveTable: await tableResolver(s), now: new Date(),
@@ -444,4 +447,3 @@ export async function moveTable(s: Services, def: TableDef, record: ConnectionRe
   return fresh
 }
 
-export { FILES_CONNECTION_ID }

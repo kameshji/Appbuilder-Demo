@@ -64,7 +64,8 @@ const ordersCols = (): ColumnDef[] => [
 ]
 
 /** creates the Contacts and Orders tables (with sample rows) on the default connection when they are missing */
-export async function ensureSampleTables(s: Services): Promise<TableDef[]> {
+export async function ensureSampleTables(s: Services, ownerId?: string): Promise<TableDef[]> {
+  const own: Record<string, QueryValue> = ownerId ? { owner: ownerId, createdBy: ownerId } : {}
   const created: TableDef[] = []
   const have = (n: string) => s.meta.tables.get(n)
   const { record, connector } = await resolveConnection(s)
@@ -83,7 +84,7 @@ export async function ensureSampleTables(s: Services): Promise<TableDef[]> {
   if (!(await have('Contacts'))) {
     const cd = await make('Contacts', 'People and companies you work with.', 'Name', contactsCols())
     for (const c of SEED_CONTACTS) {
-      const row = await s.data.insert(null, cd, c as unknown as Record<string, QueryValue>)
+      const row = await s.data.insert(null, cd, { ...(c as unknown as Record<string, QueryValue>), ...own })
       contactIds.push(String(row.id))
     }
   }
@@ -98,20 +99,20 @@ export async function ensureSampleTables(s: Services): Promise<TableDef[]> {
     }
     if (contactIds.length >= SEED_CONTACTS.length) {
       for (const o of SEED_ORDERS) {
-        await s.data.insert(null, od, { Customer: contactIds[o.customer], Amount: o.amount, OrderDate: o.date, Status: o.status })
+        await s.data.insert(null, od, { Customer: contactIds[o.customer], Amount: o.amount, OrderDate: o.date, Status: o.status, ...own })
       }
     }
   }
   return created
 }
 
-export async function createSampleApp(s: Services, actor: string, name = 'Contacts app'): Promise<AppMeta> {
-  await ensureSampleTables(s)
+export async function createSampleApp(s: Services, actor: string, name = 'Contacts app', ownerId?: string): Promise<AppMeta> {
+  await ensureSampleTables(s, ownerId)
   return addApp(s, actor, sampleAppDef(), name, 'A contacts list with search, details and an add form.')
 }
 
 /** seed sample tables, rows and the Contacts app into the default store (when there is nothing to migrate) */
 export async function seedSample(services: Services, adminUserId: string): Promise<void> {
   const admin = await services.meta.users.get(adminUserId)
-  await createSampleApp(services, admin?.name ?? 'Admin')
+  await createSampleApp(services, admin?.name ?? 'Admin', 'Contacts app', adminUserId)
 }

@@ -138,7 +138,7 @@ export async function createPhysical(s: Services, record: ConnectionRecord, conn
 
 /** HttpErrors pass through; anything else becomes a 422 with the (already user-safe) connector message */
 export function friendly(e: unknown, prefix: string): Error {
-  if (e && typeof e === 'object' && 'status' in e && 'code' in e) return e as Error
+  if (e && typeof e === 'object' && 'status' in e && 'code' in e) return e as unknown as Error
   const msg = e instanceof Error ? e.message : String(e)
   return invalid(`${prefix}: ${msg}`)
 }

@@ -1,2 +1,2 @@
 import type { Plugin } from 'vite'
-export default function appbuilderFsPlugin(): Plugin
+export default function appbuilderApiPlugin(): Plugin

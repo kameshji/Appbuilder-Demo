@@ -1,9 +1,20 @@
-// STUB. Replaced by the metadata API agent (S2): exports the route module and the legacy migration.
-import type { RouteModule, Services } from '../../core/contracts.ts'
-export const metaRoutes: RouteModule = () => {}
-/** called by the core after the first admin is created; returns a human summary */
-export async function migrateLegacyWorkspace(_services: Services, _adminUserId: string): Promise<{ migrated: boolean; summary: string }> {
-  return { migrated: false, summary: 'not implemented' }
+/** Metadata API: apps, tables, columns, connections, roles, users, security preview, solutions, packages, files. */
+import type { RouteModule } from '../../core/contracts.ts'
+import { registerAppRoutes } from './apps.ts'
+import { registerConnectionRoutes } from './connections.ts'
+import { registerFileRoutes } from './files.ts'
+import { registerSecurityRoutes } from './security.ts'
+import { registerSolutionRoutes } from './solutions.ts'
+import { registerTableRoutes } from './tables.ts'
+
+export const metaRoutes: RouteModule = (router, services) => {
+  registerAppRoutes(router, services)
+  registerTableRoutes(router, services)
+  registerConnectionRoutes(router, services)
+  registerSecurityRoutes(router, services)
+  registerSolutionRoutes(router, services)
+  registerFileRoutes(router, services)
 }
-/** seed sample tables, rows and the Contacts app into the default store (when there is nothing to migrate) */
-export async function seedSample(_services: Services, _adminUserId: string): Promise<void> {}
+
+export { migrateLegacyWorkspace } from './migrate.ts'
+export { seedSample } from './seed.ts'

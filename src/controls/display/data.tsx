@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronsUpDown, List as ListIcon, Search, Table2 } from 'lucide-react'
 import type { ControlRenderProps, ControlType, FxRecord, FxValue } from '@/contracts'
+import { platform, type TableDef } from '@/platform'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
@@ -100,10 +101,34 @@ function keyOf(rec: FxRecord): string {
   }
 }
 
+/** the TableDef when these items are the rows of a platform table (their keys are all columns of one table) */
+function sourceTable(items: FxRecord[]): TableDef | undefined {
+  if (items.length === 0) return undefined
+  try {
+    const names = new Set(Object.keys(items[0]).filter((k) => !k.startsWith('__')))
+    if (!names.has('id')) return undefined
+    return platform.getState().tables.find((t) => {
+      const cols = new Set(t.columns.map((c) => c.name))
+      return t.columns.some((c) => c.name === 'id') && [...names].every((n) => cols.has(n))
+    })
+  } catch {
+    return undefined
+  }
+}
+
 function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRenderProps) {
   const design = mode === 'design'
   const items = useMemo(() => toRecords(props.Items), [props.Items])
-  const colSpec = toText(props.Columns)
+  const colSpecRaw = toText(props.Columns)
+  // an explicit Columns list skips columns the (CLS-trimmed) table does not have; other item sources are untouched
+  const colSpec = useMemo(() => {
+    if (!colSpecRaw.trim()) return colSpecRaw
+    const t = sourceTable(items)
+    if (!t) return colSpecRaw
+    const have = new Set(t.columns.map((c) => c.name.toLowerCase()))
+    const kept = colSpecRaw.split(',').map((s) => s.trim()).filter(Boolean).filter((s) => have.has((s.includes(':') ? s.slice(0, s.indexOf(':')) : s).trim().toLowerCase()))
+    return kept.join(',')
+  }, [colSpecRaw, items])
   const cols = useMemo(() => resolveColumns(items, colSpec), [items, colSpec])
   const striped = toBool(props.Striped, false)
   const dense = toBool(props.Dense, false)

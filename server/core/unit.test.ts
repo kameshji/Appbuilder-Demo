@@ -1,0 +1,330 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { createSecretBox, loadSecretKey } from './secrets.ts'
+import { checkPasswordPolicy, hashPassword, verifyPassword } from './password.ts'
+import { buildUserContext, rowFilterCondition } from './security.ts'
+import { createRouter, originProblem } from './router.ts'
+import { HttpError } from './contracts.ts'
+import type { Services } from './contracts.ts'
+import type { RoleDef, TableDef, UserDef } from '../../src/platform/contracts.ts'
+import { LoginThrottle } from './auth.ts'
+import { coerceIn, cellOut } from './values.ts'
+import { safeStaticPath } from './static.ts'
+import { setQuiet } from './util.ts'
+
+setQuiet(true)
+
+/* ------------------------------------------------------------------ SecretBox */
+
+describe('SecretBox', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ab-secret-'))
+  afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }))
+
+  it('round-trips, uses a fresh IV each time, rejects tampering and wrong keys', () => {
+    const box = createSecretBox(Buffer.alloc(32, 7))
+    const a = box.encrypt('s3cret pass')
+    const b = box.encrypt('s3cret pass')
+    expect(a).not.toBe(b)
+    expect(a.startsWith('v1:')).toBe(true)
+    expect(a).not.toContain('s3cret')
+    expect(box.decrypt(a)).toBe('s3cret pass')
+    expect(box.decrypt(box.encrypt(''))).toBe('')
+    const parts = a.split(':')
+    const ct = Buffer.from(parts[3], 'base64')
+    ct[0] ^= 1
+    expect(() => box.decrypt([parts[0], parts[1], parts[2], ct.toString('base64')].join(':'))).toThrow()
+    expect(() => createSecretBox(Buffer.alloc(32, 8)).decrypt(a)).toThrow(/cannot be decrypted/)
+    expect(() => box.decrypt('garbage')).toThrow()
+  })
+
+  it('creates the key file once with mode 0600 and honours APPBUILDER_SECRET_KEY', () => {
+    const k1 = loadSecretKey(tmp, {})
+    const k2 = loadSecretKey(tmp, {})
+    expect(k1.equals(k2)).toBe(true)
+    const file = path.join(tmp, '.secret-key')
+    if (process.platform !== 'win32') expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+    const hex = 'ab'.repeat(32)
+    expect(loadSecretKey(tmp, { APPBUILDER_SECRET_KEY: hex }).toString('hex')).toBe(hex)
+    expect(() => loadSecretKey(tmp, { APPBUILDER_SECRET_KEY: 'short' })).toThrow()
+  })
+})
+
+/* ------------------------------------------------------------------ passwords */
+
+describe('password hashing', () => {
+  it('hashes with scrypt and verifies in constant time', async () => {
+    const h = await hashPassword('correct horse battery')
+    expect(h).toMatch(/^scrypt\$32768\$8\$1\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/)
+    expect(await verifyPassword('correct horse battery', h)).toBe(true)
+    expect(await verifyPassword('correct horse batterz', h)).toBe(false)
+    expect(await verifyPassword('x', null)).toBe(false)
+    expect(await verifyPassword('x', 'md5$abc')).toBe(false)
+    expect(h).not.toBe(await hashPassword('correct horse battery'))
+  })
+
+  it('enforces the policy', () => {
+    expect(() => checkPasswordPolicy('short', 'a@b.c')).toThrow(HttpError)
+    expect(() => checkPasswordPolicy('me@example.com', 'ME@example.com')).toThrow(/same as the email/)
+    expect(checkPasswordPolicy('long enough!', 'a@b.c')).toBe('long enough!')
+    expect(() => checkPasswordPolicy(undefined)).toThrow(HttpError)
+  })
+
+  it('throttles after 8 failures in the window', () => {
+    const t = new LoginThrottle()
+    for (let i = 0; i < 7; i++) t.fail('k', 1000)
+    expect(t.blocked('k', 1000)).toBe(false)
+    t.fail('k', 1000)
+    expect(t.blocked('k', 1000)).toBe(true)
+    expect(t.blocked('k', 1000 + 15 * 60 * 1000 + 1)).toBe(false)
+    t.fail('j', 0)
+    t.reset('j')
+    expect(t.blocked('j', 0)).toBe(false)
+  })
+})
+
+/* ------------------------------------------------------------------ security engine */
+
+const table: TableDef = {
+  id: 'tbl_orders', name: 'Orders', displayName: 'Orders', primaryColumn: 'Title', createdOn: '', modifiedOn: '',
+  columns: [
+    { name: 'id', displayName: 'Id', type: 'text', system: true },
+    { name: 'owner', displayName: 'Owner', type: 'text', system: true },
+    { name: 'Title', displayName: 'Title', type: 'text' },
+    { name: 'Region', displayName: 'Region', type: 'text' },
+    { name: 'Salary', displayName: 'Salary', type: 'currency' },
+    { name: 'Notes', displayName: 'Notes', type: 'multiline' },
+    { name: 'Email', displayName: 'Email', type: 'email' },
+  ],
+}
+const other: TableDef = { ...table, id: 'tbl_other', name: 'Other', columns: table.columns.slice(0, 3) }
+const user: UserDef = { id: 'user_1', name: 'U', email: 'u@x.io', roleIds: [] }
+const role = (id: string, p: Partial<RoleDef['privileges'][number]> | null, extra: Partial<RoleDef> = {}): RoleDef => ({
+  id, name: id, apps: [], privileges: p ? [{ table: table.id, create: false, read: 'none', update: 'none', delete: 'none', ...p }] : [], ...extra,
+})
+const ctxFor = (roles: RoleDef[]) => buildUserContext({ ...user, roleIds: roles.map((r) => r.id) }, roles, [table, other])
+
+describe('security engine', () => {
+  it('no role -> const false, no create, all columns hidden except id', () => {
+    const c = ctxFor([])
+    expect(c.rowPredicate(table, 'read')).toEqual({ const: false })
+    expect(c.rowPredicate(table, 'update')).toEqual({ const: false })
+    expect(c.canCreate(table)).toBe(false)
+    expect(c.columnAccess(table, 'Title')).toBe('none')
+    expect(c.columnAccess(table, 'id')).toBe('read')
+    expect(c.visibleDef(table).columns.map((x) => x.name)).toEqual(['id'])
+    expect(c.privileges.isAdmin).toBe(false)
+    expect(c.privileges.isMaker).toBe(false)
+  })
+
+  it('admin bypass: everything, all columns update (system read)', () => {
+    const c = ctxFor([role('r_admin', null, { isAdmin: true })])
+    expect(c.rowPredicate(table, 'delete')).toEqual({ const: true })
+    expect(c.canCreate(table)).toBe(true)
+    expect(c.columnAccess(table, 'Salary')).toBe('update')
+    expect(c.columnAccess(table, 'owner')).toBe('read')
+    expect(c.visibleDef(table)).toBe(table)
+    expect(c.privileges).toMatchObject({ isAdmin: true, isMaker: true, apps: 'all' })
+    expect(c.canRunApp('anything')).toBe(true)
+  })
+
+  it('own scope and union of roles (max scope, OR of predicates)', () => {
+    const own = role('r_own', { read: 'own', update: 'own', create: true })
+    const c = ctxFor([own])
+    expect(c.rowPredicate(table, 'read')).toEqual({ col: 'owner', op: 'eq', value: 'user_1' })
+    expect(c.rowPredicate(table, 'delete')).toEqual({ const: false })
+    expect(c.canCreate(table)).toBe(true)
+    const all = role('r_all', { read: 'all' })
+    const both = ctxFor([own, all])
+    expect(both.rowPredicate(table, 'read')).toEqual({ const: true })
+    expect(both.rowPredicate(table, 'update')).toEqual({ col: 'owner', op: 'eq', value: 'user_1' })
+    expect(both.privileges.tables[table.id]).toMatchObject({ read: 'all', update: 'own', delete: 'none', create: true })
+  })
+
+  it('rowFilter with @me / @myEmail tokens, ANDed, ORed across roles', () => {
+    const west = role('r_west', { read: 'all', rowFilter: [{ column: 'Region', op: 'eq', value: 'West' }, { column: 'Email', op: 'eq', value: '@myEmail' }] })
+    const mine = role('r_mine', { read: 'own', rowFilter: [{ column: 'owner', op: 'eq', value: '@me' }] })
+    const c = ctxFor([west, mine])
+    expect(c.rowPredicate(table, 'read')).toEqual({
+      or: [
+        { and: [{ col: 'Region', op: 'eq', value: 'West' }, { col: 'Email', op: 'eq', value: 'u@x.io' }] },
+        { and: [{ col: 'owner', op: 'eq', value: 'user_1' }, { col: 'owner', op: 'eq', value: 'user_1' }] },
+      ],
+    })
+    expect(c.privileges.tables[table.id].filtered).toBe(true)
+    expect(rowFilterCondition([{ column: 'Region', op: 'in', value: ['@me', 'East'] }], table, user)).toEqual({ col: 'Region', op: 'in', value: ['user_1', 'East'] })
+  })
+
+  it('a rowFilter on a missing column makes that role grant nothing', () => {
+    const broken = role('r_broken', { read: 'all', rowFilter: [{ column: 'Gone', op: 'eq', value: 1 }] })
+    expect(ctxFor([broken]).rowPredicate(table, 'read')).toEqual({ const: false })
+    const ok = role('r_ok', { read: 'own' })
+    expect(ctxFor([broken, ok]).rowPredicate(table, 'read')).toEqual({ col: 'owner', op: 'eq', value: 'user_1' })
+  })
+
+  it('CLS none/read/update: max over granting roles, missing = update, system never writable', () => {
+    const a = role('r_a', { read: 'all', update: 'all', columns: { Salary: 'none', Notes: 'read' } })
+    const c = ctxFor([a])
+    expect(c.columnAccess(table, 'Salary')).toBe('none')
+    expect(c.columnAccess(table, 'Notes')).toBe('read')
+    expect(c.columnAccess(table, 'Title')).toBe('update')
+    expect(c.columnAccess(table, 'owner')).toBe('read')
+    expect(c.visibleDef(table).columns.map((x) => x.name)).not.toContain('Salary')
+    expect(c.privileges.tables[table.id].columns).toEqual({ id: 'read', owner: 'read', Salary: 'none', Notes: 'read' })
+    // a second role granting read with Salary readable widens it
+    const b = role('r_b', { read: 'own', columns: { Salary: 'read', Notes: 'none' } })
+    const cb = ctxFor([a, b])
+    expect(cb.columnAccess(table, 'Salary')).toBe('read')
+    expect(cb.columnAccess(table, 'Notes')).toBe('read')
+    // roles without read do not contribute to CLS when another role grants read
+    const noRead = role('r_c', { create: true, columns: {} })
+    expect(ctxFor([a, noRead]).columnAccess(table, 'Salary')).toBe('none')
+    // hidden primary column -> visibleDef picks another
+    const hideTitle = role('r_d', { read: 'all', columns: { Title: 'none' } })
+    expect(ctxFor([hideTitle]).visibleDef(table).primaryColumn).toBe('Region')
+  })
+
+  it('maker flag and app access union', () => {
+    const r1 = role('r1', null, { isMaker: true, apps: ['app_a'] } as Partial<RoleDef>)
+    const r2 = role('r2', null, { apps: ['app_b'] })
+    const c = ctxFor([r1, r2])
+    expect(c.privileges.isMaker).toBe(true)
+    expect(c.privileges.isAdmin).toBe(false)
+    expect(c.canRunApp('app_a')).toBe(true)
+    expect(c.canRunApp('app_b')).toBe(true)
+    expect(c.canRunApp('app_c')).toBe(false)
+    expect(c.session().user.id).toBe('user_1')
+  })
+})
+
+/* ------------------------------------------------------------------ values */
+
+describe('value coercion', () => {
+  const col = (type: TableDef['columns'][number]['type'], extra = {}) => ({ name: 'c', displayName: 'C', type, ...extra })
+  it('coerces JSON in and formats out', () => {
+    expect(coerceIn(col('number'), '42')).toBe(42)
+    expect(() => coerceIn(col('number'), '4.2')).toThrow(HttpError)
+    expect(coerceIn(col('boolean'), 'yes')).toBe(true)
+    expect(coerceIn(col('text'), '   ')).toBe(null)
+    const d = coerceIn(col('date'), '2024-02-29') as Date
+    expect(d.toISOString()).toBe('2024-02-29T00:00:00.000Z')
+    expect(() => coerceIn(col('date'), '2023-02-29')).toThrow()
+    expect(cellOut(col('date'), d)).toBe('2024-02-29')
+    expect(cellOut(col('datetime'), new Date('2024-01-02T03:04:05.006Z'))).toBe('2024-01-02T03:04:05.006Z')
+    expect(cellOut(col('boolean'), 1)).toBe(true)
+    expect(cellOut(col('currency'), '12.3400')).toBe(12.34)
+    expect(() => coerceIn(col('choice', { choices: ['A', 'B'] }), 'c')).toThrow(/not one of/)
+    expect(coerceIn(col('choice', { choices: ['A', 'B'] }), 'b')).toBe('B')
+    expect(coerceIn(col('file', { multiple: true }), '["att_1","att_2"]')).toBe('["att_1","att_2"]')
+    expect(() => coerceIn(col('file'), '["att_1","att_2"]')).toThrow(/single/)
+  })
+  it('static path guard', () => {
+    expect(safeStaticPath('assets/app.js')).toBe(true)
+    expect(safeStaticPath('../etc/passwd')).toBe(false)
+    expect(safeStaticPath('a/.env')).toBe(false)
+    expect(safeStaticPath('a\\b')).toBe(false)
+  })
+})
+
+/* ------------------------------------------------------------------ router guards */
+
+describe('router guards', () => {
+  let server: http.Server
+  let base = ''
+  const fake = { ready: () => false } as unknown as Services
+
+  beforeAll(async () => {
+    const router = createRouter(fake)
+    router.add('GET', '/ping', () => ({ pong: true }), { auth: 'none' })
+    router.add('POST', '/echo', (ctx) => ({ got: ctx.body }), { auth: 'none' })
+    router.add('POST', '/upload', (ctx) => ({ size: ctx.rawBody?.length }), { auth: 'none', raw: true, maxBodyMB: 1 })
+    router.add('GET', '/api/v1/items/:id', (ctx) => ({ id: ctx.params.id, kind: 'param' }), { auth: 'none' })
+    router.add('GET', '/items/special', () => ({ kind: 'literal' }), { auth: 'none' })
+    router.add('GET', '/private', () => ({ secret: 1 }), { auth: 'user' })
+    router.add('GET', '/boom', () => {
+      throw new Error('select * from secret_table where password = hunter2')
+    }, { auth: 'none' })
+    router.add('GET', '/teapot', () => {
+      throw new HttpError(409, 'conflict', 'Already there', 'name')
+    }, { auth: 'none' })
+    server = http.createServer((req, res) => {
+      router.handle(req, res).then((handled) => {
+        if (!handled) res.writeHead(418).end()
+      })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  })
+  afterAll(() => new Promise<void>((r) => server.close(() => r())))
+
+  const post = (p: string, body: string | Buffer, headers: Record<string, string> = {}) =>
+    fetch(base + p, { method: 'POST', body: typeof body === 'string' ? body : new Uint8Array(body), headers: { 'Content-Type': 'application/json', ...headers } })
+
+  it('serves JSON with security headers', async () => {
+    const r = await fetch(base + '/api/v1/ping')
+    expect(r.status).toBe(200)
+    expect(await r.json()).toEqual({ pong: true })
+    expect(r.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(r.headers.get('referrer-policy')).toBe('same-origin')
+    expect(r.headers.get('cache-control')).toBe('no-store')
+  })
+
+  it('requires the CSRF header on non-GET', async () => {
+    const r = await post('/api/v1/echo', '{"a":1}')
+    expect(r.status).toBe(403)
+    expect((await r.json()).error.code).toBe('denied')
+    const ok = await post('/api/v1/echo', '{"a":1}', { 'X-Appbuilder': '1' })
+    expect(await ok.json()).toEqual({ got: { a: 1 } })
+  })
+
+  it('rejects foreign Host and cross-origin Origin', async () => {
+    const status = await new Promise<number>((resolve) => {
+      http.get(`${base}/api/v1/ping`, { headers: { Host: 'evil.example.com' } }, (res) => {
+        res.resume()
+        resolve(res.statusCode ?? 0)
+      })
+    })
+    expect(status).toBe(403)
+    expect((await fetch(base + '/api/v1/ping', { headers: { Origin: 'https://evil.example.com' } })).status).toBe(403)
+    expect((await post('/api/v1/echo', '{}', { 'X-Appbuilder': '1', Origin: 'http://localhost:9999' })).status).toBe(403)
+    expect((await post('/api/v1/echo', '{}', { 'X-Appbuilder': '1', Origin: base })).status).toBe(200)
+    expect((await fetch(base + '/api/v1/ping', { headers: { Origin: 'null' } })).status).toBe(403)
+    const req = { headers: { host: 'localhost:5174', origin: 'http://localhost:5174' } } as unknown as http.IncomingMessage
+    expect(originProblem(req)).toBeNull()
+  })
+
+  it('enforces the JSON and raw body limits and JSON validity', async () => {
+    const big = Buffer.alloc(2 * 1024 * 1024 + 10, 32)
+    expect((await post('/api/v1/echo', big, { 'X-Appbuilder': '1' })).status).toBe(413)
+    expect((await post('/api/v1/echo', '{nope', { 'X-Appbuilder': '1' })).status).toBe(422)
+    expect((await post('/api/v1/echo', 'a=1', { 'X-Appbuilder': '1', 'Content-Type': 'text/plain' })).status).toBe(415)
+    const raw = await post('/api/v1/upload', Buffer.alloc(1000, 1), { 'X-Appbuilder': '1', 'Content-Type': 'application/octet-stream' })
+    expect(await raw.json()).toEqual({ size: 1000 })
+    expect((await post('/api/v1/upload', Buffer.alloc(1024 * 1024 + 1, 1), { 'X-Appbuilder': '1', 'Content-Type': 'application/octet-stream' })).status).toBe(413)
+  })
+
+  it('matches params, prefers literals, answers 404/405, 503 for auth routes without a database', async () => {
+    expect(await (await fetch(base + '/api/v1/items/abc%20d')).json()).toEqual({ id: 'abc d', kind: 'param' })
+    expect(await (await fetch(base + '/api/v1/items/special')).json()).toEqual({ kind: 'literal' })
+    expect((await fetch(base + '/api/v1/nope')).status).toBe(404)
+    expect((await fetch(base + '/api/fs/health')).status).toBe(404)
+    expect((await fetch(base + '/api/v1/ping', { method: 'DELETE', headers: { 'X-Appbuilder': '1' } })).status).toBe(405)
+    expect((await fetch(base + '/api/v1/private')).status).toBe(503)
+    expect((await fetch(base + '/index.html')).status).toBe(418) // not an API path: left to the caller
+  })
+
+  it('maps errors without leaking internals', async () => {
+    const r = await fetch(base + '/api/v1/boom')
+    expect(r.status).toBe(500)
+    const text = await r.text()
+    expect(text).not.toContain('hunter2')
+    expect(text).not.toContain('select')
+    expect(JSON.parse(text)).toEqual({ error: { code: 'storage', message: 'Internal server error.' } })
+    const t = await fetch(base + '/api/v1/teapot')
+    expect(t.status).toBe(409)
+    expect(await t.json()).toEqual({ error: { code: 'conflict', message: 'Already there', field: 'name' } })
+  })
+})

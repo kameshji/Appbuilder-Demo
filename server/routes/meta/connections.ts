@@ -3,7 +3,6 @@
  * Secrets are handed to the MetaStore (which seals them) and never come back in a response.
  */
 import type { ColumnDef, ConnectionRef, ConnectorKind, TableDef } from '../../../src/platform/contracts.ts'
-import { HttpError } from '../../core/contracts.ts'
 import type { ConnectionRecord, Connector, Router, Services, SourceColumn } from '../../core/contracts.ts'
 import { ensureIdColumn } from '../../connectors/gsheets/index.ts'
 import {
@@ -13,15 +12,15 @@ import {
 import { FILES_CONNECTION_ID, audit, ensureFilesConnection, friendly, grantDefaults, resolveConnection, toRef } from './tables-core.ts'
 
 const KINDS: ConnectorKind[] = ['mysql', 'files', 'gsheets']
-const SETTING_KEYS: Record<string, string[]> = { mysql: ['host', 'port', 'database', 'user', 'ssl'], gsheets: ['spreadsheetId'], files: [] }
 
 function cleanSettings(kind: ConnectorKind, raw: unknown, base: Record<string, string> = {}): Record<string, string> {
   if (raw !== undefined && !isObj(raw)) throw invalid('"settings" must be an object.', 'settings')
-  const allowed = SETTING_KEYS[kind] ?? []
   const out: Record<string, string> = { ...base }
   for (const [k, v] of Object.entries(raw ?? {})) {
-    if (!allowed.includes(k)) throw invalid(`Unknown setting "${k}" for a ${kind} connection.`, `settings.${k}`)
+    // unknown non-secret settings (e.g. serviceAccountEmail) are kept as given
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(k)) throw invalid(`"${k}" is not a valid setting name.`, `settings.${k}`)
     if (v === null || v === undefined || typeof v === 'object') throw invalid(`Setting "${k}" must be text.`, `settings.${k}`)
+    if (String(v).length > 2000) throw invalid(`Setting "${k}" is too long.`, `settings.${k}`)
     out[k] = String(v).trim()
   }
   if (kind === 'mysql') {

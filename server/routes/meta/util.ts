@@ -19,8 +19,8 @@ export const denied = (message: string): HttpError => new HttpError(403, 'denied
 export const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 export const clone = <T>(v: T): T => structuredClone(v)
 
-/** A role as stored: RoleDef plus the Maker flag (ab_roles.is_maker). The shared contract does not declare it yet. */
-export type RoleX = RoleDef & { isMaker?: boolean }
+/** RoleDef (isMaker maps to ab_roles.is_maker) */
+export type RoleX = RoleDef
 
 export function bodyObj(ctx: Ctx): Record<string, unknown> {
   if (!isObj(ctx.body)) throw invalid('The request body must be a JSON object.')
