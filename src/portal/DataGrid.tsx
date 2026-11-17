@@ -1,24 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, ChevronsUpDown, FileDown, FileUp, Plus, Rows3, Search, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronsUpDown, FileDown, FileUp, Lock, Plus, Rows3, Search, Trash2, TriangleAlert, X } from 'lucide-react'
 import { platform, usePlatform, type ColumnDef, type TableDef } from '@/platform'
 import type { FxRecord } from '@/contracts'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Spinner } from '@/components/ui/spinner'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { CodeDialog, ConfirmDialog, Empty, Field, Segmented, useToast } from './kit'
 import { CellEditor, buildLookups, compareValues, displayText, draftToValue, isNumeric, valueToDraft } from './cells'
 import { TYPE_INFO } from './columnTypes'
+import { AttachmentCell, AttachmentsDialog, isAttachmentCol } from './Attachments'
+import { useMyAccess } from './security'
+import { DEFAULT_ROW_CAP } from '@/platform/http'
 
 const PAGE = 200
 
 /* ------------------------------------------------------------------ add row */
 
-function AddRowDialog({ open, onOpenChange, table, cols, onAdded }: { open: boolean; onOpenChange(o: boolean): void; table: TableDef; cols: ColumnDef[]; onAdded(id: string): void }) {
+function AddRowDialog({ open, onOpenChange, table, cols, onAdded, readOnlyCols }: { open: boolean; onOpenChange(o: boolean): void; table: TableDef; cols: ColumnDef[]; onAdded(id: string): void; readOnlyCols: Set<string> }) {
   const { fail, toast } = useToast()
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const lookups = useMemo(() => (open ? buildLookups(cols) : {}), [open, cols])
-  const editable = cols.filter((c) => !c.system && c.type !== 'autonumber')
+  const editable = cols.filter((c) => !c.system && c.type !== 'autonumber' && !isAttachmentCol(c) && !readOnlyCols.has(c.name))
+  const hasAttach = cols.some((c) => isAttachmentCol(c))
   useEffect(() => {
     if (!open) return
     const d: Record<string, string> = {}
@@ -46,7 +51,7 @@ function AddRowDialog({ open, onOpenChange, table, cols, onAdded }: { open: bool
       <DialogContent className="sm:max-w-lg" data-testid="add-row-dialog">
         <DialogHeader>
           <DialogTitle>Add row to {table.displayName}</DialogTitle>
-          <DialogDescription>Fields marked * are required. Autonumber and system columns are filled in for you.</DialogDescription>
+          <DialogDescription>Fields marked * are required. Autonumber and system columns are filled in for you.{hasAttach ? ' Attach files and images after the row is added.' : ''}</DialogDescription>
         </DialogHeader>
         <form className="grid max-h-[60vh] gap-3 overflow-auto px-0.5 py-0.5" onSubmit={(e) => { e.preventDefault(); save() }}>
           {editable.map((c, i) => (
@@ -117,7 +122,11 @@ export function DataGrid({ table }: { table: TableDef }) {
   const { fail } = useToast()
   const dataVersion = usePlatform((s) => s.dataVersion)
   const tables = usePlatform((s) => s.tables)
+  const access = useMyAccess(table)
+  const loading = usePlatform((s) => s.loading.includes(table.name))
+  const truncated = usePlatform((s) => s.truncated.includes(table.name))
   const gridRef = useRef<HTMLDivElement>(null)
+  const [attach, setAttach] = useState<{ rowId: string; col: ColumnDef } | null>(null)
   const [filter, setFilter] = useState('')
   const [sort, setSort] = useState<{ col: string; dir: 'asc' | 'desc' } | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -167,7 +176,8 @@ export function DataGrid({ table }: { table: TableDef }) {
     gridRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }, [active])
 
-  const isReadonly = (c: ColumnDef) => !!c.system || c.type === 'autonumber'
+  const isReadonly = (c: ColumnDef) => !!c.system || c.type === 'autonumber' || access.update === 'none' || access.readOnlyColumns.has(c.name)
+  const openAttach = (ri: number, c: ColumnDef) => { const id = String(shown[ri]?.__id ?? shown[ri]?.id ?? ''); if (id) setAttach({ rowId: id, col: c }) }
   const refocus = () => requestAnimationFrame(() => gridRef.current?.focus({ preventScroll: true }))
 
   const save = (rowIdx: number, c: ColumnDef, text: string): boolean => {
@@ -186,6 +196,7 @@ export function DataGrid({ table }: { table: TableDef }) {
     if (!active) return
     const c = cols[active.c]
     const row = shown[active.r]
+    if (c && row && isAttachmentCol(c)) { openAttach(active.r, c); return }
     if (!c || !row || isReadonly(c)) return
     setDraft(initial ?? valueToDraft(c, row[c.name]))
     setEditing(true)
@@ -220,9 +231,9 @@ export function DataGrid({ table }: { table: TableDef }) {
       case 'F2': e.preventDefault(); if (col.type === 'boolean' && !isReadonly(col)) { save(r, col, shown[r][col.name] ? 'false' : 'true') } else startEdit(); return
       case ' ': if (col.type === 'boolean' && !isReadonly(col)) { e.preventDefault(); save(r, col, shown[r][col.name] ? 'false' : 'true') } return
       case 'Delete':
-      case 'Backspace': if (!isReadonly(col) && col.type !== 'boolean') { e.preventDefault(); save(r, col, '') } return
+      case 'Backspace': if (!isReadonly(col) && col.type !== 'boolean' && !isAttachmentCol(col)) { e.preventDefault(); save(r, col, '') } return
       default:
-        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && !isReadonly(col) && !['boolean', 'choice', 'lookup'].includes(col.type)) {
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && !isReadonly(col) && !['boolean', 'choice', 'lookup', 'file', 'image'].includes(col.type)) {
           e.preventDefault()
           startEdit(e.key)
         }
@@ -248,8 +259,8 @@ export function DataGrid({ table }: { table: TableDef }) {
           />
           {filter && <button type="button" aria-label="Clear filter" className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setFilter('')}><X className="size-3.5" /></button>}
         </div>
-        <Button size="sm" onClick={() => setDlg('add')} data-testid="add-row-button"><Plus /> Add row</Button>
-        <Button size="sm" variant="outline" disabled={selected.size === 0} onClick={() => setDlg('delete')} data-testid="delete-rows-button">
+        <Button size="sm" disabled={!access.create} title={!access.create ? 'You cannot add rows to this table' : undefined} onClick={() => setDlg('add')} data-testid="add-row-button"><Plus /> Add row</Button>
+        <Button size="sm" variant="outline" disabled={selected.size === 0 || access.delete === 'none'} onClick={() => setDlg('delete')} data-testid="delete-rows-button">
           <Trash2 /> Delete{selected.size > 0 ? ` (${selected.size})` : ''}
         </Button>
         <div className="ml-auto flex items-center gap-2">
@@ -257,12 +268,24 @@ export function DataGrid({ table }: { table: TableDef }) {
             {filter.trim() ? `${view.length} of ${rows.length} rows` : `${rows.length} ${rows.length === 1 ? 'row' : 'rows'}`}
             {selected.size > 0 && ` · ${selected.size} selected`}
           </span>
-          <Button size="sm" variant="outline" onClick={() => setDlg('import')} data-testid="csv-import-button"><FileUp /> Import CSV</Button>
+          <Button size="sm" variant="outline" disabled={!access.create} onClick={() => setDlg('import')} data-testid="csv-import-button"><FileUp /> Import CSV</Button>
           <Button size="sm" variant="outline" onClick={() => setDlg('export')} data-testid="csv-export-button"><FileDown /> Export CSV</Button>
         </div>
       </div>
 
-      {rows.length === 0 ? (
+      {truncated && (
+        <div role="status" className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300" data-testid="truncated-warning">
+          <TriangleAlert className="size-3.5 shrink-0" /> Only the first {DEFAULT_ROW_CAP.toLocaleString()} rows are loaded. Filter or sort on the server, or split the table, to work with the rest.
+        </div>
+      )}
+      {access.enforced && !access.isAdmin && (access.readOnlyTable || access.update === 'none' || access.readOnlyColumns.size > 0) && (
+        <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground" data-testid="readonly-note">
+          <Lock className="size-3.5 shrink-0" /> {access.readOnlyTable ? 'This table is read-only.' : access.update === 'none' ? 'You can read but not change rows here.' : `Read-only columns for you: ${[...access.readOnlyColumns].map((n) => cols.find((c) => c.name === n)?.displayName ?? n).join(', ')}.`}
+        </div>
+      )}
+      {rows.length === 0 && loading ? (
+        <div className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-border py-12 text-sm text-muted-foreground" data-testid="grid-loading"><Spinner /> Loading rows...</div>
+      ) : rows.length === 0 ? (
         <Empty icon={Rows3} title="No rows yet" description="Add a row, or import a CSV file to fill this table." action={<Button onClick={() => setDlg('add')}><Plus /> Add row</Button>} />
       ) : view.length === 0 ? (
         <Empty icon={Search} title="No rows match the filter" description={`Nothing matches "${filter}".`} action={<Button variant="outline" size="sm" onClick={() => setFilter('')}>Clear filter</Button>} />
@@ -294,6 +317,7 @@ export function DataGrid({ table }: { table: TableDef }) {
                         <button type="button" onClick={() => toggleSort(c.name)} className={cn('flex h-9 w-full items-center gap-1.5 px-2.5 text-xs font-medium outline-none hover:bg-accent/60 focus-visible:bg-accent', isNumeric(c.type) && 'flex-row-reverse text-right')} data-testid={`sort-${c.name}`}>
                           <I className="size-3.5 shrink-0 text-muted-foreground" />
                           <span className="truncate">{c.displayName}{c.required ? ' *' : ''}</span>
+                          {access.readOnlyColumns.has(c.name) && <Lock className="size-3 shrink-0 text-muted-foreground" aria-label="Read-only for you" />}
                           {s === 'asc' ? <ArrowUp className="size-3 shrink-0 text-primary" /> : s === 'desc' ? <ArrowDown className="size-3 shrink-0 text-primary" /> : <ChevronsUpDown className="size-3 shrink-0 opacity-30" />}
                         </button>
                       </th>
@@ -323,7 +347,7 @@ export function DataGrid({ table }: { table: TableDef }) {
                             data-active={isActive ? 'true' : undefined}
                             data-testid={`cell-${id}-${c.name}`}
                             onClick={() => { if (!isActive) { if (editing) endEdit(true); setActive({ r: ri, c: ci }) } gridRef.current?.focus({ preventScroll: true }) }}
-                            onDoubleClick={() => { setActive({ r: ri, c: ci }); if (c.type !== 'boolean') { setDraft(valueToDraft(c, v)); if (!ro) setEditing(true) } }}
+                            onDoubleClick={() => { setActive({ r: ri, c: ci }); if (isAttachmentCol(c)) { openAttach(ri, c); return } if (c.type !== 'boolean') { setDraft(valueToDraft(c, v)); if (!ro) setEditing(true) } }}
                             className={cn(
                               'relative h-8 max-w-80 border-b border-r border-border px-0 last:border-r-0',
                               isNumeric(c.type) && 'text-right tabular-nums',
@@ -354,6 +378,8 @@ export function DataGrid({ table }: { table: TableDef }) {
                                   else if (e.key === 'Tab') { e.preventDefault(); endEdit(true, 'right') }
                                 }}
                               />
+                            ) : isAttachmentCol(c) ? (
+                              <AttachmentCell col={c} value={v} canEdit={!ro} onManage={() => { setActive({ r: ri, c: ci }); openAttach(ri, c) }} testId={`attach-${id}-${c.name}`} />
                             ) : c.type === 'boolean' ? (
                               <div className="flex h-full items-center px-2.5">
                                 <Checkbox checked={v === true} disabled={ro} aria-label={c.displayName} onCheckedChange={(chk) => save(ri, c, chk === true ? 'true' : 'false')} onClick={(e) => e.stopPropagation()} />
@@ -378,9 +404,10 @@ export function DataGrid({ table }: { table: TableDef }) {
           )}
         </div>
       )}
-      <p className="text-xs text-muted-foreground">Click a cell and press Enter or just start typing to edit. Arrow keys move, Tab and Enter commit, Escape cancels. Edits here ignore security roles.</p>
+      <p className="text-xs text-muted-foreground">Click a cell and press Enter or just start typing to edit. Arrow keys move, Tab and Enter commit, Escape cancels. {access.enforced ? 'The server applies your security roles to every change.' : 'Edits here ignore security roles.'}</p>
 
-      <AddRowDialog open={dlg === 'add'} onOpenChange={(o) => !o && setDlg(null)} table={table} cols={table.columns} onAdded={() => setLimit((l) => Math.max(l, PAGE))} />
+      <AddRowDialog open={dlg === 'add'} onOpenChange={(o) => !o && setDlg(null)} table={table} cols={table.columns} readOnlyCols={access.readOnlyColumns} onAdded={() => setLimit((l) => Math.max(l, PAGE))} />
+      {attach && <AttachmentsDialog open onOpenChange={(o) => !o && setAttach(null)} table={table} col={attach.col} rowId={attach.rowId} canEdit={!isReadonly(attach.col)} />}
       <CsvImportDialog open={dlg === 'import'} onOpenChange={(o) => !o && setDlg(null)} table={table} />
       <CodeDialog
         open={dlg === 'export'}

@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react'
-import { ChevronRight, CircleAlert, Maximize, Minus, Monitor, Plus, Trash2 } from 'lucide-react'
+import { ChevronRight, CircleAlert, Loader2, Maximize, Minus, Monitor, Plus, Trash2, TriangleAlert } from 'lucide-react'
+import { usePlatform } from '@/platform'
+import { tableRows } from '@/runtime/data'
 import { evaluatorOf, useStore } from '@/runtime/store'
 import { useUi } from '@/runtime/ui'
 import { pathTo, walk } from '@/runtime/util'
@@ -86,6 +88,27 @@ function ViewportSelect() {
   )
 }
 
+/** tables of this app whose query hit the server row cap: the app sees only the rows that were loaded */
+function useTruncatedWarnings(): string[] {
+  const sources = useStore((s) => s.app.dataSources)
+  const truncated = usePlatform((s) => s.truncated)
+  usePlatform((s) => s.dataVersion)
+  return (truncated ?? []).filter((t) => (sources ?? []).includes(t)).map((t) => `Data truncated at ${tableRows(t).length} rows: ${t} has more rows than the server returns to apps`)
+}
+
+/** small spinner while the app's tables load from the server */
+function LoadingIndicator() {
+  const loading = usePlatform((s) => s.loading)
+  const sources = useStore((s) => s.app.dataSources)
+  const mine = (loading ?? []).filter((t) => (sources ?? []).includes(t))
+  if (mine.length === 0) return null
+  return (
+    <span data-testid="data-loading" className="flex items-center gap-1 text-muted-foreground" title={`Loading ${mine.join(', ')}`}>
+      <Loader2 className="size-3 animate-spin" /> Loading data: {mine.join(', ')}
+    </span>
+  )
+}
+
 interface ErrItem { id: string; nodeId?: string; nodeType?: string; prop?: string; label: string; message: string }
 
 function ErrorList() {
@@ -104,6 +127,7 @@ function ErrorList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [app, rt, env, ev])
   const runtimeErrors = log.filter((l) => l.kind === 'error')
+  const warnings = useTruncatedWarnings()
   const n = formulaErrors.length + runtimeErrors.length
   return (
     <Popover>
@@ -111,11 +135,23 @@ function ErrorList() {
         <button type="button" data-testid="error-count" className={cn('flex items-center gap-1 rounded px-1 hover:bg-accent', n ? 'font-medium text-destructive' : '')}>
           <CircleAlert className="size-3" />
           {n} {n === 1 ? 'error' : 'errors'}
+          {warnings.length > 0 && (
+            <span className="ml-1 flex items-center gap-0.5 font-medium text-amber-600 dark:text-amber-400" data-testid="data-warning-count">
+              <TriangleAlert className="size-3" /> {warnings.length}
+            </span>
+          )}
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" side="top" className="w-[460px] p-0" data-testid="error-list">
         <div className="max-h-[360px] overflow-auto p-1.5 text-xs">
-          {n === 0 && <p className="p-2 text-muted-foreground">No formula or runtime errors.</p>}
+          {n === 0 && warnings.length === 0 && <p className="p-2 text-muted-foreground">No formula or runtime errors.</p>}
+          {warnings.length > 0 && <h4 className="px-1.5 pb-1 pt-1 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">Data warnings</h4>}
+          {warnings.map((w) => (
+            <div key={w} data-testid="data-warning" className="flex items-start gap-1.5 rounded px-1.5 py-1 text-amber-700 dark:text-amber-400">
+              <TriangleAlert className="mt-0.5 size-3 shrink-0" />
+              <span>{w}</span>
+            </div>
+          ))}
           {formulaErrors.length > 0 && <h4 className="px-1.5 pb-1 pt-1 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">Formulas</h4>}
           {formulaErrors.map((e) => (
             <button
@@ -179,6 +215,7 @@ export function StatusBar() {
         ))}
       </nav>
       <ErrorList />
+      <LoadingIndicator />
       <div className="ml-auto flex items-center gap-3">
         <ViewportSelect />
         <div className="flex items-center gap-0.5">

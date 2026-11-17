@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Info, Pencil, Plus, ShieldCheck, Trash2, UserRound, Users } from 'lucide-react'
+import { Ban, CircleCheck, Eye, Info, KeyRound, Pencil, Plus, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Users } from 'lucide-react'
 import { platform, usePlatform, type AccessScope, type RoleDef, type TablePrivilege, type UserDef } from '@/platform'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -9,7 +9,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { ConfirmDialog, Empty, Field, Panel, PageHeader, Segmented, useToast } from './kit'
+import { ConfirmDialog, Empty, Field, Panel, PageHeader, Segmented, fmtRelative, useToast } from './kit'
+import { NewPasswordFields, passwordsValid } from './PasswordFields'
+import { TableRules } from './RoleRules'
+import { emptyPrivilege, isMakerRole, useCaps } from './security'
+import { fetchSecurityPreview, type TablePreview } from './serverApi'
+import { Spinner } from '@/components/ui/spinner'
 import { matches, useSearch } from './Shell'
 
 const SCOPES: { value: AccessScope; label: string; title: string }[] = [
@@ -61,10 +66,12 @@ function RoleEditor({ role }: { role: RoleDef }) {
   const [name, setName] = useState(role.name)
   const [desc, setDesc] = useState(role.description ?? '')
   const [del, setDel] = useState(false)
+  const [detail, setDetail] = useState<string | null>(null)
+  useEffect(() => { setDetail(null) }, [role.id])
   useEffect(() => { setName(role.name); setDesc(role.description ?? '') }, [role.id, role.name, role.description])
 
   const patch = (p: Partial<Omit<RoleDef, 'id'>>) => { platform.security.updateRole(role.id, p).catch(fail) }
-  const priv = (tableId: string): TablePrivilege => role.privileges.find((p) => p.table === tableId) ?? { table: tableId, create: false, read: 'none', update: 'none', delete: 'none' }
+  const priv = (tableId: string): TablePrivilege => role.privileges.find((p) => p.table === tableId) ?? emptyPrivilege(tableId)
   const setPriv = (tableId: string, change: Partial<TablePrivilege>) => {
     const full = tables.map((t) => (t.id === tableId ? { ...priv(t.id), ...change } : priv(t.id)))
     patch({ privileges: full })
@@ -95,6 +102,13 @@ function RoleEditor({ role }: { role: RoleDef }) {
             <Input id="role-desc" value={desc} onChange={(e) => setDesc(e.target.value)} onBlur={() => { if (desc.trim() !== (role.description ?? '')) patch({ description: desc.trim() }) }} />
           </Field>
         </div>
+        <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-sm">
+          <span>
+            <span className="font-medium">Maker</span>
+            <span className="block text-xs text-muted-foreground">May create and edit apps, tables and connections.</span>
+          </span>
+          <Switch checked={adm || isMakerRole(role)} disabled={adm} onCheckedChange={(v) => patch({ isMaker: v } as Partial<RoleDef>)} aria-label="Maker" data-testid="role-maker-switch" />
+        </label>
         <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-sm">
           <span>
             <span className="font-medium">Administrator</span>
@@ -128,11 +142,12 @@ function RoleEditor({ role }: { role: RoleDef }) {
                   <th className="px-3 py-2">Read</th>
                   <th className="px-3 py-2">Update</th>
                   <th className="px-3 py-2">Delete</th>
+                  <th className="w-28 px-3 py-2 text-right"><span className="sr-only">Finer rules</span></th>
                 </tr>
               </thead>
               <tbody>
                 {tables.map((t) => {
-                  const p = adm ? { table: t.id, create: true, read: 'all' as AccessScope, update: 'all' as AccessScope, delete: 'all' as AccessScope } : priv(t.id)
+                  const p: TablePrivilege = adm ? { table: t.id, create: true, read: 'all' as AccessScope, update: 'all' as AccessScope, delete: 'all' as AccessScope } : priv(t.id)
                   return (
                     <tr key={t.id} className="border-b border-border last:border-0" data-testid={`matrix-row-${t.id}`}>
                       <td className="px-3 py-2 font-medium">{t.displayName}</td>
@@ -144,6 +159,12 @@ function RoleEditor({ role }: { role: RoleDef }) {
                           <Segmented size="sm" label={`${op} ${t.displayName}`} disabled={adm} value={p[op]} onChange={(v) => setPriv(t.id, { [op]: v })} options={SCOPES} />
                         </td>
                       ))}
+                      <td className="px-3 py-1.5 text-right">
+                        {(() => {
+                          const n = Object.values(p.columns ?? {}).filter((a) => a !== 'update').length + (p.rowFilter?.length ?? 0)
+                          return <Button size="xs" variant={detail === t.id ? 'secondary' : 'outline'} onClick={() => setDetail(detail === t.id ? null : t.id)} data-testid={`matrix-detail-${t.id}`} aria-expanded={detail === t.id}><SlidersHorizontal /> Columns and rows{n ? ` (${n})` : ''}</Button>
+                        })()}
+                      </td>
                     </tr>
                   )
                 })}
@@ -151,6 +172,10 @@ function RoleEditor({ role }: { role: RoleDef }) {
             </table>
           </div>
         )}
+        {(() => {
+          const t = tables.find((x) => x.id === detail)
+          return t ? <TableRules role={role} table={t} priv={priv(t.id)} disabled={adm} onChange={(c) => setPriv(t.id, c)} onClose={() => setDetail(null)} /> : null
+        })()}
       </div>
 
       <div className="border-b border-border p-5" data-testid="role-apps">
@@ -184,7 +209,8 @@ function RoleEditor({ role }: { role: RoleDef }) {
   )
 }
 
-function UserDialog({ open, onOpenChange, user }: { open: boolean; onOpenChange(o: boolean): void; user: UserDef | null }) {
+function UserDialog({ open, onOpenChange, user, onCreated }: { open: boolean; onOpenChange(o: boolean): void; user: UserDef | null; onCreated(u: UserDef): void }) {
+  const server = usePlatform((s) => s.mode) === 'server'
   const roles = usePlatform((s) => s.roles)
   const { fail, toast } = useToast()
   const [name, setName] = useState('')
@@ -196,8 +222,14 @@ function UserDialog({ open, onOpenChange, user }: { open: boolean; onOpenChange(
     setBusy(true)
     try {
       if (user) await platform.security.updateUser(user.id, { name: name.trim(), email: email.trim(), roleIds })
-      else await platform.security.createUser({ name: name.trim(), email: email.trim(), roleIds })
-      toast(user ? 'User updated' : `Added ${name.trim()}`, 'success')
+      else {
+        const u = await platform.security.createUser({ name: name.trim(), email: email.trim(), roleIds })
+        toast(`Added ${name.trim()}`, 'success')
+        onOpenChange(false)
+        onCreated(u)
+        return
+      }
+      toast('User updated', 'success')
       onOpenChange(false)
     } catch (e) {
       fail(e)
@@ -208,7 +240,7 @@ function UserDialog({ open, onOpenChange, user }: { open: boolean; onOpenChange(
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent data-testid="user-dialog">
-        <DialogHeader><DialogTitle>{user ? 'Edit user' : 'Add user'}</DialogTitle><DialogDescription>Users are people you can run apps as on this machine.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>{user ? 'Edit user' : 'Add user'}</DialogTitle><DialogDescription>{server ? 'After adding a user you set their first password; they can change it themselves.' : 'Users are people you can run apps as on this machine.'}</DialogDescription></DialogHeader>
         <form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); if (name.trim() && email.trim()) void run() }}>
           <Field label="Name" htmlFor="user-name"><Input id="user-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} data-testid="user-name" /></Field>
           <Field label="Email" htmlFor="user-email"><Input id="user-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="user-email" /></Field>
@@ -232,12 +264,114 @@ function UserDialog({ open, onOpenChange, user }: { open: boolean; onOpenChange(
   )
 }
 
+function UserPasswordDialog({ user, onOpenChange }: { user: UserDef | null; onOpenChange(o: boolean): void }) {
+  const { fail, toast } = useToast()
+  const [pw, setPw] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => { setPw(''); setConfirm(''); setError('') }, [user?.id])
+  const valid = passwordsValid(pw, confirm, user?.email)
+  const submit = async () => {
+    if (!user || !valid) return
+    setBusy(true)
+    setError('')
+    try {
+      await platform.security.setPassword(user.id, pw)
+      toast(`Password set for ${user.name}. Share it with them securely; it is not shown again.`, 'success')
+      setPw(''); setConfirm('')
+      onOpenChange(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      fail(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog open={!!user} onOpenChange={onOpenChange}>
+      <DialogContent data-testid="user-password-dialog">
+        <DialogHeader>
+          <DialogTitle>{user?.hasPassword ? 'Reset password' : 'Set password'} for {user?.name}</DialogTitle>
+          <DialogDescription>You choose the password and tell the user. It is stored hashed, never shown again, and any open sessions of this user end.</DialogDescription>
+        </DialogHeader>
+        <form className="grid gap-4" autoComplete="off" onSubmit={(e) => { e.preventDefault(); void submit() }}>
+          <NewPasswordFields password={pw} confirm={confirm} onPassword={setPw} onConfirm={setConfirm} email={user?.email} idPrefix="up" labelNew="Password" autoFocus />
+          {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button type="submit" disabled={busy || !valid} data-testid="user-password-save">{busy && <Spinner />} Set password</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function TestAsUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange(o: boolean): void }) {
+  const users = usePlatform((s) => s.users)
+  const tables = usePlatform((s) => s.tables)
+  const { fail } = useToast()
+  const [userId, setUserId] = useState('')
+  const [rows, setRows] = useState<TablePreview[] | null>(null)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { if (open) { setRows(null); setUserId((u) => u || users[0]?.id || '') } }, [open, users])
+  useEffect(() => {
+    if (!open || !userId) return
+    let alive = true
+    setBusy(true)
+    setRows(null)
+    fetchSecurityPreview(userId).then((r) => alive && setRows(r)).catch((e) => { if (alive) fail(e) }).finally(() => alive && setBusy(false))
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, userId])
+  const name = (id: string) => tables.find((t) => t.id === id)?.displayName ?? id
+  const col = (tid: string, n: string) => tables.find((t) => t.id === tid)?.columns.find((c) => c.name === n)?.displayName ?? n
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] overflow-auto sm:max-w-2xl" data-testid="test-as-user-dialog">
+        <DialogHeader>
+          <DialogTitle>Test as user</DialogTitle>
+          <DialogDescription>What the server would show this person: rows they can read and the columns that are hidden or read-only. You stay signed in as yourself.</DialogDescription>
+        </DialogHeader>
+        <Field label="User" htmlFor="preview-user">
+          <select id="preview-user" value={userId} onChange={(e) => setUserId(e.target.value)} data-testid="preview-user" className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm">
+            {users.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}
+          </select>
+        </Field>
+        {busy ? <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground"><Spinner /> Asking the server...</div> : rows && (
+          <table className="w-full text-sm" data-testid="preview-table">
+            <thead><tr className="border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground"><th className="px-3 py-2">Table</th><th className="px-3 py-2 text-right">Visible rows</th><th className="px-3 py-2">Hidden columns</th><th className="px-3 py-2">Read-only columns</th></tr></thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.tableId} className="border-b border-border last:border-0" data-testid={`preview-${r.tableId}`}>
+                  <td className="px-3 py-2 font-medium">{name(r.tableId)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{r.visibleRows}</td>
+                  <td className="px-3 py-2 text-muted-foreground">{r.hiddenColumns.map((n) => col(r.tableId, n)).join(', ') || 'None'}</td>
+                  <td className="px-3 py-2 text-muted-foreground">{r.readOnlyColumns.map((n) => col(r.tableId, n)).join(', ') || 'None'}</td>
+                </tr>
+              ))}
+              {rows.length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">No table access.</td></tr>}
+            </tbody>
+          </table>
+        )}
+        <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function Roles() {
+  const server = usePlatform((s) => s.mode) === 'server'
+  const caps = useCaps()
+  const [pwUser, setPwUser] = useState<UserDef | null>(null)
+  const [preview, setPreview] = useState(false)
+  const session = usePlatform((s) => s.session)
   const roles = usePlatform((s) => s.roles)
   const users = usePlatform((s) => s.users)
   const currentUserId = usePlatform((s) => s.currentUserId)
   const q = useSearch()
-  const { toast } = useToast()
+  const { toast, fail } = useToast()
   const [view, setView] = useState<'roles' | 'users'>('roles')
   const [selId, setSelId] = useState<string>('')
   const [newRole, setNewRole] = useState(false)
@@ -256,6 +390,7 @@ export function Roles() {
         actions={
           <>
             <Segmented label="Section" value={view} onChange={setView} options={[{ value: 'roles', label: <><ShieldCheck className="size-3.5" /> Roles ({roles.length})</> }, { value: 'users', label: <><Users className="size-3.5" /> Users ({users.length})</> }]} />
+            {server && caps.isAdmin && <Button size="sm" variant="outline" onClick={() => setPreview(true)} data-testid="test-as-user-button"><Eye /> Test as user</Button>}
             {view === 'roles' ? (
               <Button size="sm" onClick={() => setNewRole(true)} data-testid="new-role-button"><Plus /> New role</Button>
             ) : (
@@ -266,7 +401,7 @@ export function Roles() {
       />
       <div className="mb-4 flex items-start gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-xs text-muted-foreground" data-testid="roles-note">
         <Info className="mt-px size-3.5 shrink-0 text-primary" />
-        Roles are enforced inside apps on this machine; this is not yet a server-side boundary.
+        {server ? 'The server enforces roles on every request: table access, hidden and read-only columns, and row filters.' : 'Demo mode: roles are simulated in this browser and are not a security boundary. Connect the local server for real enforcement.'}
       </div>
 
       {view === 'roles' ? (
@@ -286,6 +421,7 @@ export function Roles() {
                         <span className="block truncate text-xs text-muted-foreground">{users.filter((u) => u.roleIds.includes(r.id)).length === 1 ? '1 user' : `${users.filter((u) => u.roleIds.includes(r.id)).length} users`}{r.description ? ` · ${r.description}` : ''}</span>
                       </span>
                       {r.isAdmin && <Badge variant="secondary">Admin</Badge>}
+                      {!r.isAdmin && isMakerRole(r) && <Badge variant="outline">Maker</Badge>}
                     </button>
                   </li>
                 ))}
@@ -301,13 +437,13 @@ export function Roles() {
           <table className="w-full text-sm" data-testid="users-table">
             <thead>
               <tr className="border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground">
-                <th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Email</th><th className="px-4 py-2.5">Roles</th><th className="w-24 px-4 py-2.5"><span className="sr-only">Actions</span></th>
+                <th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Email</th><th className="px-4 py-2.5">Roles</th>{server && <th className="px-4 py-2.5">Status</th>}{server && <th className="px-4 py-2.5">Last sign-in</th>}<th className="w-40 px-4 py-2.5"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
               {ulist.map((u) => (
                 <tr key={u.id} className="border-b border-border last:border-0 hover:bg-accent/40" data-testid={`user-row-${u.id}`}>
-                  <td className="px-4 py-2.5 font-medium">{u.name}{u.id === currentUserId && <Badge variant="secondary" className="ml-2">Running as</Badge>}</td>
+                  <td className="px-4 py-2.5 font-medium">{u.name}{(server ? u.id === session?.user.id : u.id === currentUserId) && <Badge variant="secondary" className="ml-2">{server ? 'You' : 'Running as'}</Badge>}</td>
                   <td className="px-4 py-2.5 text-muted-foreground">{u.email}</td>
                   <td className="px-4 py-2.5">
                     <div className="flex flex-wrap gap-1">
@@ -315,22 +451,35 @@ export function Roles() {
                       {u.roleIds.length === 0 && <span className="text-xs text-muted-foreground">No roles</span>}
                     </div>
                   </td>
+                  {server && (
+                    <td className="px-4 py-2.5">
+                      <div className="flex flex-wrap gap-1">
+                        {u.status === 'disabled' ? <Badge variant="destructive">Disabled</Badge> : <Badge className="border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">Active</Badge>}
+                        {!u.hasPassword && <Badge variant="outline" title="Cannot sign in until an administrator sets a password">No password</Badge>}
+                      </div>
+                    </td>
+                  )}
+                  {server && <td className="px-4 py-2.5 text-xs text-muted-foreground" data-testid={`last-login-${u.id}`}>{u.lastLogin ? fmtRelative(u.lastLogin) : 'Never'}</td>}
                   <td className="px-4 py-1.5">
                     <div className="flex justify-end gap-1">
+                      {server && <Button variant="ghost" size="icon-sm" aria-label={`${u.hasPassword ? 'Reset' : 'Set'} password for ${u.name}`} title={u.hasPassword ? 'Reset password' : 'Set password'} onClick={() => setPwUser(u)} data-testid={`password-${u.id}`}><KeyRound /></Button>}
+                      {server && <Button variant="ghost" size="icon-sm" aria-label={u.status === 'disabled' ? `Enable ${u.name}` : `Disable ${u.name}`} title={u.id === session?.user.id ? 'You cannot disable yourself' : u.status === 'disabled' ? 'Enable user' : 'Disable user'} disabled={u.id === session?.user.id} data-testid={`toggle-status-${u.id}`} onClick={() => { platform.security.updateUser(u.id, { status: u.status === 'disabled' ? 'active' : 'disabled' }).then(() => toast(u.status === 'disabled' ? `${u.name} can sign in again` : `${u.name} is disabled and signed out`, 'success')).catch(fail) }}>{u.status === 'disabled' ? <CircleCheck /> : <Ban />}</Button>}
                       <Button variant="ghost" size="icon-sm" aria-label={`Edit ${u.name}`} onClick={() => setUserDlg({ user: u })}><Pencil /></Button>
                       <Button variant="ghost" size="icon-sm" aria-label={`Delete ${u.name}`} onClick={() => setDelUser(u)}><Trash2 /></Button>
                     </div>
                   </td>
                 </tr>
               ))}
-              {ulist.length === 0 && <tr><td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">No users match "{q}".</td></tr>}
+              {ulist.length === 0 && <tr><td colSpan={server ? 6 : 4} className="px-4 py-6 text-center text-sm text-muted-foreground">No users match "{q}".</td></tr>}
             </tbody>
           </table>
         </Panel>
       )}
 
       <NewRoleDialog open={newRole} onOpenChange={setNewRole} onCreated={(r) => { setView('roles'); setSelId(r.id) }} />
-      <UserDialog open={!!userDlg} onOpenChange={(o) => !o && setUserDlg(null)} user={userDlg?.user ?? null} />
+      <UserDialog open={!!userDlg} onOpenChange={(o) => !o && setUserDlg(null)} user={userDlg?.user ?? null} onCreated={(u) => { if (server) setPwUser(u) }} />
+      <UserPasswordDialog user={pwUser} onOpenChange={(o) => !o && setPwUser(null)} />
+      <TestAsUserDialog open={preview} onOpenChange={setPreview} />
       <ConfirmDialog
         open={!!delUser}
         onOpenChange={(o) => !o && setDelUser(null)}

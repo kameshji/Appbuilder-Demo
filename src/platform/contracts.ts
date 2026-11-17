@@ -141,6 +141,8 @@ export interface RoleDef {
   description?: string
   /** full access to everything; cannot be deleted when it is the last admin role */
   isAdmin?: boolean
+  /** may create and edit apps, tables and connections (ab_roles.is_maker) */
+  isMaker?: boolean
   privileges: TablePrivilege[]
   /** app ids the role may run, or 'all' */
   apps: string[] | 'all'
@@ -320,9 +322,10 @@ export interface PlatformApi {
   }
 
   tables: {
-    create(input: { displayName: string; name?: string; description?: string; columns?: Partial<ColumnDef>[] }): Promise<TableDef>
+    create(input: { displayName: string; name?: string; description?: string; columns?: Partial<ColumnDef>[]; connectionId?: string }): Promise<TableDef>
     update(id: string, patch: Partial<Pick<TableDef, 'displayName' | 'description' | 'primaryColumn'>>): Promise<void>
-    remove(id: string): Promise<void>
+    /** dropSource (server mode, default true): also drop the physical table / sheet */
+    remove(id: string, opts?: { dropSource?: boolean }): Promise<void>
     addColumn(tableId: string, col: Partial<ColumnDef> & { displayName: string; type: ColumnType }): Promise<ColumnDef>
     updateColumn(tableId: string, name: string, patch: Partial<ColumnDef>): Promise<void>
     removeColumn(tableId: string, name: string): Promise<void>

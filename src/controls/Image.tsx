@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Image as ImageIcon } from 'lucide-react'
 import type { ControlRenderProps, ControlType } from '@/contracts'
+import { imageSource } from '@/runtime/attachments'
 import { toNum, toText } from './util'
 
 function fitOf(v: string): 'cover' | 'contain' | 'fill' | 'none' {
@@ -13,7 +14,8 @@ function fitOf(v: string): 'cover' | 'contain' | 'fill' | 'none' {
 }
 
 function ImageRender({ props }: ControlRenderProps) {
-  const src = toText(props.Image).trim()
+  // attachment ids (att_..., a JSON array of ids, or a bare id) resolve through the platform
+  const src = imageSource(toText(props.Image))
   const [failed, setFailed] = useState(false)
   useEffect(() => setFailed(false), [src])
   const radius = toNum(props.Radius, 0)

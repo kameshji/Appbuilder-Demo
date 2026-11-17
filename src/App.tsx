@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Loader2, TriangleAlert } from 'lucide-react'
 import { platform } from '@/platform'
-import { Portal } from '@/portal'
+import { AuthGate, Portal } from '@/portal'
 import { useRoute } from '@/router'
 import { linkPlatform } from '@/runtime/store'
 import { errorMessage } from '@/runtime/data'
@@ -46,7 +46,8 @@ export default function App() {
       </div>
     )
   }
-  if (route.page === 'studio') return <Studio key={route.id} appId={route.id} />
-  if (route.page === 'run') return <RunApp key={route.id} appId={route.id} />
-  return <Portal route={route} />
+  // server mode needs a session for every page (the debug run window shares the cookie); demo mode passes through
+  if (route.page === 'studio') return <AuthGate><Studio key={route.id} appId={route.id} /></AuthGate>
+  if (route.page === 'run') return <AuthGate><RunApp key={route.id} appId={route.id} /></AuthGate>
+  return <AuthGate><Portal route={route} /></AuthGate>
 }

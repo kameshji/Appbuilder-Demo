@@ -29,6 +29,9 @@ function ColumnEditor({ table, mode, onClose }: { table: TableDef; mode: Mode; o
   const [newChoice, setNewChoice] = useState('')
   const [lookupTable, setLookupTable] = useState('')
   const [prefix, setPrefix] = useState('')
+  const [multiple, setMultiple] = useState(false)
+  const [accept, setAccept] = useState('')
+  const [maxSize, setMaxSize] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -44,13 +47,18 @@ function ColumnEditor({ table, mode, onClose }: { table: TableDef; mode: Mode; o
     setNewChoice('')
     setLookupTable(c?.lookupTable ?? '')
     setPrefix(c?.prefix ?? '')
+    setMultiple(!!c?.multiple)
+    setAccept((c?.accept ?? []).join(', '))
+    setMaxSize(c?.maxSizeMB ? String(c.maxSizeMB) : '')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode.kind, mode.kind === 'edit' ? mode.name : '', table.id])
 
   const locked = !!existing?.system
   const finalName = mode.kind === 'edit' ? mode.name : nameTouched ? name : slugName(displayName)
   const nameClash = mode.kind === 'new' && !!finalName && table.columns.some((c) => c.name.toLowerCase() === finalName.toLowerCase())
-  const valid = !!displayName.trim() && !!finalName && !nameClash && (type !== 'lookup' || !!lookupTable) && (type !== 'choice' || choices.length > 0 || !!newChoice.trim())
+  const attach = type === 'file' || type === 'image'
+  const maxOk = !maxSize.trim() || (Number.isFinite(Number(maxSize)) && Number(maxSize) > 0)
+  const valid = !!displayName.trim() && !!finalName && !nameClash && maxOk && (type !== 'lookup' || !!lookupTable) && (type !== 'choice' || choices.length > 0 || !!newChoice.trim())
 
   const addChoice = () => {
     const t = newChoice.trim()
@@ -72,6 +80,9 @@ function ColumnEditor({ table, mode, onClose }: { table: TableDef; mode: Mode; o
         choices: finalChoices,
         lookupTable: type === 'lookup' ? lookupTable : undefined,
         prefix: type === 'autonumber' ? prefix : undefined,
+        multiple: attach ? multiple : undefined,
+        accept: attach ? accept.split(/[,\s]+/).map((x) => x.trim()).filter(Boolean) : undefined,
+        maxSizeMB: attach && maxSize.trim() ? Number(maxSize) : undefined,
       }
       if (mode.kind === 'new') {
         await platform.tables.addColumn(table.id, { ...body, name: finalName, displayName: displayName.trim(), type })
@@ -140,7 +151,27 @@ function ColumnEditor({ table, mode, onClose }: { table: TableDef; mode: Mode; o
             <Input value={prefix} disabled={locked} onChange={(e) => setPrefix(e.target.value)} data-testid="col-prefix" />
           </Field>
         )}
-        {type !== 'autonumber' && type !== 'image' && (
+        {attach && (
+          <div className="grid gap-3 rounded-lg border border-border bg-muted/30 p-3" data-testid="attachment-options">
+            <label className="flex items-center justify-between gap-3 text-sm">
+              <span>Allow several files<span className="block text-xs text-muted-foreground">Each row can hold a list of attachments.</span></span>
+              <Switch checked={multiple} disabled={locked} onCheckedChange={setMultiple} aria-label="Allow several files" data-testid="col-multiple" />
+            </label>
+            <Field label="Accepted types" hint={<>Comma-separated MIME patterns, e.g. <code className="font-mono">image/*, application/pdf</code>. Empty accepts anything.</>}>
+              <Input value={accept} disabled={locked} onChange={(e) => setAccept(e.target.value)} placeholder={type === 'image' ? 'image/*' : 'any type'} data-testid="col-accept" className="font-mono text-xs" />
+              <div className="flex flex-wrap gap-1">
+                {[['Images', 'image/*'], ['PDF', 'application/pdf'], ['Office', 'application/vnd.openxmlformats-officedocument.*, application/msword'], ['Text', 'text/*']].map(([l, v]) => (
+                  <Button key={l} type="button" variant="outline" size="xs" disabled={locked} onClick={() => setAccept(v)}>{l}</Button>
+                ))}
+              </div>
+            </Field>
+            <Field label="Largest file (MB)" hint="Leave empty for the server default (25 MB).">
+              <Input value={maxSize} disabled={locked} inputMode="decimal" onChange={(e) => setMaxSize(e.target.value.replace(/[^0-9.]/g, ''))} data-testid="col-max-size" className="w-32" />
+              {!maxOk && <p className="text-xs text-destructive">Enter a number above zero.</p>}
+            </Field>
+          </div>
+        )}
+        {type !== 'autonumber' && !attach && (
           <Field label="Default value" hint={type === 'boolean' ? 'Use true or false.' : type === 'choice' ? 'Must be one of the choices.' : undefined}>
             <Input value={def} disabled={locked} onChange={(e) => setDef(e.target.value)} data-testid="col-default" />
           </Field>
@@ -203,7 +234,7 @@ export function ColumnsPanel({ table }: { table: TableDef }) {
                           {c.required && <Badge variant="outline">Required</Badge>}
                           {c.unique && <Badge variant="outline">Unique</Badge>}
                         </span>
-                        <span className="block truncate font-mono text-[11px] text-muted-foreground">{c.name}{c.type === 'choice' && c.choices?.length ? ` · ${c.choices.join(', ')}` : ''}{c.type === 'lookup' && c.lookupTable ? ` · to ${c.lookupTable}` : ''}</span>
+                        <span className="block truncate font-mono text-[11px] text-muted-foreground">{c.name}{c.type === 'choice' && c.choices?.length ? ` · ${c.choices.join(', ')}` : ''}{c.type === 'lookup' && c.lookupTable ? ` · to ${c.lookupTable}` : ''}{(c.type === 'file' || c.type === 'image') ? `${c.multiple ? ' · several' : ' · one'}${c.accept?.length ? ` · ${c.accept.join(', ')}` : ''}${c.maxSizeMB ? ` · max ${c.maxSizeMB} MB` : ''}` : ''}</span>
                       </span>
                       <span className="w-44 shrink-0 text-xs text-muted-foreground">{TYPE_INFO[c.type]?.label ?? c.type}</span>
                     </button>

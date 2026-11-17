@@ -1,0 +1,276 @@
+{
+ "formatVersion": 2,
+ "name": "Contacts app",
+ "width": 1920,
+ "height": 1080,
+ "scaleMode": "responsive",
+ "theme": {
+  "mode": "light"
+ },
+ "dataSources": [
+  "Contacts",
+  "Orders"
+ ],
+ "appProps": {
+  "OnStart": "=Set(StartedAt, Now())",
+  "Formulas": "FilteredContacts = Filter(Contacts, IsBlank(SearchBox.Value) || SearchBox.Value in Name || SearchBox.Value in Company || SearchBox.Value in City);"
+ },
+ "screens": [
+  {
+   "id": "njsqjchpskww",
+   "name": "Home",
+   "type": "Screen",
+   "props": {
+    "Fill": "=RGBA(248, 250, 252, 1)"
+   },
+   "children": [
+    {
+     "id": "nmf47uwoxkww",
+     "name": "HeaderBar",
+     "type": "Rectangle",
+     "props": {
+      "X": "=0",
+      "Y": "=0",
+      "Width": "=1920",
+      "Height": "=80",
+      "AnchorH": "=Anchor.Stretch",
+      "AnchorV": "=Anchor.Start",
+      "Fill": "=Color.White",
+      "Radius": "=0",
+      "BorderWidth": "=0"
+     },
+     "children": []
+    },
+    {
+     "id": "nv5q7g071kww",
+     "name": "Accent",
+     "type": "Rectangle",
+     "props": {
+      "X": "=32",
+      "Y": "=24",
+      "Width": "=6",
+      "Height": "=32",
+      "Fill": "=RGBA(79, 70, 229, 1)",
+      "Radius": "=3"
+     },
+     "children": []
+    },
+    {
+     "id": "nwcn9xbtlkww",
+     "name": "Title",
+     "type": "Label",
+     "props": {
+      "X": "=52",
+      "Y": "=18",
+      "Width": "=480",
+      "Height": "=44",
+      "Text": "=\"Contacts\"",
+      "Size": "=28",
+      "FontWeight": "=FontWeight.Bold"
+     },
+     "children": []
+    },
+    {
+     "id": "nry9bwyh6kww",
+     "name": "TitleHeart",
+     "type": "AnimatedIcon",
+     "props": {
+      "X": "=176",
+      "Y": "=22",
+      "Width": "=36",
+      "Height": "=36",
+      "Icon": "=AnimatedIcon.Heart",
+      "Size": "=28",
+      "Color": "=RGBA(239, 68, 68, 1)"
+     },
+     "children": []
+    },
+    {
+     "id": "nv8dsq2wykww",
+     "name": "UserLabel",
+     "type": "Label",
+     "props": {
+      "X": "=1176",
+      "Y": "=28",
+      "Width": "=360",
+      "Height": "=24",
+      "AnchorH": "=Anchor.End",
+      "AnchorV": "=Anchor.Start",
+      "Text": "=\"Signed in as \" & User().FullName",
+      "Size": "=13",
+      "Color": "=RGBA(100, 116, 139, 1)",
+      "Align": "=Align.Right"
+     },
+     "children": []
+    },
+    {
+     "id": "n4zonaokkkww",
+     "name": "QuickAddButton",
+     "type": "Button",
+     "props": {
+      "X": "=1560",
+      "Y": "=20",
+      "Width": "=152",
+      "Height": "=40",
+      "AnchorH": "=Anchor.End",
+      "AnchorV": "=Anchor.Start",
+      "Text": "=\"Quick add\"",
+      "Style": "=ButtonStyle.Outline",
+      "OnSelect": "=Patch(Contacts, Defaults(Contacts), {Name: \"New contact \" & Text(CountRows(Contacts) + 1), Company: \"Unassigned\", City: \"\", Active: true}); Notify(\"Contact added\", NotificationType.Success)"
+     },
+     "children": []
+    },
+    {
+     "id": "ncfbplhyjkww",
+     "name": "NewButton",
+     "type": "Button",
+     "props": {
+      "X": "=1728",
+      "Y": "=20",
+      "Width": "=160",
+      "Height": "=40",
+      "AnchorH": "=Anchor.End",
+      "AnchorV": "=Anchor.Start",
+      "Text": "=\"+ New contact\"",
+      "OnSelect": "=NewForm(ContactForm)"
+     },
+     "children": []
+    },
+    {
+     "id": "nbgcb5xu0kww",
+     "name": "SearchBox",
+     "type": "SearchBox",
+     "props": {
+      "X": "=32",
+      "Y": "=104",
+      "Width": "=520",
+      "Height": "=40",
+      "Placeholder": "=\"Search name, company or city\""
+     },
+     "children": []
+    },
+    {
+     "id": "nhv0klukokww",
+     "name": "CountLabel",
+     "type": "Label",
+     "props": {
+      "X": "=576",
+      "Y": "=112",
+      "Width": "=400",
+      "Height": "=24",
+      "Text": "=\"Showing \" & CountRows(FilteredContacts) & \" of \" & CountRows(Contacts) & \" contacts\"",
+      "Size": "=13",
+      "Color": "=RGBA(100, 116, 139, 1)"
+     },
+     "children": []
+    },
+    {
+     "id": "nofnbwqnpkww",
+     "name": "ContactsTable",
+     "type": "DataTable",
+     "props": {
+      "X": "=32",
+      "Y": "=160",
+      "Width": "=1096",
+      "Height": "=888",
+      "AnchorH": "=Anchor.Stretch",
+      "AnchorV": "=Anchor.Stretch",
+      "Items": "=FilteredContacts",
+      "Columns": "=\"Name, Company, City, Email, Status\""
+     },
+     "children": []
+    },
+    {
+     "id": "n5gqazh50kww",
+     "name": "DetailPanel",
+     "type": "Container",
+     "props": {
+      "X": "=1160",
+      "Y": "=160",
+      "Width": "=728",
+      "Height": "=888",
+      "AnchorH": "=Anchor.End",
+      "AnchorV": "=Anchor.Stretch",
+      "Fill": "=Color.White",
+      "Radius": "=12"
+     },
+     "children": [
+      {
+       "id": "n1bo4up8dkww",
+       "name": "DetailTitle",
+       "type": "Label",
+       "props": {
+        "X": "=24",
+        "Y": "=20",
+        "Width": "=680",
+        "Height": "=32",
+        "AnchorH": "=Anchor.Stretch",
+        "AnchorV": "=Anchor.Start",
+        "Text": "=If(ContactForm.Mode = \"New\", \"New contact\", Coalesce(ContactsTable.Selected.Name, \"Select a contact\"))",
+        "Size": "=20",
+        "FontWeight": "=FontWeight.Semibold"
+       },
+       "children": []
+      },
+      {
+       "id": "nkyf4zvqlkww",
+       "name": "ContactForm",
+       "type": "Form",
+       "props": {
+        "X": "=24",
+        "Y": "=64",
+        "Width": "=680",
+        "Height": "=440",
+        "AnchorH": "=Anchor.Stretch",
+        "AnchorV": "=Anchor.Start",
+        "DataSource": "=\"Contacts\"",
+        "Item": "=ContactsTable.Selected",
+        "Mode": "=FormMode.Edit",
+        "Fields": "=\"Name, Company, City, Email, Active, Status\"",
+        "Columns": "=2",
+        "OnSuccess": "=Notify(\"Contact saved\", NotificationType.Success)",
+        "OnFailure": "=Notify(ContactForm.Error, NotificationType.Error)"
+       },
+       "children": []
+      },
+      {
+       "id": "n0g4rwm4ekww",
+       "name": "OrdersTitle",
+       "type": "Label",
+       "props": {
+        "X": "=24",
+        "Y": "=528",
+        "Width": "=680",
+        "Height": "=28",
+        "AnchorH": "=Anchor.Stretch",
+        "AnchorV": "=Anchor.Start",
+        "Text": "=\"Orders\" & If(IsBlank(ContactsTable.Selected), \"\", \" for \" & ContactsTable.Selected.Name)",
+        "Size": "=16",
+        "FontWeight": "=FontWeight.Semibold"
+       },
+       "children": []
+      },
+      {
+       "id": "n72cmx4plkww",
+       "name": "OrdersChart",
+       "type": "Chart",
+       "props": {
+        "X": "=24",
+        "Y": "=568",
+        "Width": "=680",
+        "Height": "=296",
+        "AnchorH": "=Anchor.Stretch",
+        "AnchorV": "=Anchor.Stretch",
+        "Items": "=Filter(Orders, Customer = ContactsTable.Selected.id)",
+        "Type": "=ChartType.Bar",
+        "CategoryField": "=\"OrderNo\"",
+        "ValueFields": "=\"Amount\""
+       },
+       "children": []
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

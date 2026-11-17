@@ -5,7 +5,8 @@ import type { AppDef, ControlNode, FxRecord, FxValue } from '@/contracts'
 import { fx } from '@/fx'
 import { controls } from '@/controls'
 import { getEvaluator, isContainerType, isOverlayType, metaMap, ROOT_CTX, type Env, type Evaluator, type NodeCtx } from './evaluator'
-import { runFormula, type RunResult, type Toast, type ToastKind, type TraceEntry } from './host'
+import { runFormula, type DeferredSubmit, type RunResult, type Toast, type ToastKind, type TraceEntry } from './host'
+import { SubmitError } from './submit'
 import { readClipboard, writeClipboard } from './persist'
 import { useUi } from './ui'
 import { blankApp, sampleApp } from './sample'
@@ -13,7 +14,7 @@ import {
   allNames, cloneWithNewIds, deepEqual, findNode, findParent, isDescendant, mapNodes, parseNumberLiteral, round2, screenOf, uid,
   uniqueName, walk,
 } from './util'
-import { currentUserId, dataVersion, isTable, platformState, subscribePlatform } from './data'
+import { currentUserId, dataVersion, ensureTablesLoaded, errorMessage, isTable, platformState, subscribePlatform, subscribeDataErrors } from './data'
 
 setAutoFreeze(false)
 
@@ -123,7 +124,7 @@ const freshRuntime = (collections: Record<string, FxRecord[]> = {}, firstScreen?
 export function platformDataKey(): string {
   const st = platformState()
   if (!st) return '0'
-  return `${dataVersion()}|${st.tables.map((t) => `${t.name}:${t.columns.length}:${t.modifiedOn}`).join(',')}`
+  return `${dataVersion()}|${(st.loading ?? []).join('+')}|${st.tables.map((t) => `${t.name}:${t.columns.length}:${t.modifiedOn}`).join(',')}`
 }
 
 /** formatVersion 1 apps (960x600, single screen size) open as 'fit' */
@@ -258,11 +259,40 @@ export const useStore = create<StudioState>()(
       }
     }
 
+    /** the server's verdict on a submitted form (and its file uploads) arrived */
+    const finishDeferred = (d: DeferredSubmit) => {
+      void d.work().then(
+        (stored) => {
+          const cur = get().runtime.outputs[d.key]
+          const saved = typeof cur?.__saved === 'number' ? cur.__saved : 0
+          set((s) => {
+            s.runtime.outputs[d.key] = { ...(cur ?? {}), LastSubmit: stored, Error: '', Unsaved: false, __busy: 0, __saved: saved + 1 }
+          })
+          get().fire(d.nodeId, 'OnSuccess', d.ctx, { allowInDesign: true })
+        },
+        (e: unknown) => {
+          const message = errorMessage(e)
+          const upload = e instanceof SubmitError && e.stage === 'upload'
+          set((s) => {
+            s.runtime.outputs[d.key] = { ...(s.runtime.outputs[d.key] ?? {}), Error: message, __busy: 0 }
+          })
+          // a refused write was already reported (toast, error list) through platform.onDataError
+          if (upload) {
+            get().notify(`${d.name}: ${message}`, 'error')
+            get().log([{ id: uid(), at: Date.now(), kind: 'error', message: `${d.name}: ${message}`, source: d.label }])
+            logListeners.forEach((fn) => fn([{ id: uid(), at: Date.now(), kind: 'error', message: `${d.name}: ${message}`, source: d.label }]))
+          }
+          get().fire(d.nodeId, 'OnFailure', d.ctx, { allowInDesign: true })
+        },
+      )
+    }
+
     let depth = 0
     const run = (node: ControlNode | null, ctx: NodeCtx, label: string, what: { formula?: string; action?: Parameters<typeof runFormula>[0]['action']; fromSubmitButton?: boolean }, designRun = false) => {
       const st = get()
       const r = runFormula({ app: st.app, rt: st.runtime, env: st.env, node, ctx, label, ...what, dryData: designRun })
       applyRun(r)
+      r.deferred.forEach(finishDeferred)
       if (r.failed || depth > 8) return
       depth++
       try {
@@ -904,5 +934,23 @@ export function linkPlatform() {
   }
   subscribePlatform(sync)
   sync()
+  // load the rows of the app's tables when an app opens and whenever a data source is added
+  useStore.subscribe((s, prev) => {
+    if (s.app !== prev.app && s.app.dataSources !== prev.app.dataSources) ensureTablesLoaded(s.app.dataSources ?? [])
+  })
+  ensureTablesLoaded(useStore.getState().app.dataSources ?? [])
+  // writes the server refused (the platform already rolled the cache back)
+  subscribeDataErrors((e) => {
+    const verb = e.op === 'create' ? 'add to' : e.op === 'update' ? 'change' : 'delete from'
+    const message = `Could not ${verb} ${e.table}: ${e.error.message}`
+    const entries: TraceEntry[] = [
+      { id: uid(), at: Date.now(), kind: 'error', message, source: 'Data' },
+      { id: uid(), at: Date.now(), kind: 'trace', message: `Data error (${e.op} ${e.table})`, data: JSON.stringify({ code: e.error.code, rows: e.rowIds, message: e.error.message }), source: 'Data' },
+    ]
+    const st = useStore.getState()
+    st.log(entries)
+    logListeners.forEach((fn) => fn(entries))
+    if (st.mode === 'preview' || surfaceIsRun) st.notify(e.error.message, 'error')
+  })
   ;(window as unknown as Record<string, unknown>).__ab = { store: useStore, ui: useUi, evaluator: () => evaluatorOf(), sampleApp }
 }

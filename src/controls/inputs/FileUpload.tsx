@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { FileUp, Upload, X } from 'lucide-react'
 import type { ControlRenderProps, ControlType, FxRecord } from '@/contracts'
+import { filesForToken, registerFiles } from '@/runtime/attachments'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { displayModeProp, toBool, toDisplayMode, toNum, toRecords, toText } from '../util'
@@ -44,6 +45,13 @@ function FileUploadRender({ props, mode, outputs, setOutput, fire, focusToken }:
   const root = useRef<HTMLDivElement>(null)
   useFocusToken(root, focusToken, design)
   const error = outputs.Error == null ? '' : toText(outputs.Error)
+  // The original File objects live in a module-level registry; the FileToken output is the handle a Form
+  // (or any runtime code) uses to upload them without base64 round-trips. Reset() clears Files and the token.
+  const token = toText(outputs.FileToken)
+  const heldFiles = () => {
+    const held = filesForToken(token)
+    return held.length === files.length ? held : []
+  }
 
   const take = async (list: FileList | File[]) => {
     if (!editable) return
@@ -61,9 +69,12 @@ function FileUploadRender({ props, mode, outputs, setOutput, fire, focusToken }:
     setBusy(true)
     try {
       const recs: FxRecord[] = []
-      for (const f of multiple ? ok : ok.slice(0, 1)) {
+      const picked = multiple ? ok : ok.slice(0, 1)
+      for (const f of picked) {
         recs.push({ Name: f.name, Size: f.size, Type: f.type, DataUrl: await readAsDataUrl(f) })
       }
+      const held = multiple ? heldFiles() : []
+      setOutput('FileToken', registerFiles(multiple ? [...held, ...picked] : picked, token))
       setOutput('Files', multiple ? [...files, ...recs] : recs)
       fire('OnChange')
     } catch {
@@ -75,6 +86,8 @@ function FileUploadRender({ props, mode, outputs, setOutput, fire, focusToken }:
 
   const remove = (i: number) => {
     if (!editable) return
+    const held = heldFiles()
+    setOutput('FileToken', registerFiles(held.filter((_, k) => k !== i), token))
     setOutput('Files', files.filter((_, k) => k !== i))
     setOutput('Error', '')
     fire('OnChange')
@@ -161,6 +174,8 @@ export const FileUpload: ControlType = {
   outputs: [
     { name: 'Files', initial: [] },
     { name: 'Error', initial: '' },
+    // handle to the original File objects (see src/runtime/attachments.ts); empty when nothing is selected
+    { name: 'FileToken', initial: '' },
   ],
   defaultSize: { width: 360, height: 140 },
   primaryProp: 'OnChange',

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Columns3, Settings2, Table2, Trash2 } from 'lucide-react'
+import { ArrowLeft, Columns3, Lock, Settings2, ShieldCheck, Table2, Trash2 } from 'lucide-react'
 import { platform, usePlatform } from '@/platform'
 import { go } from '@/router'
 import { Button } from '@/components/ui/button'
@@ -9,10 +9,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ConfirmDialog, Empty, Field, Panel, fmtDate, useToast } from './kit'
 import { DataGrid } from './DataGrid'
 import { ColumnsPanel } from './ColumnsPanel'
+import { TableSecurity } from './TableSecurity'
+import { ConnectionFlags, connectorInfo } from './ConnectionBits'
+import { Badge } from '@/components/ui/badge'
 
 export function TableDesigner({ tableId }: { tableId: string }) {
   const table = usePlatform((s) => s.tables.find((t) => t.id === tableId))
   const dataVersion = usePlatform((s) => s.dataVersion)
+  const conn = usePlatform((s) => s.connections.find((c) => c.id === (table?.connectionId ?? 'conn_default')) ?? (table?.connectionId ? undefined : s.connections.find((c) => c.isDefault)))
   const { fail, toast } = useToast()
   const [tab, setTab] = useState('data')
   const [name, setName] = useState('')
@@ -74,6 +78,12 @@ export function TableDesigner({ tableId }: { tableId: string }) {
           />
         </div>
         <div className="shrink-0 pt-1.5 text-right text-xs text-muted-foreground">
+          <div className="flex items-center justify-end gap-1.5">
+            {conn && <span className="flex items-center gap-1" data-testid="table-connection">{(() => { const I = connectorInfo(conn.connector).icon; return <I className="size-3.5" /> })()}{conn.name}</span>}
+            <ConnectionFlags conn={conn?.isDefault ? undefined : conn} />
+            {table.origin?.kind === 'file' && <Badge variant="secondary" title={`From file ${table.origin.fileName}`}>File</Badge>}
+            {table.readOnly && <Badge variant="outline"><Lock /> Read-only</Badge>}
+          </div>
           <div className="font-mono">{table.name}</div>
           <div>Modified {fmtDate(table.modifiedOn)}</div>
         </div>
@@ -83,10 +93,12 @@ export function TableDesigner({ tableId }: { tableId: string }) {
         <TabsList className="h-9 self-start">
           <TabsTrigger value="data" className="flex-none px-4" data-testid="tab-data"><Table2 /> Data</TabsTrigger>
           <TabsTrigger value="columns" className="flex-none px-4" data-testid="tab-columns"><Columns3 /> Columns</TabsTrigger>
+          <TabsTrigger value="security" className="flex-none px-4" data-testid="tab-security"><ShieldCheck /> Security</TabsTrigger>
           <TabsTrigger value="settings" className="flex-none px-4" data-testid="tab-settings"><Settings2 /> Settings</TabsTrigger>
         </TabsList>
         <TabsContent value="data" className="mt-2"><DataGrid table={table} /></TabsContent>
         <TabsContent value="columns" className="mt-2"><ColumnsPanel table={table} /></TabsContent>
+        <TabsContent value="security" className="mt-2"><TableSecurity table={table} /></TabsContent>
         <TabsContent value="settings" className="mt-2">
           <div className="grid max-w-2xl gap-4" data-testid="settings-tab">
             <Panel className="grid gap-4 p-5">
@@ -100,6 +112,8 @@ export function TableDesigner({ tableId }: { tableId: string }) {
               </Field>
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <Field label="Formula name"><Input readOnly value={table.name} className="font-mono text-xs" /></Field>
+                <Field label="Connection"><Input readOnly value={conn ? `${conn.name} (${connectorInfo(conn.connector).label})` : table.connectionId ?? 'Browser storage'} /></Field>
+                <Field label="Stored as" hint={table.origin?.kind === 'file' ? `File ${table.origin.fileName}${table.origin.sheet ? `, sheet ${table.origin.sheet}` : ''}` : undefined}><Input readOnly value={table.source ?? table.name} className="font-mono text-xs" /></Field>
                 <Field label="Table id"><Input readOnly value={table.id} className="font-mono text-xs" /></Field>
                 <Field label="Rows"><Input readOnly value={String(rowCount)} /></Field>
                 <Field label="Created"><Input readOnly value={fmtDate(table.createdOn)} /></Field>

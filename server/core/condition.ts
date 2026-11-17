@@ -33,6 +33,8 @@ function cmp(a: Cell, b: QueryValue): number | null {
   if (typeof x === 'string' && typeof y === 'number' && x.trim() !== '' && !Number.isNaN(Number(x))) x = Number(x)
   if (x === null || y === null) return null
   if (typeof x === 'boolean' || typeof y === 'boolean') return x === y ? 0 : x ? 1 : -1
+  // a number against non-numeric text is not comparable: eq false, ne true, ordering false (matches the SQL translation)
+  if (typeof x !== typeof y) return null
   if (x < y) return -1
   if (x > y) return 1
   return 0

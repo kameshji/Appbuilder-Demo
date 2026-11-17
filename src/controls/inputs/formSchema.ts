@@ -16,6 +16,7 @@ export function parseFormMode(v: FxValue | undefined): FormModeName {
 }
 
 export const isNumberType = (t: ColumnDef['type']) => t === 'number' || t === 'decimal' || t === 'currency'
+export const isFileType = (t: ColumnDef['type']) => t === 'file' || t === 'image'
 export const isDateType = (t: ColumnDef['type']) => t === 'date' || t === 'datetime'
 
 /** Columns to show: the `Fields` list (case-insensitive name or display name), else every non-system column. */

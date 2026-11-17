@@ -168,6 +168,7 @@ export function coerceValue(col: ColumnDef, raw: FxValue | undefined): FxValue {
     case 'text':
     case 'multiline':
     case 'image':
+    case 'file':
     case 'autonumber': {
       if (raw instanceof Date) return raw.toISOString()
       if (typeof raw === 'object') return bad(col, 'must be text')

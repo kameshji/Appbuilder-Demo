@@ -66,6 +66,12 @@ export function displayText(col: ColumnDef, v: FxValue | undefined, lookups: Loo
     case 'datetime': return v instanceof Date ? v.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : String(v)
     case 'currency': return typeof v === 'number' ? v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(v)
     case 'lookup': return lookups[col.name]?.get(String(v)) ?? String(v)
+    case 'file':
+    case 'image': {
+      const raw = String(v)
+      if (raw.startsWith('[')) { try { const n = (JSON.parse(raw) as unknown[]).length; return `${n} ${n === 1 ? 'file' : 'files'}` } catch { /* plain text */ } }
+      return /^(https?:|data:|blob:|\/)/i.test(raw) ? raw : '1 file'
+    }
     default: return typeof v === 'object' ? JSON.stringify(v) : String(v)
   }
 }
@@ -123,6 +129,9 @@ export function CellEditor({
         </select>
       )
     }
+    case 'file':
+    case 'image':
+      return <span className="px-2 text-xs text-muted-foreground">{displayText(col, value, lookups) || 'Attach files after the row is saved.'}</span>
     case 'multiline':
       return dense ? (
         <input id={id} autoFocus={autoFocus} className={cls} value={value} onChange={(e) => onChange(e.target.value)} onKeyDown={onKeyDown} onBlur={onBlur} aria-label={col.displayName} />

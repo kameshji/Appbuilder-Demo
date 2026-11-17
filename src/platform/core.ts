@@ -9,9 +9,12 @@
 import type { AppDef, FxRecord, FxValue } from '@/contracts'
 import { PlatformError } from './contracts'
 import type {
-  AccessScope, AppMeta, ColumnDef, ColumnType, ConnectionRef, ConnectorKind, DataOp, PlatformApi, RoleDef,
-  Row, SolutionComponentKind, SolutionDef, StorageAdapter, TableDef, TablePrivilege, UserDef, WorkspaceState,
+  AccessScope, AppMeta, AttachmentRef, ColumnAccess, ColumnDef, ColumnType, ConnectionRef, ConnectorKind, DataFileDef, DataOp,
+  EffectivePrivileges, PlatformApi, RoleDef, Row, Session, SolutionComponentKind, SolutionDef, StorageAdapter, TableDef,
+  TablePrivilege, UserDef, WorkspaceState,
 } from './contracts'
+import Papa from 'papaparse'
+import { matchesCondition } from './rowfilter'
 import { csvToRows, parseCsvText, rowsToCsv } from './csv'
 import { Persister } from './persister'
 import { MemoryStorage } from './storage'
@@ -37,10 +40,12 @@ export interface PlatformOptions {
 
 const COLUMN_TYPES: ColumnType[] = [
   'text', 'multiline', 'email', 'url', 'phone', 'number', 'decimal', 'currency',
-  'boolean', 'date', 'datetime', 'choice', 'lookup', 'image', 'autonumber',
+  'boolean', 'date', 'datetime', 'choice', 'lookup', 'image', 'autonumber', 'file',
 ]
-const CONNECTORS: ConnectorKind[] = ['local-csv', 'rest', 'postgres', 'mysql', 'sqlserver', 'supabase', 'firebase', 'excel']
-const KINDS: SolutionComponentKind[] = ['app', 'table', 'role', 'connection']
+const CONNECTORS: ConnectorKind[] = ['local-csv', 'rest', 'postgres', 'mysql', 'sqlserver', 'supabase', 'firebase', 'excel', 'files', 'gsheets', 'php-gateway']
+const KINDS: SolutionComponentKind[] = ['app', 'table', 'role', 'connection', 'file']
+const NEEDS_SERVER = 'This needs the local server.'
+const colRank: Record<ColumnAccess, number> = { none: 0, read: 1, update: 2 }
 
 const fail = (code: PlatformError['code'], message: string): never => {
   throw new PlatformError(code, message)
@@ -71,9 +76,15 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
 
   let state: WorkspaceState = {
     ready: false,
+    mode: 'demo',
+    setup: { needsDatabase: false, needsAdmin: false },
+    session: null,
     storage: { kind: storage?.kind ?? 'browser', location: storage?.location ?? 'Loading…' },
-    apps: [], tables: [], roles: [], users: [], currentUserId: '', connections: [], solutions: [], dataVersion: 0,
+    apps: [], tables: [], roles: [], users: [], currentUserId: '', connections: [], solutions: [], dataFiles: [],
+    dataVersion: 0, loading: [], truncated: [],
   }
+  /** attachments (demo mode): metadata + data URL, mirrored in storage under attachments/<id>.json */
+  const attachmentStore = new Map<string, AttachmentRef & { dataUrl: string }>()
   const listeners = new Set<() => void>()
   const tablesRt = new Map<string, TableRt>() // by table id
   const appDefs = new Map<string, AppDef>() // by app id
@@ -92,13 +103,18 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
   }
   const setState = (patch: Partial<WorkspaceState>, bumpData = false) => {
     state = { ...state, ...patch, dataVersion: bumpData ? state.dataVersion + 1 : state.dataVersion }
+    // the run-as user, roles or tables changed: recompute what that user sees (CLS) and their effective privileges
+    if (patch.users || patch.roles || patch.tables || patch.currentUserId !== undefined) {
+      if (!patch.tables) state = { ...state, tables: visibleTables() }
+      state = { ...state, session: computeSession() }
+    }
     emit()
   }
   const st = (): StorageAdapter => storage ?? fail('storage', 'The workspace is not initialised yet.')
 
   const sortTables = (ts: TableDef[]) => [...ts].sort((a, b) => a.displayName.localeCompare(b.displayName))
   const sortApps = (as: AppMeta[]) => [...as].sort((a, b) => b.modifiedOn.localeCompare(a.modifiedOn) || a.name.localeCompare(b.name))
-  const syncTables = (bumpData = true) => setState({ tables: sortTables([...tablesRt.values()].map((t) => t.def)) }, bumpData)
+  const syncTables = (bumpData = true) => setState({ tables: visibleTables() }, bumpData)
   const iso = () => nowFn().toISOString()
   const ctx = (): Ctx => ({ userId: state.currentUserId, now: nowFn() })
   const userName = () => state.users.find((u) => u.id === state.currentUserId)?.name ?? 'Unknown'
@@ -116,11 +132,21 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
         roles: state.roles,
         connections: state.connections,
         solutions: state.solutions,
+        dataFiles: state.dataFiles,
       }),
     )
   }
   const saveWorkspace = () => persister.now(wsKey, writeWorkspace)
   const saveWorkspaceLater = () => persister.schedule(wsKey, writeWorkspace)
+  /** a write through an app to a table that came from a data file marks that file as modified since import */
+  function markFileModified(def: TableDef) {
+    const fileId = def.origin?.fileId
+    if (!fileId) return
+    const f = state.dataFiles.find((x) => x.id === fileId)
+    if (!f || f.modifiedSinceImport) return
+    state = { ...state, dataFiles: state.dataFiles.map((x) => (x.id === fileId ? { ...x, modifiedSinceImport: true } : x)) }
+    saveWorkspaceLater()
+  }
 
   const findTableByName = (name: string): TableRt | undefined => {
     for (const t of tablesRt.values()) if (t.def.name === name) return t
@@ -168,34 +194,149 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
   const currentUser = (): UserDef => state.users.find((u) => u.id === state.currentUserId) ?? state.users[0]
   const rolesOf = (u: UserDef): RoleDef[] => state.roles.filter((r) => u.roleIds.includes(r.id))
 
-  /** broadest privilege across the user's roles; admin = everything */
-  function privilege(def: TableDef): { create: boolean; read: AccessScope; update: AccessScope; delete: AccessScope } {
-    const u = currentUser()
-    if (!u) return { create: false, read: 'none', update: 'none', delete: 'none' }
+  interface Grant {
+    create: boolean
+    read: AccessScope
+    update: AccessScope
+    delete: AccessScope
+    /** effective CLS: only columns that are not 'update' */
+    columns: Record<string, ColumnAccess>
+    /** a granting role carries a rowFilter */
+    filtered: boolean
+  }
+  const NO_GRANT = (): Grant => ({ create: false, read: 'none', update: 'none', delete: 'none', columns: {}, filtered: false })
+
+  /** broadest privilege across the user's roles (RBAC), with the union CLS; admin = everything */
+  function grantFor(u: UserDef | undefined, def: TableDef): Grant {
+    if (!u) return NO_GRANT()
     const rs = rolesOf(u)
-    if (rs.some((r) => r.isAdmin)) return { create: true, read: 'all', update: 'all', delete: 'all' }
-    const out = { create: false, read: 'none' as AccessScope, update: 'none' as AccessScope, delete: 'none' as AccessScope }
+    if (rs.some((r) => r.isAdmin)) return { create: true, read: 'all', update: 'all', delete: 'all', columns: {}, filtered: false }
+    const out = NO_GRANT()
+    const readers: (TablePrivilege | undefined)[] = []
     for (const r of rs) {
       const p = r.privileges.find((x) => x.table === def.id)
       if (!p) continue
       if (p.create) out.create = true
       for (const op of ['read', 'update', 'delete'] as const) if (rank[p[op]] > rank[out[op]]) out[op] = p[op]
+      if (p.read !== 'none') {
+        readers.push(p)
+        if (p.rowFilter && p.rowFilter.length) out.filtered = true
+      }
+    }
+    if (readers.length) {
+      for (const col of def.columns) {
+        let best: ColumnAccess = 'none'
+        for (const p of readers) {
+          const a: ColumnAccess = p?.columns?.[col.name] ?? 'update'
+          if (colRank[a] > colRank[best]) best = a
+        }
+        if (best !== 'update') out.columns[col.name] = best
+      }
     }
     return out
   }
+  const privilege = (def: TableDef): Grant => grantFor(currentUser(), def)
+  const isAdminNow = () => {
+    const u = currentUser()
+    return !!u && rolesOf(u).some((r) => r.isAdmin)
+  }
 
-  const rowAllowed = (scope: AccessScope, row: Row | undefined) =>
-    scope === 'all' ? true : scope === 'own' ? (row ? row.owner === state.currentUserId : true) : false
+  /**
+   * Row-level check for the current user: OR over roles that grant `op` of
+   * (scope all ? true : owner == me) AND every rowFilter condition. A filter on a column the table no
+   * longer has makes that role grant nothing (server semantics).
+   */
+  function rowTester(def: TableDef, op: 'read' | 'update' | 'delete'): (row: Row) => boolean {
+    const u = currentUser()
+    if (!u) return () => false
+    const rs = rolesOf(u)
+    if (rs.some((r) => r.isAdmin)) return () => true
+    const me = { id: u.id, email: u.email }
+    const colNames = new Set(def.columns.map((c) => c.name))
+    const grants: { scope: AccessScope; filter: NonNullable<TablePrivilege['rowFilter']> }[] = []
+    for (const r of rs) {
+      const p = r.privileges.find((x) => x.table === def.id)
+      if (!p || p[op] === 'none') continue
+      const filter = p.rowFilter ?? []
+      if (filter.some((c) => !colNames.has(c.column))) continue
+      grants.push({ scope: p[op], filter })
+    }
+    return (row) =>
+      grants.some((g) => (g.scope === 'all' || row.owner === me.id) && g.filter.every((c) => matchesCondition(c, row, me)))
+  }
 
   function can(tableName: string, op: DataOp, row?: Row): boolean {
     const t = findTable(tableName)
     if (!t) return false
     const p = privilege(t.def)
-    return op === 'create' ? p.create : rowAllowed(p[op], row)
+    if (op === 'create') return p.create
+    if (p[op] === 'none') return false
+    if (!row) return true
+    return rowTester(t.def, op)(row)
   }
 
   const deny = (op: DataOp, t: TableRt): never =>
     fail('denied', `${currentUser()?.name ?? 'This user'} is not allowed to ${op} rows in "${t.def.displayName}".`)
+
+  const hiddenColumns = (g: Grant): string[] => Object.keys(g.columns).filter((k) => g.columns[k] === 'none')
+  function stripColumns(row: Row, hidden: string[]): Row {
+    if (!hidden.length) return row
+    const out: Row = { ...row }
+    for (const h of hidden) delete out[h]
+    return out
+  }
+  /** a column the current user may not write (CLS read/none) -> denied */
+  function assertWritable(rt: TableRt, g: Grant, keys: Iterable<string>) {
+    for (const k of keys) {
+      const col = rt.def.columns.find((c) => c.name === k)
+      if (!col || col.system || col.type === 'autonumber') continue
+      const a = g.columns[k] ?? 'update'
+      if (a !== 'update') fail('denied', `${col.displayName} is ${a === 'read' ? 'read-only' : 'not available'} for ${currentUser()?.name ?? 'this user'}.`)
+    }
+  }
+  const writtenKeys = (def: TableDef, values: FxRecord): string[] => {
+    const out: string[] = []
+    for (const k of Object.keys(values)) {
+      if (k === '__id') continue
+      const c = findColumn(def, k)
+      if (c) out.push(c.name)
+    }
+    return out
+  }
+
+  /** the TableDef as the current user sees it: CLS 'none' columns removed (admins see everything) */
+  function visibleDef(def: TableDef): TableDef {
+    const hidden = hiddenColumns(privilege(def))
+    if (!hidden.length) return def
+    const columns = def.columns.filter((c) => !hidden.includes(c.name))
+    const primaryColumn = columns.some((c) => c.name === def.primaryColumn) ? def.primaryColumn : (columns.find((c) => !c.system)?.name ?? 'id')
+    return { ...def, columns, primaryColumn }
+  }
+  function visibleTables(): TableDef[] {
+    return sortTables([...tablesRt.values()].map((t) => visibleDef(t.def)))
+  }
+
+  function computeSession(): Session | null {
+    const user = currentUser()
+    if (!user) return null
+    const rs = rolesOf(user)
+    const isAdmin = rs.some((r) => r.isAdmin)
+    const tables: EffectivePrivileges['tables'] = {}
+    for (const rt of tablesRt.values()) {
+      const g = grantFor(user, rt.def)
+      tables[rt.def.id] = { create: g.create, read: g.read, update: g.update, delete: g.delete, columns: g.columns, filtered: g.filtered }
+    }
+    const allTables = [...tablesRt.values()]
+    const fullEverywhere = allTables.length > 0 && allTables.every((rt) => {
+      const g = tables[rt.def.id]
+      return g.create && g.read === 'all' && g.update === 'all' && g.delete === 'all'
+    })
+    const apps: EffectivePrivileges['apps'] = isAdmin || rs.some((r) => r.apps === 'all') ? 'all' : [...new Set(rs.flatMap((r) => (Array.isArray(r.apps) ? r.apps : [])))]
+    const privileges: EffectivePrivileges = {
+      isAdmin, isMaker: isAdmin || rs.some((r) => r.isMaker === true || r.name.toLowerCase() === 'maker') || fullEverywhere, tables, apps,
+    }
+    return { user, privileges, expiresOn: new Date(nowFn().getTime() + 365 * 86_400_000).toISOString() }
+  }
 
   /** after a role/user change there must still be a user with an admin role */
   function assertAdminRemains(users: UserDef[], roles: RoleDef[]) {
@@ -354,6 +495,11 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       if (type === 'choice') col.choices = Array.isArray(rc.choices) ? rc.choices.map(String) : []
       if (type === 'lookup' && typeof rc.lookupTable === 'string') col.lookupTable = rc.lookupTable
       if (type === 'autonumber') col.prefix = typeof rc.prefix === 'string' ? rc.prefix : ''
+      if (type === 'file' || type === 'image') {
+        if (rc.multiple === true) col.multiple = true
+        if (Array.isArray(rc.accept)) col.accept = rc.accept.map(String)
+        if (typeof rc.maxSizeMB === 'number') col.maxSizeMB = rc.maxSizeMB
+      }
       userCols.push(col)
     }
     const columns = [...SYSTEM_COLUMNS.map((c) => ({ ...c })), ...userCols]
@@ -368,6 +514,10 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       modifiedOn: typeof raw.modifiedOn === 'string' ? raw.modifiedOn : now,
     }
     if (typeof raw.description === 'string' && raw.description) def.description = raw.description
+    if (typeof raw.connectionId === 'string' && raw.connectionId) def.connectionId = raw.connectionId
+    if (typeof raw.source === 'string' && raw.source) def.source = raw.source
+    if (raw.readOnly === true) def.readOnly = true
+    if (isObj(raw.origin) && raw.origin.kind === 'file' && typeof raw.origin.fileId === 'string') def.origin = raw.origin as unknown as NonNullable<TableDef['origin']>
     return def
   }
 
@@ -393,6 +543,11 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       col.lookupTable = target
     }
     if (type === 'autonumber') col.prefix = p.prefix ?? ''
+    if (type === 'file' || type === 'image') {
+      if (p.multiple) col.multiple = true
+      if (p.accept && p.accept.length) col.accept = [...p.accept]
+      if (p.maxSizeMB !== undefined) col.maxSizeMB = p.maxSizeMB
+    }
     if (col.default !== undefined && type !== 'lookup') {
       try {
         const d = defaultValue(col, nowFn())
@@ -532,7 +687,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
 
     const roles: RoleDef[] = [
       { id: 'role_admin', name: 'Administrator', description: 'Full access to everything.', isAdmin: true, privileges: [], apps: 'all' },
-      { id: 'role_maker', name: 'Maker', description: 'Builds apps and edits all data.', privileges: fullPrivileges(), apps: 'all' },
+      { id: 'role_maker', name: 'Maker', isMaker: true, description: 'Builds apps and edits all data.', privileges: fullPrivileges(), apps: 'all' },
       { id: 'role_viewer', name: 'Viewer', description: 'Can run apps and read all data.', privileges: readPrivileges(), apps: 'all' },
     ]
     const users: UserDef[] = [
@@ -648,6 +803,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       ...state, roles, users, currentUserId,
       connections: arr<ConnectionRef>(ws.connections),
       solutions: arr<SolutionDef>(ws.solutions),
+      dataFiles: arr<DataFileDef>(ws.dataFiles).map((f) => ({ ...f, tableIds: Array.isArray(f.tableIds) ? f.tableIds.map(String) : [] })),
       apps: sortApps(metas),
     }
     syncTables(false)
@@ -657,12 +813,23 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
   async function loadAll() {
     tablesRt.clear()
     appDefs.clear()
-    state = { ...state, apps: [], tables: [], roles: [], users: [], connections: [], solutions: [], currentUserId: '' }
+    state = { ...state, apps: [], tables: [], roles: [], users: [], connections: [], solutions: [], dataFiles: [], currentUserId: '' }
+    attachmentStore.clear()
     const wsText = await st().readText('workspace.yaml')
     const tableFiles = (await st().list('tables')).filter((f) => f.endsWith('.schema.yaml'))
     const appFiles = (await st().list('apps')).filter((f) => f.endsWith('.app.yaml'))
     if (wsText === null && tableFiles.length === 0 && appFiles.length === 0) await seed()
     else await loadExisting(wsText, tableFiles, appFiles)
+    try {
+      for (const f of (await st().list('attachments')).filter((x) => x.endsWith('.json'))) {
+        const text = await st().readText(`attachments/${f}`)
+        if (!text) continue
+        const a = JSON.parse(text) as AttachmentRef & { dataUrl: string }
+        if (a && typeof a.id === 'string' && typeof a.dataUrl === 'string') attachmentStore.set(a.id, a)
+      }
+    } catch (e) {
+      console.warn('[platform] attachments could not be loaded:', e)
+    }
   }
 
   function init(): Promise<void> {
@@ -841,6 +1008,46 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
 
   /* ------------------------------------------------------------------ the API */
 
+  /** create a table from CSV text (inferred columns). `extra` merges into the new TableDef (origin, connectionId). */
+  async function createTableFromCsv(displayName: string, csvText: string, extra: Partial<TableDef> = {}): Promise<TableDef> {
+    const name = displayName.trim()
+    if (!name) fail('invalid', 'A table needs a display name.')
+    const { headers, records } = parseCsvText(csvText)
+    const usable = headers.map((h, i) => ({ h, i })).filter((x) => x.h !== '')
+    if (usable.length === 0) fail('invalid', 'The CSV has no header row.')
+    const tname = uniqueIdentifier(toIdentifier(name, 'Table'), tableNames())
+    const cols: ColumnDef[] = []
+    const header2col = new Map<string, ColumnDef>()
+    for (const { h } of usable) {
+      if (header2col.has(h)) continue
+      const type = inferType(records.map((r) => r[h] ?? ''))
+      const col: ColumnDef = { name: uniqueIdentifier(toIdentifier(h, 'Column'), [...SYSTEM_COLUMNS, ...cols].map((c) => c.name)), displayName: h, type }
+      cols.push(col)
+      header2col.set(h, col)
+    }
+    const now = iso()
+    const first = cols.find((c) => c.type === 'text') ?? cols[0]
+    const def: TableDef = {
+      id: shortId('tbl'), name: tname, displayName: name, primaryColumn: first.name,
+      columns: [...SYSTEM_COLUMNS.map((c) => ({ ...c })), ...cols], createdOn: now, modifiedOn: now,
+    }
+    const rt: TableRt = { def, rows: [], counters: new Map() }
+    const rows: Row[] = []
+    const c = ctx()
+    records.forEach((rec, i) => {
+      const values: FxRecord = {}
+      for (const [h, col] of header2col) if ((rec[h] ?? '') !== '') values[col.name] = rec[h]
+      try {
+        rows.push(buildRow(def, rows, rt.counters, values, c, { checkLookups: false }))
+      } catch (e) {
+        if (e instanceof PlatformError) throw new PlatformError(e.code, `Row ${i + 2}: ${e.message}`)
+        throw e
+      }
+    })
+    Object.assign(def, extra)
+    return addTable(def, rows)
+  }
+
   async function updateTableDef(id: string, patch: Partial<Pick<TableDef, 'displayName' | 'description' | 'primaryColumn'>>): Promise<void> {
     const rt = needTable(id)
     const def = { ...rt.def }
@@ -865,13 +1072,19 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
   function updateRow(tableName: string, id: string, changes: FxRecord, opts?: { secure?: boolean }): Row {
     const rt = needTable(tableName)
     const existing = rt.rows.find((r) => r.id === id) ?? fail('not-found', `No row with id "${id}" in "${rt.def.displayName}".`)
-    if (opts?.secure !== false && !rowAllowed(privilege(rt.def).update, existing)) deny('update', rt)
+    const secure = opts?.secure !== false
+    const g = privilege(rt.def)
+    if (secure) {
+      if (g.update === 'none' || !rowTester(rt.def, 'update')(existing!)) deny('update', rt)
+      assertWritable(rt, g, writtenKeys(rt.def, changes))
+    }
     const next = applyChanges(rt.def, rt.rows, existing!, changes, ctx())
-    if (next === existing) return existing!
+    if (next === existing) return secure ? stripColumns(existing!, hiddenColumns(g)) : existing!
     rt.rows = rt.rows.map((r) => (r === existing ? next : r))
+    markFileModified(rt.def)
     setState({}, true)
     saveTableLater(rt.def.name)
-    return next
+    return secure ? stripColumns(next, hiddenColumns(g)) : next
   }
 
   /**
@@ -979,6 +1192,25 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
         else delete merged.lookupTable
       }
       if ('prefix' in p) merged.prefix = p.prefix ?? ''
+      for (const k of ['multiple'] as const) {
+        if (k in p) {
+          if (p[k]) merged[k] = true
+          else delete merged[k]
+        }
+      }
+      if ('accept' in p) {
+        if (p.accept && p.accept.length) merged.accept = [...p.accept]
+        else delete merged.accept
+      }
+      if ('maxSizeMB' in p) {
+        if (p.maxSizeMB !== undefined) merged.maxSizeMB = p.maxSizeMB
+        else delete merged.maxSizeMB
+      }
+      if (merged.type !== 'file' && merged.type !== 'image') {
+        delete merged.multiple
+        delete merged.accept
+        delete merged.maxSizeMB
+      }
       // drop fields that do not belong to the (possibly new) type
       if (merged.type !== 'choice') delete merged.choices
       else merged.choices ??= []
@@ -1034,27 +1266,36 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     },
 
     get(nameOrId) {
-      return findTable(nameOrId)?.def
+      const rt = findTable(nameOrId)
+      return rt ? visibleDef(rt.def) : undefined
     },
 
     rows(tableName, opts) {
       const rt = needTable(tableName)
       if (opts?.secure === false) return rt.rows.slice()
-      const scope = privilege(rt.def).read
-      if (scope === 'all') return rt.rows.slice()
-      if (scope === 'none') return []
-      const me = state.currentUserId
-      return rt.rows.filter((r) => r.owner === me)
+      const g = privilege(rt.def)
+      if (g.read === 'none') return []
+      const hidden = hiddenColumns(g)
+      const everything = isAdminNow() || (g.read === 'all' && !g.filtered)
+      let out = everything ? rt.rows.slice() : rt.rows.filter(rowTester(rt.def, 'read'))
+      if (hidden.length) out = out.map((r) => stripColumns(r, hidden))
+      return out
     },
 
     insert(tableName, values, opts) {
       const rt = needTable(tableName)
-      if (opts?.secure !== false && !privilege(rt.def).create) deny('create', rt)
+      const secure = opts?.secure !== false
+      const g = privilege(rt.def)
+      if (secure) {
+        if (!g.create) deny('create', rt)
+        assertWritable(rt, g, writtenKeys(rt.def, values))
+      }
       const row = buildRow(rt.def, rt.rows, rt.counters, values, ctx())
       rt.rows = [...rt.rows, row]
+      markFileModified(rt.def)
       setState({}, true)
       saveTableLater(rt.def.name)
-      return row
+      return secure ? stripColumns(row, hiddenColumns(g)) : row
     },
 
     delete(tableName, ids, opts) {
@@ -1063,10 +1304,11 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       const victims = rt.rows.filter((r) => kill.has(r.id as string))
       if (victims.length === 0) return
       if (opts?.secure !== false) {
-        const scope = privilege(rt.def).delete
-        if (victims.some((r) => !rowAllowed(scope, r))) deny('delete', rt)
+        const test = rowTester(rt.def, 'delete')
+        if (victims.some((r) => !test(r))) deny('delete', rt)
       }
       rt.rows = rt.rows.filter((r) => !kill.has(r.id as string))
+      markFileModified(rt.def)
       setState({}, true)
       saveTableLater(rt.def.name)
     },
@@ -1092,47 +1334,27 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       rt.rows = res.rows
       rt.counters = res.counters
       for (const col of rt.def.columns) if (col.type === 'autonumber') rt.counters.set(col.name, Math.max(rt.counters.get(col.name) ?? 0, autonumberMax(rt.def, col, rt.rows)))
+      markFileModified(rt.def)
       setState({}, true)
       await saveTable(rt.def.name)
       return res.added
     },
 
-    async createFromCsv(displayName, csvText) {
-      const name = displayName.trim()
-      if (!name) fail('invalid', 'A table needs a display name.')
-      const { headers, records } = parseCsvText(csvText)
-      const usable = headers.map((h, i) => ({ h, i })).filter((x) => x.h !== '')
-      if (usable.length === 0) fail('invalid', 'The CSV has no header row.')
-      const tname = uniqueIdentifier(toIdentifier(name, 'Table'), tableNames())
-      const cols: ColumnDef[] = []
-      const header2col = new Map<string, ColumnDef>()
-      for (const { h } of usable) {
-        if (header2col.has(h)) continue
-        const type = inferType(records.map((r) => r[h] ?? ''))
-        const col: ColumnDef = { name: uniqueIdentifier(toIdentifier(h, 'Column'), [...SYSTEM_COLUMNS, ...cols].map((c) => c.name)), displayName: h, type }
-        cols.push(col)
-        header2col.set(h, col)
-      }
-      const now = iso()
-      const first = cols.find((c) => c.type === 'text') ?? cols[0]
-      const def: TableDef = {
-        id: shortId('tbl'), name: tname, displayName: name, primaryColumn: first.name,
-        columns: [...SYSTEM_COLUMNS.map((c) => ({ ...c })), ...cols], createdOn: now, modifiedOn: now,
-      }
-      const rt: TableRt = { def, rows: [], counters: new Map() }
-      const rows: Row[] = []
-      const c = ctx()
-      records.forEach((rec, i) => {
-        const values: FxRecord = {}
-        for (const [h, col] of header2col) if ((rec[h] ?? '') !== '') values[col.name] = rec[h]
-        try {
-          rows.push(buildRow(def, rows, rt.counters, values, c, { checkLookups: false }))
-        } catch (e) {
-          if (e instanceof PlatformError) throw new PlatformError(e.code, `Row ${i + 2}: ${e.message}`)
-          throw e
-        }
-      })
-      return addTable(def, rows)
+    createFromCsv(displayName, csvText) {
+      return createTableFromCsv(displayName, csvText)
+    },
+
+    async ensureLoaded() {
+      /* demo mode holds every table in memory */
+    },
+    async listSourceTables() {
+      return []
+    },
+    async linkSourceTable() {
+      return fail('unavailable', NEEDS_SERVER)
+    },
+    async moveToConnection() {
+      return fail('unavailable', NEEDS_SERVER)
     },
 
     flush() {
@@ -1232,6 +1454,9 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       setState({ currentUserId: userId }, true) // row visibility depends on the user
       saveWorkspaceLater()
     },
+    async setPassword() {
+      return fail('unavailable', 'Passwords need the local server.')
+    },
     can,
     canRunApp(appId) {
       const u = currentUser()
@@ -1258,6 +1483,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       next.name = next.name.trim()
       if (state.roles.some((r) => r.id !== id && r.name.toLowerCase() === next.name.toLowerCase())) fail('conflict', `A role named "${next.name}" already exists.`)
       if (!next.isAdmin) delete next.isAdmin
+      if (!next.isMaker) delete next.isMaker
       const roles = state.roles.map((r) => (r.id === id ? next : r))
       assertAdminRemains(state.users, roles)
       setState({ roles }, true)
@@ -1344,6 +1570,13 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       setState({ connections: state.connections.map((c) => (c.id === id ? next : c)) })
       await saveWorkspace()
     },
+    async test(id) {
+      if (!state.connections.some((c) => c.id === id)) fail('not-found', `Connection "${id}" was not found.`)
+      return { ok: false, message: 'Available with the local server' }
+    },
+    async setDefault() {
+      return fail('unavailable', NEEDS_SERVER)
+    },
     async remove(id) {
       if (!state.connections.some((c) => c.id === id)) fail('not-found', `Connection "${id}" was not found.`)
       const solutions = state.solutions.map((s) =>
@@ -1358,6 +1591,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     kind === 'app' ? state.apps.some((a) => a.id === id)
       : kind === 'table' ? tablesRt.has(id)
         : kind === 'role' ? state.roles.some((r) => r.id === id)
+          : kind === 'file' ? state.dataFiles.some((f) => f.id === id)
           : state.connections.some((c) => c.id === id)
 
   const solutionsApi: PlatformApi['solutions'] = {
@@ -1505,6 +1739,233 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     },
   }
 
+  const authApi: PlatformApi['auth'] = {
+    async login() {
+      return state.session ?? fail('unavailable', 'Sign-in needs the local server.')
+    },
+    async logout() {
+      /* demo mode: the run-as user stays */
+    },
+    async changePassword() {
+      /* no passwords in demo mode */
+    },
+    async setupDatabase() {
+      return fail('unavailable', 'Sign-in needs the local server')
+    },
+    async setupAdmin() {
+      return fail('unavailable', 'Sign-in needs the local server')
+    },
+  }
+
+  /* ------------------------------------------------------------------ attachments (data URLs in storage) */
+
+  const DEFAULT_MAX_MB = 25
+  const mimeMatches = (mime: string, accept: string[]) =>
+    accept.length === 0 || accept.some((a) => (a.endsWith('/*') ? mime.startsWith(a.slice(0, -1)) : a.toLowerCase() === mime.toLowerCase()))
+
+  async function toDataUrl(file: Blob, mime: string): Promise<string> {
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    let bin = ''
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+    return `data:${mime};base64,${btoa(bin)}`
+  }
+  const refOf = (a: AttachmentRef & { dataUrl: string }): AttachmentRef => ({ id: a.id, fileName: a.fileName, mime: a.mime, sizeBytes: a.sizeBytes, url: a.dataUrl })
+
+  const attachmentsApi: PlatformApi['attachments'] = {
+    async upload(tableName, column, rowId, file) {
+      const rt = needTable(tableName)
+      const col = findColumn(rt.def, column)
+      if (!col || (col.type !== 'file' && col.type !== 'image')) fail('invalid', `"${column}" is not a file or image column.`)
+      const row = rt.rows.find((r) => r.id === rowId) ?? fail('not-found', `No row with id "${rowId}" in "${rt.def.displayName}".`)
+      const g = privilege(rt.def)
+      if (g.update === 'none' || !rowTester(rt.def, 'update')(row!)) deny('update', rt)
+      assertWritable(rt, g, [col!.name])
+      const mime = file.type || 'application/octet-stream'
+      const limitMB = col!.maxSizeMB ?? DEFAULT_MAX_MB
+      if (file.size > limitMB * 1024 * 1024) fail('invalid', `${file.name} is larger than ${limitMB} MB.`)
+      if (!mimeMatches(mime, col!.accept ?? [])) fail('invalid', `${file.name} (${mime}) is not an accepted file type for ${col!.displayName}.`)
+      const id = `att_${uuid().replace(/-/g, '')}`
+      const dataUrl = await toDataUrl(file, mime)
+      const rec = { id, fileName: file.name, mime, sizeBytes: file.size, url: dataUrl, dataUrl }
+      attachmentStore.set(id, rec)
+      await st().writeText(`attachments/${id}.json`, JSON.stringify({ ...rec, tableId: rt.def.id, column: col!.name, rowId }))
+      // link it to the cell (single: the id; multiple: appended to the JSON array of ids)
+      const cur = rt.rows.find((r) => r.id === rowId)?.[col!.name]
+      let value: string = id
+      if (col!.multiple) {
+        let ids: string[] = []
+        if (typeof cur === 'string' && cur) {
+          try {
+            const parsed: unknown = JSON.parse(cur)
+            ids = Array.isArray(parsed) ? parsed.map(String) : [cur]
+          } catch {
+            ids = [cur]
+          }
+        }
+        value = JSON.stringify([...ids, id])
+      }
+      rt.rows = rt.rows.map((r) => (r.id === rowId ? { ...r, [col!.name]: value } : r))
+      markFileModified(rt.def)
+      setState({}, true)
+      saveTableLater(rt.def.name)
+      return refOf(rec)
+    },
+    async resolve(ids) {
+      return ids.map((id) => attachmentStore.get(id)).filter((a): a is AttachmentRef & { dataUrl: string } => !!a).map(refOf)
+    },
+    url(id) {
+      return attachmentStore.get(id)?.dataUrl ?? ''
+    },
+    async remove(id) {
+      if (!attachmentStore.delete(id)) fail('not-found', 'Attachment not found.')
+      await st().remove(`attachments/${id}.json`)
+    },
+  }
+
+  /* ------------------------------------------------------------------ data files (parsed client-side) */
+
+  const FILES_CONNECTION = 'conn_files'
+  interface ParsedFileTable { name: string; csv: string }
+
+  function parseDataFile(name: string, text: string, kind: 'csv' | 'json', displayName?: string): ParsedFileTable[] {
+    const base = (displayName ?? name.replace(/\.[^.]+$/, '')).trim() || 'Data'
+    if (kind === 'csv') return [{ name: base, csv: text }]
+    let doc: unknown
+    try {
+      doc = JSON.parse(text)
+    } catch (e) {
+      return fail('invalid', `${name} is not valid JSON: ${(e as Error).message}`)
+    }
+    const flat = (arr: unknown[]) =>
+      Papa.unparse(arr.map((o) => {
+        if (!isObj(o)) return { value: o as unknown }
+        return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, v !== null && typeof v === 'object' ? JSON.stringify(v) : v]))
+      }) as object[], { newline: '\n' })
+    if (Array.isArray(doc)) return [{ name: base, csv: flat(doc) }]
+    if (isObj(doc)) {
+      const out = Object.entries(doc).filter(([, v]) => Array.isArray(v)).map(([k, v]) => ({ name: k, csv: flat(v as unknown[]) }))
+      if (out.length) return out
+    }
+    return fail('invalid', 'A JSON data file must hold an array of objects (or an object whose values are arrays).')
+  }
+
+  async function checksumOf(text: string): Promise<string> {
+    try {
+      const subtle = (globalThis as { crypto?: Crypto }).crypto?.subtle
+      if (subtle) {
+        const buf = await subtle.digest('SHA-256', new TextEncoder().encode(text))
+        return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
+      }
+    } catch { /* fall through */ }
+    let h = 2166136261
+    for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619)
+    return (h >>> 0).toString(16).padStart(8, '0')
+  }
+
+  async function readDataFile(file: File, displayName?: string): Promise<{ kind: 'csv' | 'json'; text: string; tables: ParsedFileTable[] }> {
+    const ext = /\.([A-Za-z0-9]+)$/.exec(file.name)?.[1]?.toLowerCase()
+    if (ext === 'xlsx' || ext === 'xls') return fail('unavailable', 'Excel files need the local server')
+    if (ext !== 'csv' && ext !== 'json') return fail('invalid', 'Only .csv, .xlsx and .json data files are supported.')
+    const text = await file.text()
+    return { kind: ext, text, tables: parseDataFile(file.name, text, ext, displayName) }
+  }
+
+  async function ensureFilesConnection() {
+    if (state.connections.some((c) => c.id === FILES_CONNECTION)) return
+    const conn: ConnectionRef = { id: FILES_CONNECTION, name: 'Data files', connector: 'files', status: 'connected', settings: {}, scope: 'device' }
+    setState({ connections: [...state.connections, conn] })
+    await saveWorkspace()
+  }
+
+  const filesApi: PlatformApi['files'] = {
+    async add(file, opts) {
+      const parsed = await readDataFile(file, opts?.displayName)
+      await ensureFilesConnection()
+      const fileId = shortId('file')
+      const importedOn = iso()
+      const tableIds: string[] = []
+      for (const t of parsed.tables) {
+        const def = await createTableFromCsv(t.name, t.csv, {
+          connectionId: FILES_CONNECTION,
+          origin: { kind: 'file', fileId, fileName: file.name, ...(parsed.tables.length > 1 ? { sheet: t.name } : {}), importedOn },
+        })
+        tableIds.push(def.id)
+      }
+      const def: DataFileDef = {
+        id: fileId, connectionId: FILES_CONNECTION, fileName: file.name, kind: parsed.kind, sizeBytes: file.size,
+        checksum: await checksumOf(parsed.text), importedOn, tableIds, modifiedSinceImport: false,
+      }
+      setState({ dataFiles: [...state.dataFiles, def] })
+      await saveWorkspace()
+      return def
+    },
+
+    async replace(fileId, file) {
+      const old = state.dataFiles.find((f) => f.id === fileId) ?? fail('not-found', 'Data file not found.')
+      const parsed = await readDataFile(file)
+      if (parsed.kind !== old!.kind) fail('invalid', `The replacement must be a .${old!.kind} file.`)
+      const importedOn = iso()
+      const tableIds: string[] = []
+      for (const t of parsed.tables) {
+        const existing = old!.tableIds
+          .map((id) => tablesRt.get(id))
+          .find((rt) => rt && (rt.def.origin?.sheet ?? rt.def.displayName) === t.name) ?? (parsed.tables.length === 1 ? old!.tableIds.map((id) => tablesRt.get(id)).find(Boolean) : undefined)
+        if (existing) {
+          const res = importRows(existing, t.csv, 'replace', { preserve: true, checkLookups: false })
+          existing.rows = res.rows
+          existing.counters = res.counters
+          existing.def = { ...existing.def, ...(existing.def.origin ? { origin: { ...existing.def.origin, fileName: file.name, importedOn } } : {}), modifiedOn: importedOn }
+          await saveTable(existing.def.name)
+          tableIds.push(existing.def.id)
+        } else {
+          const def = await createTableFromCsv(t.name, t.csv, {
+            connectionId: FILES_CONNECTION,
+            origin: { kind: 'file', fileId, fileName: file.name, ...(parsed.tables.length > 1 ? { sheet: t.name } : {}), importedOn },
+          })
+          tableIds.push(def.id)
+        }
+      }
+      const next: DataFileDef = { ...old!, fileName: file.name, sizeBytes: file.size, checksum: await checksumOf(parsed.text), importedOn, tableIds, modifiedSinceImport: false }
+      syncTables()
+      setState({ dataFiles: state.dataFiles.map((f) => (f.id === fileId ? next : f)) })
+      await saveWorkspace()
+      return next
+    },
+
+    async download(fileId) {
+      const f = state.dataFiles.find((x) => x.id === fileId) ?? fail('not-found', 'Data file not found.')
+      const rts = f!.tableIds.map((id) => tablesRt.get(id)).filter((t): t is TableRt => !!t)
+      if (f!.kind === 'csv') {
+        const rt = rts[0] ?? fail('not-found', 'The table of this file no longer exists.')
+        return new Blob([rowsToCsv(rt!.def.columns, rt!.rows)], { type: 'text/csv' })
+      }
+      const plain = (rt: TableRt) => rt.rows.map((r) => Object.fromEntries(rt.def.columns.filter((c) => !c.system).map((c) => [c.name, r[c.name] instanceof Date ? serializeValue(c, r[c.name]) : r[c.name]])))
+      const doc = rts.length === 1 && !rts[0].def.origin?.sheet ? plain(rts[0]) : Object.fromEntries(rts.map((rt) => [rt.def.origin?.sheet ?? rt.def.name, plain(rt)]))
+      return new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' })
+    },
+
+    async remove(fileId, opts) {
+      const f = state.dataFiles.find((x) => x.id === fileId) ?? fail('not-found', 'Data file not found.')
+      for (const id of f!.tableIds) {
+        const rt = tablesRt.get(id)
+        if (!rt) continue
+        if (opts?.dropTables) await tablesApi.remove(id)
+        else {
+          const { origin: _o, ...rest } = rt.def
+          void _o
+          rt.def = { ...rest }
+          syncTables()
+          await saveTable(rt.def.name)
+        }
+      }
+      const solutions = state.solutions.map((s2) =>
+        s2.components.some((c) => c.kind === 'file' && c.id === fileId) ? { ...s2, components: s2.components.filter((c) => !(c.kind === 'file' && c.id === fileId)), modifiedOn: iso() } : s2,
+      )
+      setState({ dataFiles: state.dataFiles.filter((x) => x.id !== fileId), solutions })
+      await saveWorkspace()
+    },
+  }
+
   return {
     init,
     getState: () => state,
@@ -1519,6 +1980,10 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     security: securityApi,
     connections: connectionsApi,
     solutions: solutionsApi,
+    auth: authApi,
+    attachments: attachmentsApi,
+    files: filesApi,
+    onDataError: () => () => {},
   }
 }
 

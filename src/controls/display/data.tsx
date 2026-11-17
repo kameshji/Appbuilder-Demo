@@ -6,6 +6,8 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { isRecord, recordText, toBool, toNum, toRecords, toText } from '../util'
+import { AttachmentCell } from '@/runtime/AttachmentCell'
+import { attachmentIds, imageSource } from '@/runtime/attachments'
 import { AvatarCircle } from './basics'
 import { DynIcon, fieldText, formatDate, formatNumber, isIsoDateString, pick, prettify, selModeOf } from './helpers'
 
@@ -296,14 +298,17 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
                     )}
                     {cols.map((c) => {
                       const v = pick(rec, c.field)
+                      const attIds = c.kind === 'text' ? attachmentIds(v) : []
                       return (
                         <td
                           key={c.field}
-                          title={c.kind === 'boolean' ? undefined : cellText(v, c.kind)}
+                          title={c.kind === 'boolean' || attIds.length ? undefined : cellText(v, c.kind)}
                           className={cn('max-w-xs overflow-hidden text-ellipsis whitespace-nowrap border-b', pad, c.kind === 'number' && 'text-right tabular-nums')}
                         >
                           {c.kind === 'boolean' && typeof v === 'boolean' ? (
                             v ? <Check className="size-4 text-primary" aria-label="Yes" /> : <span className="text-muted-foreground/50" aria-label="No">–</span>
+                          ) : attIds.length > 0 ? (
+                            <AttachmentCell value={v} thumb={dense ? 20 : 28} />
                           ) : (
                             cellText(v, c.kind)
                           )}
@@ -402,7 +407,7 @@ function ListRender({ props, mode, outputs, setOutput, fire }: ControlRenderProp
         const title = fieldText(rec, titleF)
         const sub = subF ? fieldText(rec, subF) : ''
         const trail = trailF ? fieldText(rec, trailF) : ''
-        const img = imgF ? fieldText(rec, imgF) : ''
+        const img = imgF ? imageSource(fieldText(rec, imgF)) : ''
         const icon = iconF ? pick(rec, iconF) : undefined
         const active = selectable && selIdx === i + 1
         return (

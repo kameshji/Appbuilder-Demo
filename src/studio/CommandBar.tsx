@@ -1,6 +1,7 @@
 import { ArrowLeft, Check, CloudOff, EllipsisVertical, ExternalLink, FilePlus2, Loader2, Moon, Play, Plus, Redo2, Settings, Shapes, Sun, Undo2, Upload, Download } from 'lucide-react'
 import { controls } from '@/controls'
 import { go } from '@/router'
+import { UserMenu } from '@/portal'
 import { useStore } from '@/runtime/store'
 import { useUi } from '@/runtime/ui'
 import { openRunWindow } from '@/runtime/session'
@@ -99,6 +100,7 @@ export function CommandBar() {
       </Button>
 
       <div className="ml-auto flex items-center gap-1.5">
+        <UserMenu />
         <Button variant="ghost" size="icon-sm" title="Toggle Studio theme" data-testid="theme-toggle" onClick={() => useUi.getState().toggleTheme()}>
           {theme === 'dark' ? <Sun /> : <Moon />}
         </Button>

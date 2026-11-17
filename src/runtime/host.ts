@@ -2,7 +2,9 @@ import type { AppDef, ControlNode, FxHost, FxRecord, FxValue } from '@/contracts
 import { fx } from '@/fx'
 import { Evaluator, ROOT_CTX, enumName, type Env, type NodeCtx, type RuntimeView } from './evaluator'
 import { uid, isRecord } from './util'
-import { errorMessage, isTable, rowId, tableRows, tables } from './data'
+import { currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableRows, tables } from './data'
+import { pendingFilesOf } from './attachments'
+import { finishSubmit } from './submit'
 
 export type ToastKind = 'info' | 'success' | 'warning' | 'error'
 export interface Toast { id: string; message: string; kind: ToastKind }
@@ -26,6 +28,21 @@ export interface RunInput {
 
 export interface FollowUp { nodeId: string; event: string; ctx: NodeCtx }
 
+/**
+ * A Form submit whose verdict is not known yet (server mode, or files to upload). The store awaits `work`
+ * and then writes LastSubmit / Error and fires OnSuccess or OnFailure.
+ */
+export interface DeferredSubmit {
+  /** output key of the form (see Evaluator.outKey) */
+  key: string
+  nodeId: string
+  ctx: NodeCtx
+  name: string
+  label: string
+  /** resolves with the stored row; rejects with a SubmitError */
+  work: () => Promise<FxRecord>
+}
+
 export interface RunResult {
   vars: Record<string, FxValue>
   context: Record<string, Record<string, FxValue>>
@@ -38,6 +55,7 @@ export interface RunResult {
   /** outKey -> output values to merge */
   outputs: Record<string, Record<string, FxValue>>
   followUps: FollowUp[]
+  deferred: DeferredSubmit[]
   traces: TraceEntry[]
   exit: boolean
   /** an action failed (formula error or a refused data operation) */
@@ -110,6 +128,7 @@ export function runFormula(input: RunInput): RunResult {
     formModes: view.formModes,
     outputs: {},
     followUps: [],
+    deferred: [],
     traces: [],
     exit: false,
     failed: null,
@@ -161,6 +180,7 @@ export function runFormula(input: RunInput): RunResult {
     const ds = asText(p('DataSource')).trim()
     const mode = formMode(f, fctx)
     const onFailure = () => res.followUps.push({ nodeId: f.id, event: 'OnFailure', ctx: fctx })
+    if (counter(outs.__busy) > 0) return // a previous submit is still waiting for the server
     if (mode === 'view') {
       setOut(f, fctx, { Error: 'The form is in View mode' })
       onFailure()
@@ -174,6 +194,7 @@ export function runFormula(input: RunInput): RunResult {
     const updates = isRecord(outs.Updates) ? outs.Updates : {}
     try {
       let stored: FxRecord
+      let deferTable = false
       if (!ds) throw new Error('The form has no DataSource')
       const item = p('Item')
       const id = mode === 'new' ? null : rowId(isRecord(item) ? item : null)
@@ -181,6 +202,7 @@ export function runFormula(input: RunInput): RunResult {
       else if (isTableTarget(ds)) {
         stored = id ? tables.update(ds, id, updates) : tables.insert(ds, updates)
         fresh()
+        deferTable = true
       } else if (Object.prototype.hasOwnProperty.call(view.collections, ds)) {
         const list = view.collections[ds].slice()
         const i = id ? list.findIndex((r) => r.__id === id) : -1
@@ -190,6 +212,25 @@ export function runFormula(input: RunInput): RunResult {
         view.collections[ds] = list
         inv('k:' + ds)
       } else throw new Error(`"${ds}" is not a table`)
+      const files = deferTable ? pendingFilesOf(outs.__files) : []
+      const storedId = rowId(stored)
+      if (deferTable && storedId && (files.length > 0 || platformMode() === 'server')) {
+        // wait for the server's verdict, then upload the pending files; the store finishes the submit
+        const table = ds
+        setOut(f, fctx, { Error: '', __busy: 1 })
+        res.deferred.push({
+          key: evr.outKey(f, fctx),
+          nodeId: f.id,
+          ctx: fctx,
+          name: f.name,
+          label,
+          work: async () => {
+            await finishSubmit(submitDeps, { table, rowId: storedId, files })
+            return currentRow(table, storedId) ?? stored
+          },
+        })
+        return
+      }
       setOut(f, fctx, { LastSubmit: stored, Error: '', Unsaved: false, __saved: counter(outs.__saved) + 1 })
       res.followUps.push({ nodeId: f.id, event: 'OnSuccess', ctx: fctx })
     } catch (e) {

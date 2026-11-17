@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import { FileUp, Plus, Table2, X } from 'lucide-react'
-import { platform, usePlatform, type ColumnDef, type ColumnType } from '@/platform'
+import { FileUp, HardDrive, Lock, Plus, Table2, X } from 'lucide-react'
+import { platform, usePlatform, type ColumnDef, type ColumnType, type TableDef } from '@/platform'
 import { go } from '@/router'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Spinner } from '@/components/ui/spinner'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Empty, Field, Panel, PageHeader, fmtDate, useToast } from './kit'
 import { TYPE_GROUPS, TYPE_INFO } from './columnTypes'
 import { matches, useSearch } from './Shell'
+import { TABLE_HOSTS, connectorInfo } from './ConnectionBits'
 
 export function TypeSelect({ value, onChange, disabled, id, className }: { value: ColumnType; onChange(t: ColumnType): void; disabled?: boolean; id?: string; className?: string }) {
   return (
@@ -41,12 +44,21 @@ function NewTableDialog({ open, onOpenChange }: { open: boolean; onOpenChange(o:
   const [desc, setDesc] = useState('')
   const [cols, setCols] = useState<DraftCol[]>([{ displayName: 'Name', type: 'text' }])
   const [busy, setBusy] = useState(false)
-  useEffect(() => { if (open) { setName(''); setDesc(''); setCols([{ displayName: 'Name', type: 'text' }]) } }, [open])
+  const connections = usePlatform((s) => s.connections)
+  const mode = usePlatform((s) => s.mode)
+  const hosts = connections.filter((c) => TABLE_HOSTS.includes(c.connector) && c.status !== 'not-configured')
+  const defaultConn = hosts.find((c) => c.isDefault) ?? hosts[0]
+  const [connId, setConnId] = useState('')
+  useEffect(() => { if (open) { setName(''); setDesc(''); setCols([{ displayName: 'Name', type: 'text' }]); setConnId(defaultConn?.id ?? '') } }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+  const chosen = hosts.find((c) => c.id === connId)
   const create = async () => {
     setBusy(true)
     try {
       const columns: Partial<ColumnDef>[] = cols.filter((c) => c.displayName.trim()).map((c) => ({ displayName: c.displayName.trim(), type: c.type }))
-      const t = await platform.tables.create({ displayName: name.trim(), description: desc.trim() || undefined, columns })
+      // connectionId travels to POST /tables; the shared contract's create() input does not list it yet
+      const input = { displayName: name.trim(), description: desc.trim() || undefined, columns, ...(mode === 'server' && chosen ? { connectionId: chosen.id } : {}) }
+      let t = await platform.tables.create(input)
+      if (mode === 'server' && chosen && t.connectionId && t.connectionId !== chosen.id) t = await platform.tables.moveToConnection(t.id, chosen.id)
       toast(`Created table "${t.displayName}"`, 'success')
       onOpenChange(false)
       go({ page: 'table', id: t.id })
@@ -70,6 +82,19 @@ function NewTableDialog({ open, onOpenChange }: { open: boolean; onOpenChange(o:
           <Field label="Description (optional)">
             <Input value={desc} onChange={(e) => setDesc(e.target.value)} />
           </Field>
+          {mode === 'server' && hosts.length > 0 && (
+            <Field label="Store in" hint={chosen?.scope === 'device' ? 'Device only: this table stays on this machine.' : chosen?.connector === 'gsheets' ? 'A new tab is added to the spreadsheet.' : 'The default connection holds new tables unless you pick another.'}>
+              <Select value={connId} onValueChange={setConnId}>
+                <SelectTrigger className="w-full" size="sm" data-testid="new-table-connection"><SelectValue placeholder="Choose a connection" /></SelectTrigger>
+                <SelectContent>
+                  {hosts.map((c) => {
+                    const I = connectorInfo(c.connector).icon
+                    return <SelectItem key={c.id} value={c.id}><span className="flex items-center gap-2"><I className="size-3.5 text-muted-foreground" />{c.name}{c.isDefault ? ' (default)' : ''}</span></SelectItem>
+                  })}
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
           <div className="grid gap-1.5">
             <div className="text-xs font-medium">First columns (optional)</div>
             <div className="grid max-h-52 gap-1.5 overflow-auto pr-1">
@@ -145,9 +170,32 @@ function CsvNewTableDialog({ open, onOpenChange }: { open: boolean; onOpenChange
   )
 }
 
+function ConnectionCell({ t }: { t: TableDef }) {
+  const conn = usePlatform((s) => s.connections.find((c) => c.id === (t.connectionId ?? 'conn_default')) ?? s.connections.find((c) => c.isDefault && !t.connectionId))
+  const m = conn ? connectorInfo(conn.connector) : null
+  return (
+    <div className="flex flex-wrap items-center gap-1.5" data-testid={`table-connection-${t.id}`}>
+      {m && <span className="flex items-center gap-1.5 text-muted-foreground"><m.icon className="size-3.5" />{conn?.name}</span>}
+      {!m && <span className="text-muted-foreground">{t.connectionId ?? 'Browser storage'}</span>}
+      {conn?.scope === 'device' && <Badge variant="outline"><HardDrive /> Device only</Badge>}
+      {t.origin?.kind === 'file' && <Badge variant="secondary" title={`From file ${t.origin.fileName}`}>File</Badge>}
+      {t.readOnly && <Badge variant="outline"><Lock /> Read-only</Badge>}
+    </div>
+  )
+}
+
+function RowCount({ t }: { t: TableDef }) {
+  const loading = usePlatform((s) => s.loading.includes(t.name))
+  const truncated = usePlatform((s) => s.truncated.includes(t.name))
+  const n = platform.tables.rows(t.name, { secure: false }).length
+  if (loading && n === 0) return <Spinner className="ml-auto size-3.5" aria-label="Loading rows" />
+  return <>{n}{truncated ? '+' : ''}</>
+}
+
 export function Tables() {
   const tables = usePlatform((s) => s.tables)
   usePlatform((s) => s.dataVersion)
+  const mode = usePlatform((s) => s.mode)
   const q = useSearch()
   const [dlg, setDlg] = useState<'new' | 'csv' | null>(null)
   const close = (o: boolean) => { if (!o) setDlg(null) }
@@ -158,7 +206,7 @@ export function Tables() {
       <PageHeader
         icon={Table2}
         title="Tables"
-        subtitle="Your data. Each table is stored as a CSV file plus a schema."
+        subtitle={mode === 'server' ? 'Your data. Tables live in a connection: the default database, a linked sheet or a data file.' : 'Your data. Each table is stored in this browser.'}
         actions={
           <>
             <Button variant="outline" size="sm" onClick={() => setDlg('csv')} data-testid="import-csv-table-button"><FileUp /> Import CSV</Button>
@@ -176,6 +224,7 @@ export function Tables() {
             <thead>
               <tr className="border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground">
                 <th className="px-4 py-2.5">Name</th>
+                <th className="px-4 py-2.5">Connection</th>
                 <th className="px-4 py-2.5">Formula name</th>
                 <th className="px-4 py-2.5 text-right">Columns</th>
                 <th className="px-4 py-2.5 text-right">Rows</th>
@@ -201,9 +250,10 @@ export function Tables() {
                       </div>
                     </div>
                   </td>
+                  <td className="px-4 py-2.5 text-xs"><ConnectionCell t={t} /></td>
                   <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{t.name}</td>
                   <td className="px-4 py-2.5 text-right tabular-nums">{t.columns.filter((c) => !c.system).length}</td>
-                  <td className="px-4 py-2.5 text-right tabular-nums">{platform.tables.rows(t.name, { secure: false }).length}</td>
+                  <td className="px-4 py-2.5 text-right tabular-nums"><RowCount t={t} /></td>
                   <td className="px-4 py-2.5 text-muted-foreground">{fmtDate(t.modifiedOn)}</td>
                 </tr>
               ))}

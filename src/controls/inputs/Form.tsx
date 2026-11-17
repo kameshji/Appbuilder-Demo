@@ -8,17 +8,21 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { AttachmentCell } from '@/runtime/AttachmentCell'
+import { attachmentIds, registerFiles } from '@/runtime/attachments'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { isRecord, toBool, toNum, toText } from '../util'
 import { Shell, formatDate, startOfDay, useDefaultApply, useFocusToken } from './shared'
 import { DatePopover } from './DatePopover'
+import { AttachmentField } from './AttachmentField'
 import {
   type FieldVal,
   type FormModeName,
   type FormValues,
   type LookupOption,
   initialValues,
+  isFileType,
   itemKey,
   parseFormMode,
   serializeValues,
@@ -53,6 +57,19 @@ function useWorkspaceVersion(): number {
 }
 
 const NONE = '__none__'
+
+const pendingSig = (p: Record<string, File[]>) =>
+  Object.keys(p)
+    .sort()
+    .map((k) => k + ':' + p[k].map((f) => `${f.name}/${f.size}/${f.lastModified}`).join(','))
+    .join(';')
+
+/** the file/image cells of a value set (attachment ids as text) */
+function fileCells(cols: ColumnDef[], v: FormValues): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const c of cols) if (isFileType(c.type)) out[c.name] = typeof v[c.name] === 'string' ? (v[c.name] as string) : ''
+  return out
+}
 
 /* ------------------------------------------------------------------ field editors */
 
@@ -240,10 +257,16 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
   const [baseline, setBaseline] = useState(() => serializeValues(values))
   const [touched, setTouched] = useState<Record<string, boolean>>({})
   const [allTouched, setAllTouched] = useState(false)
+  /** files chosen for file/image columns, uploaded after the row is saved (originals stay in the registry) */
+  const [pending, setPending] = useState<Record<string, File[]>>({})
+  /** the file cells as last loaded / saved: Updates only carries a file column that differs from it */
+  const [fileBase, setFileBase] = useState<Record<string, string>>(() => fileCells(cols, values))
   if (loaded !== loadKey) {
     const v = initialValues(cols, formMode, item)
     setLoaded(loadKey)
     setValues(v)
+    setPending({})
+    setFileBase(fileCells(cols, v))
     setBaseline(serializeValues(v))
     setTouched({})
     setAllTouched(false)
@@ -261,43 +284,94 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
   const [seenSaved, setSeenSaved] = useState(savedToken)
   if (seenSaved !== savedToken) {
     setSeenSaved(savedToken)
-    setBaseline(serializeValues(values))
+    // uploads changed the file cells: take them from the stored row, then the pending files are done
+    const last = isRecord(outputs.LastSubmit) ? outputs.LastSubmit : null
+    let nextValues = values
+    if (last) {
+      nextValues = { ...values }
+      for (const c of cols) if (isFileType(c.type) && last[c.name] !== undefined) nextValues[c.name] = toText(last[c.name])
+      setValues(nextValues)
+    }
+    setPending({})
+    setFileBase(fileCells(cols, nextValues))
+    setBaseline(serializeValues(nextValues))
   }
 
   /* ---- validation + outputs ---- */
   const errors: Record<string, string> = {}
   if (formMode !== 'View') {
     for (const c of cols) {
+      if (isFileType(c.type)) {
+        const has = attachmentIds(values[c.name]).length > 0 || (pending[c.name]?.length ?? 0) > 0
+        if (c.required && !has) errors[c.name] = `${c.displayName || c.name} is required`
+        continue
+      }
       const m = validateField(c, values[c.name], lookups)
       if (m) errors[c.name] = m
     }
   }
   const errorCount = Object.keys(errors).length
   const valid = errorCount === 0
-  const unsaved = serializeValues(values) !== baseline
+  const pSig = pendingSig(pending)
+  const unsaved = serializeValues(values) !== baseline || pSig !== ''
 
   const updates = useMemo(() => {
     const rec: FxRecord = {}
-    for (const c of cols) if (c.type !== 'autonumber') rec[c.name] = toFxValue(c, values[c.name])
+    for (const c of cols) {
+      if (c.type === 'autonumber') continue
+      if (isFileType(c.type)) {
+        // new files are uploaded after the row exists (see __files); only removed attachments are written here
+        if (formMode === 'New') continue
+        const cell = typeof values[c.name] === 'string' ? (values[c.name] as string) : ''
+        const replacing = !c.multiple && (pending[c.name]?.length ?? 0) > 0 && attachmentIds(cell).length > 0
+        if (replacing) rec[c.name] = null
+        else if (cell !== (fileBase[c.name] ?? '')) rec[c.name] = cell === '' ? null : cell
+        continue
+      }
+      rec[c.name] = toFxValue(c, values[c.name])
+    }
     return rec
-  }, [cols, values])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cols, values, pSig, fileBase, formMode])
+
+  /* hidden __files output: { column: token } of the File objects to upload after save */
+  const tokens = useRef<Record<string, string>>({})
+  useEffect(() => {
+    if (design) return
+    const next: Record<string, string> = {}
+    for (const c of cols) {
+      if (!isFileType(c.type)) continue
+      const t = registerFiles(pending[c.name] ?? [], tokens.current[c.name])
+      if (t) next[c.name] = t
+    }
+    tokens.current = next
+    setOutput('__files', next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [design, pSig, colsKey])
+  useEffect(
+    () => () => {
+      for (const t of Object.values(tokens.current)) registerFiles([], t)
+    },
+    [],
+  )
 
   const lastOut = useRef('')
   useEffect(() => {
     if (design) return
-    const sig = serializeValues(values) + '|' + valid + '|' + unsaved + '|' + colsKey
+    const sig = serializeValues(values) + '|' + valid + '|' + unsaved + '|' + colsKey + '|' + pSig + '|' + serializeValues(fileBase as FormValues)
     if (sig === lastOut.current) return
     lastOut.current = sig
     setOutput('Updates', updates)
     setOutput('Valid', valid)
     setOutput('Unsaved', unsaved)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [design, values, valid, unsaved, colsKey, updates])
+  }, [design, values, valid, unsaved, colsKey, updates, pSig, fileBase])
 
   /* ---- render ---- */
   const columnsN = Math.min(6, Math.max(1, Math.round(toNum(props.Columns, 2))))
   const showButtons = toBool(props.ShowButtons, true) && formMode !== 'View'
   const lastError = outputs.Error == null ? '' : toText(outputs.Error)
+  const busy = toNum(outputs.__busy, 0) > 0
   const editable = !design
 
   const setField = (name: string, v: FieldVal) => {
@@ -306,7 +380,7 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
   }
 
   const save = () => {
-    if (!editable) return
+    if (!editable || busy) return
     setAllTouched(true)
     if (!valid) {
       const first = cols.find((c) => errors[c.name])
@@ -343,8 +417,23 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
               </Label>
               {formMode === 'View' ? (
                 <div className="min-h-9 whitespace-pre-wrap rounded-md bg-muted/50 px-3 py-2 text-sm">
-                  {displayValue(c, values[c.name], lookups[c.name] ?? []) || <span className="text-muted-foreground">-</span>}
+                  {isFileType(c.type) && attachmentIds(values[c.name]).length > 0 ? (
+                    <AttachmentCell value={values[c.name]} thumb={40} max={6} />
+                  ) : (
+                    displayValue(c, values[c.name], lookups[c.name] ?? []) || <span className="text-muted-foreground">-</span>
+                  )}
                 </div>
+              ) : isFileType(c.type) ? (
+                <AttachmentField
+                  col={c}
+                  id={id}
+                  existing={typeof values[c.name] === 'string' ? (values[c.name] as string) : ''}
+                  pending={pending[c.name] ?? []}
+                  invalid={Boolean(showMsg)}
+                  onExistingChange={(cell) => setField(c.name, cell)}
+                  onPendingChange={(files) => editable && setPending((p) => ({ ...p, [c.name]: files }))}
+                  onTouch={() => editable && setTouched((t) => (t[c.name] ? t : { ...t, [c.name]: true }))}
+                />
               ) : (
                 <FieldEditor
                   col={c}
@@ -384,8 +473,8 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
             <Button type="button" variant="outline" size="sm" onClick={() => editable && fire('OnCancel')}>
               {toText(props.CancelText) || 'Cancel'}
             </Button>
-            <Button type="button" size="sm" onClick={save}>
-              {toText(props.SubmitText) || 'Save'}
+            <Button type="button" size="sm" onClick={save} disabled={busy} data-testid="form-save">
+              {busy ? 'Saving...' : toText(props.SubmitText) || 'Save'}
             </Button>
           </div>
         )}
@@ -405,6 +494,9 @@ const FORM_OUTPUTS: { name: string; initial: FxValue }[] = [
   { name: '__reset', initial: 0 },
   { name: '__touch', initial: 0 },
   { name: '__saved', initial: 0 },
+  // 1 while a submit waits for the server / file uploads; { column: token } of files to upload after save
+  { name: '__busy', initial: 0 },
+  { name: '__files', initial: {} },
 ]
 
 export const Form: ControlType = {

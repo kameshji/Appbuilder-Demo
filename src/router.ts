@@ -1,16 +1,16 @@
 /**
  * Tiny hash router. Routes are plain ASCII names with hyphens (safe for sandboxed hosts):
- *   #home  #apps  #tables  #table-<tableId>  #roles  #solutions  #solution-<id>  #connections
+ *   #home  #apps  #tables  #datafiles  #table-<tableId>  #roles  #solutions  #solution-<id>  #connections
  *   #studio-<appId>   the editor
  *   #run-<appId>      the running app (debug window / player)
  */
 import { useSyncExternalStore } from 'react'
 
 export type Route =
-  | { page: 'home' | 'apps' | 'tables' | 'roles' | 'solutions' | 'connections' }
+  | { page: 'home' | 'apps' | 'tables' | 'roles' | 'solutions' | 'connections' | 'datafiles' }
   | { page: 'table' | 'solution' | 'studio' | 'run'; id: string }
 
-const SIMPLE = ['home', 'apps', 'tables', 'roles', 'solutions', 'connections'] as const
+const SIMPLE = ['home', 'apps', 'tables', 'roles', 'solutions', 'connections', 'datafiles'] as const
 const WITH_ID = ['table', 'solution', 'studio', 'run'] as const
 
 export function parseRoute(hash: string): Route {

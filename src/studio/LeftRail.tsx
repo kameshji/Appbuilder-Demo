@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react'
 import {
-  ArrowDownToLine, ArrowUpToLine, Bug, ChevronRight, Clock, Copy, Database, Eye, EyeOff, Layers, Lock, Pencil, Plus, Search, Table2, Trash2, Unlock, Variable, X,
+  ArrowDownToLine, ArrowUpToLine, Bug, ChevronRight, Clock, Copy, Database, Eye, EyeOff, FileSpreadsheet, Layers, Lock, Pencil, Plug, Plus, Search, Sheet, Table2, Trash2, Unlock, Variable, X,
 } from 'lucide-react'
 import type { ControlNode, FxRecord, FxValue } from '@/contracts'
 import { controls } from '@/controls'
 import { go } from '@/router'
-import { usePlatform } from '@/platform'
+import { usePlatform, type ConnectionRef, type TableDef } from '@/platform'
 import { evaluatorOf, recentControls, useStore } from '@/runtime/store'
 import { useUi, type Pane } from '@/runtime/ui'
 import { isContainerType, isOverlayType } from '@/runtime/evaluator'
@@ -479,7 +479,47 @@ function RowsPreview({ rows }: { rows: FxRecord[] }) {
   )
 }
 
+function ConnIcon({ kind, className }: { kind: ConnectionRef['connector'] | undefined; className?: string }) {
+  if (kind === 'files' || kind === 'local-csv' || kind === 'excel') return <FileSpreadsheet className={className} />
+  if (kind === 'gsheets') return <Sheet className={className} />
+  if (kind === 'mysql' || kind === 'postgres' || kind === 'sqlserver' || kind === 'php-gateway') return <Database className={className} />
+  return <Plug className={className} />
+}
+
+const isDeviceOnly = (c: ConnectionRef | undefined) => !!c && (c.scope === 'device' || c.connector === 'files')
+
+function ConnHeader({ conn }: { conn: ConnectionRef | undefined }) {
+  return (
+    <div className="flex items-center gap-1.5 px-1 pb-0.5 pt-1.5 text-[10.5px] font-semibold text-muted-foreground" data-testid="conn-group">
+      <ConnIcon kind={conn?.connector} className="size-3" />
+      <span className="truncate">{conn?.name ?? 'Tables'}</span>
+      {isDeviceOnly(conn) && (
+        <span className="rounded bg-amber-500/15 px-1 py-px text-[9.5px] font-medium text-amber-700 dark:text-amber-300" title="Data file stored on this device only; it is not synced or hosted unless packaged in a solution" data-testid="device-only-badge">
+          device only
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** group tables by the connection that stores them (default connection when a table names none) */
+function groupByConnection<T extends { def?: TableDef }>(items: T[], connections: ConnectionRef[]): Array<{ conn: ConnectionRef | undefined; items: T[] }> {
+  const def = connections.find((c) => c.isDefault) ?? connections[0]
+  const order = new Map(connections.map((c, i) => [c.id, i] as const))
+  const groups = new Map<string, { conn: ConnectionRef | undefined; items: T[] }>()
+  for (const it of items) {
+    const cid = it.def?.connectionId
+    const conn = (cid ? connections.find((c) => c.id === cid) : undefined) ?? (it.def ? def : undefined)
+    const key = conn?.id ?? (it.def ? '__none' : '__missing')
+    if (!groups.has(key)) groups.set(key, { conn, items: [] })
+    groups.get(key)?.items.push(it)
+  }
+  return [...groups.values()].sort((a, b) => (order.get(a.conn?.id ?? '') ?? 999) - (order.get(b.conn?.id ?? '') ?? 999))
+}
+
 function DataPane() {
+  const connections = usePlatform((s) => s.connections)
+  const loadingNames = usePlatform((s) => s.loading)
   const sources = useStore((s) => s.app.dataSources) ?? NO_SOURCES
   const collections = useStore((s) => s.runtime.collections)
   const tables = usePlatform((s) => s.tables)
@@ -490,6 +530,8 @@ function DataPane() {
   const cur = active ?? (sources[0] ? { kind: 'table' as const, name: sources[0] } : collNames[0] ? { kind: 'collection' as const, name: collNames[0] } : null)
   const rows: FxRecord[] = !cur ? [] : cur.kind === 'table' ? tableRows(cur.name) : (collections[cur.name] ?? [])
   const available = tables.filter((t) => !sources.includes(t.name))
+  const availableGroups = groupByConnection(available.map((def) => ({ def })), connections ?? [])
+  const sourceGroups = groupByConnection(sources.map((name) => ({ name, def: tables.find((t) => t.name === name) })), connections ?? [])
   return (
     <div className="flex h-full flex-col">
       <div className="space-y-1 border-b border-border p-2">
@@ -501,9 +543,12 @@ function DataPane() {
                 <Plus /> Add data
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="w-56 p-1">
+            <PopoverContent align="end" className="max-h-[60vh] w-64 overflow-auto p-1">
               {available.length === 0 && <p className="p-2 text-xs text-muted-foreground">Every table is already added.</p>}
-              {available.map((t) => (
+              {availableGroups.map((g) => (
+                <div key={g.conn?.id ?? 'x'}>
+                  {g.conn ? <ConnHeader conn={g.conn} /> : null}
+                  {g.items.map(({ def: t }) => t && (
                 <button
                   key={t.id}
                   type="button"
@@ -519,6 +564,8 @@ function DataPane() {
                   <span className="font-medium">{t.displayName}</span>
                   <span className="ml-auto font-mono text-[10.5px] text-muted-foreground">{t.name}</span>
                 </button>
+                  ))}
+                </div>
               ))}
               <div className="mt-1 border-t border-border pt-1">
                 <button type="button" className="w-full rounded px-2 py-1.5 text-left text-xs text-primary hover:bg-accent" onClick={() => go({ page: 'tables' })}>
@@ -529,21 +576,28 @@ function DataPane() {
           </Popover>
         </div>
         {sources.length === 0 && <p className="px-1 py-1 text-xs text-muted-foreground">No tables yet. Add one, or just use a table name in a formula.</p>}
-        {sources.map((n) => {
-          const exists = tables.some((t) => t.name === n)
-          return (
-            <div key={n} className={cn('group flex h-7 items-center rounded-md px-2 text-xs', cur?.kind === 'table' && cur.name === n ? 'bg-primary/10 text-primary' : 'hover:bg-accent')}>
-              <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 font-medium" onClick={() => setActive({ kind: 'table', name: n })} data-testid={`data-source-${n}`}>
-                <Table2 className="size-3.5" />
-                <span className={cn('truncate', !exists && 'text-destructive line-through')}>{n}</span>
-              </button>
-              <span className="rounded bg-muted px-1.5 text-[10.5px] text-muted-foreground">{exists ? tableRows(n).length : 'missing'}</span>
-              <button type="button" title="Remove from app" className="ml-1 hidden size-5 place-items-center rounded text-muted-foreground hover:bg-black/5 group-hover:grid" onClick={() => useStore.getState().removeDataSource(n)}>
-                <X className="size-3" />
-              </button>
-            </div>
-          )
-        })}
+        {sourceGroups.map((g) => (
+          <div key={g.conn?.id ?? '__missing'}>
+            {g.conn ? <ConnHeader conn={g.conn} /> : !g.items[0]?.def ? <div className="px-1 pb-0.5 pt-1.5 text-[10.5px] font-semibold text-destructive">Missing tables</div> : null}
+            {g.items.map(({ name: n, def }) => {
+              const exists = !!def
+              return (
+                <div key={n} className={cn('group flex h-7 items-center rounded-md px-2 text-xs', cur?.kind === 'table' && cur.name === n ? 'bg-primary/10 text-primary' : 'hover:bg-accent')}>
+                  <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 font-medium" onClick={() => setActive({ kind: 'table', name: n })} data-testid={`data-source-${n}`}>
+                    <Table2 className="size-3.5" />
+                    <span className={cn('truncate', !exists && 'text-destructive line-through')}>{n}</span>
+                  </button>
+                  <span className="rounded bg-muted px-1.5 text-[10.5px] text-muted-foreground">
+                    {!exists ? 'missing' : (loadingNames ?? []).includes(n) ? '…' : tableRows(n).length}
+                  </span>
+                  <button type="button" title="Remove from app" className="ml-1 hidden size-5 place-items-center rounded text-muted-foreground hover:bg-black/5 group-hover:grid" onClick={() => useStore.getState().removeDataSource(n)}>
+                    <X className="size-3" />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        ))}
         <h4 className="px-1 pt-2 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">Collections</h4>
         {collNames.length === 0 && <p className="px-1 py-1 text-xs text-muted-foreground">None. Use Collect or ClearCollect.</p>}
         {collNames.map((n) => (

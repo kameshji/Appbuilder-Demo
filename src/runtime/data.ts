@@ -4,7 +4,7 @@
  * writes throw a PlatformError the host turns into a formula failure.
  */
 import type { FxRecord, FxValue } from '@/contracts'
-import { platform, PlatformError, userRecord, type ColumnDef, type Row, type TableDef, type WorkspaceState } from '@/platform'
+import { platform, PlatformError, userRecord, type ColumnDef, type DataErrorEvent, type Row, type TableDef, type WorkspaceState } from '@/platform'
 
 export const SYSTEM_COLUMNS = new Set(['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner'])
 
@@ -63,6 +63,41 @@ export function currentUserId(): string {
   return platformState()?.currentUserId ?? ''
 }
 
+export function platformMode(): 'server' | 'demo' {
+  return platformState()?.mode === 'server' ? 'server' : 'demo'
+}
+
+/** table names that are loading from the server / hit the row cap (server mode) */
+export function loadingTables(): string[] {
+  return platformState()?.loading ?? []
+}
+export function truncatedTables(): string[] {
+  return platformState()?.truncated ?? []
+}
+
+/**
+ * Load the rows of these tables (plus the tables their lookup columns point at) into the platform cache.
+ * Idempotent; never throws (a failure just leaves the table empty and shows in the platform state).
+ */
+export function ensureTablesLoaded(names: string[]): void {
+  try {
+    const seen = new Set<string>()
+    const queue = names.slice()
+    while (queue.length) {
+      const n = queue.pop() as string
+      if (seen.has(n)) continue
+      const def = tableDef(n)
+      if (!def) continue
+      seen.add(def.name)
+      for (const c of def.columns) if (c.type === 'lookup' && c.lookupTable && !seen.has(c.lookupTable)) queue.push(c.lookupTable)
+    }
+    if (seen.size === 0) return
+    void Promise.resolve(platform.tables.ensureLoaded([...seen])).catch(() => {})
+  } catch {
+    /* platform unavailable */
+  }
+}
+
 export function dataVersion(): number {
   return platformState()?.dataVersion ?? 0
 }
@@ -113,6 +148,18 @@ export const tables = {
   },
 }
 
+/** the async tail of a Form submit talks to the platform through these */
+export const submitDeps = {
+  flush: () => platform.tables.flush(),
+  upload: (table: string, column: string, id: string, file: File) => platform.attachments.upload(table, column, id, file),
+  reload: (table: string) => platform.tables.reload(table),
+}
+
+/** the freshest copy of a row from the cache (after an upload refreshed its file cells) */
+export function currentRow(name: string, id: string): Row | undefined {
+  return tableRows(name).find((r) => r.__id === id)
+}
+
 /** subscribe to platform changes; returns a no-op unsubscribe when the platform is unavailable */
 export function subscribePlatform(fn: () => void): () => void {
   try {
@@ -120,4 +167,14 @@ export function subscribePlatform(fn: () => void): () => void {
   } catch {
     return () => {}
   }
+}
+
+/** server-side write refusals (after the platform rolled the optimistic change back) */
+export function subscribeDataErrors(fn: (e: DataErrorEvent) => void): () => void {
+  try {
+    if (typeof platform.onDataError === 'function') return platform.onDataError(fn)
+  } catch {
+    /* ignore */
+  }
+  return () => {}
 }

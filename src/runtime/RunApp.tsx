@@ -115,8 +115,22 @@ export function RunApp({ appId }: { appId: string }) {
       ) : (
         <RunSurface testId="run-screen" />
       )}
+      <DataLoading />
       <Toasts />
       {connected && <DebugBar />}
+    </div>
+  )
+}
+
+/** small corner spinner while the app's tables load from the server */
+function DataLoading() {
+  const loading = usePlatform((s) => s.loading)
+  const sources = useStore((s) => s.app.dataSources)
+  const mine = (loading ?? []).filter((t) => (sources ?? []).includes(t))
+  if (mine.length === 0) return null
+  return (
+    <div data-testid="data-loading" className="pointer-events-none absolute right-3 top-3 z-[350] flex items-center gap-1.5 rounded-full bg-card/90 px-2.5 py-1 text-[11px] text-muted-foreground shadow">
+      <Loader2 className="size-3 animate-spin" /> Loading data
     </div>
   )
 }
@@ -141,6 +155,7 @@ function DebugBar() {
   const env = useStore((s) => s.env)
   const log = useStore((s) => s.debugLog)
   const users = usePlatform((s) => s.users)
+  const serverMode = usePlatform((s) => s.mode === 'server')
   const currentUserId = usePlatform((s) => s.currentUserId)
   const current = nav[nav.length - 1] ?? app.screens[0].id
   const errors = log.filter((l) => l.kind === 'error')
@@ -190,7 +205,7 @@ function DebugBar() {
                 </option>
               ))}
             </select>
-            <select
+            {!serverMode && <select
               data-testid="debug-user"
               value={currentUserId}
               title="Run as user"
@@ -208,7 +223,7 @@ function DebugBar() {
                   {u.name}
                 </option>
               ))}
-            </select>
+            </select>}
           </div>
           <div className="flex items-center gap-1.5">
             <MonitorPlay className="size-3.5 text-muted-foreground" />
