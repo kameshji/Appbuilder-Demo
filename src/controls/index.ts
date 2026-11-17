@@ -11,9 +11,11 @@ import { Rectangle } from './Rectangle'
 import { Container } from './Container'
 import { Gallery } from './Gallery'
 import { commonProps } from './util'
+import { inputControls } from './sets/inputs'
+import { displayControls } from './sets/display'
 
 /** Insert-pane order (Screen is not insertable). */
-const insertable: ControlType[] = [Label, Button, TextInput, Checkbox, Toggle, Dropdown, Image, Rectangle, Container, Gallery]
+const insertable: ControlType[] = [Label, Button, TextInput, Checkbox, Toggle, Dropdown, Image, Rectangle, Container, Gallery, ...inputControls, ...displayControls]
 const byType = new Map<string, ControlType>([[Screen.type, Screen], ...insertable.map((c): [string, ControlType] => [c.type, c])])
 
 const propsCache = new Map<string, PropMeta[]>()

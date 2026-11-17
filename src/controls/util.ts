@@ -119,6 +119,13 @@ export function commonProps(width: number, height: number): PropMeta[] {
     { name: 'Width', kind: 'number', group: 'Layout', default: `=${width}` },
     { name: 'Height', kind: 'number', group: 'Layout', default: `=${height}` },
     { name: 'Visible', kind: 'boolean', group: 'Layout', default: '=true' },
+    // Responsive behaviour inside a Manual-layout parent (see SPEC2 section 4).
+    { name: 'AnchorH', label: 'Horizontal anchor', kind: 'enum', group: 'Layout', default: '=Anchor.Start', options: ['Anchor.Start', 'Anchor.End', 'Anchor.Stretch', 'Anchor.Center', 'Anchor.Scale'] },
+    { name: 'AnchorV', label: 'Vertical anchor', kind: 'enum', group: 'Layout', default: '=Anchor.Start', options: ['Anchor.Start', 'Anchor.End', 'Anchor.Stretch', 'Anchor.Center', 'Anchor.Scale'] },
+    // Behaviour inside an auto-layout (Row / Column / Grid) parent.
+    { name: 'Grow', kind: 'number', group: 'Layout', default: '=0', simple: false },
+    { name: 'AlignSelf', kind: 'enum', group: 'Layout', default: '=AlignItems.Auto', options: ['AlignItems.Auto', 'AlignItems.Start', 'AlignItems.Center', 'AlignItems.End', 'AlignItems.Stretch'], simple: false },
+    { name: 'Tooltip', kind: 'text', group: 'Content', default: '=""', simple: false },
   ]
 }
 

@@ -26,11 +26,21 @@ export interface ControlNode {
 }
 
 export interface AppDef {
-  formatVersion: 1
+  formatVersion: 1 | 2
   name: string
-  /** design size of every screen, px */
+  /** design resolution of every screen, px. Landscape only (width >= height). Presets: 1920x1080 (Full HD), 2560x1440 (2K). */
   width: number
   height: number
+  /**
+   * 'responsive' (default): at run time the screen fills the window at any landscape aspect ratio;
+   *   controls follow their anchors / auto-layout; App.Width and App.Height are live.
+   * 'fit': the design resolution is scaled uniformly and letterboxed.
+   */
+  scaleMode?: 'responsive' | 'fit'
+  /** theme tokens for the running app */
+  theme?: { mode?: 'light' | 'dark'; primary?: string; radius?: number; font?: string }
+  /** table names (platform tables) this app uses as data sources */
+  dataSources?: string[]
   /** App-level formulas: OnStart */
   appProps: Record<string, Formula>
   /** nodes with type 'Screen' */
@@ -86,6 +96,21 @@ export interface FxHost {
   notify(message: string, kind: 'info' | 'success' | 'warning' | 'error'): void
   /** Reset(TextInput1) -> control returns to its Default */
   reset(controlName: string): void
+  /** SubmitForm / ResetForm / NewForm / EditForm / ViewForm (Form1) */
+  form(action: 'submit' | 'reset' | 'new' | 'edit' | 'view', formName: string): void
+  /** Select(Button1): run the control's OnSelect */
+  select(controlName: string): void
+  setFocus(controlName: string): void
+  /** Launch(url) */
+  launch(url: string): void
+  /** Copy(text) to clipboard */
+  copy(text: string): void
+  /** Trace(message [, data]) -> debug console of the Studio / debug window */
+  trace(message: string, data?: FxValue): void
+  /** Exit(): close the running app (debug window: stop; preview: back to edit) */
+  exit(): void
+  /** Refresh(Table): reload a table from storage */
+  refresh(source: string): void
 }
 
 export interface FxFunctionDoc {
@@ -110,11 +135,30 @@ export interface FxApi {
   functions(): FxFunctionDoc[]
   /** Built-in enum names and members, for autocomplete: { Color: ['Red', ...], ... } */
   enums(): Record<string, string[]>
+  /**
+   * Named formulas (App.Formulas): "Name = expr; Other = expr;" -> one entry per definition.
+   * `formula` is ready for evaluate() (leading '='). Also accepts user-defined functions
+   * "Area(w: Number, h: Number): Number = w * h;" (params filled, formula = body).
+   */
+  parseNamedFormulas(source: string): { items: FxNamedFormula[]; errors: FxDiagnostic[] }
+  /** Register user-defined functions for subsequent evaluate() calls (replaces the previous set). */
+  setUserFunctions(defs: FxNamedFormula[]): void
+  /** Call-site help for the formula bar: which function and which argument the caret is in. */
+  signatureAt(source: Formula, offset: number): { name: string; signature: string; summary: string; argIndex: number } | null
+}
+
+export interface FxNamedFormula {
+  name: string
+  formula: Formula
+  /** present for user-defined functions */
+  params?: { name: string; type: string }[]
+  returnType?: string
 }
 
 /* ------------------------------------------------------------------ control registry */
 
-export type PropKind = 'text' | 'number' | 'boolean' | 'color' | 'enum' | 'action' | 'table' | 'any'
+/** 'tableName' = text formula naming a platform table (editor: select of tables). 'icon' = lucide icon name text (editor: icon picker). 'record' = a record formula. */
+export type PropKind = 'text' | 'number' | 'boolean' | 'color' | 'enum' | 'action' | 'table' | 'any' | 'tableName' | 'icon' | 'record'
 export type PropGroup = 'Content' | 'Data' | 'Layout' | 'Style' | 'Behaviour'
 
 export interface PropMeta {
@@ -147,6 +191,8 @@ export interface ControlRenderProps {
   children?: ReactNode
   /** Gallery only: render the row template for one item (sets ThisItem for that subtree) */
   renderTemplate?(item: FxRecord, index: number): ReactNode
+  /** run mode only: imperative focus request counter (SetFocus); focus your main element when it changes */
+  focusToken?: number
 }
 
 export interface ControlType {
@@ -155,13 +201,17 @@ export interface ControlType {
   label: string
   /** lucide-react icon component */
   icon: ComponentType<{ className?: string }>
-  category: 'Layout' | 'Display' | 'Input' | 'Data'
+  category: 'Layout' | 'Display' | 'Input' | 'Data' | 'Navigation' | 'Feedback' | 'Media' | 'Charts'
   /** control-specific properties. X, Y, Width, Height, Visible are added by the registry for every non-Screen control. */
   props: PropMeta[]
   outputs: { name: string; initial: FxValue }[]
   defaultSize: { width: number; height: number }
-  /** may hold children (Screen, Container, Gallery) */
+  /** may hold children (Screen, Container, Card, Dialog, Gallery...) */
   isContainer?: boolean
+  /** children are a per-item template (Gallery) rather than direct children */
+  isTemplate?: boolean
+  /** rendered above everything else when shown (Dialog, Sheet); the canvas shows it in place */
+  isOverlay?: boolean
   /** property the formula bar selects first, e.g. 'Text', 'Items', 'OnSelect' */
   primaryProp: string
   /** fills 100% of its wrapper; the canvas/player positions and sizes the wrapper */
