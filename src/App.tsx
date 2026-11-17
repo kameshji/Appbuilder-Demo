@@ -1,1 +1,10 @@
-export default function App() { return <div className="p-6">Appbuilder Studio</div> }
+import { useEffect } from 'react'
+import { bootstrap } from '@/runtime/store'
+import { Studio } from '@/studio/Studio'
+
+export default function App() {
+  useEffect(() => {
+    bootstrap()
+  }, [])
+  return <Studio />
+}
