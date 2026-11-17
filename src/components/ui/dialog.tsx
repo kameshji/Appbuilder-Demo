@@ -15,11 +15,11 @@ function DialogContent({
 }: React.ComponentProps<typeof DialogPrimitive.Content> & { showCloseButton?: boolean }) {
   return (
     <DialogPrimitive.Portal>
-      <DialogPrimitive.Overlay className="fixed inset-0 z-[90] bg-black/50" />
+      <DialogPrimitive.Overlay className="fixed inset-0 z-[240] bg-black/50" />
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          'fixed left-1/2 top-1/2 z-[91] grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border border-border bg-background p-5 shadow-lg outline-none sm:max-w-md',
+          'fixed left-1/2 top-1/2 z-[241] grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border border-border bg-background p-5 shadow-lg outline-none sm:max-w-md',
           className,
         )}
         {...props}
