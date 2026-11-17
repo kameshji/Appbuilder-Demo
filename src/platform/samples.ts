@@ -1,9 +1,10 @@
 /**
- * App templates and seed data. Self-contained on purpose (no import from the runtime) so the
- * platform core stays testable in plain Node.
+ * App templates and seed data. The sample app comes from src/runtime/sample.ts, which is pure (no React or DOM),
+ * so the platform core stays testable in plain Node.
  */
 import type { AppDef, ControlNode } from '@/contracts'
 import { shortId } from './values'
+import { sampleApp } from '@/runtime/sample'
 
 const nodeId = () => shortId('n')
 
@@ -31,107 +32,12 @@ export function blankApp(name: string, width: number, height: number): AppDef {
 }
 
 /**
- * The Contacts sample, bound to the platform table "Contacts" (no OnStart collection).
- * Laid out for a 960x600 reference grid and scaled to the requested design size.
+ * The Contacts sample (see sampleApp in src/runtime/sample.ts), sized to the requested design size.
+ * The name comes from the argument. The sample is a responsive 1920×1080 design (anchors adapt it to any
+ * landscape window), so the requested width/height are intentionally ignored: its coordinates are not size-aware.
  */
-export function contactsSampleApp(name: string, width: number, height: number): AppDef {
-  const sx = width / 960
-  const sy = height / 600
-  const k = Math.min(sx, sy)
-  const X = (n: number) => Math.round(n * sx)
-  const Y = (n: number) => Math.round(n * sy)
-  const F = (n: number) => `=${Math.round(n * k)}`
-  const box = (x: number, y: number, w: number, h: number) => ({ X: `=${X(x)}`, Y: `=${Y(y)}`, Width: `=${X(w)}`, Height: `=${Y(h)}` })
-  const muted = '=RGBA(113, 113, 122, 1)'
-
-  const home = node('Screen', 'Home', { Fill: '=RGBA(250, 250, 251, 1)' }, [
-    node('Rectangle', 'Accent', { ...box(24, 22, 5, 30), Fill: '=RGBA(79, 70, 229, 1)', Radius: '=3' }),
-    node('Label', 'Title', { ...box(40, 16, 480, 40), Text: '="Contacts"', Size: F(26), FontWeight: '=FontWeight.Bold' }),
-    node('Button', 'AddButton', { ...box(780, 18, 156, 36), Text: '="+ Add contact"', OnSelect: '=Navigate(AddScreen)' }),
-    node('TextInput', 'SearchBox', { ...box(24, 72, 420, 40), Placeholder: '="Search by name or company"' }),
-    node('Label', 'ResultCount', {
-      ...box(24, 120, 420, 24),
-      Text: '="Showing " & CountRows(ContactList.Items) & " of " & CountRows(Contacts) & " contacts"',
-      Size: F(12),
-      Color: muted,
-    }),
-    node(
-      'Gallery',
-      'ContactList',
-      {
-        ...box(24, 152, 420, 424),
-        Items: '=Filter(Contacts, SearchBox.Value in Name || SearchBox.Value in Company)',
-        TemplateHeight: `=${Y(64)}`,
-        Gap: `=${Y(4)}`,
-      },
-      [
-        node('Label', 'RowName', { ...box(16, 10, 280, 24), Text: '=ThisItem.Name', Size: F(15), FontWeight: '=FontWeight.Semibold' }),
-        node('Label', 'RowCompany', {
-          ...box(16, 34, 300, 20),
-          Text: '=ThisItem.Company & " · " & ThisItem.City',
-          Size: F(12),
-          Color: muted,
-        }),
-        node('Button', 'RowDelete', {
-          ...box(340, 16, 68, 32),
-          Text: '="Delete"',
-          Style: '=ButtonStyle.Ghost',
-          Size: F(12),
-          OnSelect: '=Remove(Contacts, ThisItem)',
-        }),
-      ],
-    ),
-    node('Container', 'DetailPanel', { ...box(468, 152, 468, 424) }, [
-      node('Label', 'DetailHeading', { ...box(24, 20, 300, 20), Text: '="DETAILS"', Size: F(11), Color: muted, FontWeight: '=FontWeight.Semibold' }),
-      node('Label', 'DetailName', {
-        ...box(24, 48, 420, 40),
-        Text: '=If(IsBlank(ContactList.Selected), "Select a contact", ContactList.Selected.Name)',
-        Size: F(24),
-        FontWeight: '=FontWeight.Bold',
-      }),
-      node('Label', 'DetailCompany', { ...box(24, 104, 420, 24), Text: '="Company: " & ContactList.Selected.Company', Size: F(14) }),
-      node('Label', 'DetailCity', { ...box(24, 136, 420, 24), Text: '="City: " & ContactList.Selected.City', Size: F(14) }),
-      node('Label', 'DetailEmail', { ...box(24, 168, 420, 24), Text: '="Email: " & ContactList.Selected.Email', Size: F(14) }),
-      node('Label', 'DetailStatus', {
-        ...box(24, 208, 160, 28),
-        Text: '=If(ContactList.Selected.Active, "Active", "Inactive")',
-        Size: F(12),
-        FontWeight: '=FontWeight.Semibold',
-        Align: '=Align.Center',
-        Color: '=If(ContactList.Selected.Active, RGBA(21, 128, 61, 1), RGBA(161, 98, 7, 1))',
-        Fill: '=If(ContactList.Selected.Active, RGBA(220, 252, 231, 1), RGBA(254, 243, 199, 1))',
-        Visible: '=!IsBlank(ContactList.Selected)',
-      }),
-    ]),
-  ])
-
-  const add = node('Screen', 'AddScreen', { Fill: '=RGBA(250, 250, 251, 1)' }, [
-    node('Label', 'AddTitle', { ...box(24, 20, 480, 40), Text: '="New contact"', Size: F(26), FontWeight: '=FontWeight.Bold' }),
-    node('TextInput', 'NameInput', { ...box(24, 84, 360, 40), Placeholder: '="Full name"' }),
-    node('TextInput', 'CompanyInput', { ...box(24, 140, 360, 40), Placeholder: '="Company"' }),
-    node('TextInput', 'CityInput', { ...box(24, 196, 360, 40), Placeholder: '="City"' }),
-    node('TextInput', 'EmailInput', { ...box(24, 252, 360, 40), Placeholder: '="Email"' }),
-    node('Toggle', 'ActiveToggle', { ...box(24, 312, 200, 32), Text: '="Active"', Default: '=true' }),
-    node('Button', 'SaveButton', {
-      ...box(24, 368, 120, 40),
-      Text: '="Save"',
-      OnSelect:
-        '=Patch(Contacts, Defaults(Contacts), {Name: NameInput.Value, Company: CompanyInput.Value, City: CityInput.Value, Email: EmailInput.Value, Active: ActiveToggle.Value, Status: "Lead"}); Reset(NameInput); Reset(CompanyInput); Reset(CityInput); Reset(EmailInput); Reset(ActiveToggle); Notify("Saved", NotificationType.Success); Back()',
-    }),
-    node('Button', 'CancelButton', { ...box(156, 368, 120, 40), Text: '="Cancel"', Style: '=ButtonStyle.Outline', OnSelect: '=Back()' }),
-  ])
-
-  return {
-    formatVersion: 2,
-    name,
-    width,
-    height,
-    scaleMode: 'responsive',
-    theme: { mode: 'light' },
-    dataSources: ['Contacts'],
-    appProps: {},
-    screens: [home, add],
-  }
+export function contactsSampleApp(name: string, _width?: number, _height?: number): AppDef {
+  return { ...sampleApp(), name, formatVersion: 2 }
 }
 
 /* ------------------------------------------------------------------ seed data */

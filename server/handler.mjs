@@ -107,7 +107,12 @@ export function createFsHandler(options = {}) {
         try {
           text = await fs.promises.readFile(abs, 'utf8')
         } catch (e) {
-          if (e.code === 'ENOENT' || e.code === 'EISDIR' || e.code === 'ENOTDIR') return fail(res, 404, 'not found'), true
+          // A missing file is not an error: 204 with a marker header keeps browser consoles quiet.
+          if (e.code === 'ENOENT' || e.code === 'EISDIR' || e.code === 'ENOTDIR') {
+            res.writeHead(204, { 'X-Appbuilder-Missing': '1', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
+            res.end()
+            return true
+          }
           throw e
         }
         send(res, 200, text, 'text/plain; charset=utf-8')

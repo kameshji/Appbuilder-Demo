@@ -157,7 +157,7 @@ export interface FxNamedFormula {
 
 /* ------------------------------------------------------------------ control registry */
 
-/** 'tableName' = text formula naming a platform table (editor: select of tables). 'icon' = lucide icon name text (editor: icon picker). 'record' = a record formula. */
+/** 'tableName' = text formula naming a platform table (editor: select of tables). 'icon' = icon name text: a lucide name ("Plus") or an animated icon "anim:<id>" (editor: icon picker). 'record' = a record formula. */
 export type PropKind = 'text' | 'number' | 'boolean' | 'color' | 'enum' | 'action' | 'table' | 'any' | 'tableName' | 'icon' | 'record'
 export type PropGroup = 'Content' | 'Data' | 'Layout' | 'Style' | 'Behaviour'
 

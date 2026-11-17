@@ -1,4 +1,5 @@
 import type { FxRecord } from '@/contracts'
+import { ANIMATED_ICON_IDS } from './animatedIcons'
 
 const rgba = (r: number, g: number, b: number, a = 1): string => `rgba(${r}, ${g}, ${b}, ${a})`
 
@@ -76,6 +77,11 @@ export const ICON_NAMES: string[] = [
   'Send', 'MessageSquare', 'LogIn', 'LogOut', 'Play', 'Pause', 'Printer', 'Wifi', 'Flag', 'Gift',
 ]
 
+/** AnimatedIcon.Heart -> "anim:heart". Member = PascalCase of the animated icon id, value = "anim:<id>". */
+export const animatedIconMember = (id: string): string => id.charAt(0).toUpperCase() + id.slice(1)
+const animatedIconRecord: FxRecord = {}
+for (const id of ANIMATED_ICON_IDS) animatedIconRecord[animatedIconMember(id)] = `anim:${id}`
+
 const colorRecord: FxRecord = {}
 for (const [name, c] of Object.entries(NAMED_COLORS)) colorRecord[name] = rgba(c[0], c[1], c[2], c[3])
 
@@ -110,6 +116,8 @@ export const ENUM_RECORDS: Record<string, FxRecord> = {
   TextMode: members(['SingleLine', 'MultiLine', 'Password', 'Number']),
   SelectionMode: members(['None', 'Single', 'Multiple']),
   Icon: members(ICON_NAMES),
+  /** Animated (Lottie) icons: AnimatedIcon.Heart is "anim:heart". Accepted wherever an icon name is. */
+  AnimatedIcon: animatedIconRecord,
   /** Patterns for IsMatch / Match / MatchAll (regular-expression text). */
   Match: matchPatterns(),
   /** Options for IsMatch / Match / MatchAll. Combine with &, like MatchOptions.Contains & MatchOptions.IgnoreCase. */

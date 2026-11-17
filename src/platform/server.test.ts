@@ -7,6 +7,7 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { isSafeRelPath, pathProblem, resolveSafe, PathError } from '../../server/pathGuard.mjs'
 import { createFsHandler } from '../../server/handler.mjs'
+import { LocalFolderStorage } from './storage'
 
 describe('server path guard', () => {
   it('accepts ordinary relative paths', () => {
@@ -105,8 +106,19 @@ describe('server fs api', () => {
     expect(((await (await fetch(`${base}/api/fs/list?dir=missing`)).json()) as { files: string[] }).files).toEqual([])
     expect(((await (await fetch(`${base}/api/fs/list?dir=`)).json()) as { files: string[] }).files).toEqual([])
     expect((await fetch(`${base}/api/fs/remove?path=${q('tables/Notes.csv')}`, { method: 'DELETE' })).status).toBe(200)
-    expect((await fetch(`${base}/api/fs/read?path=${q('tables/Notes.csv')}`)).status).toBe(404)
+    const gone = await fetch(`${base}/api/fs/read?path=${q('tables/Notes.csv')}`)
+    expect(gone.status).toBe(204)
+    expect(gone.headers.get('x-appbuilder-missing')).toBe('1')
+    expect(await gone.text()).toBe('')
     expect((await fetch(`${base}/api/fs/remove?path=${q('tables/Notes.csv')}`, { method: 'DELETE' })).status).toBe(200) // idempotent
+  })
+
+  it('LocalFolderStorage.readText returns null for a missing file and the text for an existing one', async () => {
+    const storage = new LocalFolderStorage('workspace', base)
+    expect(await storage.readText('workspace.yaml')).toBeNull()
+    await put('workspace.yaml', 'name: demo')
+    expect(await storage.readText('workspace.yaml')).toBe('name: demo')
+    fs.rmSync(path.join(root, 'workspace.yaml'), { force: true })
   })
 
   it('overwrites atomically and leaves no temp files behind', async () => {

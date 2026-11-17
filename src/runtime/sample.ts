@@ -41,6 +41,7 @@ export function sampleApp(): AppDef {
     node('Rectangle', 'HeaderBar', { ...box(0, 0, 1920, 80), ...anchor('Stretch'), Fill: '=Color.White', Radius: '=0', BorderWidth: '=0' }),
     node('Rectangle', 'Accent', { ...box(32, 24, 6, 32), Fill: '=RGBA(79, 70, 229, 1)', Radius: '=3' }),
     node('Label', 'Title', { ...box(52, 18, 480, 44), Text: '="Contacts"', Size: '=28', FontWeight: '=FontWeight.Bold' }),
+    node('AnimatedIcon', 'TitleHeart', { ...box(176, 22, 36, 36), Icon: '=AnimatedIcon.Heart', Size: '=28', Color: '=RGBA(239, 68, 68, 1)' }),
     node('Label', 'UserLabel', { ...box(1176, 28, 360, 24), ...anchor('End'), Text: '="Signed in as " & User().FullName', Size: '=13', Color: muted, Align: '=Align.Right' }),
     node('Button', 'QuickAddButton', {
       ...box(1560, 20, 152, 40),

@@ -4,6 +4,7 @@ import type { ComponentType } from 'react'
 import type { FxRecord, FxValue, PropMeta } from '@/contracts'
 import { cn } from '@/lib/utils'
 import { isRecord, recordText, toText } from '../util'
+import { animatedIconComponent } from '../icon'
 
 /* ------------------------------------------------------------------ shell */
 
@@ -172,11 +173,13 @@ type IconComp = ComponentType<{ className?: string; style?: CSSProperties }>
 const NOT_ICONS = /^(createLucideIcon|icons|Icon|LucideProvider|useLucideContext|DynamicIcon|dynamicIconImports)$/i
 
 /**
- * Resolve an evaluated icon name (PascalCase lucide name, aliases included) to a component.
+ * Resolve an evaluated icon name (PascalCase lucide name, aliases included, or "anim:<id>" for an animated icon) to a component.
  * Never throws; returns `fallback` for blank / unknown names.
  */
 export function resolveIcon(name: FxValue | undefined, fallback?: IconComp): IconComp | undefined {
   const n = toText(name).trim()
+  const animated = animatedIconComponent(n)
+  if (animated) return animated
   if (n !== '' && /^[A-Za-z][A-Za-z0-9]*$/.test(n) && !NOT_ICONS.test(n)) {
     const map = lucide as unknown as Record<string, unknown>
     const cand = map[n] ?? map[n.charAt(0).toUpperCase() + n.slice(1)]

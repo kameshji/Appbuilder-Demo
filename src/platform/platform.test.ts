@@ -674,8 +674,8 @@ describe('apps', () => {
     expect(dup.name).toBe('Blank (2)')
     const sample = await p.apps.create({ name: 'Sample', width: 1920, height: 1080, template: 'sample' })
     const sdef = (await p.apps.load(sample.id))!
-    expect(sdef.screens.map((s) => s.name)).toEqual(['Home', 'AddScreen'])
-    expect(sdef.dataSources).toEqual(['Contacts'])
+    expect(sdef.screens.map((s) => s.name)).toEqual(['Home'])
+    expect(sdef.dataSources).toEqual(['Contacts', 'Orders'])
     expect(sdef.width).toBe(1920)
     expect(p.getState().apps).toHaveLength(4)
   })
@@ -746,7 +746,7 @@ describe('app packages', () => {
     const app = doc.app as Record<string, unknown>
     expect(Object.keys(app)).toEqual(['id', 'name', 'description', 'definition'])
     const tables = doc.tables as { schema: { name: string }; csv?: string }[]
-    expect(tables.map((t) => t.schema.name)).toEqual(['Contacts'])
+    expect(tables.map((t) => t.schema.name)).toEqual(['Contacts', 'Orders'])
     expect(tables[0].csv).toBeUndefined()
     const withData = yaml.load(await p.apps.exportPackage(id, { includeData: true })) as { tables: { csv: string }[] }
     expect(withData.tables[0].csv.split('\n')[0]).toContain('Name')
@@ -777,7 +777,7 @@ describe('app packages', () => {
     expect(p.tables.rows('Contacts')).toHaveLength(8)
     const def = (await p.apps.load(imp.id))!
     expect(def.name).toBe('Contacts app (2)')
-    expect(def.screens.map((s) => s.name)).toEqual(['Home', 'AddScreen'])
+    expect(def.screens.map((s) => s.name)).toEqual(['Home'])
     expect((await p.apps.load(orig.id))!.name).toBe('Contacts app') // the original is untouched
   })
 
@@ -903,7 +903,7 @@ describe('solutions', () => {
     expect(q.tables.insert('Orders', { Customer: [...ids][0] }).OrderNo).toBe('ORD-0013')
     expect(imp.components).toHaveLength(1 + 2 + 3 + 1)
     expect(qs.apps).toHaveLength(1)
-    expect((await q.apps.load(qs.apps[0].id))!.dataSources).toEqual(['Contacts'])
+    expect((await q.apps.load(qs.apps[0].id))!.dataSources).toEqual(['Contacts', 'Orders'])
   })
 
   it('rejects malformed solution packages before changing anything', async () => {

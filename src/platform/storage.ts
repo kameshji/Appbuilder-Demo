@@ -61,7 +61,8 @@ export class LocalFolderStorage implements StorageAdapter {
   }
   async readText(path: string): Promise<string | null> {
     const res = await this.call(this.url('read', 'path', path))
-    if (res.status === 404) return null
+    // 204 is the server's "no such file" answer; 404 is still accepted as null for older servers.
+    if (res.status === 204 || res.status === 404) return null
     if (!res.ok) throw new PlatformError('storage', `Could not read ${path} (HTTP ${res.status}).`)
     return res.text()
   }

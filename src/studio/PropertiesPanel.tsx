@@ -18,7 +18,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { usePlatform } from '@/platform'
 import { parseFormulas } from '@/runtime/evaluator'
-import * as Lucide from 'lucide-react'
+import { IconPicker, iconValueOfFormula } from './IconPicker'
 
 const GROUPS = ['Content', 'Data', 'Layout', 'Style', 'Behaviour'] as const
 
@@ -360,7 +360,7 @@ function NumberEditor({ node, meta, formula, compact }: { node: ControlNode; met
   return (
     <label className="flex items-center gap-1.5">
       <span
-        className="w-4 shrink-0 cursor-ew-resize select-none text-center text-[10.5px] font-medium text-muted-foreground hover:text-foreground"
+        className="min-w-4 max-w-[56px] shrink-0 truncate cursor-ew-resize select-none text-center text-[10.5px] font-medium text-muted-foreground hover:text-foreground"
         title={`Drag to change ${meta.name}`}
         onPointerDown={(e) => {
           e.preventDefault()
@@ -436,9 +436,8 @@ function SimpleRow({ node, meta, ev, nodeEval, compact }: { node: ControlNode; m
       break
     }
     case 'icon': {
-      const m = /^=\s*Icon\.(\w+)\s*$/.exec(formula)
-      const lit = m ? m[1] : parseTextLiteral(formula)
-      editor = lit !== null ? <IconEditor value={lit} onChange={(v) => set(`=Icon.${v}`)} testId={`prop-${meta.name}`} /> : <FxPill node={node} meta={meta} formula={formula} />
+      const lit = iconValueOfFormula(formula, parseTextLiteral)
+      editor = lit !== null ? <IconPicker value={lit} onChange={set} testId={`prop-${meta.name}`} /> : <FxPill node={node} meta={meta} formula={formula} />
       break
     }
     default:
@@ -575,55 +574,3 @@ function TableEditor({ value, onChange, testId }: { value: string; onChange: (v:
   )
 }
 
-const lucideBag = Lucide as unknown as Record<string, React.ComponentType<{ className?: string }> | undefined>
-function iconComp(name: string) {
-  const c = lucideBag[name]
-  return typeof c === 'function' || (typeof c === 'object' && c !== null) ? c : undefined
-}
-
-function IconEditor({ value, onChange, testId }: { value: string; onChange: (v: string) => void; testId: string }) {
-  const [q, setQ] = useState('')
-  const [open, setOpen] = useState(false)
-  let names: string[] = []
-  try {
-    names = fx.enums().Icon ?? []
-  } catch {
-    names = []
-  }
-  const list = names.filter((n) => n.toLowerCase().includes(q.toLowerCase()))
-  const Cur = iconComp(value)
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button type="button" data-testid={testId} className="flex h-7 w-full items-center gap-2 rounded-md border border-input bg-background px-1.5 text-left text-xs hover:bg-accent/50">
-          {Cur ? <Cur className="size-4 text-primary" /> : <span className="size-4 rounded border border-dashed border-border" />}
-          <span className="truncate">{value || 'Choose an icon'}</span>
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-[268px] p-2">
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search icons" className="mb-2 h-7 text-xs" data-testid="icon-search" autoFocus />
-        <div className="grid max-h-56 grid-cols-7 gap-1 overflow-auto">
-          {list.map((n) => {
-            const C = iconComp(n)
-            return (
-              <button
-                key={n}
-                type="button"
-                title={n}
-                data-testid={`icon-${n}`}
-                onClick={() => {
-                  onChange(n)
-                  setOpen(false)
-                }}
-                className={cn('grid size-8 place-items-center rounded-md border border-transparent hover:border-border hover:bg-accent', n === value && 'border-primary bg-primary/10 text-primary')}
-              >
-                {C ? <C className="size-4" /> : <span className="text-[9px]">{n.slice(0, 3)}</span>}
-              </button>
-            )
-          })}
-          {list.length === 0 && <p className="col-span-7 p-2 text-center text-xs text-muted-foreground">No icons</p>}
-        </div>
-      </PopoverContent>
-    </Popover>
-  )
-}

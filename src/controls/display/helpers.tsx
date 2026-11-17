@@ -4,6 +4,7 @@ import type { CSSProperties, ComponentType, ReactNode } from 'react'
 import * as Lucide from 'lucide-react'
 import type { FxRecord, FxValue, PropMeta } from '@/contracts'
 import { isRecord, recordText, toBool, toNum, toText } from '../util'
+import { animatedIconComponent } from '../icon'
 
 /* ------------------------------------------------------------------ icons */
 
@@ -11,10 +12,12 @@ type IconComp = ComponentType<{ className?: string; style?: CSSProperties; strok
 
 const lucideBag = Lucide as unknown as Record<string, unknown>
 
-/** Resolve an icon name (PascalCase, kebab-case or snake_case) to a lucide component. */
+/** Resolve an icon name (PascalCase, kebab-case or snake_case) to a lucide component; "anim:<id>" to an animated icon component. */
 export function iconByName(name: string): IconComp | undefined {
   const raw = name.trim()
   if (!raw) return undefined
+  const animated = animatedIconComponent(raw)
+  if (animated) return animated
   const pascal = raw.replace(/(^|[-_ ]+)([A-Za-z0-9])/g, (_m, _s, c: string) => c.toUpperCase())
   for (const key of [raw, pascal]) {
     const v = lucideBag[key]

@@ -9,6 +9,7 @@ import { CalendarControl, Video, Audio } from '../display/media'
 import { Breadcrumb, Pagination, NavMenu, TopBar, Steps } from '../display/nav'
 import { ProgressControl, CircularProgress, Spinner, Skeleton, Alert, EmptyState } from '../display/feedback'
 import { Chart, Sparkline } from '../display/charts'
+import { AnimatedIconControl } from '../icon/AnimatedIconControl'
 
 /** Insert-pane order: Layout -> Display -> Data -> Navigation -> Feedback -> Media -> Charts. */
 export const displayControls: ControlType[] = [
@@ -23,7 +24,7 @@ export const displayControls: ControlType[] = [
   // Feedback
   ProgressControl, CircularProgress, Spinner, Skeleton, Alert, EmptyState,
   // Media
-  Video, Audio,
+  Video, Audio, AnimatedIconControl,
   // Charts
   Chart, Sparkline,
 ]

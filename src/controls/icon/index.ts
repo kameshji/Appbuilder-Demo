@@ -1,0 +1,6 @@
+export { AppIcon, animatedIconComponent, lucideByName } from './AppIcon'
+export type { AppIconProps } from './AppIcon'
+export { ANIMATED_ICONS, ANIMATED_CATEGORIES, ANIM_PREFIX, isAnimatedName, parseAnimatedName } from './catalog'
+export type { AnimatedIconMeta } from './catalog'
+export { loadAnimation, useAnimation } from './loader'
+export { AnimatedIconControl, interactionOf } from './AnimatedIconControl'
