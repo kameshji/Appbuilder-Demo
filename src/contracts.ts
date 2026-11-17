@@ -1,0 +1,178 @@
+/**
+ * CONTRACTS. The single shared interface between the three packages:
+ *   src/fx        formula engine (no React, no DOM)
+ *   src/controls  control registry + shadcn-based renderers
+ *   src/studio + src/runtime   editor shell, canvas, player
+ * Do not change this file without telling the architect; code against it exactly.
+ */
+import type { ComponentType, ReactNode } from 'react'
+
+/* ------------------------------------------------------------------ app definition */
+
+/** A formula is source text that always starts with '='. Example: '="Hello " & TextInput1.Value' */
+export type Formula = string
+
+export interface ControlNode {
+  /** stable unique id (nanoid-like), never shown to the maker */
+  id: string
+  /** unique across the whole app, maker-visible, used in formulas: Button1, Gallery1 */
+  name: string
+  /** key into the control registry: 'Screen' | 'Label' | 'Button' | ... */
+  type: string
+  /** property name -> formula. Missing property = registry default. */
+  props: Record<string, Formula>
+  /** children. For Gallery, the children are the row template. */
+  children: ControlNode[]
+}
+
+export interface AppDef {
+  formatVersion: 1
+  name: string
+  /** design size of every screen, px */
+  width: number
+  height: number
+  /** App-level formulas: OnStart */
+  appProps: Record<string, Formula>
+  /** nodes with type 'Screen' */
+  screens: ControlNode[]
+}
+
+/* ------------------------------------------------------------------ Fx values */
+
+/** Blank is null. Tables are arrays of records. Colours are CSS colour strings. Dates are Date. */
+export type FxValue = null | boolean | number | string | Date | FxRecord | FxValue[]
+export interface FxRecord { [field: string]: FxValue }
+
+export interface FxDiagnostic {
+  message: string
+  /** 0-based offsets into the formula source INCLUDING the leading '=' */
+  start: number
+  end: number
+}
+
+export type FxResult =
+  | { ok: true; value: FxValue }
+  | { ok: false; error: FxDiagnostic }
+
+/**
+ * Name resolution supplied by the host. Called for every bare identifier that is not a
+ * row-scope field, a With/ForAll/As name, a built-in enum (Color, Align, ...) or a function.
+ * Return undefined when the name is unknown (engine reports "Name isn't recognised: X").
+ * Typical answers: a control (record of its evaluated props + outputs), a variable value,
+ * a collection (array of records), ThisItem, Self, Parent.
+ */
+export interface FxScope {
+  resolve(name: string): FxValue | undefined
+}
+
+/**
+ * Side effects. Only reachable from behaviour functions. When evaluate() is called without a
+ * host, any behaviour function is an error ("Behaviour function in a non-behaviour property").
+ * Collections and variables live in the host, not the engine.
+ */
+export interface FxHost {
+  setVar(name: string, value: FxValue): void
+  /** UpdateContext({a: 1, b: 2}) */
+  updateContext(values: FxRecord): void
+  /** Collect / ClearCollect / Clear. items already flattened to records. */
+  collect(collection: string, items: FxRecord[], clearFirst: boolean): void
+  clear(collection: string): void
+  /** Remove(Coll, record) -> match by the hidden '__id' field; RemoveIf handled by engine via remove() */
+  remove(collection: string, records: FxRecord[]): void
+  /** Patch(Coll, base, changes). base without '__id' (Defaults(Coll)) = create. Returns the stored record. */
+  patch(collection: string, base: FxRecord, changes: FxRecord): FxRecord
+  navigate(screenName: string): void
+  back(): void
+  notify(message: string, kind: 'info' | 'success' | 'warning' | 'error'): void
+  /** Reset(TextInput1) -> control returns to its Default */
+  reset(controlName: string): void
+}
+
+export interface FxFunctionDoc {
+  name: string
+  /** 'Filter(source, condition, ...)' */
+  signature: string
+  summary: string
+  kind: 'pure' | 'behaviour'
+}
+
+/** Public API exported from src/fx/index.ts */
+export interface FxApi {
+  /** Syntax check only. Empty array = parses. */
+  check(source: Formula): FxDiagnostic[]
+  /** Evaluate. Never throws. `host` omitted = data (non-behaviour) property. */
+  evaluate(source: Formula, scope: FxScope, host?: FxHost): FxResult
+  /** Bare identifiers referenced by the formula (for rename + dependency display). */
+  referencedNames(source: Formula): string[]
+  /** Rename an identifier everywhere it is used as a name (not inside strings). */
+  renameIdentifier(source: Formula, from: string, to: string): Formula
+  /** All registered functions, for the formula bar's autocomplete. */
+  functions(): FxFunctionDoc[]
+  /** Built-in enum names and members, for autocomplete: { Color: ['Red', ...], ... } */
+  enums(): Record<string, string[]>
+}
+
+/* ------------------------------------------------------------------ control registry */
+
+export type PropKind = 'text' | 'number' | 'boolean' | 'color' | 'enum' | 'action' | 'table' | 'any'
+export type PropGroup = 'Content' | 'Data' | 'Layout' | 'Style' | 'Behaviour'
+
+export interface PropMeta {
+  name: string
+  /** label on the Simple tab; defaults to name */
+  label?: string
+  kind: PropKind
+  group: PropGroup
+  /** default formula, e.g. '="Button"', '=true', '=RGBA(79, 70, 229, 1)' */
+  default: Formula
+  /** kind === 'enum': member formulas shown in the select, e.g. ['Align.Left','Align.Center'] */
+  options?: string[]
+  /** false = Advanced tab only. Default true. */
+  simple?: boolean
+}
+
+export interface ControlRenderProps {
+  node: ControlNode
+  /** every property of the control, evaluated. Failed formulas arrive as the default's value. */
+  props: Record<string, FxValue>
+  /** 'design' = on the Studio canvas (must not capture clicks/focus); 'run' = preview/player */
+  mode: 'design' | 'run'
+  /** current values of the control's outputs (Value, Selected, ...) */
+  outputs: Record<string, FxValue>
+  /** write an output; other formulas that read it recalculate */
+  setOutput(name: string, value: FxValue): void
+  /** run an action property (OnSelect, OnChange). Optional extra row scope for galleries. */
+  fire(event: string): void
+  /** already-rendered child controls, for containers */
+  children?: ReactNode
+  /** Gallery only: render the row template for one item (sets ThisItem for that subtree) */
+  renderTemplate?(item: FxRecord, index: number): ReactNode
+}
+
+export interface ControlType {
+  type: string
+  /** name in the Insert pane */
+  label: string
+  /** lucide-react icon component */
+  icon: ComponentType<{ className?: string }>
+  category: 'Layout' | 'Display' | 'Input' | 'Data'
+  /** control-specific properties. X, Y, Width, Height, Visible are added by the registry for every non-Screen control. */
+  props: PropMeta[]
+  outputs: { name: string; initial: FxValue }[]
+  defaultSize: { width: number; height: number }
+  /** may hold children (Screen, Container, Gallery) */
+  isContainer?: boolean
+  /** property the formula bar selects first, e.g. 'Text', 'Items', 'OnSelect' */
+  primaryProp: string
+  /** fills 100% of its wrapper; the canvas/player positions and sizes the wrapper */
+  render: ComponentType<ControlRenderProps>
+}
+
+/** Public API exported from src/controls/index.ts */
+export interface ControlRegistryApi {
+  get(type: string): ControlType
+  /** insertable controls in Insert-pane order (excludes Screen) */
+  list(): ControlType[]
+  /** full property list for a type, including the common X/Y/Width/Height/Visible */
+  propsOf(type: string): PropMeta[]
+}
