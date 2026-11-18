@@ -1,0 +1,191 @@
+# Connectors
+
+A **connector** is the server-side adapter that stores and fetches the rows of a table. The platform ships three:
+`mysql` (the default store), `files` (CSV, Excel and JSON data files copied into the workspace) and `gsheets` (Google Sheets through
+a service account). A planned fourth, a PHP gateway, is a *backend* for the whole Data API, not a connector (see `data-api.md`).
+
+Connectors know nothing about users or security. The `DataService`
+(`/home/claude/appbuilder-demo/server/core/data.ts`) hands a connector a fully security-augmented `Condition` (row-level filter
+already ANDed in) and validates and strips columns (column-level security) before and after. Never add permission checks inside a
+connector; add them to `security.ts`/`data.ts` (see `security-engine.md`).
+
+What is not supported: connectors cannot be added at run time or by makers (they are compiled into the server and registered in one
+file), there are no joins at all (a `lookup` column stores the target row id; formulas resolve it in the browser), and only `mysql` can be
+the default store.
+
+## The interface
+
+Defined in `/home/claude/appbuilder-demo/server/core/contracts.ts`:
+
+```ts
+interface Connector {
+  readonly kind: ConnectorKind
+  readonly capabilities: ConnectorCapabilities   // { ddl, write, pushdown, transactions }
+  test(): Promise<{ ok: true; message: string } | { ok: false; message: string }>
+  listSourceTables(): Promise<{ source: string; columns: SourceColumn[]; rowCount?: number }[]>
+  describe(source: string): Promise<SourceColumn[]>
+  createTable(def: TableDef): Promise<void>
+  addColumn(def: TableDef, col: ColumnDef): Promise<void>
+  alterColumn(def: TableDef, before: ColumnDef, after: ColumnDef): Promise<void>   // values already verified to convert
+  dropColumn(def: TableDef, name: string): Promise<void>
+  dropTable(def: TableDef): Promise<void>
+  select(def: TableDef, q: Query): Promise<{ rows: RawRow[]; total?: number }>
+  insert(def: TableDef, rows: RawRow[]): Promise<void>
+  update(def: TableDef, id: string, changes: RawRow, guard?: Condition): Promise<number>
+  delete(def: TableDef, ids: string[], guard?: Condition): Promise<number>
+  close(): Promise<void>
+}
+type RawRow = Record<string, string | number | boolean | Date | null>
+type ConnectorFactory = (conn: ConnectionRecord, env: ConnectorEnv) => Connector
+interface ConnectorEnv { workspaceDir: string; filesDir: string; fetch: typeof fetch; log(level, msg): void }
+```
+
+Contract points an implementer must honour:
+
+- **One instance per connection.** The `ConnectionManager` (`server/core/connections.ts`) caches instances per connection id, keyed
+  by a SHA-256 fingerprint of `[connector, settings, secret]`; changing any of them builds a fresh instance and closes the old one.
+  `ConnectionRecord` carries the decrypted secret in memory only.
+- **`def.source` is always set** when a connector sees a table (the physical name; for `files` it is `<fileId>/<sheet>`).
+- **Typed rows.** `select` returns `Date` objects for `date` (UTC midnight) and `datetime` columns, numbers for number types,
+  booleans for `boolean`, `null` for blank. The service converts to the JSON wire format.
+- **`update` and `delete` take a `guard`** (the row-level filter) and return the affected count. `0` means "not found or not
+  allowed"; the service then decides between 403 and 404 by re-reading with the read filter. A connector must apply the guard
+  atomically with the write where it can (MySQL does it in the `WHERE`).
+- **`where` references only columns of `def`.** Identifiers come from the def, never from the request; a connector must still
+  validate or quote them.
+- **Errors** are `HttpError(status, code, message, field?)` with friendly text. Never put a password, key, SQL text or file path in
+  a message. `mapDbError` and `friendlyConnectionError` in `server/connectors/mysql/index.ts` show the pattern.
+- **Capabilities.**
+
+  | Connector | `ddl` | `write` | `pushdown` | `transactions` |
+  | --- | --- | --- | --- | --- |
+  | `mysql` | yes | yes | yes | yes |
+  | `files` | yes | yes | no | no |
+  | `gsheets` | yes | yes | no | no |
+
+  `pushdown: false` means the connector loads the sheet or file and runs `applyQuery` from `server/core/condition.ts` itself.
+  `transactions: true` means multi-row `insert`/`delete` are all-or-nothing (the MySQL tests assert a failing chunk rolls everything back).
+
+## Condition semantics (the reference)
+
+`/home/claude/appbuilder-demo/server/core/condition.ts` is the reference implementation (`evaluateCondition`, `applyQuery`,
+`conditionColumns`, `and`). Every connector must produce the same answers. The rules:
+
+- `Condition` is `{ and: [...] } | { or: [...] } | { not: c } | { col, op, value? } | { const: boolean }`. An empty `and` is true, an
+  empty `or` is false.
+- **Blank** means `null`, `undefined` or `''`. `isBlank` and `notBlank` test that. `eq`/`ne` with `null` (or no value) mean
+  `isBlank`/`notBlank`.
+- **Text is compared case-insensitively.** `contains`, `startsWith`, `endsWith` are text operations on the cell's string form,
+  case-insensitive; a blank cell never matches them. `in` takes an array and is true if any element compares equal.
+- **Ordering** (`lt le gt ge`) on a blank cell is false. Dates compare by time (a Date against ISO text compares as time).
+  Numbers compare numerically; a number cell against numeric-looking text compares numerically (and vice versa).
+- A **number against non-numeric text is not comparable**: `eq` is false, `ne` is true, ordering is false. Booleans compare as
+  equal or as true greater than false.
+- `ne` is true for a blank cell (when the value is not null).
+- **`applyQuery`** (used by non-pushdown connectors): filter, `total` (if `count`) is the filtered count before paging, sort by
+  `orderBy` with **blanks last in both directions**, then `skip`/`top`, then `select` (the `id` column is always kept).
+
+The DataService also validates the tree before it reaches a connector: at most 2000 nodes, depth 32, at most 1000 values per `in`,
+known ops, known columns.
+
+## MySQL connector
+
+Files: `server/connectors/mysql/index.ts` (the connector), `sql.ts` (pure SQL builder, unit-testable), `db.ts` (pool, transactions).
+
+- Pool: `mysql2/promise`, `connectionLimit: 10`, `timezone: 'Z'`, charset `utf8mb4_unicode_ci`, `dateStrings: false`,
+  `supportBigNumbers: true`, `multipleStatements: false`, `connectTimeout: 10000`. With `ssl` set the pool requires TLS 1.2+ and
+  verifies the certificate (`rejectUnauthorized`).
+- Everything that reaches SQL text is a validated, backtick-quoted identifier or a literal fragment from `sql.ts`; every value
+  travels as a `?` parameter. Identifier rule `^[A-Za-z_][A-Za-z0-9_]{0,63}$`; names starting with `ab_` are refused (403).
+- DDL generation and the type map are documented in `schema.md`.
+- `listSourceTables` excludes `ab_%` tables and computes exact row counts only when there are 50 tables or fewer.
+
+### Parity with the reference
+
+The MySQL translation is held to the reference by a **parity test**: the `describe('parity: SQL vs evaluateCondition')` block in
+`/home/claude/appbuilder-demo/server/connectors/mysql/mysql.integration.test.ts`. It inserts a fixed dataset of ten rows with nasty
+values (blank vs `''` vs `NULL`, `%`, `_`, `!` and backslash for LIKE escaping, text that looks like numbers, dates and datetimes at
+millisecond precision, mixed case choices) and then runs a long list of named conditions both through `connector.select` (SQL) and
+through `evaluateCondition` over the same rows (JavaScript), and requires the same set of ids (compared sorted). A second test,
+`orderBy / top / skip match applyQuery (blanks last)`, runs several `orderBy` plus `skip`/`top` combinations and compares the
+sort-key sequence (and the exact id order when a unique tiebreaker column is part of the sort). The list covers every operator on every column kind, `and`/`or`/`not` nesting, empty `and`/`or`, `const`, and ordering with
+blanks. **When you change `sql.ts` or `condition.ts`, extend this list** with the case that motivated the change.
+
+To make SQL behave like the reference, `sql.ts`:
+
+- puts `COLLATE utf8mb4_unicode_ci` on every string literal, so comparison does not depend on the column's collation;
+- treats `''` as blank for text columns (`(col IS NULL OR CHAR_LENGTH(col) = 0)`) and only `NULL` as blank for other kinds;
+- makes `ne` true for blank cells (`col IS NULL OR col <> ?`);
+- escapes `%`, `_` and the escape character `!` (`LIKE ... ESCAPE '!'`) for `contains`/`startsWith`/`endsWith`;
+- wraps leaves in `COALESCE(..., 0)` under `NOT` so SQL's three-valued logic does not leak through;
+- sorts with `(col IS NULL) ASC` (or the text-blank test) before the column, so blanks are last in both directions, and appends
+  `id ASC`.
+
+Documented differences that cannot be removed (see the header of `sql.ts`): accent and width insensitivity and `PAD SPACE` of
+`utf8mb4_unicode_ci` in `eq`/`in`/`ne`; ordering by collation rather than code unit for `lt/le/gt/ge` on text; `contains` on date
+columns compares the SQL text form. The header of `sql.ts` still says that a non-numeric text against a numeric literal is "not
+equal in SQL but equal in the reference"; `condition.ts` was changed to match SQL (not comparable) and the sentence is stale.
+
+## Files connector
+
+`server/connectors/files/{index,cells,formats}.ts`. A data file (CSV, XLSX or JSON) is copied into
+`workspace/files/<fileId>/data.<csv|xlsx|json>` with a `meta.json`; the original is never touched. One sheet is one table; the table
+source is `<fileId>/<sheet>`.
+
+- Sheets are held in memory and re-read when the file's mtime or size changes. Writes are debounced (300 ms), serialised per file,
+  and replace the file atomically (temp file plus rename). `flushFiles()` waits for pending writes; the server calls it on shutdown.
+- A module-level store is shared per files folder, so several connector instances see the same data.
+- Type inference (`cells.ts`) scans the sheet and assigns `text`, `number`, `decimal`, `boolean`, `date`, `datetime`, `email`, etc.;
+  identifiers are made from headers (`toIdentifier`: `"Sales orders (2024)"` becomes `SalesOrders2024`).
+- Module API used by the routes (`server/routes/meta/files.ts`): `inspectDataFile`, `storeDataFile`, `replaceDataFile`,
+  `readDataFile`, `removeDataFile`, `flushFiles`.
+- `dropTable` refuses to remove the last sheet of a file ("remove the file instead").
+- Files are **device-only** (decision D8): the connection has scope `device` and is left out of a hosted deployment unless a file is
+  packaged into a solution. `modifiedSinceImport` records that apps edited rows since the file was added.
+
+## Google Sheets connector
+
+`server/connectors/gsheets/index.ts` (class `GSheets`). One tab is one table; row 1 holds column names; rows are located by the `id`
+column (`ensureIdColumn` adds it).
+
+- No Google packages. The service-account JSON key is parsed by `parseServiceAccountKey` (error messages never contain key text), a
+  signed RS256 JWT is built with `node:crypto` (`buildJwtAssertion`) and exchanged for a bearer token; Sheets API v4 calls go
+  through the injected `env.fetch`. Scope `https://www.googleapis.com/auth/spreadsheets`.
+- A 15 s read cache per spreadsheet, writes serialised per spreadsheet, up to 4 attempts with exponential backoff on 429 and 5xx
+  (`Retry-After` honoured, capped at 30 s).
+- Writes use `valueInputOption=RAW`, so nothing a user types can become a formula. Dates are written as ISO text and read back from
+  ISO text or serial numbers (`serialToDate`).
+- Exported helpers used by tests: `parseSpreadsheetId` (accepts a URL or an id), `parseServiceAccountKey`, `buildJwtAssertion`,
+  `serialToDate`, `ensureIdColumn`.
+- Settings: `settings.spreadsheetId` (an id or a URL), the service-account key as the connection secret.
+
+## Registering a connector
+
+1. Create `server/connectors/<kind>/index.ts` exporting a `ConnectorFactory` (see `createMySqlConnector`,
+   `createFilesConnector`, `createGSheetsConnector`). Follow the server TypeScript rules: relative imports with the `.ts`
+   extension, `import type` for types, no enums, no runtime import of `@/...` (see `architecture.md`).
+2. Add the kind to `ConnectorKind` in `/home/claude/appbuilder-demo/src/platform/contracts.ts` if it is not there.
+3. Register it in `/home/claude/appbuilder-demo/server/connectors/index.ts`:
+
+   ```ts
+   manager.register('mysql', createMySqlConnector)
+   manager.register('files', createFilesConnector)
+   manager.register('gsheets', createGSheetsConnector)
+   ```
+
+   An unknown kind makes `ConnectionManager.get` answer 503 `unavailable`.
+4. Allow the kind in `POST /connections` validation (`server/routes/meta/connections.ts`; today `mysql`, `files`, `gsheets`) and give
+   the Connections screen a form for its settings (`/home/claude/appbuilder-demo/src/portal/`).
+5. Add tests (below) and update this page and `schema.md` if the connector stores anything in `ab_*`.
+
+## Testing a connector
+
+- **Fakes.** Connectors take everything external through injection: `ConnectorEnv.fetch` for HTTP, directories for files. The
+  Google tests (`gsheets.test.ts`) use a `FakeGoogle` that implements the parts of the Sheets API the connector calls and is passed
+  as `env.fetch`; no network is used. The files tests (`files.test.ts`) work in a temp directory. Unit tests of the SQL builder
+  (`sql.test.ts`) need no database at all because `sql.ts` is pure.
+- **Route and service tests** use the in-memory `FakeMetaStore` harness `/home/claude/appbuilder-demo/server/routes/meta/testing.ts`
+  together with the real `SecurityEngine`, `DataService` and `ConnectionManager`, and a fake connector registered under a kind.
+- **Parity.** A pushdown connector must be added to a parity test like the MySQL one: same dataset, same condition list, compare with
+  `evaluateCondition`. A non-pushdown connector should use `applyQuery`/`evaluateCondition` directly, which makes parity automatic.
+- **Integration** tests against a real server run only when `APPBUILDER_TEST_DB` is set (see `testing.md`).
