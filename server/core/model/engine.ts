@@ -519,7 +519,7 @@ async function dropTable(s: Services, call: <T>(key: string, params: Record<stri
   await s.meta.relationships?.removeForTable(id)
 }
 
-async function setUniqueTogether(s: Services, tableId: string, sets: string[][]): Promise<void> {
+export async function setUniqueTogether(s: Services, tableId: string, sets: string[][]): Promise<void> {
   const def = await s.meta.tables.get(tableId)
   if (!def) return
   const db = s.env.systemDb?.()
@@ -568,17 +568,23 @@ async function createView(s: Services, ctx: Ctx, t: ModelTable, r: ViewDef, real
   return def
 }
 
-async function fillDateDimension(s: Services, ctx: Ctx, tableId: string, r: DateDimDef): Promise<void> {
+/** (re)fills a date dimension with one row per day of its range (replace: also after a range change by an upgrade) */
+export async function fillDateDimension(s: Services, ctx: Ctx | null, tableId: string, r: DateDimDef): Promise<void> {
   const def = await s.meta.tables.get(tableId)
   if (!def) return
   const rows = dateDimRows(r)
   const cols = ['Date', 'DateKey', 'Year', 'Quarter', 'Month', 'MonthName', 'Day', 'Weekday', 'WeekdayName', 'IsWeekend', 'FiscalYear', 'FiscalQuarter', 'FiscalMonth'] as const
   const csv = [cols.join(','), ...rows.map((x) => cols.map((c) => String(x[c])).join(','))].join('\n')
-  await s.data.importCsv(null, def, csv, 'replace', { actorId: ctx.user?.user.id })
+  // the table is read-only for apps, not for its own refill (the system writes it)
+  await s.data.importCsv(null, { ...def, readOnly: false }, csv, 'replace', { actorId: ctx?.user?.user.id })
   await s.meta.tables.upsert({ ...def, reporting: r, readOnly: true, modifiedOn: s.now() })
 }
 
-async function createSummary(s: Services, ctx: Ctx, tableId: string, r: SummaryDef): Promise<void> {
+/**
+ * Summary settings of a table (creation, solution install or upgrade): stores them, sets which roles read the totals,
+ * creates or updates the refresh schedule (one per table) and queues a refresh. Idempotent.
+ */
+export async function createSummary(s: Services, ctx: Ctx | null, tableId: string, r: SummaryDef): Promise<void> {
   const def = await s.meta.tables.get(tableId)
   const src = await s.meta.tables.get(r.source)
   if (!def || !src) throw new HttpError(422, 'invalid', 'The summary table or its source is missing.')
@@ -596,8 +602,11 @@ async function createSummary(s: Services, ctx: Ctx, tableId: string, r: SummaryD
   s.security.invalidate()
   const core = s as CoreServices
   if (core.kernel?.jobs) {
-    await core.kernel.jobs.schedules.create({ name: `Refresh ${def.displayName}`, description: `Recomputes the summary table ${def.displayName} from ${src.displayName} (data model designer).`, cron: r.cron, timeZone: 'UTC', jobType: SUMMARY_JOB, payload: { tableId: def.id }, misfire: 'run_once' }, ctx.user?.user.id ?? null)
-    await core.kernel.jobs.enqueue(SUMMARY_JOB, { tableId: def.id }, { createdBy: ctx.user?.user.id })
+    const input = { name: `Refresh ${def.displayName}`, description: `Recomputes the summary table ${def.displayName} from ${src.displayName} (data model designer).`, cron: r.cron, timeZone: 'UTC', jobType: SUMMARY_JOB, payload: { tableId: def.id }, misfire: 'run_once' as const }
+    const existing = (await core.kernel.jobs.schedules.list()).find((sc) => sc.jobType === SUMMARY_JOB && (sc.payload as { tableId?: string } | null)?.tableId === def.id)
+    if (!existing) await core.kernel.jobs.schedules.create(input, ctx?.user?.user.id ?? null)
+    else if (existing.cron !== r.cron || existing.name !== input.name) await core.kernel.jobs.schedules.update(existing.id, { ...input, enabled: existing.enabled })
+    await core.kernel.jobs.enqueue(SUMMARY_JOB, { tableId: def.id }, { createdBy: ctx?.user?.user.id })
   } else {
     // no job queue (metadata test harness): refresh once now
     const db = s.env.systemDb?.()

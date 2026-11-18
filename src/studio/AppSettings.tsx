@@ -91,7 +91,7 @@ function SettingsBody({ app }: { app: AppDef }) {
           <SizePicker value={size} onChange={setSize} testId="settings-resolution" />
           {sizeError && <p className="text-xs text-destructive">{sizeError}</p>}
           {!sizeError && resized && (
-            <p className="text-[11px] text-muted-foreground">Controls keep their positions; check anchors and layouts after changing between desktop and phone sizes.</p>
+            <p className="text-[11px] text-muted-foreground">UI components keep their positions; check anchors and layouts after changing between desktop and phone sizes.</p>
           )}
         </div>
         <div className="space-y-1.5">
@@ -99,7 +99,7 @@ function SettingsBody({ app }: { app: AppDef }) {
           <div className="flex items-center gap-3">
             <Seg value={scale} onChange={setScale} testId="settings-scale" options={[{ v: 'responsive', label: 'Responsive' }, { v: 'fit', label: 'Fit' }]} />
             <span className="text-xs text-muted-foreground">
-              {scale === 'responsive' ? 'Fills the window; controls follow their anchors and layouts.' : 'Design size scaled uniformly and letterboxed.'}
+              {scale === 'responsive' ? 'Fills the window; UI components follow their anchors and layouts.' : 'Design size scaled uniformly and letterboxed.'}
             </span>
           </div>
         </div>

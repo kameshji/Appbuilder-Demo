@@ -8,6 +8,7 @@
  */
 import { useRef, useSyncExternalStore } from 'react'
 import { createPlatform } from './core'
+import type { RelationshipRecord } from './delete-rules'
 import { createRemotePlatform } from './remote'
 import { BrowserStorage, MemoryStorage } from './storage'
 import { PlatformError } from './contracts'
@@ -81,7 +82,16 @@ export function createPlatformFacade(deps: {
   makeRemote?: () => PlatformApi
 } = {}): PlatformApi {
   const probe = deps.probe ?? (() => probeServer(800))
-  const makeDemo = deps.makeDemo ?? (() => createPlatform(demoStorage))
+  // the data model designer keeps demo relationships (with their delete behaviours) in this browser (modelApi.ts)
+  const demoRelationships = (envId: string) => {
+    try {
+      const v = typeof localStorage === 'undefined' ? null : localStorage.getItem(`appbuilder-model:${envId}:relationships`)
+      return v ? (JSON.parse(v) as RelationshipRecord[]) : []
+    } catch {
+      return []
+    }
+  }
+  const makeDemo = deps.makeDemo ?? (() => createPlatform(demoStorage, { relationships: demoRelationships }))
   const makeRemote = deps.makeRemote ?? (() => createRemotePlatform())
 
   let impl: PlatformApi | null = null

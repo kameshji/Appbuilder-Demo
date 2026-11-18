@@ -18,6 +18,8 @@ import { seedSample } from '../routes/meta/seed.ts'
 import { copySystemData, provisionSystemTables } from './system-tables.ts'
 import { assertAdminRemains } from '../routes/meta/security.ts'
 import { errText, log } from './util.ts'
+import { SUMMARY_JOB } from './model/summary.ts'
+import { fillDateDimension } from './model/engine.ts'
 
 const q = (id: string): string => `"${id.replace(/"/g, '""')}"`
 const TYPES: EnvironmentType[] = ['production', 'sandbox', 'developer']
@@ -198,6 +200,21 @@ async function copyContent(s: CoreServices, src: EnvironmentRecord, dst: { id: s
       await copyRows(db, src.schema, dst.schema, def.source)
       // planner statistics for the copied rows (also what the admin console's row estimate reads)
       await db.exec(`ANALYZE ${q(dst.schema)}.${q(def.source)}`)
+    }
+  }
+  // summary tables (package K) keep their refresh schedules; a copy without rows refreshes them at once
+  await db.exec(
+    `INSERT INTO ${D('ab_schedules')} (id, name, description, cron, interval_seconds, time_zone, job_type, payload, enabled, misfire, built_in, next_run_at, created_by, created_on, modified_on)
+     SELECT id, name, description, cron, interval_seconds, time_zone, job_type, payload, enabled, misfire, false,
+            CASE WHEN enabled AND $2 = 'schema' THEN now() ELSE next_run_at END, created_by, now(), now()
+     FROM ${q(src.schema)}.${q('ab_schedules')} WHERE job_type = $1 AND NOT built_in`, [SUMMARY_JOB, mode],
+  )
+  // date dimensions are reference rows, not data: a schema copy fills them from their range
+  if (mode === 'schema') {
+    for (const def of defs) {
+      if (def.reporting?.kind !== 'date' || def.connectionId !== DEFAULT_CONNECTION_ID) continue
+      const r = def.reporting
+      await runInEnvironment(dst.id, () => fillDateDimension(s, null, def.id, r))
     }
   }
   if (mode === 'data') {

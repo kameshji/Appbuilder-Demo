@@ -27,7 +27,7 @@ flowchart TB
     Studio["Studio<br/>canvas, formula bar, properties"]
     Runtime["Runtime<br/>store, evaluator, host, player"]
     Fx["Fx engine<br/>lexer, parser, evaluator, functions"]
-    Controls["Controls registry<br/>renderers (shadcn/Radix, recharts, ...)"]
+    Controls["UI component registry<br/>renderers (shadcn/Radix, recharts, ...)"]
     Facade["Platform facade<br/>usePlatform, tables, apps, security"]
     Remote["Remote platform<br/>server mode: row cache, optimistic writes"]
     Demo["Demo platform<br/>demo mode: simulated, IndexedDB"]
@@ -102,7 +102,7 @@ A PHP gateway for shared hosting (D12) replaces the whole Server box and keeps t
 | --- | --- |
 | `src/contracts.ts` | The shared contract: `AppDef`, `ControlNode`, Fx types, `PropMeta`, `ControlType`. Changes need the architect's agreement. |
 | `src/fx/` | Formula engine, shared by browser and server. No React, no DOM, explicit `.ts` imports. `index.ts` exports `fx` (`check`, `evaluate`, `referencedNames`, `renameIdentifier`, `functions`, `enums`, `parseNamedFormulas`, `setUserFunctions`, `signatureAt`, `createEngine`); `engine.ts` the per-app engine instance (`createEngine`: its own user-defined functions and named formulas); `query/` the formula-to-query translator (Query v2, see `query-v2.md`). |
-| `src/controls/` | Control registry (`index.ts`), control components, `sets/` (Insert-pane order), `icon/` (lucide and animated icons). |
+| `src/controls/` | UI component registry (`index.ts`), the UI component renderers, `sets/` (Insert-pane order), `icon/` (lucide and animated icons). |
 | `src/components/ui/` | shadcn-style wrappers over Radix and other libraries. |
 | `src/platform/` | The platform facade (`index.ts`), `remote.ts` (server mode), `core.ts` (demo mode), `contracts.ts` (platform types), `http.ts` (Data API types, shared with the server), `query.ts` (Query v2 plan types, shared with the server and `src/fx/query`), `rowfilter.ts`, `storage.ts`. |
 | `src/runtime/` | App stores (`createAppStore`: definition and runtime state; the shared `useStore` plus one per app tab), store context, evaluator, Fx host, player (`RunApp`, `RenderNode`), design sizes, autosave session. |
@@ -116,7 +116,7 @@ A PHP gateway for shared hosting (D12) replaces the whole Server box and keeps t
 | `server/routes/meta/` | Metadata routes (apps, tables, connections, security, solutions, files), packages (YAML), seed data, legacy migration. |
 | `server/connectors/{postgres,mysql,files,gsheets}/` | The connectors. `postgres/db.ts` is also the system store's pool (`SqlDb`, units of work). |
 | `server/vite-plugin.mjs` | Mounts the same API handler into the Vite dev and preview servers. |
-| `scripts/` | installers (`setup-postgres.ps1` and `setup-postgres.sh`: PostgreSQL role and database; `setup-offline.ps1`, `start.ps1`), `gen-animated-icons.mjs`, `gen-notices.mjs`, `docs/` (reference generators and their test), `docs-shots/` (screenshot capture, developer tool). |
+| `scripts/` | installers (`install/`: the Windows and Linux installers, their manifest and the offline bundle, see `release-process.md`; `release/`: `npm run release`, signing; `setup-postgres.ps1` and `setup-postgres.sh`: PostgreSQL role and database; `setup-offline.ps1`, `start.ps1`), `gen-animated-icons.mjs`, `gen-notices.mjs`, `docs/` (reference generators and their test), `docs-shots/` (screenshot capture, developer tool). |
 | `docs/` | Documentation (see `docs/README.md` for the rules). |
 
 ## Module boundaries: who may import what
@@ -129,7 +129,7 @@ contracts.ts   <- imported by everyone (types only)
 fx             -> relative .ts files in src/fx; `import type` only from contracts.ts, platform/query.ts, platform/http.ts.
                   No React, no DOM, no packages, no runtime / studio / portal / controls / platform code (enforced by a test).
 platform       -> contracts, fx values where needed. Never imports studio, portal, controls.
-controls       -> contracts, components/ui, platform types and a few calls (data table, Form, attachment controls), runtime attachment helpers
+controls       -> contracts, components/ui, platform types and a few calls (data table, Form, attachment UI components), runtime attachment helpers
 components/ui  -> third-party UI libraries, lib/utils. Nothing from the app.
 runtime        -> fx, controls (registry), platform (through runtime/data.ts), contracts
 studio         -> runtime, controls, fx, platform, components/ui, portal (ProfileAvatar, theme, SizePicker), chat (ChatButton)
@@ -165,7 +165,7 @@ Specific rules:
 5. **Connectors know nothing about users or security**; security lives in `security.ts` and `data.ts` (see `connectors.md`).
 6. **Client security code only mirrors the server** (see `security-engine.md`). Never make a client-only decision that protects data.
 
-Known exceptions to keep in mind: a few controls import runtime helpers (`@/runtime/attachments`, `@/runtime/AttachmentCell`) for
+Known exceptions to keep in mind: a few UI components import runtime helpers (`@/runtime/attachments`, `@/runtime/AttachmentCell`) for
 attachment cells, the player (`src/runtime/RunApp.tsx`) imports the Studio's `Toasts`, the Studio command bar imports
 `ProfileAvatar` and `useTheme` from the portal, the animated icon (`AppIcon`) and the Studio's snapping (`studio/geo.ts`) read
 the user's preferences from `src/platform/preferences.ts` (reduce motion, snap and grid), and `src/platform/samples.ts` imports the sample app from `src/runtime/sample.ts` for seeding. These
@@ -205,14 +205,14 @@ Rules:
 
 - **Every property is a formula string that starts with `=`.** A literal is a formula too: text is `="Save"`, a number `=40`, a boolean
   `=true`, a colour `=RGBA(79, 70, 229, 1)` or `=Color.Red`, blank is `=Blank()`. There are no "plain" values, which keeps the
-  evaluator uniform. A property that is missing from `props` takes the control's default (`PropMeta.default`, itself a formula).
+  evaluator uniform. A property that is missing from `props` takes the UI component's default (`PropMeta.default`, itself a formula).
 - **Formulas are stored as text; today only the browser evaluates them.** The server stores and returns them. A formula can only
   affect data through the Data API with the caller's own session, so the server's security applies. The engine itself also runs on
   the server (rule 3) for the coming query pushdown, table events and jobs (P0 packages D and G).
-- `ControlNode.type` is a key in the control registry (`controls.get(type)`); an unknown type makes the registry throw, so a
-  control type name is part of the stored format and must never be renamed.
-- `name` is unique across the whole app (not per screen) because formulas refer to controls by bare name (`TextInput1.Value`). Renaming a
-  control rewrites formulas with `fx.renameIdentifier` (only references, not strings or record labels).
+- `ControlNode.type` is a key in the UI component registry (`controls.get(type)`); an unknown type makes the registry throw, so a
+  UI component type name is part of the stored format and must never be renamed.
+- `name` is unique across the whole app (not per screen) because formulas refer to UI components by bare name (`TextInput1.Value`). Renaming a
+  UI component rewrites formulas with `fx.renameIdentifier` (only references, not strings or record labels).
 - `children` of a `Gallery` are the **row template**, evaluated once per item with `ThisItem` in scope. Other containers (`Container`,
   `Row`, `Column`, `Grid`, `Card`, `Dialog`, `Sheet`, ...) hold direct children. Container flags are on `ControlType`
   (`isContainer`, `isTemplate`, `isOverlay`).
@@ -233,10 +233,10 @@ other's definitions; the Studio's formula bar uses the same instance for autocom
 evaluator's `resolveName(node, ctx, name)` looks names up in this order:
 
 1. `ThisItem`: the current gallery row (innermost gallery of the node's context).
-2. `Self` and `Parent`: a record of the control itself, or of its parent container.
+2. `Self` and `Parent`: a record of the UI component itself, or of its parent container.
 3. `App`: `{ Width, Height, DesignWidth, DesignHeight, Name, ActiveScreen }`; `User()` (a special name for the signed-in user's record);
    `Param:<name>` (a URL query parameter).
-4. A **control name** (`byName`): the record of that control (its evaluated properties and outputs, e.g. `TextInput1.Value`).
+4. A **UI component name** (`byName`): the record of that UI component (its evaluated properties and outputs, e.g. `TextInput1.Value`).
 5. A **screen context variable** (`UpdateContext`) of the screen the formula lives on.
 6. A **global variable** (`Set`).
 7. A **collection** (`Collect`).
@@ -244,7 +244,7 @@ evaluator's `resolveName(node, ctx, name)` looks names up in this order:
 9. A **platform table** (`isTable(name)`): its rows, from the platform cache.
 10. Otherwise undefined, which the engine reports as "Name isn't recognised".
 
-Names the maker cannot use for variables or controls (`ThisItem`, `ThisRecord`, `Self`, `Parent`, `App`, `User`, `true`, `false`,
+Names the maker cannot use for variables or UI components (`ThisItem`, `ThisRecord`, `Self`, `Parent`, `App`, `User`, `true`, `false`,
 function names, enum names) are reserved (`reserved` in the store's rename and add logic).
 
 **Dependency tracking.** Each evaluated property is a cache entry keyed `P|<nodeKey>|<prop>`. While a property computes, every read
@@ -253,15 +253,15 @@ is recorded in the current frame (`record(dep)`): other properties (`P|...`), ou
 and named formulas `N|<name>`. The frame becomes the entry's forward dependencies and the reverse index (`rdeps`) is updated. When the
 runtime state changes, `update(rt, env)` compares the previous and new state per key (`diffFlat`) and `invalidate(dep)` drops every
 entry that transitively depends on what changed. Each node has a version number that is bumped when its entries drop; `RenderNode`
-subscribes to its own node's version, so typing in one input re-renders only the controls that read it. A definition change that does
+subscribes to its own node's version, so typing in one input re-renders only the UI components that read it. A definition change that does
 not alter the structure (names, types, nesting) is adopted incrementally with `withApp`, which invalidates only the changed properties;
 a structural change builds a new evaluator.
 
 **Failure handling.** A formula that fails yields the property's default value and an error message shown in the Studio; it never throws
-into the control. Circular references are detected through the evaluation stack and reported as "Circular reference" (the default value
+into the UI component. Circular references are detected through the evaluation stack and reported as "Circular reference" (the default value
 is used). Action properties (`kind: 'action'`) are syntax-checked when read and only run when fired.
 
-**Events and the host.** A control calls `fire('OnSelect')`; the store's `fire(nodeId, event, ctx)` runs the action formula through
+**Events and the host.** A UI component calls `fire('OnSelect')`; the store's `fire(nodeId, event, ctx)` runs the action formula through
 `runFormula` in `/home/claude/appbuilder-demo/src/runtime/host.ts`. The host implements `FxHost`
 (`setVar`, `updateContext`, `collect`, `clear`, `remove`, `patch`, `navigate`, `back`, `notify`, `form` operations, `select`, `setFocus`,
 `launch`, `copy`, `trace`, `exit`, `refresh`) against a **copy** of the runtime state, so a failing chain leaves nothing half applied: on
@@ -320,7 +320,7 @@ users, sessions, the registry (`ab.environments`), access (`ab.environment_acces
 
 ### A write (insert, update, delete)
 
-1. A control or formula calls `Patch(...)`, `Collect(...)`, a form submit, or the portal grid. This reaches
+1. A UI component or formula calls `Patch(...)`, `Collect(...)`, a form submit, or the portal grid. This reaches
    `platform.tables.insert/update/delete`.
 2. **Client pre-validation** (`src/platform/remote.ts`): required and unique columns, type coercion, and the **mirrored privileges**
    (`grantOf`, `rowOk`, `assertWritable`). A refusal throws `PlatformError` immediately and nothing changes.
@@ -424,7 +424,13 @@ connections and the database pool, then exit.
   `data-api.md`. An app package import creates new instances. A solution package carries stable ids: importing it where the
   solution or its components exist is an in-place upgrade after a confirmed plan (one transaction); `asCopy` and packages without
   a solution id create new instances.
-- Not packaged: an installer for the Node server itself (Node must be installed), a Docker image, a PHP gateway (planned).
+- **Release package and installers** (P0 package L, `release-process.md`): `npm run release` builds a self-contained,
+  reproducible folder and ZIP (the web app, the server sources it imports, production `node_modules`, installers,
+  `SHA256SUMS`, optionally an Ed25519 signature). `scripts/install/windows/install.ps1` and `scripts/install/linux/install.sh`
+  install Node.js, PostgreSQL and the service (WinSW / systemd) and optionally Caddy for HTTPS; `appbuilder update` swaps
+  the app folder and rolls back on a failed health check (`server/core/update/`). Health, the rotating JSON file log,
+  usage and the diagnostics bundle live in `server/core/diagnostics/`.
+- Not packaged: a Docker image, MSI/WinGet packages, a PHP gateway (planned).
 
 ## Where to read next
 

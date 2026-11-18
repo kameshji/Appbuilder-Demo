@@ -152,8 +152,13 @@ function deleteOf(attrs: string[]): DeleteBehaviour | undefined {
  * Parses DBML-like text into NEW tables (ids new_*) and relationships, added to `into` (default: an empty model).
  * Names that already exist in `into` are reported and skipped.
  */
+/** longest line, and longest text, parseDbml reads */
+export const MAX_LINE = 4000
+export const MAX_TEXT = 2_000_000
+
 export function parseDbml(text: string, into: Model = { tables: [], relationships: [] }): DbmlResult {
   const warnings: string[] = []
+  if (text.length > MAX_TEXT) return { model: clone(into), warnings: [`The text is ${Math.round(text.length / 1e6)} MB; DBML imports read at most ${MAX_TEXT / 1e6} MB.`] }
   let model = clone(into)
   const existing = new Set(into.tables.map((t) => t.name.toLowerCase()))
   const src = braceLines(text.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')).split('\n')
@@ -165,6 +170,11 @@ export function parseDbml(text: string, into: Model = { tables: [], relationship
   for (const raw of src) {
     const line = raw.trim()
     if (!line) continue
+    // no real DBML line is this long; a crafted one would make the patterns below backtrack for seconds
+    if (line.length > MAX_LINE) {
+      warnings.push(`A line of ${line.length.toLocaleString('en')} characters was skipped (at most ${MAX_LINE.toLocaleString('en')}).`)
+      continue
+    }
     if (!cur) {
       const tm = /^Table\s+("?[\w.]+"?)(?:\s+as\s+\w+)?\s*(\[(.*)\])?\s*\{\s*$/i.exec(line)
       if (tm) {

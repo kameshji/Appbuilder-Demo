@@ -23,7 +23,10 @@ src/**/*.test.ts   server/**/*.test.ts   scripts/**/*.test.ts
 | Connectors | `server/connectors/postgres/sql.test.ts` and `server/connectors/mysql/sql.test.ts` (pure SQL builders, error mapping), `files/files.test.ts` (temp directory), `gsheets/gsheets.test.ts` (injected fake Google API) | Each connector in isolation | no |
 | Integration (PostgreSQL) | `server/connectors/postgres/postgres.integration.test.ts`, `server/core/{integration,fixes,hardening,admin,transactions,environments}.integration.test.ts`, `server/routes/meta/meta.integration.test.ts` | The PostgreSQL connector against a real server including SQL-versus-reference **parity**, pooled-connection settings and transactions; the whole HTTP API end to end (cookie jars per user, RBAC/RLS/CLS, attachments); units of work (a failed import or schema change leaves nothing behind); the metadata API; environments (access by header, isolation of same-named objects, create/copy/delete, locked production, in-place solution upgrade with rollback, per-environment boot migration, the upgrade from a version 4 database, `_env_` and `_v4_` databases) | **yes**, `APPBUILDER_TEST_DB` |
 | Integration (MySQL connector) | `server/connectors/mysql/mysql.integration.test.ts` | The MySQL connector (external databases) against MySQL/MariaDB including parity | **yes**, `APPBUILDER_TEST_MYSQL` |
-| Generated docs | `scripts/docs/generate.test.ts` | Staleness of `docs/reference/*.md` (below) | no |
+| Generated docs | `scripts/docs/generate.test.ts` | Staleness of `docs/reference/*.md` (below), the redirect stub `controls.md` | no |
+| Docs and naming guards (package M) | `scripts/docs-links.test.ts`, `scripts/naming.test.ts` | Every relative link and image in `docs/` and the top-level Markdown files exists; no "control" in user-facing text (registry labels, function signatures and summaries, the reference's hand-written parts, string literals and JSX text in `src/` and `server/`) | no |
+| Phase close (package M) | `server/core/phase-close.integration.test.ts`, `server/core/alm-model.integration.test.ts`, `src/platform/delete-rules.test.ts`, `src/portal/lookupSearch.test.ts` | Sign-in and email log retention, the schedule policy, directory visibility, export environment data, grouped aggregates over collaboration tables; solution upgrade in place and environment copies carrying unique pairs, reporting views, date dimensions, summary schedules and relationship changes; demo-mode delete behaviours; the lookup type-ahead plan | partly (`APPBUILDER_TEST_DB`) |
+| Security re-check (package M) | `server/core/security-p0.integration.test.ts`, `server/core/security-p0.test.ts` | Environment selection tampering, Query v2 plan and cursor tampering, hidden-column inference, collaboration spoofing, system-table writes, outbound host policy, crafted archives, zip bombs, DBML abuse, export escaping, API key reach (docs/internal/security-review-p0.md) | partly |
 | Licence classifier | `scripts/licences.test.ts` | The licence allow-list logic used by `npm run licences` and `npm run notices` (SPDX expressions, arrays, missing, exceptions, forbidden imports) | no |
 
 Test data: `server/routes/meta/fixtures.ts` is the legacy sample fixture; seed data is in `server/routes/meta/seed.ts` with
@@ -109,7 +112,7 @@ targets not yet run in CI. The MySQL connector passes on MariaDB 10.11; MySQL 8.
 | Change | Test it with |
 | --- | --- |
 | New Fx function | A case in the matching `src/fx/*.test.ts` using `val`/`err` (blank, error, laziness). Then `npm run docs:gen`. |
-| New control | Logic helpers in a unit test; manual check in the Studio (design and run mode, light and dark); `npm run docs:gen`. |
+| New UI component | Logic helpers in a unit test; manual check in the Studio (design and run mode, light and dark); `npm run docs:gen`. |
 | Condition semantics (`condition.ts` or a `sql.ts`) | Unit tests in `postgres/sql.test.ts` (and `mysql/sql.test.ts`), **and a new case in the parity lists** of `postgres.integration.test.ts` and `mysql.integration.test.ts`. |
 | Security rule (`security.ts`, `data.ts`) | A role table with expected rows in `unit.test.ts` or `security.test.ts`, and a flow in `server/core/integration.test.ts` over HTTP. |
 | New route | A route test in `server/routes/meta/*.test.ts` through the harness (status codes and error codes for each auth level), then `data-api.md`. |
@@ -163,13 +166,13 @@ get a build green. A real denied licence (AGPL, GPL, and so on) is not a candida
 
 Reference pages that can come from the code are generated, and a test fails when they are out of date:
 
-- `npm run docs:gen` (which is `vitest run scripts/docs`) writes `docs/reference/formulas.md` and `docs/reference/controls.md` from
-  `fx.functions()`, `fx.enums()` and the control registry, using the hand-maintained parts in
+- `npm run docs:gen` (which is `vitest run scripts/docs`) writes `docs/reference/formulas.md` and `docs/reference/ui-components.md` from
+  `fx.functions()`, `fx.enums()` and the UI component registry, using the hand-maintained parts in
   `/home/claude/appbuilder-demo/scripts/docs/formulas.ts` (function categories) and
   `/home/claude/appbuilder-demo/scripts/docs/controls.ts` (one-line descriptions and notes). Write mode is on when `DOCS_WRITE=1` or the
   command is started through `npm run docs:gen`.
 - `npm test` runs `scripts/docs/generate.test.ts` in check mode: it fails with "`docs/reference/... is stale. Run npm run docs:gen`
-  and commit the result" plus the first differing line, fails when a control has no description, and checks that generation is
+  and commit the result" plus the first differing line, fails when a UI component has no description, and checks that generation is
   deterministic.
 - Never edit a generated file by hand (it starts with a `GENERATED FILE` notice). Change the code or the hand-written part in
   `scripts/docs/` and regenerate.
@@ -192,6 +195,29 @@ Unit tests cannot show what a maker sees. Two kinds of browser checks are used:
    (one with a database, one for the setup wizard). Treat any puppeteer script you write as a developer tool in `scripts/`, with
    sandbox values only (a test email such as `admin@example.test`, an obviously fake password), never against real data, and never
    as a replacement for a unit test. `window.__ab` (store, ui, evaluator) is available in the page for assertions.
+
+## Installers, releases and the updater (package L)
+
+- `npx vitest run server/core/update server/core/diagnostics scripts/install`: ZIP writer/reader, checksums, Ed25519
+  signatures, version order, the updater flow with fake service control (swap, rollback, refusals), redaction (every
+  secret shape), the rotating file log, the diagnostics bundle, the manifest; `ops.integration.test.ts` runs the health,
+  logs, usage, diagnostics and updates routes against PostgreSQL.
+- Windows installer (any OS with PowerShell 7 and Pester 5): `pwsh -NoProfile -Command "Invoke-Pester -Path
+  scripts/install/windows/tests"`; set `APPBUILDER_RELEASE_DIR=release/appbuilder-<version>` (after `npm run release`) to
+  include the full `-WhatIf` run of `install.ps1`/`uninstall.ps1` with stubbed Windows commands. Lint with
+  PSScriptAnalyzer (`PSUseCompatibleSyntax`/`Commands`/`Types` for Windows PowerShell 5.1).
+- Linux installer end to end (Docker with privileged containers): `bash scripts/install/tests/linux-e2e.sh ubuntu:24.04`
+  (also `ubuntu:22.04`, `debian:12`); behind an intercepting proxy set `https_proxy` and `E2E_CA_FILE`. About 3 minutes.
+- Screens: `scripts/docs-shots/operations.mjs` (Server logs, Usage, Updates with an uploaded release).
+
+## Phase exit checks
+
+`node scripts/exit-check/p0.mjs` runs the automatable Phase 0 exit checks against a freshly started server on an empty
+database it creates (`appbuilder_exitcheck`, dropped afterwards): a million rows through the API with time limits, the
+headless browser check (`scripts/bench/browser-check.mjs`; needs `npm run build`, puppeteer-core and Chrome), the
+delegation error, the restore drill, reset + TOTP + sessions against `server/core/identity/fake-smtp.ts`, and a second
+environment. It prints a Markdown table (copied into `docs/plan/p0-spec.md`); `EXIT_SKIP=browser,drill` skips the slow
+parts. Sandbox values only.
 
 ## CI
 

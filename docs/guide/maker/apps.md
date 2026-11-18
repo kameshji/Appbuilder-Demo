@@ -1,6 +1,6 @@
 # Apps
 
-An app is a set of screens with controls, formulas and links to tables. Apps are listed on the **Apps** page.
+An app is a set of screens with UI components, formulas and links to tables. Apps are listed on the **Apps** page.
 
 ![Apps page](../../images/portal-apps.png)
 
@@ -17,14 +17,14 @@ An app is a set of screens with controls, formulas and links to tables. Apps are
 
 - **Start with data**: on Home, pick a table and a design size. Appbuilder creates "<Table> app" with the data source
   added and screens already connected to the table:
-  - desktop and landscape sizes: a table control and an edit form side by side;
+  - desktop and landscape sizes: a table UI component and an edit form side by side;
   - tablet portrait: the table above the form;
   - phone: a list screen (a gallery with a **+ New** button) and a separate form screen with **< Back**; tapping a row
     opens the form, saving or cancelling goes back to the list.
 
 ![Start with data](../../images/home-start-with-data.png)
 
-A table control with an empty **Columns** property shows every column, including system ones (id, createdOn and so on). Set **Columns** to the ones you want.
+A table UI component with an empty **Columns** property shows every column, including system ones (id, createdOn and so on). Set **Columns** to the ones you want.
 
 ## Phone and tablet apps
 
@@ -35,7 +35,7 @@ A portrait app (phone, tablet portrait) is designed in the Studio at its size, l
   centred on a neutral background;
 - a Fit app is always scaled uniformly.
 
-Changing the size of an existing app in **App settings** keeps every control where it is: check anchors and layouts
+Changing the size of an existing app in **App settings** keeps every UI component where it is: check anchors and layouts
 after switching between a desktop and a phone size. Package export and import keep the size.
 
 ## Open, run, rename, duplicate, delete

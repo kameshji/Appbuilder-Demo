@@ -148,6 +148,10 @@ method, browser and address), newest first, filter by result. People see their o
 Sign-in history. Reasons: wrong password, unknown email, account disabled, too many attempts, wrong code, code used
 twice, second step locked, invalid reset code, API key problems (unknown, revoked, expired, address not allowed).
 
+Entries older than **180 days** are deleted every night by the "Sign-in log retention" schedule, and email delivery log
+entries older than **90 days** by "Email delivery log retention" (both on the Jobs page of the Default environment; only
+install administrators can change the number of days or switch them off). See [Jobs](jobs.md#schedules-and-retention).
+
 ## Sessions
 
 People: **Settings > Profile > Active sessions** lists every browser signed in (device, address, when signed in, last

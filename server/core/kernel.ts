@@ -16,7 +16,7 @@ import { createOutbox, snapshot, ROW_ID_CAP } from './outbox.ts'
 import {
   computedProblems, createTableEvents, EVENT_JOB, FORMULA_BACKFILL_JOB, ROLLUP_RECOMPUTE_JOB, ROLLUP_RECONCILE_JOB,
 } from './table-events.ts'
-import { currentEnvironment } from './env-context.ts'
+import { DEFAULT_ENVIRONMENT_ID, currentEnvironment } from './env-context.ts'
 import { DEFAULT_CONNECTION_ID } from './connections.ts'
 import { keyIndexesSql, kindOf, quoteId } from '../connectors/postgres/sql.ts'
 import { errText } from './util.ts'
@@ -26,12 +26,23 @@ export const DELETE_FILES_JOB = 'attachments.delete-files'
 export const SWEEP_JOB = 'attachments.sweep'
 export const OUTBOX_RETENTION_JOB = 'outbox.retention'
 export const AUDIT_RETENTION_JOB = 'audit.retention'
+/** install-wide log retention (P0 package M): run in the Default environment only */
+export const SIGNIN_LOG_RETENTION_JOB = 'identity.signin-log.retention'
+export const MAIL_LOG_RETENTION_JOB = 'identity.mail-log.retention'
 
 const days = (v: string | undefined, d: number): number => {
   const n = Number(v)
   return Number.isInteger(n) && n >= 1 && n <= 3650 ? n : d
 }
 export const DEFAULT_OUTBOX_DAYS = days(process.env.APPBUILDER_OUTBOX_RETENTION_DAYS, 14)
+export const DEFAULT_SIGNIN_LOG_DAYS = days(process.env.APPBUILDER_SIGNIN_LOG_RETENTION_DAYS, 180)
+export const DEFAULT_MAIL_LOG_DAYS = days(process.env.APPBUILDER_MAIL_LOG_RETENTION_DAYS, 90)
+
+/** install-wide built-in schedules: created in the Default environment only */
+export const INSTALL_SCHEDULES: BuiltinSchedule[] = [
+  { id: 'sched_signin_log_retention', name: 'Sign-in log retention', description: 'Deletes sign-in log entries (the whole install) older than the configured number of days.', cron: '53 3 * * *', jobType: SIGNIN_LOG_RETENTION_JOB, payload: { days: DEFAULT_SIGNIN_LOG_DAYS }, enabled: true },
+  { id: 'sched_mail_log_retention', name: 'Email delivery log retention', description: 'Deletes email delivery log entries (recipient, subject, status; the whole install) older than the configured number of days.', cron: '57 3 * * *', jobType: MAIL_LOG_RETENTION_JOB, payload: { days: DEFAULT_MAIL_LOG_DAYS }, enabled: true },
+]
 
 export const BUILTIN_SCHEDULES: BuiltinSchedule[] = [
   { id: 'sched_outbox_retention', name: 'Outbox, run log and job retention', description: 'Deletes dispatched outbox rows, event run log entries and finished jobs older than the configured number of days.', cron: '17 3 * * *', jobType: OUTBOX_RETENTION_JOB, payload: { days: DEFAULT_OUTBOX_DAYS, eventRunDays: 30, jobDays: 14 }, enabled: true },
@@ -93,7 +104,7 @@ export function createKernel(deps: KernelDeps) {
   const builtinsDone = new Set<string>()
   async function ensureBuiltins(env: EnvironmentRef): Promise<void> {
     if (builtinsDone.has(env.id)) return
-    await jobs.schedules.ensureBuiltins(BUILTIN_SCHEDULES)
+    await jobs.schedules.ensureBuiltins(env.id === DEFAULT_ENVIRONMENT_ID ? [...BUILTIN_SCHEDULES, ...INSTALL_SCHEDULES] : BUILTIN_SCHEDULES)
     builtinsDone.add(env.id)
   }
 
@@ -148,6 +159,7 @@ export function createKernel(deps: KernelDeps) {
 
   jobs.register<{ tableId?: string; column?: string }>({
     type: ROLLUP_RECONCILE_JOB,
+    schedule: 'custom',
     description: 'Recomputes rollup columns from all their rows (all rollups, or one table / column).',
     concurrency: 1,
     timeoutMs: 60 * 60_000,
@@ -208,6 +220,7 @@ export function createKernel(deps: KernelDeps) {
 
   jobs.register<{ graceMinutes: number }>({
     type: SWEEP_JOB,
+    schedule: 'custom',
     description: 'Removes attachments whose table, row or cell no longer references them.',
     concurrency: 1,
     timeoutMs: 60 * 60_000,
@@ -217,6 +230,7 @@ export function createKernel(deps: KernelDeps) {
 
   jobs.register<{ days: number; eventRunDays: number; jobDays: number }>({
     type: OUTBOX_RETENTION_JOB,
+    schedule: 'custom',
     description: 'Deletes old outbox rows, event run log entries and finished jobs.',
     concurrency: 1,
     parse: (raw) => {
@@ -233,6 +247,27 @@ export function createKernel(deps: KernelDeps) {
     parse: (raw) => ({ days: numIn(obj(raw ?? {}).days, 730, 30, 36500) }),
     handler: async (p) => ({ deleted: (await db().exec(`DELETE FROM ${q(currentEnvironment().schema)}."ab_audit" WHERE at < now() - make_interval(days => $1)`, [p.days])).affectedRows }),
   })
+
+  // install-wide logs in schema ab (packages I): only from the Default environment, whose schedules install
+  // administrators own; the tables may be missing in an old or partial install
+  for (const [type, table, column, def, what] of [
+    [SIGNIN_LOG_RETENTION_JOB, 'signin_log', 'at', 180, 'sign-in log entries'],
+    [MAIL_LOG_RETENTION_JOB, 'mail_log', 'created_on', 90, 'email delivery log entries'],
+  ] as const) {
+    jobs.register<{ days: number }>({
+      type,
+      description: `Deletes ${what} of the whole install older than the configured number of days.`,
+      concurrency: 1,
+      schedule: 'install',
+      parse: (raw) => ({ days: numIn(obj(raw ?? {}).days, def, 7, 3650) }),
+      handler: async (p) => {
+        if (currentEnvironment().id !== DEFAULT_ENVIRONMENT_ID) return { skipped: 'Runs in the Default environment only.' }
+        const ok = (await db().query<{ ok: boolean }>('SELECT to_regclass($1) IS NOT NULL AS ok', [`ab.${table}`]))[0]?.ok
+        if (!ok) return { skipped: `ab.${table} does not exist.` }
+        return { deleted: (await db().exec(`DELETE FROM "ab".${q(table)} WHERE ${q(column)} < now() - make_interval(days => $1)`, [p.days])).affectedRows }
+      },
+    })
+  }
 
   const q = (s: string) => `"${s}"`
 

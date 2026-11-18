@@ -8,11 +8,31 @@ Appbuilder is a desktop low-code app builder. You make apps in a maker portal, t
 - [Getting started](docs/guide/getting-started.md): install and first steps
 - [Admin guide](docs/admin/README.md): users, roles, connections, backups and upgrades
 - [Architecture](docs/dev/architecture.md): how the code is organised
-- [Formula reference](docs/reference/formulas.md) and [controls reference](docs/reference/controls.md)
+- [Formula reference](docs/reference/formulas.md) and [UI components reference](docs/reference/ui-components.md)
 - [Changelog](CHANGELOG.md) and [third-party notices](THIRD-PARTY-NOTICES.md)
 - [Security policy](SECURITY.md) and [contributing guide](CONTRIBUTING.md)
 
-## Requirements
+## Install (Windows or Linux)
+
+Download a release (`appbuilder-<version>.zip`), unpack it, and run one script. It installs Node.js, PostgreSQL 17,
+Appbuilder as a service and, if you ask for it, HTTPS with Caddy:
+
+```powershell
+# Windows, in an elevated PowerShell
+powershell -ExecutionPolicy Bypass -File .\scripts\install\windows\install.ps1            # add -Https Lan -OpenFirewall for the office network
+```
+
+```bash
+# Ubuntu 22.04/24.04, Debian 12
+sudo bash scripts/install/linux/install.sh                                                  # add --https domain --domain apps.example.com
+```
+
+Then create the first administrator at `http://localhost:5174/` with the setup code the installer points to. Details,
+offline installs and sizing: [Installation](docs/admin/installation.md). Updates: `appbuilder update <zip>`
+([Upgrades](docs/admin/upgrades.md)). Build a release yourself with `npm run release`
+([Release process](docs/dev/release-process.md)).
+
+## Requirements (running from source)
 
 - Node.js 22.18 or newer. `npm start` runs the TypeScript server directly, which needs this version.
 - PostgreSQL 15 or newer (17 recommended) for the app data, either on this PC or reachable from it.
@@ -72,7 +92,7 @@ The script checks for Node.js 22.18 or newer and git, clones or updates the repo
 ## Project layout
 
 - `src/fx/`: the formula engine (lexer, parser, evaluator and the built-in functions)
-- `src/controls/`: the control types that can be placed on a screen
+- `src/controls/`: the UI component types that can be placed on a screen
 - `src/components/ui/`: shared UI components
 - `src/platform/`: apps, tables, storage, packages and solutions; the storage adapters (local folder or browser)
 - `src/portal/`: the maker portal, where apps are listed and created
@@ -94,7 +114,7 @@ This runs the Vitest suite. Integration tests run when `APPBUILDER_TEST_DB` (a s
 
 ## Known limits
 
-- Runs on one PC: the server listens on 127.0.0.1 only. Hosting for several PCs (a PHP gateway on shared hosting) is planned.
+- The server listens on 127.0.0.1 only; other PCs reach it through the HTTPS reverse proxy (Caddy) the installers set up on request. A PHP gateway for shared hosting is planned.
 - Security (sign-in, roles, row filters, column access) is enforced by the local server. The browser-only demo page simulates it and is not secure.
 - Writes are optimistic: the screen updates before the server confirms; a refused write is rolled back with an error.
 - Formulas over tables run in the database (filter, search, sort, paging, exact counts, totals), so tables of a million rows work; a
@@ -102,5 +122,5 @@ This runs the Vitest suite. Integration tests run when `APPBUILDER_TEST_DB` (a s
   queried over their first 5,000 rows.
 - Connectors: PostgreSQL, MySQL/MariaDB, data files (CSV, Excel, JSON; device only) and Google Sheets. Google Sheets has not been tested against a live Google account yet.
 - Verified on PostgreSQL 16 (the MySQL connector on MariaDB 10.11). One environment per install for now.
-- Flows (automation) are not built yet. No installer, auto-update, built-in backup, password-reset email or two-factor sign-in yet.
+- Flows (automation) are not built yet. Updates are installed by `appbuilder update` from a release file you bring (no automatic download). The Windows installer has not yet been run on a real Windows machine (see [Release process](docs/dev/release-process.md#what-was-tested)).
 - The run window needs a normal browser window. Where pop-ups are blocked, it falls back to a preview inside the page.

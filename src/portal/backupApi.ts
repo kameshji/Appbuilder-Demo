@@ -59,6 +59,17 @@ export const runRestoreTest = () => call<BackupOp>('POST', '/backups/restore-tes
 export const uploadBackup = (file: File) => call<BackupInfo>('POST', '/backups/upload', undefined, { raw: file, query: { name: file.name } })
 export const reauthenticate = (password: string) => call<unknown>('POST', '/auth/reauth', { password })
 
+/** export environment data (package M): a ZIP of CSVs of the current environment; needs a recent sign-in like a backup download */
+export async function downloadEnvironmentData(): Promise<void> {
+  const t = await call<{ url: string }>('POST', '/admin/export-data/ticket', {})
+  const a = document.createElement('a')
+  a.href = t.url
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
 /** a one-use download link (needs a recent sign-in: ApiError serverCode "reauth_required" otherwise) */
 export async function downloadBackup(id: string): Promise<void> {
   const t = await call<{ ticket: string; url: string }>('POST', `/backups/${enc(id)}/download-ticket`, {})

@@ -229,7 +229,7 @@ export const behaviourFns: FnDef[] = [
     c.host!.notify(msg, kind)
     return null
   }, 'behaviour'),
-  def('Reset', 'Reset(control)', 'Puts an input control back to its default value.', 1, 1, (c) => {
+  def('Reset', 'Reset(component)', 'Puts an input UI component back to its default value.', 1, 1, (c) => {
     c.host!.reset(c.nameOf(0))
     return null
   }, 'behaviour'),
@@ -242,8 +242,8 @@ export const behaviourFns: FnDef[] = [
   def('NewForm', 'NewForm(Form)', 'Switches a form to New mode with empty fields.', 1, 1, (c) => { c.host!.form('new', c.nameOf(0)); return null }, 'behaviour'),
   def('EditForm', 'EditForm(Form)', 'Switches a form to Edit mode.', 1, 1, (c) => { c.host!.form('edit', c.nameOf(0)); return null }, 'behaviour'),
   def('ViewForm', 'ViewForm(Form)', 'Switches a form to View mode.', 1, 1, (c) => { c.host!.form('view', c.nameOf(0)); return null }, 'behaviour'),
-  def('Select', 'Select(control)', 'Runs the OnSelect of a control.', 1, 1, (c) => { c.host!.select(c.nameOf(0)); return null }, 'behaviour'),
-  def('SetFocus', 'SetFocus(control)', 'Moves the keyboard focus to a control.', 1, 1, (c) => { c.host!.setFocus(c.nameOf(0)); return null }, 'behaviour'),
+  def('Select', 'Select(component)', 'Runs the OnSelect of a UI component.', 1, 1, (c) => { c.host!.select(c.nameOf(0)); return null }, 'behaviour'),
+  def('SetFocus', 'SetFocus(component)', 'Moves the keyboard focus to a UI component.', 1, 1, (c) => { c.host!.setFocus(c.nameOf(0)); return null }, 'behaviour'),
   def('Launch', 'Launch(url)', 'Opens a web address.', 1, 1, (c) => { c.host!.launch(c.text(0)); return null }, 'behaviour'),
   def('Download', 'Download(url)', 'Starts a download from a web address.', 1, 1, (c) => { c.host!.launch(c.text(0)); return null }, 'behaviour'),
   def('Copy', 'Copy(text)', 'Copies text to the clipboard.', 1, 1, (c) => { c.host!.copy(c.text(0)); return null }, 'behaviour'),

@@ -70,6 +70,11 @@ A rollup counts or totals the related rows of another table: the rows whose **lo
 The value is updated a moment after a related row is added, changed, moved to another invoice or deleted (apps refresh it
 shortly after a save), and every hour a check repairs anything that went wrong. Both tables must be in the default database.
 
+**Who sees the total.** A rollup (and a formula column) is calculated by the system over **all** related rows, also rows
+and columns some people may not open, and everyone who can see the column sees the result. If the related rows are
+private (people see only their own lines, a row rule, a hidden column), limit the rollup column in the table's column
+security. The rollup editor reminds you.
+
 ![Rollups](../../images/events-rollups.png)
 
 ### Events

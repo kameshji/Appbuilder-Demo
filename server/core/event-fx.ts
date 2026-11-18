@@ -43,9 +43,9 @@ export const ALLOWED_ACTIONS: Record<FormulaRole, string[]> = {
 const WHY: Record<string, string> = {
   Navigate: 'changes the screen of an app', Back: 'changes the screen of an app',
   Notify: 'shows a message inside an app; in an after-event use NotifyUser(user, message)',
-  Reset: 'works on controls of an app', SubmitForm: 'works on controls of an app', ResetForm: 'works on controls of an app',
-  NewForm: 'works on controls of an app', EditForm: 'works on controls of an app', ViewForm: 'works on controls of an app',
-  Select: 'works on controls of an app', SetFocus: 'works on controls of an app',
+  Reset: 'works on UI components of an app', SubmitForm: 'works on UI components of an app', ResetForm: 'works on UI components of an app',
+  NewForm: 'works on UI components of an app', EditForm: 'works on UI components of an app', ViewForm: 'works on UI components of an app',
+  Select: 'works on UI components of an app', SetFocus: 'works on UI components of an app',
   Launch: "works in the user's browser", Copy: "works in the user's browser", Download: "works in the user's browser", Exit: "works in the user's browser",
   Refresh: 'reloads data inside an app (table events always read current data)',
   UpdateContext: 'sets screen variables, which exist only in apps (use Set)',

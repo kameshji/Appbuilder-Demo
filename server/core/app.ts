@@ -18,6 +18,7 @@ import { metaRoutes } from '../routes/meta/index.ts'
 import { errText, log } from './util.ts'
 import { runInEnvironment } from './env-context.ts'
 import { notificationSink } from './kernel.ts'
+import { registerExportRoutes } from './export-data.ts'
 import { kernelRoutes } from './kernel-routes.ts'
 import { backupRoutes } from './backup/routes.ts'
 import { collabRoutes } from './collab-routes.ts'
@@ -27,6 +28,8 @@ import { wireLive } from './live/wiring.ts'
 import { bridgeOutbox } from './live/changes.ts'
 import { createNotificationService, notificationRoutes } from './notifications.ts'
 import { identityRoutes } from './identity/routes.ts'
+import { diagnosticsRoutes } from './diagnostics/routes.ts'
+import { updateRoutes } from './update/routes.ts'
 
 export interface AppServer {
   services: CoreServices
@@ -95,10 +98,15 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   attachmentRoutes(router, services)
   metaRoutes(router, services)
   kernelRoutes(router, services)
+  // export environment data (package M): a ZIP of CSVs, streamed, administrators after a recent sign-in
+  registerExportRoutes(router, services)
   // backups and restores (package J): progress goes to install administrators over the hub
   backupRoutes(router, services)
   services.backup.setLive(live)
   collabRoutes(router, services)
+  // operations (package L): health, server logs, usage, diagnostics bundle, staged updates
+  diagnosticsRoutes(router, services, live)
+  updateRoutes(router, services)
   // table events' NotifyUser goes to the in-app notifications when they are available
   services.kernel.events.setNotificationSink(notificationSink(services))
   if (opts.boot !== false) {

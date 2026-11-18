@@ -13,6 +13,7 @@ import {
   uniqueIdentifier,
 } from './util.ts'
 import { FILES_CONNECTION_ID, audit, ensureFilesConnection, friendly, grantDefaults, resolveConnection, toRef } from './tables-core.ts'
+import { assertOutboundHost, hostProblem } from '../../core/net-policy.ts'
 
 const KINDS: ConnectorKind[] = ['postgres', 'mysql', 'files', 'gsheets']
 
@@ -41,6 +42,9 @@ function cleanSettings(kind: ConnectorKind, raw: unknown, base: Record<string, s
     const port = Number(out.port)
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw invalid('The port must be a number between 1 and 65535.', 'settings.port')
     if (/\s/.test(out.host)) throw invalid('The host must not contain spaces.', 'settings.host')
+    // outbound policy (net-policy.ts): never link-local / metadata / unspecified targets
+    const problem = hostProblem(out.host)
+    if (problem) throw invalid(problem, 'settings.host')
   }
   if (kind === 'gsheets' && !out.spreadsheetId) throw invalid('The spreadsheet URL or id is required.', 'settings.spreadsheetId')
   return out
@@ -68,6 +72,8 @@ async function testAndStore(s: Services, id: string): Promise<{ ok: boolean; mes
   let ok = false
   let message: string
   try {
+    // the host's addresses are checked against the outbound policy before anything connects
+    if ((rec.connector === 'postgres' || rec.connector === 'mysql') && rec.id !== DEFAULT_CONNECTION_ID && rec.settings?.host) await assertOutboundHost(String(rec.settings.host), 'Connection')
     const connector = await s.connections.get(id)
     const r = await connector.test()
     ok = r.ok

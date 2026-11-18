@@ -512,7 +512,10 @@ export class V2Builder {
     const t = tableId(this.d, this.def)
     const qc = (c: ColumnDef) => quoteId(c.name)
     const groupCols = a.groupBy.map((g) => this.cols.get(g))
-    const [N, I] = this.natural('x.')
+    // no alias for the table: a row filter's correlated semi-joins (the core data model's "regarding" rule) name the
+    // outer row by the table's qualified name, which an alias would hide (PostgreSQL 42P01)
+    const x = `${t}.`
+    const [N, I] = this.natural(x)
     const zero = (c: ColumnDef): string => {
       switch (kindOf(c.type)) {
         case 'text': return "''"
@@ -523,12 +526,12 @@ export class V2Builder {
       }
     }
     const gkey = (c: ColumnDef, ref: string) => (kindOf(c.type) === 'text' ? fold(this.d, ref) : ref)
-    const gsel = groupCols.map((c, i) => `${gkey(c, `x.${qc(c)}`)} AS "__g${i}"`)
-    const msel = a.measures.map((m, i) => `${this.measureSql(m, (c) => `x.${qc(c)}`)} AS "__m${i}"`)
-    const g = `SELECT ${[...gsel, `min(${N}) AS "__fn"`, ...msel].join(', ')} FROM ${t} AS x WHERE ${W} GROUP BY ${groupCols.map((_, i) => i + 1).join(', ')}`
-    const join = groupCols.map((c, i) => `(x.${qc(c)} IS NULL) = (g."__g${i}" IS NULL) AND COALESCE(${gkey(c, `x.${qc(c)}`)}, ${zero(c)}) = COALESCE(g."__g${i}", ${zero(c)})`)
-    const f = `SELECT DISTINCT ON (${groupCols.map((_, i) => `g."__g${i}"`).join(', ')}) g.*, ${groupCols.map((c, i) => `x.${qc(c)} AS "__v${i}"`).join(', ')}, ${I} AS "__fid"
-      FROM g JOIN ${t} AS x ON ${join.join(' AND ')} AND ${N} = g."__fn" WHERE ${W}
+    const gsel = groupCols.map((c, i) => `${gkey(c, `${x}${qc(c)}`)} AS "__g${i}"`)
+    const msel = a.measures.map((m, i) => `${this.measureSql(m, (c) => `${x}${qc(c)}`)} AS "__m${i}"`)
+    const g = `SELECT ${[...gsel, `min(${N}) AS "__fn"`, ...msel].join(', ')} FROM ${t} WHERE ${W} GROUP BY ${groupCols.map((_, i) => i + 1).join(', ')}`
+    const join = groupCols.map((c, i) => `(${x}${qc(c)} IS NULL) = (g."__g${i}" IS NULL) AND COALESCE(${gkey(c, `${x}${qc(c)}`)}, ${zero(c)}) = COALESCE(g."__g${i}", ${zero(c)})`)
+    const f = `SELECT DISTINCT ON (${groupCols.map((_, i) => `g."__g${i}"`).join(', ')}) g.*, ${groupCols.map((c, i) => `${x}${qc(c)} AS "__v${i}"`).join(', ')}, ${I} AS "__fid"
+      FROM g JOIN ${t} ON ${join.join(' AND ')} AND ${N} = g."__fn" WHERE ${W}
       ORDER BY ${groupCols.map((_, i) => `g."__g${i}"`).join(', ')}, ${I}`
     const outSel: string[] = []
     groupCols.forEach((c, i) => {

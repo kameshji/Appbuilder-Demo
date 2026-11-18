@@ -100,7 +100,7 @@ From [docs/README.md](docs/README.md):
 4. Plain English, short sentences. Developer pages quote real file paths.
 5. Security statements must match the code and the security tests. If you change `server/core/security.ts` or how it is enforced,
    update [security-engine.md](docs/dev/security-engine.md) in the same commit.
-6. Adding a control needs a one-line description in `scripts/docs/controls.ts`; adding an Fx function needs a category in
+6. Adding a UI component needs a one-line description in `scripts/docs/controls.ts`; adding an Fx function needs a category in
    `scripts/docs/formulas.ts`.
 
 ## Definition of done

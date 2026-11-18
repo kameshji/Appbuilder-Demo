@@ -145,5 +145,7 @@ other databases without an index. **Check data** also finds text columns whose v
 ## Demo mode
 
 The designer works on the browser workspace: drafts, layout, patterns, imports from CSV and DBML, checks and exports.
-Applying runs the changes one after the other (no transaction, no backup). Delete behaviours are recorded but enforced
-only by the server; reporting views, summary tables, unique pairs, rollups and database imports need the local server.
+Applying runs the changes one after the other (no transaction, no backup). Delete behaviours (restrict, cascade, set
+blank) are enforced in the browser too, with the same rules as the server: a refused delete changes nothing, and a
+cascade needs permission to delete every child row. Validation rules (table events) are not checked in demo mode.
+Reporting views, summary tables, unique pairs, rollups and database imports need the local server.

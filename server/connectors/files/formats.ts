@@ -8,6 +8,7 @@ import {
   SYSTEM_BY_LOWER, SYSTEM_COLUMNS, UUID_RE, inferColumn, isBlank, toIdentifier, uniqueIdentifier,
 } from './cells.ts'
 import type { Cell, FileKind } from './cells.ts'
+import { checkZip } from '../../core/zip-guard.ts'
 
 export const MAX_BYTES = 50 * 1024 * 1024
 
@@ -72,6 +73,8 @@ function xlCell(v: unknown): Cell {
 
 export async function parseXlsx(bytes: Buffer): Promise<RawSheet[]> {
   if (bytes.includes('vbaProject.bin')) throw invalid('Macro-enabled workbooks are not supported')
+  // a zip bomb would be unpacked in memory by ExcelJS: refuse it from its directory first
+  checkZip(bytes, 'Not a readable .xlsx file')
   const wb = new ExcelJS.Workbook()
   try {
     await wb.xlsx.load(bytes as unknown as ArrayBuffer)

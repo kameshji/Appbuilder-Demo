@@ -56,6 +56,12 @@ export const cancelJob = (id: string) => call<JobInfo>('POST', `/admin/jobs/${en
 export const fetchSchedules = async () => (await call<{ items: ScheduleInfo[] }>('GET', '/admin/schedules')).items
 export const updateSchedule = (id: string, patch: Partial<ScheduleInfo>) => call<ScheduleInfo>('PATCH', `/admin/schedules/${enc(id)}`, patch)
 export const runSchedule = (id: string) => call<{ id: string }>('POST', `/admin/schedules/${enc(id)}/run`)
+/** environment setting "Directory visibility" (Users page; docs/admin/users-and-roles.md) */
+export type DirectoryVisibility = 'everyone' | 'department' | 'admins'
+export const fetchDirectoryVisibility = async () => (await call<{ visibility: DirectoryVisibility }>('GET', '/environment/directory')).visibility
+export const saveDirectoryVisibility = (visibility: DirectoryVisibility) => call<{ visibility: DirectoryVisibility }>('PUT', '/environment/directory', { visibility })
+export const createSchedule = (s: Partial<ScheduleInfo>) => call<ScheduleInfo>('POST', '/admin/schedules', s)
+export const deleteSchedule = (id: string) => call<{ ok: true }>('DELETE', `/admin/schedules/${enc(id)}`)
 export const fetchEventRuns = async (q: { tableId?: string; status?: string; limit?: number } = {}) => {
   const p = new URLSearchParams()
   for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') p.set(k, String(v))

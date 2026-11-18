@@ -15,7 +15,7 @@ The Studio is where you design an app. Open it with **Edit** on the Apps page.
 
 ## Selecting, moving, resizing
 
-Click to select, Shift+click to add, or drag on empty canvas to select several. Drag to move and use the handles to resize. Things snap to an 8 px grid and to neighbours; hold `Alt` to move freely. Hold `Shift` while resizing to keep the shape. Locked controls cannot be moved. When two or more are selected an align toolbar appears (left, centre, right, top, middle, bottom; distribute needs three).
+Click to select, Shift+click to add, or drag on empty canvas to select several. Drag to move and use the handles to resize. Things snap to an 8 px grid and to neighbours; hold `Alt` to move freely. Hold `Shift` while resizing to keep the shape. Locked UI components cannot be moved. When two or more are selected an align toolbar appears (left, centre, right, top, middle, bottom; distribute needs three).
 
 ## Zoom and pan
 
@@ -36,16 +36,16 @@ Mouse wheel pans, `Ctrl`/`Cmd` + wheel zooms. Hold `Space` and drag, or use the 
 | Space + drag, middle drag, wheel | Pan |
 | Ctrl/Cmd + wheel | Zoom |
 | Alt + drag | Move without snapping |
-| Alt + click | Run the control's event in design |
+| Alt + click | Run the UI component's event in design |
 | Shift + click | Add to selection |
-| Double-click a control | Jump to the formula bar |
+| Double-click a UI component | Jump to the formula bar |
 | Ctrl+Space (formula bar) | Show suggestions |
 
 Shortcuts work in design mode when you are not typing in a field. Arrow nudging is off when viewing at a size other than the design size.
 
 ## Tree view and Insert
 
-The tree shows every control. Drag to reorder or move into another container, double-click to rename. The right-click menu offers Rename, Duplicate, Copy, Lock, Bring to front, Send to back and Delete. Hide a control with its eye icon (it sets Visible to false). A screen can only be deleted if there are at least two.
+The tree shows every UI component. Drag to reorder or move into another container, double-click to rename. The right-click menu offers Rename, Duplicate, Copy, Lock, Bring to front, Send to back and Delete. Hide a UI component with its eye icon (it sets Visible to false). A screen can only be deleted if there are at least two.
 
 The Insert pane has a search box and recent items. Click or drag to insert. Dialogs and sheets always go to the root of the screen.
 
@@ -90,11 +90,11 @@ The Studio has one editor per app at a time (a soft lock, not co-editing):
 
 ## Viewports and anchors
 
-The status bar viewport menu previews the screen at Full HD, 2K, Laptop 1366x768, 16:10, 21:9, Ultrawide, the phone sizes (360x800, 390x844, 412x915), the tablet sizes (800x1280, 1280x800) or a custom size. These views are read-only ("Viewing at W x H. Switch to design size to edit."). To make controls adapt, set **AnchorH** and **AnchorV** (Start, End, Stretch, Center, Scale).
+The status bar viewport menu previews the screen at Full HD, 2K, Laptop 1366x768, 16:10, 21:9, Ultrawide, the phone sizes (360x800, 390x844, 412x915), the tablet sizes (800x1280, 1280x800) or a custom size. These views are read-only ("Viewing at W x H. Switch to design size to edit."). To make UI components adapt, set **AnchorH** and **AnchorV** (Start, End, Stretch, Center, Scale).
 
 ## Auto-layout
 
-Set a container's **LayoutMode** to Row, Column or Grid (or use the Row, Column and Grid controls). Options include Gap, Padding, Justify, AlignItems, Wrap, Columns and Scroll. Children can use Grow and AlignSelf. Anchors apply only to manual layouts.
+Set a container's **LayoutMode** to Row, Column or Grid (or use the Row, Column and Grid UI components). Options include Gap, Padding, Justify, AlignItems, Wrap, Columns and Scroll. Children can use Grow and AlignSelf. Anchors apply only to manual layouts.
 
 ## Galleries and templates
 
@@ -102,7 +102,7 @@ A Gallery repeats a template for each item. Set **Items**, then design the first
 
 ## Dialogs and sheets
 
-Dialog and Sheet controls have an **Open** property and an **OnClose** action. The close button and `Esc` only run OnClose; they do not close it for you. Typical pattern: **Open** = `showDlg`, **OnClose** = `Set(showDlg, false)`, and a button with `Set(showDlg, true)`.
+Dialog and Sheet UI components have an **Open** property and an **OnClose** action. The close button and `Esc` only run OnClose; they do not close it for you. Typical pattern: **Open** = `showDlg`, **OnClose** = `Set(showDlg, false)`, and a button with `Set(showDlg, true)`.
 
 ## Screens and navigation
 
@@ -110,11 +110,11 @@ Add screens with **New screen**; switch with the tabs. Move between them with `N
 
 ## Undo, copy and paste
 
-Use undo and redo to step back through design changes, and copy and paste to reuse controls.
+Use undo and redo to step back through design changes, and copy and paste to reuse UI components.
 
 ## Errors and debugging
 
 The status bar error list has Data warnings, Formulas and Runtime sections. The **Debug console** pane shows messages from `Trace` and runtime errors. Data warnings list table formulas that run in the browser because the table is small (they will become errors when it grows), and
 tables on connections that can't run queries, where only the first 5,000 rows are used (see [Data](data.md#large-tables-what-runs-on-the-server)).
 
-More: [controls reference](../../reference/controls.md).
+More: [UI components reference](../../reference/ui-components.md).

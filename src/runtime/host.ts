@@ -219,7 +219,7 @@ function beginRun(input: RunInput): Run {
 
   const submitForm = (formName: string, fromButton: boolean) => {
     const info = nodeByName(formName)
-    if (!info) return fail(`SubmitForm: "${formName}" is not a control`)
+    if (!info) return fail(`SubmitForm: "${formName}" is not a UI component`)
     const f = info.node
     const fctx = info.galleries.length ? ctx : ROOT_CTX
     const p = (k: string) => evr.evalProp(f, k, fctx).value
@@ -380,7 +380,7 @@ function beginRun(input: RunInput): Run {
     form(action, formName) {
       if (action === 'submit') return submitForm(formName, submitFromButton)
       const info = nodeByName(formName)
-      if (!info) return fail(`"${formName}" is not a control`)
+      if (!info) return fail(`"${formName}" is not a UI component`)
       const fctx = info.galleries.length ? ctx : ROOT_CTX
       const k = evr.outKey(info.node, fctx)
       const outs = { ...evr.outputsOf(info.node, fctx), ...(res.outputs[k] ?? {}) }

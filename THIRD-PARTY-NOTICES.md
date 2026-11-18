@@ -224,7 +224,7 @@ These packages use a license that is not on the allowed list (MIT, ISC, BSD-2-Cl
 | use-sidecar | 1.1.3 | MIT |
 | use-sync-external-store | 1.7.0 | MIT |
 | util-deprecate | 1.0.2 | MIT |
-| uuid | 8.3.2 | MIT |
+| uuid | 11.1.1 | MIT |
 | victory-vendor | 37.4.1 | MIT AND ISC AND BSD-3-Clause |
 | wrappy | 1.0.2 | ISC |
 | ws | 8.23.0 | MIT |
@@ -7548,7 +7548,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### uuid@8.3.2
+### uuid@11.1.1
 
 File: LICENSE.md
 

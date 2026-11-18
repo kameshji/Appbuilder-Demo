@@ -172,25 +172,44 @@ export function kernelRoutes(router: ApiRouter, s: CoreServices): void {
 
   router.add('GET', '/admin/schedules', async () => ({ items: await k().jobs.schedules.list() }), { auth: 'admin' })
 
+  /**
+   * Who may touch a schedule (P0 package M): custom schedules only for job types marked schedule 'custom'; schedules of
+   * install-wide job types (backups, mail, install log retention) only install administrators may change or run.
+   */
+  const policyOf = (jobType: string) => k().jobs.typeDef(jobType)?.schedule
+  const guard = async (ctx: Parameters<Parameters<typeof router.add>[2]>[0], id: string, next?: ScheduleInput): Promise<void> => {
+    const cur = await k().jobs.schedules.get(id)
+    if (!cur) throw new HttpError(404, 'not-found', 'Schedule not found.')
+    const install = policyOf(cur.jobType) === 'install' || (next?.jobType !== undefined && policyOf(next.jobType) === 'install')
+    if (install && !ctx.user!.privileges.isInstallAdmin) throw new HttpError(403, 'denied', 'This schedule runs install-wide maintenance: only install administrators can change or run it.')
+    if (next?.jobType !== undefined && next.jobType !== cur.jobType && policyOf(next.jobType) !== 'custom') throw new HttpError(422, 'invalid', `Schedules of "${next.jobType}" cannot be made here.`, 'jobType')
+  }
+
   router.add('POST', '/admin/schedules', async (ctx) => {
-    const sc = await k().jobs.schedules.create(scheduleInput(body(ctx)), ctx.user!.user.id)
+    const input = scheduleInput(body(ctx))
+    if (!input.jobType || policyOf(input.jobType) !== 'custom') throw new HttpError(422, 'invalid', `Schedules of "${input.jobType ?? ''}" cannot be made here: choose one of ${k().jobs.types().filter((t) => t.schedule === 'custom').map((t) => t.type).join(', ')}.`, 'jobType')
+    const sc = await k().jobs.schedules.create(input, ctx.user!.user.id)
     await audit(s, ctx, 'schedule.create', { schedule: sc.id, name: sc.name, jobType: sc.jobType })
     return sc
   }, { auth: 'admin' })
 
   router.add('PATCH', '/admin/schedules/:id', async (ctx) => {
-    const sc = await k().jobs.schedules.update(ctx.params.id, scheduleInput(body(ctx)))
+    const input = scheduleInput(body(ctx))
+    await guard(ctx, ctx.params.id, input)
+    const sc = await k().jobs.schedules.update(ctx.params.id, input)
     await audit(s, ctx, 'schedule.update', { schedule: sc.id, name: sc.name, enabled: sc.enabled, cron: sc.cron, intervalSeconds: sc.intervalSeconds, payload: sc.payload })
     return sc
   }, { auth: 'admin' })
 
   router.add('DELETE', '/admin/schedules/:id', async (ctx) => {
+    await guard(ctx, ctx.params.id)
     await k().jobs.schedules.remove(ctx.params.id)
     await audit(s, ctx, 'schedule.delete', { schedule: ctx.params.id })
     return { ok: true }
   }, { auth: 'admin' })
 
   router.add('POST', '/admin/schedules/:id/run', async (ctx) => {
+    await guard(ctx, ctx.params.id)
     const r = await k().jobs.schedules.runNow(ctx.params.id, ctx.user!.user.id)
     await audit(s, ctx, 'schedule.run', { schedule: ctx.params.id, job: r.id })
     k().jobs.wake()

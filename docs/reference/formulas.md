@@ -2,12 +2,12 @@
 
 # Formula reference
 
-Formulas are how makers say what an app does. Every property of every control holds one, a screen can have an `OnVisible`
+Formulas are how makers say what an app does. Every property of every UI component holds one, a screen can have an `OnVisible`
 formula, and the app itself can define named formulas and functions. The language is called Fx. It looks like an Excel
 formula and has familiar function names, but it is our own engine, so a few things differ from Power Fx (see
 [Differences from Power Fx](#differences-from-power-fx)).
 
-This page is generated from the formula engine and the control registry. Do not edit it by hand; run `npm run docs:gen`.
+This page is generated from the formula engine and the UI component registry. Do not edit it by hand; run `npm run docs:gen`.
 
 ## The basics
 
@@ -73,7 +73,7 @@ Because `!` and `Not` bind tighter than comparisons, `!a = b` means `(!a) = b`. 
 - `IfError(value, fallback)` gives the fallback when the value is an error. `IsError` and `IsBlankOrError` test for one.
 - Inside a fallback, `FirstError.Message` is the message.
 - Some mistakes can never be caught by `IfError`: an unknown name or function, the wrong number of arguments, and a behaviour function in a data property. They are always reported.
-- When a property's formula fails, the control behaves as if the property had its default value,.
+- When a property's formula fails, the UI component behaves as if the property had its default value,.
 
 ## Data properties and behaviour properties
 
@@ -85,7 +85,7 @@ A property is either a **data property** or a **behaviour property**.
 =Set(Total, 0); Collect(Cart, { Item: Name }); Navigate(CartScreen)
 ```
 
-The controls reference marks events with the kind `action`. The chain gives the value of its last step. A trailing `;` is allowed.
+The UI components reference marks events with the kind `action`. The chain gives the value of its last step. A trailing `;` is allowed.
 
 ## Row scope: `ThisRecord`, `As` and `ThisItem`
 
@@ -95,7 +95,7 @@ Functions that take a formula to run for each row (`Filter`, `Sort`, `ForAll`, `
 =Filter(Contacts, Age > 30 && City = "Pune")
 ```
 
-- **Shadowing.** A field name wins over a variable or control with the same name. Names of outer rows stay reachable when nothing in the inner row has that name.
+- **Shadowing.** A field name wins over a variable or UI component with the same name. Names of outer rows stay reachable when nothing in the inner row has that name.
 - **`ThisRecord`** is the whole current row (the innermost one): `ForAll(Contacts, ThisRecord.Name)`.
 - **`As`** names the row so that nested formulas can tell rows apart: `ForAll(Orders As o, CountRows(Filter(Lines As l, l.OrderId = o.Id)))`. `As` goes after a table argument inside a function call, not on its own.
 - **`ThisItem`** is the item of a Gallery row. The Gallery supplies it; it is not a function row scope.
@@ -314,12 +314,12 @@ Functions with side effects. They work only in behaviour properties such as OnSe
 | `Refresh(table)` | Reloads a table from storage. |
 | `Remove(collection, record [, record2, ...])` | Removes records from a collection. |
 | `RemoveIf(collection, condition)` | Removes every row where the condition is true. |
-| `Reset(control)` | Puts an input control back to its default value. |
+| `Reset(component)` | Puts an input UI component back to its default value. |
 | `ResetForm(Form)` | Puts every field of a form back to its starting value. |
-| `Select(control)` | Runs the OnSelect of a control. |
+| `Select(component)` | Runs the OnSelect of a UI component. |
 | `SendNotification(user, title [, body] [, link])` | Sends an in-app notification (the bell) to a person in this environment: user is an email, a user id or a record such as User(). link is a link inside Appbuilder such as "#u". Unlike Notify, it reaches the other person; it is rate-limited. |
 | `Set(variable, value)` | Sets a global variable. |
-| `SetFocus(control)` | Moves the keyboard focus to a control. |
+| `SetFocus(component)` | Moves the keyboard focus to a UI component. |
 | `Share(record, userOrTeam [, access])` | Shares one row with a person (email, or a record such as User()) or a team (its code) for "Read" (default) or "Edit". You must own the row or have the Share privilege; sharing must be on for the table. |
 | `SubmitForm(Form)` | Saves the data entered in a form. |
 | `Tag(record, name)` | Puts a tag on a record (the tag is created when it is new). Asynchronous. |
@@ -381,13 +381,13 @@ Used by: `Heading.Align`, `Label.Align`, `LinkButton.Align`, `RichText.Align`.
 
 ### AlignItems
 
-Used by: 87 properties on 79 controls (for example `Accordion.AlignSelf`, `ActivityList.AlignSelf`, `Alert.AlignSelf`).
+Used by: 87 properties on 79 UI components (for example `Accordion.AlignSelf`, `ActivityList.AlignSelf`, `Alert.AlignSelf`).
 
 5 members: `Auto`, `Start`, `Center`, `End`, `Stretch`.
 
 ### Anchor
 
-Used by: 156 properties on 78 controls (for example `Accordion.AnchorH`, `Accordion.AnchorV`, `ActivityList.AnchorH`).
+Used by: 156 properties on 78 UI components (for example `Accordion.AnchorH`, `Accordion.AnchorV`, `ActivityList.AnchorH`).
 
 5 members: `Start`, `End`, `Stretch`, `Center`, `Scale`.
 
@@ -417,15 +417,15 @@ Used by: `Chart.Type`.
 
 Named colours. Each member is a colour value: `=Color.Red`. `Color.Transparent` has zero alpha.
 
-Used by: 8 properties on 8 controls (for example `Column.Fill`, `Container.Fill`, `Gallery.Fill`).
+Used by: 8 properties on 8 UI components (for example `Column.Fill`, `Container.Fill`, `Gallery.Fill`).
 
 51 members: `Red`, `Green`, `Blue`, `Black`, `White`, `Gray`, `LightGray`, `DarkGray`, `Orange`, `Yellow`, `Purple`, `Pink`, `Teal`, `Cyan`, `Brown`, `Transparent`, `Crimson`, `Maroon`, `Navy`, `Indigo`, `Violet`, `Magenta`, `Fuchsia`, `Rose`, `Coral`, `Salmon`, `Amber`, `Gold`, `Lime`, `Olive`, `Emerald`, `ForestGreen`, `SeaGreen`, `Mint`, `Aqua`, `Turquoise`, `Sky`, `SkyBlue`, `RoyalBlue`, `Azure`, `Lavender`, `Plum`, `Tan`, `Beige`, `Ivory`, `Khaki`, `Silver`, `Slate`, `Zinc`, `Charcoal`, `Snow`.
 
 ### DisplayMode
 
-Whether a control accepts input (Edit), only shows its value (View) or is greyed out (Disabled).
+Whether a UI component accepts input (Edit), only shows its value (View) or is greyed out (Disabled).
 
-Used by: 27 properties on 27 controls (for example `Button.DisplayMode`, `Checkbox.DisplayMode`, `ColorPicker.DisplayMode`).
+Used by: 27 properties on 27 UI components (for example `Button.DisplayMode`, `Checkbox.DisplayMode`, `ColorPicker.DisplayMode`).
 
 3 members: `Edit`, `View`, `Disabled`.
 
@@ -461,13 +461,13 @@ The full list is in the icon picker: select an icon property in the Studio and o
 
 ### Justify
 
-Used by: 9 properties on 9 controls (for example `Card.Justify`, `Column.Justify`, `Container.Justify`).
+Used by: 9 properties on 9 UI components (for example `Card.Justify`, `Column.Justify`, `Container.Justify`).
 
 5 members: `Start`, `Center`, `End`, `SpaceBetween`, `SpaceAround`.
 
 ### Layout
 
-Used by: 9 properties on 9 controls (for example `Card.LayoutMode`, `Column.LayoutMode`, `Container.LayoutMode`).
+Used by: 9 properties on 9 UI components (for example `Card.LayoutMode`, `Column.LayoutMode`, `Container.LayoutMode`).
 
 4 members: `Manual`, `Row`, `Column`, `Grid`.
 
@@ -548,7 +548,7 @@ Fx was written from the documented behaviour of Power Fx and is **not compatible
 - **Division by zero is an error** ("Can't divide by zero"), in `/` and in `Mod`. So is any result that is not a finite number.
 - **`IfError` has two forms.** `IfError(value, fallback)` and the multi-pair form `IfError(value1, fallback1, value2, fallback2, ..., default)`: the first value that fails gives its fallback; the optional last argument is returned when nothing failed. Inside a fallback only `FirstError.Message` and `FirstError.Kind` (always `"Custom"`) exist; there is no `AllErrors`.
 - **User-defined functions have a single expression as their body** (no `;` chaining). See "Named formulas" above.
-- **Enum names shadow your own names.** A variable, collection or control called `Size`, `Side`, `Fit`, `Layout`, `Icon`, `Variant`, `Match`, `Anchor`, `Justify`, `Orientation`, `Color`, `Align` or any other enum name (see the list of enums below) cannot be reached from a formula: the enum wins. Pick other names. A named formula with an enum's name is rejected.
+- **Enum names shadow your own names.** A variable, collection or UI component called `Size`, `Side`, `Fit`, `Layout`, `Icon`, `Variant`, `Match`, `Anchor`, `Justify`, `Orientation`, `Color`, `Align` or any other enum name (see the list of enums below) cannot be reached from a formula: the enum wins. Pick other names. A named formula with an enum's name is rejected.
 - **`;` chaining works only in behaviour properties.**
 - **Text is compared without regard to case** by `=`, `<>`, `<`, `>` and `in`. Use `exactin` for a case-sensitive test.
 - **One locale.** Syntax and numbers are always en-US: a point for decimals, a comma between arguments, `Language()` is always `"en-US"`. The optional language argument of `DateValue`, `DateTimeValue` and `TimeValue` is accepted but has no effect. Number text may contain commas as thousands separators, so `Value("1,5")` is 15.

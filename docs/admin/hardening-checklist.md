@@ -3,6 +3,30 @@
 A short list for a new installation. Details are in the other pages; read the
 [Security model](security-model.md) for what Appbuilder does and does not protect against.
 
+## Installed with the installers
+
+The [installers](installation.md) do several items below for you: a dedicated PostgreSQL role and database with a random
+password sealed in `server.json`, PostgreSQL on `127.0.0.1` only, Appbuilder on `127.0.0.1` only as a service under a
+low-privilege account (`NT SERVICE\Appbuilder` / the `appbuilder` user), the data folder closed to everyone else, the
+workspace outside the program folder, `APPBUILDER_SECURE_COOKIE`/`APPBUILDER_TRUST_PROXY` and allowed host names when you
+choose HTTPS, systemd sandboxing on Linux. Still do:
+
+- [ ] **Check the release** before installing it: its SHA-256 against the published value, and `appbuilder version`
+  afterwards shows the release keys the install trusts. Install updates only with `appbuilder update`, which refuses
+  packages not signed by those keys ([Upgrades](upgrades.md)).
+- [ ] **Choose the exposure deliberately** ([Which way users reach it](installation.md#which-way-users-reach-it)): no HTTPS
+  option keeps Appbuilder on this machine; `Lan` opens port 443 only with `-OpenFirewall` and only for the local subnet;
+  `Domain` puts it on the internet. Trust the local certificate authority only after comparing its fingerprint.
+- [ ] **Do the first-run setup at once**, on the server or through an SSH tunnel; the setup code file is readable by
+  administrators only and disappears afterwards. The setup cannot be done through the HTTPS address.
+- [ ] **Keep the admin folder private**: on Windows, `C:\ProgramData\Appbuilder\admin` holds the PostgreSQL superuser
+  password (DPAPI, machine scope) for repairs; only SYSTEM and Administrators can open it. Anyone who is an administrator of
+  the PC is an administrator of the database anyway.
+- [ ] **Watch health**: monitor `GET /api/v1/health` (ok / starting / degraded) and look at Admin console > Server logs
+  after updates ([Operations](operations.md)).
+- [ ] **Diagnostics bundles leave the building**: secrets are removed, but table, environment and host names remain; look
+  inside before sending one.
+
 ## Before first start
 
 - [ ] **Use a dedicated PostgreSQL database and role** for Appbuilder, not the `postgres` superuser and not a database that
@@ -73,6 +97,14 @@ See [Sign-in and identity](sign-in-and-identity.md).
   proxy), so links in emails point there.
 - [ ] Prefer **invitations** to temporary passwords: the administrator never knows the password.
 - [ ] Review the **sign-in log** (Admin console > Sign-in and security) now and then for failures from unknown addresses.
+  It keeps 180 days by default (Jobs page of the Default environment).
+- [ ] Decide **who sees the directory** (Admin console > Users > Directory visibility): everyone in the environment (the
+  default), the same department, or administrators only.
+- [ ] Decide your **audit retention** (Audit log page): off (kept forever) by default.
+- [ ] If Appbuilder should only reach the internet (no databases or mail relay on your network), set
+  `APPBUILDER_OUTBOUND_PRIVATE=deny`. Link-local and cloud metadata addresses are always refused.
+- [ ] Limit **formula and rollup columns** that summarise private rows or hidden columns with column security: their
+  values are computed by the system and shown to everyone who can see the column.
 - [ ] Shorten the session lifetime on shared PCs (for example 60 minutes idle, 12 hours absolute), and tell people not to
   tick "Remember this device" there.
 - [ ] One **service account per integration**, with a role that grants only the tables it needs; give each key an expiry

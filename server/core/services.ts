@@ -2,6 +2,8 @@
  * Services container + database bootstrap (server.json / APPBUILDER_DB_* env) and the setup step that
  * (re)configures the default store. `meta` / `data` throw 503 while no database is configured.
  */
+import fs from 'node:fs'
+import path from 'node:path'
 import { randomInt, timingSafeEqual } from 'node:crypto'
 import { HttpError } from './contracts.ts'
 import type {
@@ -69,13 +71,31 @@ export interface SetupCode {
   matches(given: unknown): boolean
 }
 
-function createSetupCode(port: number): SetupCode {
+/**
+ * file: APPBUILDER_SETUP_CODE_FILE (set by the installers, package L): the printed code is also written there (owner-only
+ * file in the workspace) so an administrator finds it without reading the service log; removed when the code is rotated
+ * after the first administrator exists.
+ */
+function createSetupCode(port: number, file?: string): SetupCode {
   let code: string | null = null
   const norm = (v: string) => v.replace(/[\s-]/g, '').toUpperCase()
+  const writeFile = (c: string | null) => {
+    if (!file) return
+    try {
+      if (c === null) fs.rmSync(file, { force: true })
+      else {
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+        fs.writeFileSync(file, `${c.slice(0, 4)}-${c.slice(4)}\nOpen http://localhost:${port}/ on the server and type this code in the setup screen. It changes at every start; this file is removed once the first administrator exists.\n`, { mode: 0o600 })
+      }
+    } catch (e) {
+      log('warn', `could not write the setup code file ${file}: ${errText(e)}`)
+    }
+  }
   return {
     current: () => code,
     issue(o = {}) {
       code = newSetupCode()
+      writeFile(o.print === false ? null : code)
       if (o.print !== false) {
         const bar = '='.repeat(60)
         const lines = [
@@ -162,7 +182,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   let retryPromise: Promise<void> | null = null
   let retryResolve: (() => void) | null = null
   let closed = false
-  const setupCode = createSetupCode(config.port)
+  const setupCode = createSetupCode(config.port, procEnv.APPBUILDER_SETUP_CODE_FILE || undefined)
 
   const getMeta = (): MetaStore => {
     if (!state.meta) throw new HttpError(503, 'unavailable', 'The database is not configured yet.')

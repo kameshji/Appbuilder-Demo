@@ -27,6 +27,8 @@ import { usePresence } from '@/platform/useLive'
 import { matches, useSearch } from './Shell'
 import { useCaps } from './security'
 import { OrgFields, UserImportDialog, orgFieldsOf, orgPatch, type OrgFieldsValue } from './Organisation'
+import { fetchDirectoryVisibility, saveDirectoryVisibility, type DirectoryVisibility } from './eventsApi'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 function UserDialog({ open, onOpenChange, user, onCreated, emailConfigured }: { open: boolean; onOpenChange(o: boolean): void; user: UserDef | null; onCreated(u: UserDef, invite: boolean): void; emailConfigured?: boolean }) {
   const server = usePlatform((s) => s.mode) === 'server'
@@ -197,6 +199,7 @@ export function UsersPanel() {
         <Button size="sm" variant="outline" onClick={() => setImporting(true)} disabled={!account} title={account ? 'Add or update many users from a CSV file' : 'Only install administrators import accounts'} data-testid="import-users-button"><Upload /> Import CSV</Button>
         <Button size="sm" onClick={() => setUserDlg({ user: null })} disabled={!account} title={account ? undefined : 'Only install administrators add accounts'} data-testid="new-user-button"><Plus /> Add user</Button>
       </div>
+      {server && <DirectoryVisibilitySetting />}
       {!server && (
         <div className="mb-4 flex items-start gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-xs text-muted-foreground">
           <Info className="mt-px size-3.5 shrink-0 text-primary" />
@@ -340,5 +343,29 @@ function UserSessionsDialog({ user, onOpenChange }: { user: UserDef | null; onOp
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** environment setting: whom non-administrators see in the Users table, person pickers, @mentions and the share dialog */
+function DirectoryVisibilitySetting() {
+  const { fail, toast } = useToast()
+  const [v, setV] = useState<DirectoryVisibility | null>(null)
+  useEffect(() => { fetchDirectoryVisibility().then(setV).catch(() => setV(null)) }, [])
+  if (!v) return null
+  return (
+    <Panel className="mb-4 flex flex-wrap items-center gap-3 p-3 text-sm" data-testid="directory-visibility">
+      <div className="min-w-0 flex-1">
+        <div className="font-medium">Directory visibility</div>
+        <div className="text-xs text-muted-foreground">Whom people who are not administrators see in the Users table, person pickers, @mentions and the share dialog of this environment. Everyone always sees themselves; administrators see everyone.</div>
+      </div>
+      <Select value={v} onValueChange={(x) => saveDirectoryVisibility(x as DirectoryVisibility).then((r) => { setV(r.visibility); toast('Directory visibility saved', 'success') }).catch(fail)}>
+        <SelectTrigger size="sm" className="w-64" data-testid="directory-visibility-select"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="everyone">Everyone in this environment</SelectItem>
+          <SelectItem value="department">People in the same department</SelectItem>
+          <SelectItem value="admins">Only administrators see the directory</SelectItem>
+        </SelectContent>
+      </Select>
+    </Panel>
   )
 }

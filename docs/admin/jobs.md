@@ -35,10 +35,35 @@ or kept running.
 | Audit log retention | off, keep 730 days | Deletes audit entries of this environment older than *Keep* days. Turn it on only if your policy allows deleting audit history |
 | Attachment orphan sweep | daily 03:37 UTC | Removes files no row refers to any more (older than an hour) |
 | Rollup reconcile | hourly | Recalculates every rollup column from its rows |
+| Collaboration orphan sweep | daily 03:47 UTC | Removes comments, activities, follows, tags and file links about records that no longer exist |
+| Sign-in log retention (Default environment only) | daily 03:53 UTC, keep 180 days | Deletes sign-in log entries of the whole install older than *Keep* days |
+| Email delivery log retention (Default environment only) | daily 03:57 UTC, keep 90 days | Deletes email delivery log entries (recipient, subject, status) of the whole install older than *Keep* days |
 
 Use the switch to turn a schedule on or off, **Keep ... days** to change a retention period, and **Run now** to start it at once.
 A slot missed while the server was off runs once when the server is back. The default outbox retention can also be set for
-new environments with the `APPBUILDER_OUTBOX_RETENTION_DAYS` variable.
+new environments with the `APPBUILDER_OUTBOX_RETENTION_DAYS` variable; the sign-in and email log defaults with
+`APPBUILDER_SIGNIN_LOG_RETENTION_DAYS` and `APPBUILDER_MAIL_LOG_RETENTION_DAYS` (used when the schedule is first created).
+
+Schedules of **install-wide work** (the sign-in and email log retention, email delivery, backups and the restore test) can
+be changed, run or deleted only by an **install administrator**; an environment administrator sees them but gets
+"only install administrators" when trying. Backup schedules are set on the Backups page.
+
+### Your own schedules
+
+**New schedule** creates a schedule of your own in this environment: a name, the job, a cron expression (minute, hour, day
+of month, month, weekday; `0 2 * * *` is every night at 02:00), a time zone and the job's payload as JSON. Only jobs that
+are safe to run on a timetable can be chosen:
+
+| Job | Payload |
+| --- | --- |
+| `model.summary.refresh` | `{"tableId": "tbl_..."}`: refresh one summary table (summary tables already get their own schedule) |
+| `rollup.reconcile` | `{}` or `{"tableId": "...", "column": "..."}` |
+| `outbox.retention` | `{"days": 14, "eventRunDays": 30, "jobDays": 14}` |
+| `attachments.sweep` | `{"graceMinutes": 60}` |
+| `collab.orphan-sweep` | `{}` |
+
+Your own schedules have a pencil (edit) and a bin (delete); built-in ones can only be switched off. Creating, changing and
+deleting schedules is recorded in the audit log (`schedule.create`, `schedule.update`, `schedule.delete`).
 
 ## The events run log
 

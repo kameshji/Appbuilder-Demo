@@ -30,15 +30,19 @@ We ask you to give us reasonable time to fix a problem before you publish detail
 
 ## Supported versions
 
-Only the **latest version on the `main` branch** is supported and receives security fixes. Older commits and forks
-do not. There are no numbered releases yet.
+Only the **latest version on the `main` branch** is supported and receives security fixes (0.5.0 is the first numbered
+version, the end of Phase 0). Older commits and forks do not. The Phase 0 security review is in
+`docs/internal/security-review-p0.md`.
 
 ## Scope
 
 In scope:
 
 - The Appbuilder server (`server/`): authentication, two-step verification, password reset and invitation tokens,
-  sessions, API keys, outbound email, roles and privileges (including row and column restrictions), request checks, secret storage, connection handling, file and attachment handling, audit logging.
+  sessions, API keys, outbound email, roles and privileges (including row and column restrictions, organisation scopes,
+  record sharing, the collaboration "regarding" rule), Query v2 plans, the realtime connection, jobs and schedules, request
+  checks, secret storage, connection handling and the outbound host policy, backups and restores (including crafted
+  archives), data exports, file and attachment handling, audit logging.
 - The web portal and runtime (`src/`): for example cross-site scripting, or any way to see or change data that the signed-in
   user's roles do not allow.
 - The install and setup scripts (`scripts/`) and the documentation in `docs/admin/` where they lead to an insecure setup.
@@ -53,7 +57,7 @@ Out of scope:
 - Weaknesses already listed under "Explicit limitations" in `docs/admin/security-model.md`, unless you found a way to make
   them worse than described.
 - Denial of service by sending very large or very many requests from a user who is allowed to use the application.
-- Vulnerabilities in third-party software (Node.js, MySQL, Google services, npm packages) that are not specific to how
+- Vulnerabilities in third-party software (Node.js, PostgreSQL, MySQL, Google services, npm packages) that are not specific to how
   Appbuilder uses them; report those to their maintainers. Do tell us if an Appbuilder dependency needs updating.
 - Social engineering, physical attacks, and issues in demo mode, which has no authentication by design.
 

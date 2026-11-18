@@ -326,7 +326,7 @@ export function deriveList(value: FxValue, view: ListView | undefined, owner: st
   const plan = withView(meta.plan, view, meta.columns)
   const st = platform.tables.queryState(plan, { owner: `${owner}#view`, pageSize })
   record('q:' + st.key)
-  const inf: DelegationInfo = { where: 'server', explain: 'Sorted / searched on the server by the control', diagnostics: [], plans: 1 }
+  const inf: DelegationInfo = { where: 'server', explain: 'Sorted / searched on the server by the UI component', diagnostics: [], plans: 1 }
   if (st.status === 'loading') return { loading: true, info: inf }
   if (st.status === 'error') return { loading: false, error: st.error?.message ?? 'The query failed', info: inf }
   return { loading: false, value: attachMeta(st.rows.slice(), st, meta.columns, meta.plan, true, view), info: inf, stamp: `view|${st.key}@${st.version}` }

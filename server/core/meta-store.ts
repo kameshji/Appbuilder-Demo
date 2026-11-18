@@ -653,6 +653,26 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
     db,
     org: createOrgStore(db, () => envOf().schema),
     relationships: createRelationshipStore(db, () => envOf().schema),
+    // directory visibility per environment (P0 package M): one JSON object in ab.settings, { [environmentId]: mode }
+    directoryVisibility: {
+      async get(envId) {
+        const rows = await db.query<Row>(`SELECT v FROM ${A('settings')} WHERE k = 'directory.visibility'`)
+        let map: Record<string, unknown> = {}
+        try { map = rows.length ? JSON.parse(String(rows[0].v)) as Record<string, unknown> : {} } catch { map = {} }
+        const v = map[envId]
+        return v === 'department' || v === 'admins' ? v : 'everyone'
+      },
+      async set(envId, mode) {
+        await db.tx(async (t) => {
+          const rows = await t.query<Row>(`SELECT v FROM ${A('settings')} WHERE k = 'directory.visibility' FOR UPDATE`)
+          let map: Record<string, unknown> = {}
+          try { map = rows.length ? JSON.parse(String(rows[0].v)) as Record<string, unknown> : {} } catch { map = {} }
+          if (mode === 'everyone') delete map[envId]
+          else map[envId] = mode
+          await t.exec(`INSERT INTO ${A('settings')} (k, v) VALUES ('directory.visibility', $1) ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v`, [JSON.stringify(map)])
+        })
+      },
+    },
 
     tableName(name) {
       return INSTALL_TABLES.includes(name) ? A(name) : E(name)

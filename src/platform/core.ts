@@ -7,6 +7,8 @@
  * person at the keyboard can open, so it is NOT a server-side security boundary.
  */
 import type { AppDef, FxRecord, FxValue } from '@/contracts'
+import { planDelete } from './delete-rules'
+import type { RelationshipRecord } from './delete-rules'
 import { PlatformError } from './contracts'
 import type {
   EnvironmentDef,
@@ -53,6 +55,11 @@ export interface PlatformOptions {
    * (unit tests under Node create many platforms in one process and must not talk to each other); a factory for tests.
    */
   liveChannel?: boolean | (() => { postMessage(m: unknown): void; close(): void; onmessage: ((ev: { data: unknown }) => void) | null } | null)
+  /**
+   * relationship records with their delete behaviours (the data model designer keeps them in this browser, P0 package M);
+   * lookups without a record behave as required -> restrict, optional -> set blank. Default: none.
+   */
+  relationships?: (environmentId: string) => RelationshipRecord[]
 }
 
 const COLUMN_TYPES: ColumnType[] = [
@@ -1548,15 +1555,41 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       const kill = new Set(ids)
       const victims = rt.rows.filter((r) => kill.has(r.id as string))
       if (victims.length === 0) return
-      if (opts?.secure !== false) {
+      const secure = opts?.secure !== false
+      if (secure) {
         const test = rowTester(rt.def, 'delete')
         if (victims.some((r) => !test(r))) deny('delete', rt)
       }
-      rt.rows = rt.rows.filter((r) => !kill.has(r.id as string))
-      collab.hooks.afterDelete(rt.def, victims.map((r) => String(r.id)))
-      markFileModified(rt.def)
+      // relationship delete behaviours (restrict, cascade, set blank): planned first, so a refusal changes nothing
+      const all = [...tablesRt.values()]
+      const testers = new Map<string, (row: Row) => boolean>()
+      const canDelete = (t: { def: TableDef }, row: Row) => {
+        if (!secure) return true
+        let f = testers.get(t.def.id)
+        if (!f) testers.set(t.def.id, (f = rowTester(t.def, 'delete')))
+        return f(row)
+      }
+      const plan = planDelete(rt, victims.map((r) => String(r.id)), all, options.relationships?.(state.environmentId || 'default') ?? [], canDelete)
+      const touched = new Set<TableRt>()
+      for (const b of plan.blanks) {
+        const t = findTable(b.table)
+        const row = t?.rows.find((r) => r.id === b.id)
+        if (!t || !row) continue
+        t.rows = t.rows.map((r) => (r === row ? { ...r, [b.column]: null, modifiedOn: nowFn().toISOString() } : r))
+        touched.add(t)
+      }
+      for (const [name, set] of plan.deletes) {
+        const t = findTable(name)
+        if (!t) continue
+        const gone = t.rows.filter((r) => set.has(String(r.id)))
+        if (!gone.length) continue
+        t.rows = t.rows.filter((r) => !set.has(String(r.id)))
+        collab.hooks.afterDelete(t.def, gone.map((r) => String(r.id)))
+        touched.add(t)
+      }
+      for (const t of touched) markFileModified(t.def)
       setState({}, true)
-      saveTableLater(rt.def.name)
+      for (const t of touched) saveTableLater(t.def.name)
     },
 
     async reload(tableName) {

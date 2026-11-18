@@ -590,7 +590,7 @@ export function createAppStore(opts: { run?: boolean } = {}) {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return 'Use letters, digits and _ (not starting with a digit)'
         const st = get()
         const node = findNode(st.app, id)
-        if (!node) return 'Control not found'
+        if (!node) return 'UI component not found'
         if (name === node.name) return null
         if (allNames(st.app).has(name)) return `"${name}" is already used`
         let reservedList: string[] = []

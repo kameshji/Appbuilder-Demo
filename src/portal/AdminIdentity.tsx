@@ -142,6 +142,7 @@ export function SignInSecuritySection({ title }: { title: TitleFn }) {
       </Section>
       {caps.isInstallAdmin && (
         <Section title="Sign-in log" testId="signin-log">
+          <p className="text-xs text-muted-foreground">Entries older than 180 days are deleted every night (schedule "Sign-in log retention" on the Jobs page of the Default environment, where an install administrator can change the number of days).</p>
           <div className="flex items-center gap-2">
             <Segmented label="Outcome" size="sm" value={outcome} onChange={(v) => { setOutcome(v); setPage(1) }} options={[{ value: 'all', label: 'All' }, { value: 'failure', label: 'Failures' }, { value: 'success', label: 'Successes' }]} />
             <span className="ml-auto text-xs text-muted-foreground">{log ? `${log.total} entries` : ''}</span>
@@ -258,7 +259,7 @@ export function EmailSection({ title }: { title: TitleFn }) {
         </Section>
       )}
       <Section title="Delivery log" testId="email-log">
-        <div className="flex items-center"><span className="text-xs text-muted-foreground">Recipient, subject and status only; message bodies are never stored.</span><Button size="sm" variant="ghost" className="ml-auto" onClick={() => emailLog().then(setLog).catch(fail)}><RefreshCw /> Refresh</Button></div>
+        <div className="flex items-center"><span className="text-xs text-muted-foreground">Recipient, subject and status only; message bodies are never stored. Entries older than 90 days are deleted every night (schedule "Email delivery log retention", Jobs page of the Default environment).</span><Button size="sm" variant="ghost" className="ml-auto" onClick={() => emailLog().then(setLog).catch(fail)}><RefreshCw /> Refresh</Button></div>
         {!log?.items.length ? <p className="py-3 text-center text-sm text-muted-foreground">Nothing sent yet.</p> : (
           <table className="w-full text-sm" data-testid="email-log-table">
             <thead><tr className="border-b border-border text-left text-xs text-muted-foreground"><th className="px-2 py-2 font-medium">Queued</th><th className="px-2 py-2 font-medium">To</th><th className="px-2 py-2 font-medium">Subject</th><th className="px-2 py-2 font-medium">Status</th></tr></thead>

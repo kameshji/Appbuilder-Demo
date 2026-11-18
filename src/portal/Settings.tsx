@@ -567,10 +567,10 @@ function StudioSection() {
         </Row>
       </Group>
       <Group title="Canvas" testId="settings-studio-canvas">
-        <Row title="Snap while dragging" description="Snap controls to the grid and to the edges and centres of other controls. Holding Alt always moves freely." testId="setting-snap">
+        <Row title="Snap while dragging" description="Snap UI components to the grid and to the edges and centres of other UI components. Holding Alt always moves freely." testId="setting-snap">
           <Switch checked={snap} onCheckedChange={(v) => set({ studioSnap: v })} aria-label="Snap while dragging" data-testid="studio-snap" />
         </Row>
-        <Row title="Grid size" description="The step for snapping, inserting and moving controls with the mouse." testId="setting-grid">
+        <Row title="Grid size" description="The step for snapping, inserting and moving UI components with the mouse." testId="setting-grid">
           <Segmented label="Grid size" disabled={!snap} value={String(grid) as '4' | '8' | '16'} onChange={(v) => set({ studioGrid: Number(v) as GridSize })} options={[{ value: '4', label: '4 px' }, { value: '8', label: '8 px' }, { value: '16', label: '16 px' }]} />
         </Row>
         <Row title="Saving" description="The Studio saves every change by itself, under a second after you stop editing. There is nothing to set." testId="setting-autosave" />

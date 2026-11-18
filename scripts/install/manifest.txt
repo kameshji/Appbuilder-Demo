@@ -1,0 +1,52 @@
+# Appbuilder installer manifest (package L): every third-party download, pinned, with its checksum and licence.
+# Read by scripts/install/windows/install.ps1, scripts/install/linux/install.sh and scripts/install/prepare-offline.mjs.
+# Format: key=value, one per line; "#" starts a comment. Only https:// URLs. Every file download has a sha256 or sha512.
+# Licences were read from each project's own licence file on 18 Nov 2026 (docs/admin/installation.md lists them).
+# To move to a newer version: change version, url and checksum together (take the checksum from the publisher's
+# checksum file where one exists), run `npx vitest run scripts/install`, and test an install.
+
+manifest.version=1
+manifest.date=2026-11-18
+
+# Node.js (MIT). Checksums from https://nodejs.org/dist/v24.22.3/SHASUMS256.txt
+node.version=24.22.3
+node.licence=MIT
+node.win-x64.url=https://nodejs.org/dist/v24.22.3/node-v24.22.3-win-x64.zip
+node.win-x64.sha256=e612af99f626ab415ea225af6bce5c971feb448cb5cae250bb1c3fa50c5f7d9f
+node.linux-x64.url=https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz
+node.linux-x64.sha256=4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb
+node.linux-arm64.url=https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-arm64.tar.xz
+node.linux-arm64.sha256=6e51a2ada00f0011cc266f65d98922b403d7ad88f809ca2aa615a5fe1ce6e86c
+
+# PostgreSQL 17 for Windows (PostgreSQL Licence): the EDB binaries ZIP, the same build the EDB installer contains.
+# EDB publishes no checksum file: this SHA-256 was computed from the download on 2026-11-18.
+# The installer unpacks only pgsql/bin, pgsql/lib and pgsql/share (not pgAdmin, not StackBuilder).
+postgres.version=17.12
+postgres.licence=PostgreSQL
+postgres.win-x64.url=https://get.enterprisedb.com/postgresql/postgresql-17.12-1-windows-x64-binaries.zip
+postgres.win-x64.sha256=a2cd8a774389347b70be7748ac4a37ef43cb6ee539c5fc3e85ae264b15e4a04c
+
+# WinSW 2.12.0 (MIT): Windows service wrapper for node.exe and caddy.exe. The .NET Framework 4.6.1 build (Windows 10/11
+# and Server 2016+ have .NET Framework 4.8). No publisher checksum: SHA-256 of the GitHub release asset on 2026-11-18.
+winsw.version=2.12.0
+winsw.licence=MIT
+winsw.win.url=https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET461.exe
+winsw.win.sha256=b5066b7bbdfba1293e5d15cda3caaea88fbeab35bd5b38c41c913d492aadfc4f
+
+# Caddy 2.11.9 (Apache-2.0): HTTPS reverse proxy. SHA-512 from caddy_2.11.9_checksums.txt of the GitHub release.
+caddy.version=2.11.9
+caddy.licence=Apache-2.0
+caddy.win-x64.url=https://github.com/caddyserver/caddy/releases/download/v2.11.9/caddy_2.11.9_windows_amd64.zip
+caddy.win-x64.sha512=98753d5d42650383d00619ac70917a217141f9e92314185bf6c1b8b439cfcfdf8393da0ebb4675c8cb3b23d29a19aabe99dc5aca64fa1bfc3a1ba22509b06871
+caddy.linux-x64.url=https://github.com/caddyserver/caddy/releases/download/v2.11.9/caddy_2.11.9_linux_amd64.tar.gz
+caddy.linux-x64.sha512=0e85544340290a16ce4bfb76fe7d65e9de1bf3a6e67f5ccfff30b30d27ea4c73e078077b7bf3e58ae60b6b12e44327705287059c775bca5782e8ee85ea7edd75
+
+# Linux package repositories (apt verifies every package against these signing keys; the installer checks the key
+# fingerprint before it trusts a key file).
+apt.caddy.keyurl=https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+apt.caddy.fingerprint=65760C51EDEA2017CEA2CA15155B6D79CA56EA34
+apt.caddy.repo=https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main
+apt.pgdg.keyurl=https://www.postgresql.org/media/keys/ACCC4CF8.asc
+apt.pgdg.fingerprint=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+apt.pgdg.repo=https://apt.postgresql.org/pub/repos/apt
+apt.pgdg.major=17

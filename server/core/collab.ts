@@ -568,7 +568,7 @@ export function createCollab(deps: CollabDeps) {
     }
     const follows = has(SYS.follows) ? await db().query<{ n: number; mine: boolean }>(`SELECT count(*)::int AS n, bool_or("owner" = $2) AS mine FROM ${S(SYS.follows)} WHERE "regardingId" = $1`, [rowId, ctx.user.id]) : []
     const tags = has(SYS.tagLinks) && has(SYS.tags)
-      ? await db().query<{ id: string; name: string; color: string | null }>(`SELECT t."id" AS id, t."Name" AS name, t."Color" AS color FROM ${S(SYS.tagLinks)} l JOIN ${S(SYS.tags)} t ON t."id" = l."Tag" WHERE l."regardingId" = $1 ORDER BY lower(t."Name")`, [rowId])
+      ? await db().query<{ id: string; name: string; color: string | null }>(`SELECT t."id" AS id, t."Name" AS name, t."Color" AS color FROM ${S(SYS.tagLinks)} l JOIN ${S(SYS.tags)} t ON t."id" = l."Tag" WHERE l."regardingId" = $1 ORDER BY lower(t."Name") COLLATE "C", t."id"`, [rowId])
       : []
     return {
       table: t.id, row: rowId, title: String(rec[t.primaryColumn] ?? ''),
@@ -627,6 +627,7 @@ export function registerCollabJobs(kernel: { jobs: { register<P>(def: import('./
   })
   kernel.jobs.register<Record<string, never>>({
     type: COLLAB_SWEEP_JOB,
+    schedule: 'custom',
     description: 'Removes comments, activities, tags and other collaboration rows about records that no longer exist.',
     concurrency: 1,
     timeoutMs: 60 * 60_000,

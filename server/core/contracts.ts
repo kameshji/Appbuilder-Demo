@@ -369,6 +369,11 @@ export interface AttachmentRecord {
  */
 export interface MetaStore {
   db: SqlDb
+  /** environment setting "Directory visibility" (P0 package M; ab.settings `directory.visibility`); absent in older fakes */
+  directoryVisibility?: {
+    get(environmentId: string): Promise<import('../../src/platform/orgsec.ts').DirectoryVisibility>
+    set(environmentId: string, mode: import('../../src/platform/orgsec.ts').DirectoryVisibility): Promise<void>
+  }
   /** organisation (departments, teams, user organisation fields) and record shares; absent in older fakes */
   org?: import('./org-store.ts').OrgStore
   /** data model designer (package K): relationships, diagram layouts, drafts; absent in older fakes */

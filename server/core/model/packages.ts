@@ -127,16 +127,19 @@ export async function relationshipPlanLines(s: Services, tables: { def: TableDef
   const have = await store.list()
   let added = 0
   const changed: string[] = []
+  const other: string[] = []
   for (const p of tables) {
     for (const r of p.relationships ?? []) {
       const from = map.get(r.fromTable) ?? r.fromTable
       const cur = have.find((x) => x.fromTable === from && x.fromColumn === r.fromColumn)
       if (!cur) added++
       else if (cur.onDelete !== r.onDelete) changed.push(`${p.def.displayName}.${r.fromColumn}: ${cur.onDelete} → ${r.onDelete}`)
+      else if ((cur.kind ?? 'oneToMany') !== (r.kind ?? 'oneToMany') || !!cur.preventCycles !== !!r.preventCycles) other.push(`${p.def.displayName}.${r.fromColumn}`)
     }
   }
   const out: string[] = []
   if (added) out.push(`Relationships: ${added} new (with their delete behaviours).`)
   if (changed.length) out.push(`Delete behaviour changes: ${changed.slice(0, 10).join('; ')}.`)
+  if (other.length) out.push(`Relationship changes (kind or loop prevention): ${other.slice(0, 10).join('; ')}.`)
   return out
 }

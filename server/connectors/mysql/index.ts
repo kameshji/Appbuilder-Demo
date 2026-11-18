@@ -16,6 +16,7 @@ import {
   createTableSql, fromDb, indexName, physicalName, quoteId, sqlType, tableId, wantedIndex,
 } from './sql.ts'
 import { rowUid } from '../../core/util.ts'
+import { hostProblem } from '../../core/net-policy.ts'
 
 export { createSqlDb }
 
@@ -127,7 +128,7 @@ function parseSettings(conn: ConnectionRecord): MySqlSettings & { valid: boolean
     database: (s.database ?? '').trim(),
     user: (s.user ?? '').trim(),
     ssl: String(s.ssl ?? 'false').toLowerCase() === 'true',
-    valid: !!(s.host && s.database && s.user),
+    valid: !!(s.host && s.database && s.user) && !hostProblem(String(s.host)),
   }
 }
 

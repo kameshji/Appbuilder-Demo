@@ -17,6 +17,7 @@ import { JobError } from '../jobs.ts'
 import { errText, log, uid } from '../util.ts'
 import { sendSmtp, SmtpError, validAddress, type SmtpSecurity, type SmtpSettings } from './smtp.ts'
 import { renderTemplate, type MailTemplate, type TemplateVars } from './templates.ts'
+import { hostProblem } from '../net-policy.ts'
 
 export const MAIL_JOB = 'mail.send'
 const KEY = 'identity.smtp'
@@ -115,6 +116,7 @@ export function createMailService(services: CoreServices): MailService {
   // the delivery job (registered once, on the kernel shared by every environment; it is enqueued in Default)
   services.kernel.jobs.register<{ logId: string; sealed: string }>({
     type: MAIL_JOB,
+    schedule: 'install',
     description: 'Sends one email through the SMTP relay (Admin console > Email). The message is sealed in the payload.',
     parse(raw) {
       if (!isObj(raw) || typeof raw.logId !== 'string' || typeof raw.sealed !== 'string') throw new JobError('malformed mail job', { retry: false })
@@ -163,6 +165,8 @@ export function createMailService(services: CoreServices): MailService {
       const cur = await stored()
       const host = str(b.host)
       if (!host || host.length > 255 || /[\s/]/.test(host)) throw new HttpError(422, 'invalid', 'Enter the host name of the SMTP relay, for example smtp.example.com.', 'host')
+      const blocked = hostProblem(host)
+      if (blocked) throw new HttpError(422, 'invalid', blocked, 'host')
       const port = Number(b.port ?? 587)
       if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(422, 'invalid', 'Port must be between 1 and 65535.', 'port')
       const security = (b.security ?? 'starttls') as SmtpSecurity

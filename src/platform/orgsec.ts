@@ -267,7 +267,17 @@ export interface PredicateEnv {
   sameStore(outer: TableDef, inner: TableDef): boolean
   /** row ids shared with the user (directly or through a team), by table id. `read` includes the update shares. */
   shares?: { read: Record<string, string[]>; update: Record<string, string[]> }
+  /** who appears in the Users system table for non-administrators (environment setting, P0 package M); default everyone */
+  directory?: DirectoryVisibility
 }
+
+/**
+ * Environment setting "Directory visibility": which people a non-administrator sees in the Users system table and in
+ * every picker built on it (person picker, @mentions, share dialog). Administrators always see everyone; everyone always
+ * sees themselves.
+ */
+export type DirectoryVisibility = 'everyone' | 'department' | 'admins'
+export const DIRECTORY_VISIBILITY: DirectoryVisibility[] = ['everyone', 'department', 'admins']
 
 export function columnNames(table: TableDef): Set<string> {
   const missing = new Set(table.missingSystem ?? [])
@@ -527,6 +537,7 @@ export interface PredicateReason {
 export function systemEnvOf(roles: RoleDef[], env: PredicateEnv, isAdmin: boolean): SystemPredicateEnv {
   return {
     user: env.user as SystemPredicateEnv['user'], teams: env.org.teams, tables: env.tables, sameStore: env.sameStore, isAdmin,
+    directory: env.directory ?? 'everyone', departmentUsers: env.org.departmentUsers,
     readOf: (t) => rowPredicateFor(roles, t, 'read', env, isAdmin),
   }
 }

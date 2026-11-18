@@ -33,8 +33,8 @@ The plan lists what will happen in the target, before anything does:
   red items is lost* before you can confirm.
 - **Problems** block the deployment (for example a table that lives in another database in the target, or a lookup to a
   table that exists in neither).
-- Whether a **backup** is taken first. In this version it is not, and the plan says *No backup was taken* in amber: export the
-  solution with data from the target first if you want a way back.
+- Whether a **backup** is taken first. An upgrade backs the target environment up before anything changes (Admin console >
+  Backups); if that backup fails, nothing changes unless an administrator chooses to go on without it.
 
 **Upgrade** (or **Install** when nothing exists there yet) applies exactly the plan you reviewed, **in one transaction**: if
 anything fails, the target is exactly as before. If the target changed since you looked (someone else deployed, for example),
@@ -57,6 +57,23 @@ A table in a solution brings its **validation rules, events, formula columns and
 ownership settings). The upgrade plan lists each rule and event as new, changed or removed. An event that **runs as the
 system** can only be brought in by an administrator, who must tick a box allowing it (also for a first install); the import
 is recorded in the audit log. Importing as a copy brings such events switched off, for an administrator to review.
+
+### The data model travels with the tables
+
+Relationships and their delete behaviours, **unique pairs**, and the settings of **reporting tables** come with the tables
+and are upgraded in place too:
+
+- a changed delete behaviour (or kind, or loop prevention) is listed under the plan's warnings and applied;
+- changed unique pairs: the old index is dropped and the new one built; if rows in the target repeat a pair, the whole
+  upgrade stops and nothing changes;
+- a **reporting view** whose columns changed is re-created (views pin the base columns they read, so they are dropped
+  before the base tables change and created again after);
+- a **date dimension** whose range or financial year changed is filled again;
+- a **summary table**: new measures get their columns, its refresh schedule takes the new timing, and it is refreshed;
+- a first install fills date dimensions and gives summary tables their schedule, as the designer does.
+
+Changing what kind of table it is (a plain table into a view, a summary into a date dimension) is not part of an upgrade:
+the plan lists it as a problem.
 
 ## Export and import
 

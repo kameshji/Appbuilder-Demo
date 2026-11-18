@@ -9,9 +9,9 @@ The formula bar shows a leading `=` for you. Typing one yourself is optional: `=
 - A **data** property (Text, Items, Visible, Fill, DisplayMode) holds a value. It is recalculated whenever what it depends on changes. Example: Text = `"Hello, " & User().FullName`.
 - An **action** property (OnSelect, OnSuccess, OnStart and similar) runs when something happens. Only these can do several things in a row, separated by `;`.
 
-## Refer to controls
+## Refer to UI components
 
-Use a control's name and a property: `TextInput1.Value`, `DataTable1.Selected`, `Toggle1.Value`. Rename controls in the tree to make formulas readable.
+Use a UI component's name and a property: `TextInput1.Value`, `DataTable1.Selected`, `Toggle1.Value`. Rename UI components in the tree to make formulas readable.
 
 ## Variables
 
@@ -45,7 +45,7 @@ computed from only some of the rows. See [Data: large tables](data.md#large-tabl
 
 Patch a row: `Patch(Equipment, DataTable1.Selected, {CheckedOut: true})`. Add a new row: `Patch(Equipment, Defaults(Equipment), {Item: "Tripod"})`. Remove: `Remove(Equipment, DataTable1.Selected)`.
 
-For editing screens, the **Form** control is usually better than Patch: it validates fields and waits for the server's answer. Set its **DataSource**, **Item** (for example `DataTable1.Selected`), **Mode** (`FormMode.Edit` or `FormMode.New`), and react in **OnSuccess** and **OnFailure**. See [Security for makers](security-for-makers.md) for why this matters.
+For editing screens, the **Form** UI component is usually better than Patch: it validates fields and waits for the server's answer. Set its **DataSource**, **Item** (for example `DataTable1.Selected`), **Mode** (`FormMode.Edit` or `FormMode.New`), and react in **OnSuccess** and **OnFailure**. See [Security for makers](security-for-makers.md) for why this matters.
 
 ## Navigate and Notify
 
@@ -85,7 +85,7 @@ Then use `Overdue` or `Area(2, 3)` anywhere.
 
 ## Good to know
 
-- Formulas that read tables may wait for the server: a control shows its previous value (or nothing, the first time) until the answer
+- Formulas that read tables may wait for the server: a UI component shows its previous value (or nothing, the first time) until the answer
   arrives. In an action (`OnSelect`), each step of `a; b; c` reads the server after the earlier steps were saved, so
   `Patch(...); Set(n, CountRows(Orders))` counts the new row.
 - `;` chaining works only in action properties.

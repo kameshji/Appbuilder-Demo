@@ -327,7 +327,7 @@ function InsertPane() {
     <div className="flex h-full flex-col">
       <div className="relative p-2">
         <Search className="pointer-events-none absolute left-4 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search controls" className="h-8 pl-7 text-xs" data-testid="insert-search" />
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search UI components" className="h-8 pl-7 text-xs" data-testid="insert-search" />
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-3 px-2 pb-3">
@@ -357,7 +357,7 @@ function InsertPane() {
               </section>
             )
           })}
-          {list.length === 0 && <p className="px-1 text-xs text-muted-foreground">No control matches "{q}".</p>}
+          {list.length === 0 && <p className="px-1 text-xs text-muted-foreground">No UI component matches "{q}".</p>}
         </div>
       </ScrollArea>
       <div className="border-t border-border px-3 py-2 text-[11px] leading-snug text-muted-foreground">Click to insert, or drag onto the canvas. Dialogs and sheets go to the screen root.</div>

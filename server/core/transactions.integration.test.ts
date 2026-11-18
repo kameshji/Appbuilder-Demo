@@ -12,6 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { runInEnvironment } from './env-context.ts'
 import { PG_URL, SKIP_PG, dropDatabase, pgQuery, pgServer, testDatabaseName } from './testdb.ts'
 import { createApp } from './app.ts'
 import type { AppServer } from './app.ts'
@@ -104,6 +105,11 @@ describe.skipIf(!PG_URL)('units of work (PostgreSQL)', () => {
     expect(rows.map((r: any) => [r.Title, r.Budget, r.Code])).toEqual([['One', 12.5, 'P-0001'], ['Two', 12.5, 'P-0002']])
     // the sample app and its tables were seeded by the setup into the same schema
     expect((await snapshot()).physical).toEqual(expect.arrayContaining(['t_projects']))
+    // the product's own listings never depend on the database's locale (CI's en_US and a C.UTF-8 sandbox order
+    // "Documents" / "DocumentVersions" differently): lower(name) COLLATE "C", i.e. code-point order of the lowercased names
+    const listed = (await runInEnvironment('default', () => app.services.meta.tables.list())).map((x) => x.name.toLowerCase())
+    expect(listed).toEqual([...listed].sort())
+    expect(listed.indexOf('documents')).toBeLessThan(listed.indexOf('documentversions'))
   }, 60000)
 
   it('solution import is all or nothing: a failure at the very end leaves no table, row, app, role or solution', async () => {

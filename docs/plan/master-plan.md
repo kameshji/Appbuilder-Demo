@@ -67,7 +67,7 @@ Target footprint: 4 GB RAM for the core, 8 GB with the office add-on (estimate f
 | Studio and runtime | Power Apps canvas | exists; add phone layout, components, auto-generated app from a table |
 | Flows | Power Automate | visual designer (React Flow), triggers: table event, schedule, button, webhook; actions: data, condition, loop, delay, approval, notify, connector action, agent; run history; no metering |
 | Approvals | Approvals | plain tables plus an inbox page, email and chat cards with approve/reject |
-| Dashboards | Power BI (lite) | chart controls on the aggregate endpoint, security-trimmed; OData feed for Excel/Power BI users |
+| Dashboards | Power BI (lite) | chart UI components on the aggregate endpoint, security-trimmed; OData feed for Excel/Power BI users |
 | Chat | Teams chat | built in-house on the realtime hub: channels, DMs, mentions, files, share a record/app/dashboard as a card, per-record discussion threads, search; available as a panel in every app and in the Studio |
 | Files and documents | SharePoint/OneDrive + Office | document library; built-in rich-text notes (TipTap), spreadsheet import/export (SheetJS), document generation from templates (docxtemplater), PDF output; full Office editing via the optional add-on |
 | Agents | Copilot Studio | agent = instructions + allow-listed tools + knowledge sources; runs as the calling user; writes need human approval; every turn audited; provider-agnostic (HF router, OpenRouter, Ollama Cloud, local Ollama); budgets per install |
@@ -99,12 +99,13 @@ Each phase ends with something usable and a written exit check.
 
 | Phase | Contents | Exit check |
 |---|---|---|
-| P0 Kernel | shared Fx package, query pushdown and paging, organisation model, relationship row rules, table events and outbox, job queue, realtime hub, environments, backup/restore, installer with Caddy, MariaDB 11.8 bundle, licence CI guard | 1 million-row table usable; restore drill passes; install on a clean Windows PC in under an hour |
+| P0 Kernel (done, 0.5.0) | PostgreSQL system store (bundled where we install it; MySQL/MariaDB stays as a connector), shared Fx package, query pushdown and paging, organisation model, relationship row rules, table events and outbox, job queue, realtime hub, environments, backup/restore, identity basics (reset, TOTP, sessions), data model designer core, core data model, installer with Caddy, licence CI guard | 1 million-row table usable; restore drill passes; install on a clean Windows PC in under an hour |
 | P1 Automation | flow engine and designer, approvals, notifications (in-app, email), scheduled reports | purchase-approval flow with escalation runs for a week without loss |
-| P2 Reach | phone layout, PDF and document generation, dashboards, WhatsApp connector, auto-generated apps | supervisor logs production from a phone; manager gets a daily OEE PDF |
-| P3 Collaboration and templates | chat v1, Tasks, Notes, manufacturing pack, Tally/ERPNext connectors | PILOT STARTS |
+| P2 Reach | phone layout, PDF and document generation, dashboards, WhatsApp connector, auto-generated apps, template catalogue (UI component, screen, app and data model templates) | supervisor logs production from a phone; manager gets a daily OEE PDF |
+| P3 Collaboration and templates | chat v1, Notes, solution templates (manufacturing pack, CRM, ERP-lite), licence passes, Tally/ERPNext connectors (Tasks shipped early, in P0) | PILOT STARTS |
+| P3.5 Identity advanced | single sign-on in and out, passkeys, enforced MFA policies beyond P0's | sign-in with the company identity provider on the pilot's accounts |
 | P4 Agents | agent runtime, "ask your data" agent, document knowledge, agent step in flows, admin AI budget | agent answers from tables and files without leaking a restricted column in a red-team test |
-| P5 Documents | library versions, office add-on integration, spreadsheet control | docx/xlsx edited in browser and saved back |
+| P5 Documents | library versions, office add-on integration, spreadsheet UI component | docx/xlsx edited in browser and saved back |
 | P6 Sites | page builder, external roles, OTP sign-in, security check | supplier portal published and passes the check |
 
 Security review by an outside party before the pilot goes beyond one company.

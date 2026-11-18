@@ -120,7 +120,17 @@ The data model designer registers `model.summary.refresh` (payload `{ tableId }`
 Built-in types: `table-event.after`, `rollup.recompute`, `rollup.reconcile`, `formula.backfill`, `index.sync` (key indexes of
 a column marked `indexed`, `CREATE INDEX CONCURRENTLY`, an invalid leftover is dropped first; the column PATCH route no longer
 builds them inline on the default database), `attachments.delete-files`, `attachments.sweep`, `outbox.retention` (outbox 14 days,
-run log 30, finished jobs 14; `APPBUILDER_OUTBOX_RETENTION_DAYS`), `audit.retention` (730 days, off by default).
+run log 30, finished jobs 14; `APPBUILDER_OUTBOX_RETENTION_DAYS`), `audit.retention` (730 days, off by default),
+`identity.signin-log.retention` (180 days) and `identity.mail-log.retention` (90 days): install-wide, their built-in
+schedules exist in the Default environment only and the handlers do nothing elsewhere.
+
+**Schedule policy** (`JobTypeDef.schedule`, P0 package M): `'custom'` lets an environment administrator create, change and
+delete their own schedules of the type (`POST/PATCH/DELETE /admin/schedules`; today `model.summary.refresh`,
+`rollup.reconcile`, `outbox.retention`, `attachments.sweep`, `collab.orphan-sweep`); `'install'` marks install-wide work
+(`backup.run`, `backup.restore-test`, `backup.health`, `mail.send`, the two log retentions) whose schedules only install
+administrators may change, run or delete (403 otherwise); no value: built-in schedules only. `GET /admin/jobs/metrics` returns
+each type's `schedule` for the editor. Before this, any environment administrator could schedule any job type with any
+payload (for example an install backup, or the sign-in log retention with 7 days); see `docs/internal/security-review-p0.md`.
 
 Throughput (sandbox, PostgreSQL 16, one process, concurrency 8, no-op handler): 10,000 jobs processed in 10.4-13.0 s,
 **770-960 jobs/s**; enqueueing them took 0.1 s (`jobs.integration.test.ts`, "load").
@@ -162,7 +172,8 @@ disabled with a warning. Environment copies copy `ab_table_events`. Tests: `even
 | UI functions on the server | Refused at save time with an explanation; the server host refuses them at run time too. |
 | Job payload tampering | Only server code enqueues; payloads are parsed by the type's `parse` (malformed = dead, not retried); `EnqueueJob` only for types marked `eventAllowed`. |
 | Files deleted for a change that did not happen | File deletion is a job inside the unit of work; it also re-checks that no attachment record uses the key. |
-| Lost or duplicated scheduled work | Unique slot keys; misfire policy; the reaper takes back jobs of crashed workers. |
+| Lost or duplicated scheduled work | Unique slot keys; misfire policy; the reaper takes back jobs of crashed workers. A summary refresh locks its table (`LOCK TABLE ... SHARE ROW EXCLUSIVE`) so two refreshes at once cannot both insert their groups. |
+| An environment administrator schedules install-wide work | Custom schedules only for job types marked `schedule: 'custom'`; schedules of `schedule: 'install'` types need an install administrator. |
 | Denial of service through the queue | Per-type and global concurrency, priorities (maintenance jobs low), payload cap 256 KB, result cap 32 KB, retention. |
 | Secrets in logs | Run log and job errors hold messages, never SQL parameters or connection secrets; snapshots are capped and hold attachment ids only. |
 

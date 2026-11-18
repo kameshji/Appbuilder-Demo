@@ -1,40 +1,78 @@
 # Upgrades
 
-Appbuilder is installed from its source folder, so an upgrade means getting newer source, rebuilding and restarting.
-There is no installer, no automatic update and no release channel yet. Read `CHANGELOG.md` (and the commit
-history) of what you pull before you apply it.
+An install made by the [installers](installation.md) is updated with a **release package** (`appbuilder-<version>.zip`) and
+the `appbuilder update` command, or prepared in **Admin console > Updates**. Nothing is downloaded automatically and the
+server never contacts us: you bring the file. A source checkout is updated with git ([below](#update-a-source-checkout)).
 
-## Before you upgrade
+## Before you update
 
-1. **Back up**: Admin console > Backups > Back up now (whole install), and download it or check the off-site copy
-   ([Backup and restore](backup-and-restore.md)). The server also takes an install backup by itself before it changes the
-   database schema (below), but a backup you made and moved off the machine is the reliable way back: an older version
-   refuses a database a newer one has upgraded.
-2. **Keep the workspace outside the source folder.** The default `workspace/` folder is inside the repository. It is
-   ignored by version control, but commands such as `git clean -x` or deleting and re-cloning the folder would delete it,
-   including `.secret-key`. Set `APPBUILDER_WORKSPACE` to a folder elsewhere (for example `C:\AppbuilderData\workspace`)
-   and move the existing folder there while the server is stopped.
-3. Tell users, then stop the server (close its console window or stop the scheduled task).
+1. **Read the release notes** (`RELEASE-NOTES.md` in the package, or Admin console > Updates after uploading it).
+2. **Back up**: Admin console > Backups > Back up now (whole install), and copy it off the machine
+   ([Backup and restore](backup-and-restore.md)). When the new release changes the database schema the server also takes
+   an install backup by itself before it migrates ("Before a server upgrade"), but a backup you moved elsewhere is the
+   reliable way back.
+3. Tell users: the service is stopped for about a minute (longer when the database is migrated and large).
 
-## Upgrade steps
+## Update an installed server
 
-Run these in the Appbuilder folder (Node 22.18 or newer; see [Installation](installation.md#requirements)):
+On the server, as root (Linux) or in an elevated PowerShell (Windows):
 
-```
-git pull --ff-only
-npm ci
-npm run build
+```bash
+sudo appbuilder update /path/to/appbuilder-0.6.0.zip
 ```
 
-Then start the server as usual (`start.ps1`, or your scheduled task). `--ff-only` stops with an error instead of merging
-if you have local changes; resolve that before going on. `npm ci` installs exactly the versions in `package-lock.json`.
-`npm run build` compiles the web interface (`tsc -b && vite build`); the server itself runs the TypeScript files
-directly and is not built.
+```powershell
+& 'C:\Program Files\Appbuilder\appbuilder.cmd' update C:\Install\appbuilder-0.6.0.zip
+```
 
-On a PC set up with `scripts/setup-offline.ps1`, running that script again also updates the installation. Check its
-output: it currently only checks for Node 20 or newer (the real requirement is 22.18), and it assumes port 5174.
+The updater, in order (each step is printed):
 
-After start, sign in and check an app, **Connections > Test**, and the console for errors.
+1. Unpacks the package next to the installed release (`<install folder>\app.staging`, the same disk, so the switch is a
+   rename) and checks **every file** against the package's `SHA256SUMS` (missing, changed or added files refuse it).
+2. Checks the **signature** (`SHA256SUMS.sig`, Ed25519) against the release keys the **installed** release trusts (never
+   against keys inside the new package). An install that trusts a key refuses unsigned packages and packages signed with
+   another key; `--allow-unsigned` exists for builds you made yourself. A development build that trusts no key accepts
+   unsigned packages and says so.
+3. Refuses a **downgrade** (an older version), a release that needs a newer **Node.js** than the service runs (run the new
+   release's installer instead: it updates Node.js too), and a release whose database schema is **older** than the
+   database's.
+4. Checks that the running server is **healthy** (`GET /api/v1/health` answers `ok`); otherwise it stops, because it could
+   not judge the new release (`--force` overrides).
+5. Asks for confirmation (`--yes` skips it), **stops the service**, renames `app` to `app.previous` (the release before is
+   deleted) and `app.staging` to `app`, sets the permissions, and **starts the service**. At start the server **migrates the
+   database** if the release needs it, taking its pre-migration install backup first (see
+   [What happens to the database](#what-happens-to-the-database)).
+6. Waits until `GET /api/v1/health` answers `ok` (default up to 10 minutes: a large migration takes time;
+   `--health-timeout <seconds>`).
+7. **If the new release does not become healthy, it rolls back the app folder by itself**: stops the service, moves the new
+   release to `app.failed` (for the logs and support), puts `app.previous` back, starts it and checks it. See
+   [Roll back](#roll-back) for the database.
+
+Each update is recorded in `<data>\updates\history.json` (shown in Admin console > Updates). Exit codes: 0 updated (or
+already installed), 2 failed and rolled back, 3 refused before anything changed.
+
+Other options: `--reinstall` (the same release again, for example after files were damaged), `--allow-downgrade` (only
+with a matching database restore), `appbuilder verify-release <zip or folder>` (check a package without installing it),
+`appbuilder version` (the installed release, its commit, build date, schema version and trusted keys).
+
+### The Updates page (Admin console)
+
+Install administrators see the installed release (version, commit, build date, schema version, trusted keys), can
+**upload a release ZIP**, and see whether its checksums match, whether it is signed by a trusted key, what it needs
+(Node.js, schema) and its **release notes**. A package that passes is kept in `<data>\updates\staged`, and the page shows
+the one command that installs it:
+
+```
+sudo appbuilder update --staged
+& 'C:\Program Files\Appbuilder\appbuilder.cmd' update --staged      (elevated PowerShell)
+```
+
+The page does not install the release itself, on purpose: the service runs under a low-privilege account that may not
+change its own program files, so a stolen administrator session cannot replace the server's code. The `update --staged`
+command checks the staged package again as root / Administrator before installing it (the service account could have
+changed the staged files; a signed package makes that detectable).
+
+![Admin console, Updates](../images/admin-updates.png)
 
 ## What happens to the database
 
@@ -108,17 +146,52 @@ or as a new environment ([Backup and restore](backup-and-restore.md#restore)).
 
 ## Roll back
 
-If the new version misbehaves:
+**The app folder** is rolled back automatically when the new release fails its health check (above). To go back by hand
+after a successful update (the new release works but you do not want it): stop the service, rename `app` to `app.failed`
+and `app.previous` to `app`, start the service. That is enough when the update did **not** change the database schema
+(`appbuilder version` and the release notes show the schema version).
 
-1. Stop the server.
-2. In the source folder, return to the previous commit you noted before upgrading (`git checkout <commit>`; note it
-   with `git rev-parse HEAD` before you pull), then `npm ci` and `npm run build`.
-3. If the new version had run (and might have changed the database), restore the install backup taken before the upgrade
-   (yours, or the automatic one, "Before a server upgrade", in the backup folder) onto an emptied database with
-   `node server/main.ts restore <archive> --force` ([Disaster recovery](disaster-recovery.md)).
-   Rolling back the code alone does not work once the new version upgraded the schema: the old code refuses the newer
-   database (downgrade guard above). Restore the dump.
-4. Start the server.
+**The database is never restored automatically.** If the new release had migrated the database before it failed, the
+previous release refuses the newer schema ([below](#running-an-older-version-against-a-newer-database)) and the updater
+says so, naming the pre-migration backup and the command:
+
+```bash
+sudo systemctl stop appbuilder
+sudo appbuilder restore /var/lib/appbuilder/backups/appbuilder-install-<date>-<id>.abbak --force
+sudo systemctl start appbuilder
+```
+
+(Windows, elevated: `Stop-Service Appbuilder`, `& 'C:\Program Files\Appbuilder\appbuilder.cmd' restore <file> --force`,
+`Start-Service Appbuilder`; see [Disaster recovery](disaster-recovery.md).) Why this is a decision for a person and not
+automatic: a restore discards everything written since the backup (with the server up, users may already have entered
+data under the new release), it replaces the whole database, and the failure may have nothing to do with the database
+(then fixing the cause and running the update again keeps all data). The updater keeps both release folders and the
+backup, so either way is open.
+
+From a source checkout: `git checkout <the previous commit>`, `npm ci`, `npm run build`, and the same restore when the
+schema had changed.
+
+## Update a source checkout
+
+For an install from source ([Installation](installation.md#install-from-source-developers)), stop the server, then in
+the Appbuilder folder (Node 22.18 or newer):
+
+```
+git pull --ff-only
+npm ci
+npm run build
+```
+
+Then start the server as usual (`start.ps1`, or your scheduled task). `--ff-only` stops with an error instead of merging
+if you have local changes; resolve that before going on. `npm ci` installs exactly the versions in `package-lock.json`.
+`npm run build` compiles the web interface (`tsc -b && vite build`); the server itself runs the TypeScript files
+directly and is not built.
+
+On a PC set up with `scripts/setup-offline.ps1`, running that script again also updates the installation (it assumes
+port 5174).
+
+After start, sign in and check an app, **Connections > Test**, and the console for errors.
+
 
 ## Migrating an older file-based workspace
 
@@ -147,7 +220,8 @@ Delete them if you do not want them.
 
 ## Not supported yet
 
-- Automatic or one-click updates, signed releases, a release notes file.
+- Automatic downloads or update notifications (by design there is no phone-home; you bring the release file).
+- Zero-downtime updates: the service is restarted, which briefly interrupts users (sessions survive: they are in the
+  database). In-memory sign-in throttle counters are reset.
+- Installing a staged update from the browser (see [Admin console > Updates](#the-updates-page-admin-console) for why).
 - Re-running the legacy conversion on a live system.
-- Zero-downtime upgrades: the server must be restarted, which ends nothing permanently (sessions live in the database)
-  but briefly interrupts users. In-memory login throttle counters are reset by a restart.

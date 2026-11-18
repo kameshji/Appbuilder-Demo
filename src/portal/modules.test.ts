@@ -24,8 +24,10 @@ describe('module registry', () => {
   it('the Admin console is live; its planned parts have no menu entry of their own', () => {
     expect(moduleRoute(moduleByKey('admin')!)).toEqual({ page: 'admin' })
     expect(moduleByKey('environments')).toBeUndefined()
+    // Server logs and Usage are real (package L): pages of the Admin console without a menu entry of their own
     for (const k of ['logs', 'usage']) {
-      expect(moduleByKey(k), k).toMatchObject({ status: 'soon', phase: 'P0', inMenu: false })
+      expect(moduleByKey(k), k).toMatchObject({ status: 'live', phase: 'P0', inMenu: false })
+      expect(moduleRoute(moduleByKey(k)!)).toEqual({ page: 'admin', id: k })
     }
     // Backups is real (package J): a page of the Admin console, still without a menu entry of its own
     expect(moduleByKey('backups')).toMatchObject({ status: 'live', phase: 'P0', inMenu: false })

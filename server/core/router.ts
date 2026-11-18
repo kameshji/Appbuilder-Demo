@@ -82,6 +82,12 @@ export function isLoopbackAddress(addr: string | undefined | null): boolean {
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4)
 }
 
+/** the request passed through a (local) reverse proxy: it carries X-Forwarded-For / Forwarded / X-Real-IP / Via */
+export function viaProxy(req: IncomingMessage): boolean {
+  const h = req.headers
+  return h['x-forwarded-for'] !== undefined || h.forwarded !== undefined || h['x-real-ip'] !== undefined || h.via !== undefined || h['x-forwarded-host'] !== undefined
+}
+
 function hostnameOf(value: string): string {
   try {
     return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : 'http://' + value).hostname.replace(/^\[|\]$/g, '')
@@ -368,7 +374,9 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
       if (m === 'method') throw new HttpError(405, 'method_not_allowed', 'Method not allowed.')
       const { route, params } = m
       // setup endpoints: the TCP peer must be this machine, whatever the headers say
-      if (route.opts.loopbackOnly && !isLoopbackAddress(req.socket?.remoteAddress)) {
+      // A reverse proxy on this machine (Caddy from the installers) connects from 127.0.0.1 for every client: a request
+      // that carries forwarding headers came through it, so it is not "on this computer" (package L)
+      if (route.opts.loopbackOnly && (!isLoopbackAddress(req.socket?.remoteAddress) || viaProxy(req))) {
         throw new HttpError(403, 'denied', 'This can only be done on the computer that runs Appbuilder (open it at http://localhost).')
       }
       const requested = requestedEnvironment(req, url)

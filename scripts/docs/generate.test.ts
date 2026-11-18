@@ -61,16 +61,22 @@ describe('generated reference docs', () => {
     writeOrCheck('docs/reference/formulas.md', text)
   })
 
-  it('every control has a description', () => {
+  it('every UI component has a description', () => {
     const { missingDescriptions } = buildControlsPage(controls, fx.enums())
     expect(missingDescriptions, `Add a one-line description in scripts/docs/controls.ts (DESCRIPTIONS) for: ${missingDescriptions.join(', ')}`).toEqual([])
   })
 
-  it('docs/reference/controls.md matches the control registry', () => {
+  it('docs/reference/ui-components.md matches the UI component registry', () => {
     const { text, warnings } = buildControlsPage(controls, fx.enums())
-    warn('controls.md', warnings)
+    warn('ui-components.md', warnings)
     expect(text.length).toBeGreaterThan(1000)
-    writeOrCheck('docs/reference/controls.md', text)
+    writeOrCheck('docs/reference/ui-components.md', text)
+  })
+
+  it('docs/reference/controls.md is only a redirect stub to the UI components reference', () => {
+    const stub = normalise(readFileSync(resolve(root, 'docs/reference/controls.md'), 'utf8'))
+    expect(stub).toContain('(ui-components.md)')
+    expect(stub.split('\n').length).toBeLessThan(12)
   })
 
   it('generation is deterministic', () => {

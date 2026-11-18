@@ -123,7 +123,11 @@ A user id that no longer appears in `ab.users` belongs to a deleted user.
 ## Keeping it in check
 
 Review it on a schedule you can keep (weekly is realistic): user, role, connection and setup changes, and failed
-sign-ins. To limit growth you can delete old rows yourself, after saving a copy:
+sign-ins.
+
+**Retention.** The Audit log page has the switch **Delete audit entries older than ... days** (off by default: entries
+are kept forever). It is the environment's "Audit log retention" schedule (Admin console > Jobs), runs nightly and is
+itself audited when changed (`schedule.update`). To delete by hand instead, save a copy first:
 
 ```sql
 DELETE FROM env_default.ab_audit WHERE at < now() - interval '400 days';
@@ -134,5 +138,5 @@ table is included in a normal database dump ([Backup and restore](backup-and-res
 
 ## Not supported yet
 
-An audit viewer in the portal, export, retention settings, recording read access, old/new values, tamper-evidence or
-forwarding to a log server.
+Export of the audit log as a file, recording read access, tamper-evidence or forwarding to a log server. (The viewer,
+filters and the retention setting exist: Admin console > Audit log.)

@@ -641,9 +641,12 @@ the stored row in the answer carries their new value (rollups follow a moment la
 | `POST /admin/jobs/:id/retry` | admin | failed / dead / cancelled -> queued now, attempts from 0; audited `job.retry` |
 | `POST /admin/jobs/:id/cancel` | admin | queued / failed (or running in this process) -> cancelled; audited `job.cancel` |
 | `GET /admin/schedules` | admin | `{ items: ScheduleInfo[] }` |
-| `POST /admin/schedules`, `PATCH /admin/schedules/:id` | admin | `{ name, cron or intervalSeconds, timeZone, jobType, payload, enabled, misfire }`; 422 for a bad cron, interval, time zone or payload. Built-in schedules can be changed (enabled, timing, payload such as retention `days`) but not deleted |
-| `DELETE /admin/schedules/:id` | admin | custom schedules only |
-| `POST /admin/schedules/:id/run` | admin | enqueue the schedule's job now -> `{ id }` |
+| `POST /admin/schedules`, `PATCH /admin/schedules/:id` | admin | `{ name, cron or intervalSeconds, timeZone, jobType, payload, enabled, misfire }`; 422 for a bad cron, interval, time zone or payload. New schedules only for job types with `schedule: 'custom'` in `GET /admin/jobs/metrics` `types` (422 otherwise). Built-in schedules can be changed (enabled, timing, payload such as retention `days`) but not deleted. Schedules of install-wide job types (`schedule: 'install'`) answer 403 to anyone but an install administrator |
+| `DELETE /admin/schedules/:id` | admin | custom schedules only (403 for install-wide ones unless install administrator) |
+| `POST /admin/schedules/:id/run` | admin | enqueue the schedule's job now -> `{ id }` (403 for install-wide ones unless install administrator) |
+| `POST /admin/export-data/ticket` | admin, recent sign-in | `{ url }`: a one-use, one-minute download link of the environment's data (403 `reauth_required` after an old sign-in) |
+| `GET /admin/export-data[?ticket=]` | admin, recent sign-in or ticket | `application/zip`, streamed: `tables/<Table>.csv`, `attachments.csv`, `manifest.json`; audited `environment.export_data` |
+| `GET /environment/directory`, `PUT /environment/directory` | admin | `{ visibility: 'everyone' \| 'department' \| 'admins' }`: who non-administrators see in the Users system table and pickers; audited |
 | `GET /admin/event-runs?tableId=&status=&limit=&before=` | admin | run log of the environment |
 
 Solution plans (`POST /solutions/import/plan`, deploy with `plan: true`) list table events as items of kind `event`, and
@@ -751,6 +754,27 @@ need an install administrator (403 otherwise). Backups and restores run in the b
 
 `DELETE /environments/:id` takes a backup first: its answer is `{ ok, backup? }`; a failed backup answers 409 field `backup`
 unless the body has `proceedWithoutBackup: true`. `GET /environments/:id` has `lastBackup` for install administrators.
+
+## Health, logs, usage, diagnostics and updates
+
+P0 package L; shapes and the route list in `src/platform/ops.ts`, design in `docs/dev/release-process.md`.
+
+| Route | Who | Answer |
+| --- | --- | --- |
+| `GET /health` | anyone (no session) | `{ status: 'ok' \| 'starting' \| 'degraded' }`, HTTP 200 only for `ok` (503 otherwise), `Cache-Control: no-store`. No versions, names or error text |
+| `GET /admin/health` | install administrators | `DetailedHealth`: checks (database, clock, environments, disk, backups, jobs, mail, log file), versions, database latency, clock skew, live sockets, process |
+| `GET /admin/logs?level=&from=&to=&q=&limit=` | install administrators | `LogPage`: the file log, newest first (≤ 5000; `q` matches the message and request ids) |
+| `GET /admin/logs/download` | install administrators | the log files as text, secrets removed |
+| `PUT /admin/logs/settings` | install administrators | `{ level }` (`info \| warn \| error`); 409 when `APPBUILDER_LOG_LEVEL` sets it |
+| `GET /admin/usage` | install administrators | `UsageReport` |
+| `POST /admin/diagnostics` | install administrators | a ZIP (`application/zip`), secrets removed; audited `diagnostics.bundle` |
+| `GET /admin/updates` | install administrators | `UpdatesInfo` (installed release, trusted keys, staged package, history, the apply command) |
+| `POST /admin/updates/upload` | install administrators | raw ZIP body (≤ 1 GB) -> `StagedUpdate` (checksums, signature, problems, release notes); 422 when it is not a release ZIP; audited `update.stage` |
+| `DELETE /admin/updates/staged` | install administrators | `{ ok }` |
+
+Setup routes (`/setup/database`, `/setup/admin`) also refuse requests that carry proxy headers (`X-Forwarded-For`,
+`Forwarded`, `X-Real-IP`, `Via`, `X-Forwarded-Host`), even from 127.0.0.1: a reverse proxy on the same machine is not
+"this computer".
 
 ## Implementing the contract in another backend
 

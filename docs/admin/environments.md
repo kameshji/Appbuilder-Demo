@@ -56,7 +56,9 @@ access). The table lists every environment with its type, state and schema; sele
 
 - **A copy of another environment**, *schema only*: tables (empty), apps, security roles, solutions and connections.
   *Schema and data*: also every row, the autonumber counters, attachments and data files. The copy is made inside the
-  database (`INSERT ... SELECT`), in one transaction with the rest.
+  database (`INSERT ... SELECT`), in one transaction with the rest. Both kinds keep the data model's relationships,
+  reporting views, the refresh schedules of summary tables and their settings; a *schema only* copy fills its date
+  dimensions from their date range (they are reference rows, not data) and refreshes its summary tables at once.
 - **The sample**: Contacts and Orders with rows, and the Contacts app.
 - **Nothing**: only the built-in roles (Administrator, Maker, Viewer) and connections (Default database, Data files).
 

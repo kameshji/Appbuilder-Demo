@@ -12,6 +12,11 @@
  * Each case builds the security predicate with src/platform/orgsec.ts exactly as the engine does and runs the SQL the
  * connectors run: Query v2 first page (50 rows, natural order) with the exact count, and a v1 page. Prints the median of
  * RUNS runs (after a warm-up) as a Markdown table. Drops the database unless KEEP=1.
+ *
+ * JIT=compare (P0 package M): every case also runs a grouped Query v2 aggregate (SUM(Qty) GROUP BY Line, and a filtered
+ * exact count) and is timed twice, with PostgreSQL's JIT on (the server default, jit_above_cost 100000) and off (what
+ * Appbuilder's pooled connections use, SESSION_OPTIONS in server/connectors/postgres/db.ts). Without JIT=compare the
+ * session runs with jit=off like the product.
  */
 import pg from 'pg'
 import { createTableSql, buildSelect } from '../../server/connectors/postgres/sql.ts'
@@ -102,7 +107,10 @@ const cases = [
   ['departmentTree AND rule (site, not own lines)', 'u10', { read: 'departmentTree', rowFilter: [{ column: 'Line.Supervisor', op: 'ne', value: '@me' }] }],
 ]
 
+const COMPARE = process.env.JIT === 'compare'
 const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]
+const setJit = (on) => db.query(`SET jit = ${on ? 'on' : 'off'}`)
+await setJit(false)
 async function time(sql, params) {
   await db.query(sql, params)
   const ms = []
@@ -116,15 +124,26 @@ async function time(sql, params) {
   return { ms: median(ms), rows }
 }
 
-const out = ['| Case | Rows visible | v2 first page + exact count (ms) | v1 page of 50 (ms) |', '| --- | ---: | ---: | ---: |']
+const out = COMPARE
+  ? ['| Case | Rows visible | v2 page + count, JIT on / off (ms) | v2 aggregate SUM by Line, on / off (ms) | v2 filtered count, on / off (ms) |', '| --- | ---: | ---: | ---: | ---: |']
+  : ['| Case | Rows visible | v2 first page + exact count (ms) | v1 page of 50 (ms) |', '| --- | ---: | ---: | ---: |']
 for (const [name, user, priv, shares] of cases) {
   const pred = rowPredicateFor([role(priv)], Prod, 'read', envFor(user, shares), false)
   const rowFilter = 'const' in pred && pred.const ? undefined : pred
   const v2 = buildV2(d, Prod, { version: 2, table: 'Production', select: ['id', 'Batch', 'Qty'], count: true, page: { size: 50 } }, { rowFilter, visible: ['id', 'Batch', 'Qty'], maxUnpagedRows: 5000, maxGroups: 10000 })
   const v1 = buildSelect(d, Prod, { where: rowFilter, select: ['id', 'Batch'], top: 50 })
+  const count = Number((await db.query(v1.sql.replace(/^SELECT .*? FROM/, 'SELECT count(*) AS n FROM').replace(/ ORDER BY .*$/, ''), v1.params)).rows[0].n)
+  if (COMPARE) {
+    const opts = { rowFilter, visible: ['id', 'Batch', 'Qty', 'Line'], maxUnpagedRows: 5000, maxGroups: 10000 }
+    const agg = buildV2(d, Prod, { version: 2, table: 'Production', aggregate: { groupBy: ['Line'], measures: [{ name: 'total', fn: 'sum', col: 'Qty' }] } }, opts)
+    const cnt = buildV2(d, Prod, { version: 2, table: 'Production', filter: { col: 'Qty', op: 'gt', value: 500 }, count: true, page: { size: 1 } }, opts)
+    const both = async (st) => { await setJit(true); const on = await time(st.sql, st.params); await setJit(false); const off = await time(st.sql, st.params); return `${on.ms.toFixed(1)} / ${off.ms.toFixed(1)}` }
+    out.push(`| ${name} | ${count.toLocaleString('en-US')} | ${await both(v2)} | ${await both(agg)} | ${await both(cnt)} |`)
+    console.error(out[out.length - 1])
+    continue
+  }
   const a = await time(v2.sql, v2.params)
   const b = await time(v1.sql, v1.params)
-  const count = Number((await db.query(v1.sql.replace(/^SELECT .*? FROM/, 'SELECT count(*) AS n FROM').replace(/ ORDER BY .*$/, ''), v1.params)).rows[0].n)
   out.push(`| ${name} | ${count.toLocaleString('en-US')} | ${a.ms.toFixed(1)} | ${b.ms.toFixed(1)} |`)
   console.error(out[out.length - 1])
 }

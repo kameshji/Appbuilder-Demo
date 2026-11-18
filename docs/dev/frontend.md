@@ -1,19 +1,19 @@
 # Frontend guide
 
-How to extend the browser side: add a control, add an Fx function, use the Studio state store, talk to the platform facade, and style
+How to extend the browser side: add a UI component, add an Fx function, use the Studio state store, talk to the platform facade, and style
 things. Layout of the code is in `architecture.md`. The shared contract all of it builds on is
 `/home/claude/appbuilder-demo/src/contracts.ts` (its header says: do not change it without telling the architect).
 
 Rules that apply to everything below:
 
 - React 19 + TypeScript, strict. Client imports use the `@/` alias for `src/` (`tsconfig.app.json`, `vite.config.ts`).
-- Only the control registry and `src/components/ui` import third-party UI libraries (Radix, recharts, react-day-picker, cmdk,
+- Only the UI component registry and `src/components/ui` import third-party UI libraries (Radix, recharts, react-day-picker, cmdk,
   react-useanimations). Portal and Studio code imports `@/components/ui/*`, never the libraries directly (decision D5).
 - Lint is `npm run lint` (oxlint): `react/rules-of-hooks` is an error, `only-export-components` a warning.
 
-## Adding a control
+## Adding a UI component
 
-A control is one object of type `ControlType` (see `src/contracts.ts`) plus a React component. Example to copy:
+A UI component is one object of type `ControlType` (see `src/contracts.ts`) plus a React component. Example to copy:
 `/home/claude/appbuilder-demo/src/controls/Button.tsx` (actions and an output) and `.../TextInput.tsx` (a value output with a
 `Default`).
 
@@ -48,12 +48,12 @@ Optional flags on `ControlType`: `isContainer` (may hold children), `isTemplate`
 ### 2. Register it (the registry)
 
 The registry is `/home/claude/appbuilder-demo/src/controls/index.ts`. `controls.get(type)` throws for an unknown type;
-`controls.list()` returns the insertable controls in Insert-pane order; `controls.propsOf(type)` returns the control's own `props`
-followed by the **common properties** added for every control except Screen (`commonProps` in `src/controls/util.ts`): `X`, `Y`,
+`controls.list()` returns the insertable UI components in Insert-pane order; `controls.propsOf(type)` returns the UI component's own `props`
+followed by the **common properties** added for every UI component except Screen (`commonProps` in `src/controls/util.ts`): `X`, `Y`,
 `Width`, `Height`, `Visible`, `AnchorH`, `AnchorV`, `Grow`, `AlignSelf`, `Tooltip`. Do not declare these yourself.
 
-- Controls grouped in sets are added to the arrays in `src/controls/sets/inputs.ts` or `src/controls/sets/display.ts`; the array
-  order is the Insert-pane order. The first group of controls (Label, Button, TextInput, ...) is listed directly in `index.ts`.
+- UI components grouped in sets are added to the arrays in `src/controls/sets/inputs.ts` or `src/controls/sets/display.ts`; the array
+  order is the Insert-pane order. The first group of UI components (Label, Button, TextInput, ...) is listed directly in `index.ts`.
 - Put new component files under `src/controls/inputs/` or `src/controls/display/`.
 
 ### 3. PropMeta
@@ -62,7 +62,7 @@ Every property is `{ name, label?, kind, group, default, options?, simple? }`.
 
 | Field | Meaning |
 | --- | --- |
-| `name` | Property name; a formula in another control reads it as `Control.Name` through outputs or props as the control exposes |
+| `name` | Property name; a formula in another UI component reads it as `Control.Name` through outputs or props as the UI component exposes |
 | `kind` | `text`, `number`, `boolean`, `color`, `enum`, `action`, `table`, `any`, `tableName`, `icon`, `record` |
 | `group` | `Content`, `Data`, `Layout`, `Style`, `Behaviour` (Properties panel sections) |
 | `default` | A **formula string** starting with `=`, e.g. `'="Button"'`, `'=true'`, `'=ButtonStyle.Primary'`, `'=Blank()'` |
@@ -89,7 +89,7 @@ Some shared descriptors exist: `displayModeProp` (Edit/View/Disabled) and `align
 
 `ControlRenderProps.mode` is `'design'` on the Studio canvas and `'run'` in Preview, the player and the debug window. Rules:
 
-- **In design mode the control must not capture pointer or keyboard input** (the canvas needs the clicks to select and drag): set
+- **In design mode the UI component must not capture pointer or keyboard input** (the canvas needs the clicks to select and drag): set
   `pointerEvents: 'none'` on interactive elements, `tabIndex={-1}`, `readOnly` or `disabled` where applicable, never call
   `setOutput` or `fire`, and do not autofocus or start timers or network requests.
 - In run mode respect `DisplayMode`: `Disabled` renders disabled; `View` renders read-only; only `Edit` fires events.
@@ -103,29 +103,29 @@ Some shared descriptors exist: `displayModeProp` (Edit/View/Disabled) and `align
 
 ### 5. Outputs and events
 
-- **Outputs** are values the control publishes for other formulas, e.g. `TextInput1.Value`, `Toggle1.Value`, `Button1.Pressed`. Declare
+- **Outputs** are values the UI component publishes for other formulas, e.g. `TextInput1.Value`, `Toggle1.Value`, `Button1.Pressed`. Declare
   them in `outputs: [{ name, initial }]` and write them with `setOutput(name, value)`. Other formulas that read an output are
   invalidated and recalculated automatically (`o:<key>` dependency, see `architecture.md`).
 - Keep an output in step with a primitive `Default` property using `useDefaultSync(def, outputs.Value, blankValue, write)` from
   `src/controls/util.ts` (initialises on mount, follows when `Default` changes, re-initialises after a Reset).
 - **Events** are `action` properties. Call `fire('OnSelect')` to run the property's formula through the Fx host. Fire only in run
   mode and only when `DisplayMode` is `Edit`.
-- Containers receive `children` (already rendered); a template control (Gallery) receives `renderTemplate(item, index)` and renders
+- Containers receive `children` (already rendered); a template UI component (Gallery) receives `renderTemplate(item, index)` and renders
   its row template once per item (it sets `ThisItem` for that subtree).
 - `focusToken` increases when a formula calls `SetFocus`; focus your main element when it changes.
 
 ### 6. Icons, including animated `anim:` icons
 
 - `ControlType.icon` is a lucide-react component for the Insert pane and the tree.
-- Inside a control render icons with `AppIcon` (`/home/claude/appbuilder-demo/src/controls/icon/AppIcon.tsx`): `<AppIcon name={...}
+- Inside a UI component render icons with `AppIcon` (`/home/claude/appbuilder-demo/src/controls/icon/AppIcon.tsx`): `<AppIcon name={...}
   size color />` renders a lucide icon for names like `"Plus"` and an animated icon for `"anim:heart"`. `lucideByName(name)` resolves
-  a lucide component from PascalCase, kebab-case or snake_case. Pass `fallback` for blank or unknown names. Controls in
+  a lucide component from PascalCase, kebab-case or snake_case. Pass `fallback` for blank or unknown names. UI components in
   `src/controls/display/helpers.tsx` and `src/controls/inputs/shared.tsx` wrap it for icon props.
 - Animated icons come from the `react-useanimations` package (300 icons). Each icon's Lottie data is a separate lazy module,
   loaded on first use by `src/controls/icon/loader.ts` through `import.meta.glob`. The single-file build inlines them into the HTML
   but evaluates them lazily. The icon box is reserved while data loads so layout does not shift.
 - Catalog metadata (title, category, keywords, own interaction) is in `src/controls/icon/catalog.ts` (`parseAnimatedName`).
-  `AnimatedIconControl` (`src/controls/icon/AnimatedIconControl.tsx`) is the ready-made control, with an `Interaction` enum
+  `AnimatedIconControl` (`src/controls/icon/AnimatedIconControl.tsx`) is the ready-made UI component, with an `Interaction` enum
   (`Default`, `Loop`, `Hover`, `HoverLoop`, `HoverReplay`, `ClickReplay`, `ClickToggle`) and an `Active` output.
 - In formulas the icons are `AnimatedIcon.<Member>` (`=AnimatedIcon.Heart` evaluates to `"anim:heart"`) and lucide ones `Icon.<Member>`.
   The member list is `ANIMATED_ICON_IDS` in `src/fx/animatedIcons.ts`, a **generated** file. After upgrading `react-useanimations`
@@ -136,10 +136,10 @@ Some shared descriptors exist: `displayModeProp` (Edit/View/Disabled) and `align
 
 - Add a unit test for any logic you extract (coercion, selection math) next to it; component rendering is not unit tested in this
   repository (no DOM test environment: the vitest `environment` is `node`).
-- Open the Studio, insert the control, change every property, resize it, switch to Preview and exercise the events and
+- Open the Studio, insert the UI component, change every property, resize it, switch to Preview and exercise the events and
   `DisplayMode` values. Check both light and dark theme.
-- **Docs.** `docs/reference/controls.md` is generated from the registry. Add a one-line description for the new control to
-  `DESCRIPTIONS` in `/home/claude/appbuilder-demo/scripts/docs/controls.ts` (the test "every control has a description" fails
+- **Docs.** `docs/reference/ui-components.md` is generated from the registry. Add a one-line description for the new UI component to
+  `DESCRIPTIONS` in `/home/claude/appbuilder-demo/scripts/docs/controls.ts` (the test "every UI component has a description" fails
   without it), add a note to `NOTES` there if needed, then run `npm run docs:gen` and commit the regenerated page.
 - Run `npm run typecheck`, `npm run lint` and `npm test` (see `testing.md`).
 
@@ -267,9 +267,9 @@ their state while you build.
   menu, through `openSettings(section?)` (`Profile.tsx`), which remembers the route to return to; `settingsReturnRoute()` is what
   Back, the x and Esc go to. `Frame` renders it in front of the shell like the Studio (the shell stays mounted and hidden, so app
   tabs keep their state). Sections: profile, appearance, region, notifications, chat, studio (makers), data, admin (admins),
-  about; `settingsSections(caps)` decides which a user sees. **Rule:** a control is real only when its backing exists; otherwise
+  about; `settingsSections(caps)` decides which a user sees. **Rule:** a setting is real only when its backing exists; otherwise
   render it with `Row soon="..."` (disabled, `SoonBadge`, one line naming what arrives and the phase). Never a working-looking
-  control that does nothing.
+  setting that does nothing.
 - **Preferences store** (`src/platform/preferences.ts`, `usePrefs`): the ONE place for per-user client preferences (theme,
   reduce motion, start mode, avatar colour, chat dock side and restore, Studio default size, snap and grid). JSON in
   `localStorage` under `appbuilder-prefs:<userId>` with a version, every access in try/catch, validated field by field by
@@ -321,13 +321,13 @@ both the **definition** and the **runtime state** of one app.
   `align`, `insert(type, opts)`, `remove`, `rename` (also rewrites references in formulas via `fx.renameIdentifier`), `copy`/`paste`
   /`duplicate`, `reorder`, `reparent`, `moveNode`, `addScreen`/`deleteScreen`, `undo`/`redo`, `addDataSource`/`removeDataSource`.
   Never mutate `app` outside these actions; they keep names unique, ids stable and history consistent.
-- Runtime (`RuntimeState`): `vars`, per-screen `context`, `collections`, `outputs` (keyed per control instance, including gallery row
+- Runtime (`RuntimeState`): `vars`, per-screen `context`, `collections`, `outputs` (keyed per UI component instance, including gallery row
   keys), `resetKeys`, `focusKeys`, `formModes`, `navStack`, `toasts`, `dataKey`, `userId`, `exited`.
 - Runtime actions: `fire(nodeId, event, ctx?)` runs an action property through the Fx host (`src/runtime/host.ts`), `runOnStart`,
   `restartRuntime`, `startPreview`/`exitPreview`, `navigateTo`, `setOutput`, `notify`, logging (`log`, `onLog`).
 - `loadApp(id, def, opts)` replaces everything; `replaceDefinition(def)` is a hot reload that keeps runtime state (used when another
   window saved). Autosave lives in `src/runtime/session.ts` (debounced `platform.apps.save`, broadcast over `src/runtime/channel.ts`).
-- UI-only state (panes, zoom, pan, theme) is a separate store, `useUi` in `src/runtime/ui.ts`. Per-app UI prefs and the control
+- UI-only state (panes, zoom, pan, theme) is a separate store, `useUi` in `src/runtime/ui.ts`. Per-app UI prefs and the UI component
   clipboard use `localStorage` (`src/runtime/persist.ts`).
 - Read from components with a selector: `useStore((s) => s.selection)`. Do not select the whole store (re-renders on every change).
 - `window.__ab` (store, ui, evaluator, `sampleApp`, and `tabs`: a map from app id to the store of each mounted app tab) is exposed
@@ -377,7 +377,7 @@ calls (for example the security preview) and builds on the same session.
 ## Formulas over tables in server mode (delegation)
 
 `src/runtime/delegation.ts`, used by the evaluator (`Evaluator.delegate`), the action runner (`runFormulaAsync` in `host.ts`) and the
-controls. Demo mode, collections and formulas without table reads take none of these paths.
+UI components. Demo mode, collections and formulas without table reads take none of these paths.
 
 - **Properties and named formulas.** For a formula that reads tables (`tableReads`: names of data-source tables, not the first argument
   of Patch / Collect / Remove / Defaults ...), the evaluator calls `analyze()` (`src/fx/query`) with the platform's schema (column kinds,
@@ -393,13 +393,13 @@ controls. Demo mode, collections and formulas without table reads take none of t
   non-enumerable `__query` (`QueryMeta`: exact `count`, `hasMore`, `loadMore`, `columns`, `plan`, `pure`, `view`); read it with
   `queryMeta(items)`. DataTable (SortColumn / SortOrder / SearchText outputs), Dropdown and ComboBox (SearchText) shape the plan of
   their Items: the evaluator adds the sort key first and a `contains` search over the text columns (`ListView`). When Items is a list
-  from elsewhere (a named formula) and `pure` (no calculation on top), `deriveList` re-plans it the same way; otherwise the control
+  from elsewhere (a named formula) and `pure` (no calculation on top), `deriveList` re-plans it the same way; otherwise the UI component
   sorts and searches the rows it holds (`viewMatches` tells which).
 - **Actions.** `needsServer(formula)` (a read of a table that is not held whole) sends the action through `runFormulaAsync`: each
   top-level step (`a; b; c`) waits for the writes of the earlier steps (`flush`), then `prepareAction` analyses the step with the
   current variables, fetches its plans and runs the residual with the host. A read the server can't run fails the action with the
   reason. Other actions stay synchronous.
-- **Controls.** `src/controls/virtual.ts` (`useVirtualRows`, `queryMeta`): DataTable and Gallery render only the rows in view (fixed
+- **UI components.** `src/controls/virtual.ts` (`useVirtualRows`, `queryMeta`): DataTable and Gallery render only the rows in view (fixed
   pitch, spacers) and load the next page near the end (infinite scroll; DataTable's pager mode fetches the pages it shows); both show
   the exact count (`[data-row-count]`). A new sort or search scrolls to the top. Dropdown with a paged Items becomes a type-ahead combo
   box; ComboBox searches on the server (250 ms debounce) and keeps selected records that are not among the rows shown. Charts and
@@ -443,8 +443,8 @@ in `live.md`). What a UI component author needs to know:
 - Tokens are defined for `:root` (light) and `.dark`. The dark theme is toggled by a class on the root; the preference is in
   `localStorage` (`appbuilder-theme`, see `src/runtime/ui.ts`). Any new UI must work in both themes: use the tokens and check it.
 - Body text is 13 px (`index.css`); the Studio is dense. The app being built is drawn at its design size and scaled
-  (`scaleMode` `responsive` or `fit`), so control components use pixel props from the maker (`Size`, `Radius`) and fill their wrapper.
+  (`scaleMode` `responsive` or `fit`), so UI component renderers use pixel props from the maker (`Size`, `Radius`) and fill their wrapper.
 - Reusable primitives are in `/home/claude/appbuilder-demo/src/components/ui/` (shadcn-style wrappers over Radix). Add new primitives
   there, not inline, and import them from `@/components/ui/...`. Use `cn` from `@/lib/utils` to join class names.
 - Icons: lucide-react for the product UI.
-- What is not supported: no CSS-in-JS and no per-app custom CSS; makers style controls only through their properties.
+- What is not supported: no CSS-in-JS and no per-app custom CSS; makers style UI components only through their properties.

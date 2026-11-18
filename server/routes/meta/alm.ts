@@ -9,7 +9,10 @@
  * Old packages without a solution id, and `asCopy`, keep the old behaviour: new instances (solutions.ts).
  */
 import { SYSTEM_TABLES } from '../../../src/platform/system-tables.ts'
-import { relationshipPlanLines, restorePkgRelationships } from '../../core/model/packages.ts'
+import { prepareViewDef, relationshipPlanLines, restorePkgRelationships } from '../../core/model/packages.ts'
+import { createSummary, fillDateDimension, setUniqueTogether } from '../../core/model/engine.ts'
+import { isSystemColumn } from '../../../src/model/ops.ts'
+import type { ReportingDef } from '../../../src/model/types.ts'
 import { createHash } from 'node:crypto'
 import type { AppDef } from '../../../src/contracts.ts'
 import type { AccessScope, AppMeta, ColumnDef, ConnectorKind, RoleDef, SolutionDef, TableDef, TablePrivilege } from '../../../src/platform/contracts.ts'
@@ -112,7 +115,24 @@ const COLUMN_PROPS: (keyof ColumnDef)[] = ['displayName', 'required', 'unique', 
 /** table properties an upgrade carries (F: team ownership, sharing) */
 const TABLE_PROPS = ['displayName', 'description', 'primaryColumn', 'teamOwnership', 'sharing'] as const
 const EVENT_PROPS = ['name', 'kind', 'timing', 'operations', 'order', 'enabled', 'condition', 'actions', 'message', 'field', 'runAs', 'description'] as const
-const same = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+/** JSON with object keys sorted: definitions read back from jsonb come with their keys in another order */
+const canonical = (v: unknown): string => JSON.stringify(v ?? null, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, (x as Record<string, unknown>)[k]])) : x))
+const same = (a: unknown, b: unknown): boolean => canonical(a) === canonical(b)
+
+/**
+ * Reporting settings (package K) in a comparable form: package table ids mapped to this environment's, the physical base
+ * name (filled in here) left out. Undefined: the table has none.
+ */
+function normReporting(r: ReportingDef | undefined, map?: Map<string, string>): ReportingDef | undefined {
+  if (!r) return undefined
+  const m = (id: string) => map?.get(id) ?? id
+  if (r.kind === 'view') {
+    const { baseSource: _b, ...rest } = r as ReportingDef & { baseSource?: string }
+    return { ...rest, base: m(r.base) } as ReportingDef
+  }
+  if (r.kind === 'summary') return { ...r, source: m(r.source) }
+  return { ...r }
+}
 
 function columnChanges(before: TableDef, after: TableDef): PlanColumnChange[] {
   const out: PlanColumnChange[] = []
@@ -134,7 +154,7 @@ interface Ops {
   /** package table id -> target table id */
   tableMap: Map<string, string>
   newTables: PkgTable[]
-  changedTables: { existing: TableDef; pkg: TableDef; columns: PlanColumnChange[] }[]
+  changedTables: { existing: TableDef; pkg: TableDef; columns: PlanColumnChange[]; reporting?: boolean }[]
   removedTables: TableDef[]
   appMap: Map<string, string>
   newApps: { app: PkgApp; id: string; name: string }[]
@@ -185,16 +205,23 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
     if (byId) {
       matched = true
       ops.tableMap.set(p.def.id, byId.id)
+      const view = byId.reporting?.kind === 'view'
       const columns = columnChanges(byId, p.def)
-      const props = byId.system ? [] : TABLE_PROPS.filter((k) => !same(byId[k], p.def[k]))
+      const props: string[] = byId.system ? [] : TABLE_PROPS.filter((k) => !same(byId[k], p.def[k]))
+      // unique pairs (package K) travel with the schema; reporting settings are compared once every table is mapped
+      if (!byId.system && !view && !same(byId.uniqueTogether, p.def.uniqueTogether)) props.push('uniqueTogether')
+      if (!byId.system && (byId.reporting?.kind ?? null) !== (p.def.reporting?.kind ?? null)) {
+        problems.push(`Table "${byId.displayName}" is ${byId.reporting ? `a ${byId.reporting.kind} table` : 'a plain table'} here and ${p.def.reporting ? `a ${p.def.reporting.kind} table` : 'a plain table'} in the package; changing what kind of table it is is not part of an upgrade.`)
+      }
       const nameChanged = !byId.system && byId.name !== p.def.name
       if (nameChanged) problems.push(`Table "${byId.displayName}" is called ${byId.name} here and ${p.def.name} in the package; renaming tables is not part of an upgrade.`)
       if (!columns.length && !props.length) {
         items.push({ kind: 'table', id: byId.id, name: byId.displayName, change: 'unchanged' })
         continue
       }
-      if (columns.length && (byId.connectionId ?? '') !== 'conn_default') problems.push(`Table "${byId.displayName}" is not in the default database here, so its columns cannot be changed by an upgrade.`)
-      if (columns.length && byId.readOnly) problems.push(`Table "${byId.displayName}" is linked read-only here.`)
+      if ((columns.length || props.includes('uniqueTogether')) && (byId.connectionId ?? '') !== 'conn_default') problems.push(`Table "${byId.displayName}" is not in the default database here, so its columns cannot be changed by an upgrade.`)
+      // reporting tables (views, summaries, date dimensions) are read-only for apps, not for an upgrade
+      if (columns.length && byId.readOnly && !byId.reporting) problems.push(`Table "${byId.displayName}" is linked read-only here.`)
       for (const c of columns) {
         if (c.change !== 'type') continue
         if (isAttachmentType(c.from as ColumnDef['type']) !== isAttachmentType(c.to as ColumnDef['type'])) problems.push(`${byId.displayName}.${c.name}: attachment columns cannot change to or from another type.`)
@@ -202,7 +229,9 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
       const destructive = columns.some((c) => c.destructive)
       const notes: string[] = []
       if (columns.some((c) => c.change === 'removed')) notes.push(`drops ${columns.filter((c) => c.change === 'removed').map((c) => c.name).join(', ')}: their values are lost`)
-      if (columns.some((c) => c.change === 'type')) notes.push('converts values; the upgrade stops (and changes nothing) if one does not convert')
+      if (columns.some((c) => c.change === 'type') && !view) notes.push('converts values; the upgrade stops (and changes nothing) if one does not convert')
+      if (view && columns.length) notes.push('the reporting view is re-created from its new columns')
+      if (props.includes('uniqueTogether')) notes.push('unique pairs change: the upgrade stops (and changes nothing) if existing rows repeat a pair')
       if (props.length) notes.push(`changes ${props.join(', ')}`)
       items.push({ kind: 'table', id: byId.id, name: p.def.displayName, change: 'changed', columns, ...(destructive ? { destructive } : {}), ...(notes.length ? { note: notes.join('; ') } : {}) })
       ops.changedTables.push({ existing: byId, pkg: p.def, columns })
@@ -223,6 +252,25 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
     ops.tableMap.set(p.def.id || id, id)
     ops.newTables.push({ ...p, def: { ...p.def, id } })
     items.push({ kind: 'table', id, name: p.def.displayName, change: 'new', ...(p.csv ? { note: 'created with the rows in the package' } : {}) })
+  }
+  // reporting settings (views, summaries, date dimensions): compared with package ids mapped to this environment's
+  for (const p of pkg.tables) {
+    const target = ops.tableMap.get(p.def.id)
+    const byId = target && p.def.id === target ? tables.find((t) => t.id === target) : undefined
+    if (!byId || byId.system || (byId.reporting?.kind ?? null) !== (p.def.reporting?.kind ?? null)) continue
+    if (same(normReporting(byId.reporting), normReporting(p.def.reporting, ops.tableMap))) continue
+    const what = byId.reporting?.kind === 'date' ? 'the date range or fiscal year changes: the days are filled again'
+      : byId.reporting?.kind === 'summary' ? 'the summary settings change: its schedule is updated and it is refreshed'
+        : 'the reporting view is re-created from its new definition'
+    const changed = ops.changedTables.find((c) => c.existing.id === byId.id)
+    const item = items.find((i) => i.kind === 'table' && i.id === byId.id)!
+    if (changed) {
+      changed.reporting = true
+      item.note = item.note ? `${item.note}; ${what}` : what
+    } else {
+      ops.changedTables.push({ existing: byId, pkg: p.def, columns: [], reporting: true })
+      Object.assign(item, { change: 'changed', name: p.def.displayName, note: what })
+    }
   }
   const pkgTableIds = new Set(pkg.tables.map((t) => ops.tableMap.get(t.def.id)))
   for (const c of old.filter((x) => x.kind === 'table')) {
@@ -401,7 +449,26 @@ function mergeApps(existing: string[] | 'all', fromPkg: string[], pkgAppIds: Set
 
 /* ------------------------------------------------------------------ apply */
 
-async function changeTable(s: Services, existing: TableDef, pkg: TableDef, columns: PlanColumnChange[]): Promise<TableDef> {
+/** a changed reporting view: dropped before the base tables change (a view pins the columns it reads), re-created after */
+async function recreateView(s: Services, existing: TableDef, pkg: TableDef, map: Map<string, string>): Promise<TableDef> {
+  const def: TableDef = {
+    ...clone(existing),
+    displayName: pkg.displayName,
+    columns: [...existing.columns.filter(isSystemColumn), ...clone(pkg.columns).filter((c) => !isSystemColumn(c))],
+    reporting: clone(pkg.reporting!),
+    modifiedOn: s.now(),
+  }
+  if (pkg.description) def.description = pkg.description
+  else delete def.description
+  if (def.columns.some((c) => c.name === pkg.primaryColumn)) def.primaryColumn = pkg.primaryColumn
+  await prepareViewDef(s, def, map)
+  const { connector } = await resolveConnection(s, existing.connectionId)
+  await connector.createTable(def)
+  await s.meta.tables.upsert(def)
+  return def
+}
+
+async function changeTable(s: Services, existing: TableDef, pkg: TableDef, columns: PlanColumnChange[], map: Map<string, string>): Promise<TableDef> {
   let cur: TableDef = clone(existing)
   const needDdl = columns.length > 0
   const connector = needDdl ? (await resolveConnection(s, existing.connectionId)).connector : null
@@ -470,6 +537,26 @@ async function changeTable(s: Services, existing: TableDef, pkg: TableDef, colum
   }
   cur.modifiedOn = s.now()
   await s.meta.tables.upsert(cur)
+  // unique pairs: old indexes dropped, new ones built (a repeated pair stops the upgrade)
+  if (!same(existing.uniqueTogether, pkg.uniqueTogether)) {
+    try {
+      await setUniqueTogether(s, cur.id, pkg.uniqueTogether ?? [])
+    } catch (e) {
+      if ((e as { code?: string }).code === '23505' || /duplicate|unique/i.test((e as Error).message)) throw invalid(`${existing.displayName}: the unique pairs cannot change, existing rows repeat a pair (${(pkg.uniqueTogether ?? []).map((x) => x.join(' + ')).join(', ')}).`)
+      throw e
+    }
+    cur = (await s.meta.tables.get(cur.id)) ?? cur
+  }
+  // reporting settings (package K): a date dimension is filled again, a summary gets its new schedule and a refresh
+  const r = pkg.reporting
+  if (r && !same(normReporting(existing.reporting), normReporting(r, map))) {
+    if (r.kind === 'date') await fillDateDimension(s, null, cur.id, r)
+    if (r.kind === 'summary') await createSummary(s, null, cur.id, { ...r, source: map.get(r.source) ?? r.source })
+    cur = (await s.meta.tables.get(cur.id)) ?? cur
+  } else if (r?.kind === 'summary' && columns.length) {
+    // new measure columns: refreshed now rather than at the next slot
+    await createSummary(s, null, cur.id, { ...r, source: map.get(r.source) ?? r.source })
+  }
   // formula columns are recomputed, rollups reconciled by jobs that commit with the upgrade
   for (const c of columns) {
     const before = existing.columns.find((x) => x.name === c.name) ?? null
@@ -507,14 +594,30 @@ export async function applySolution(s: Services, ctx: Ctx, pkg: SolutionPkg, res
         const now = s.now()
         const def: TableDef = { ...clone(p.def), createdOn: now, modifiedOn: now, connectionId: record!.id }
         def.source = await pickSource(s, record!, connector!, def.name)
+        // reporting settings name tables by package id (package K)
+        if (def.reporting?.kind === 'view') await prepareViewDef(s, def, ops.tableMap)
+        if (def.reporting?.kind === 'summary') def.reporting = { ...def.reporting, source: ops.tableMap.get(def.reporting.source) ?? def.reporting.source }
         await createPhysical(s, record!, connector!, def)
-        if (p.csv) rows.push({ def, rows: csvToRows(def, p.csv) })
+        if (p.csv && !def.reporting) rows.push({ def, rows: csvToRows(def, p.csv) })
       }
       // formula columns of the new tables are computed for their rows (the event rules learn the new tables)
       s.kernel?.invalidate()
       if (rows.length) await importRowsSystem(s, rows, u.user.id)
       for (const p of ops.newTables) for (const col of p.def.columns) if (col.computed) await s.kernel?.columnChanged(p.def, null, col)
-      for (const c of ops.changedTables) await changeTable(s, c.existing, c.pkg, c.columns)
+      // date dimensions are filled, summary tables get their schedule and a first refresh (as when the designer applies)
+      for (const p of ops.newTables) {
+        const r = p.def.reporting
+        if (r?.kind === 'date') await fillDateDimension(s, null, p.def.id, r)
+        if (r?.kind === 'summary') await createSummary(s, null, p.def.id, { ...r, source: ops.tableMap.get(r.source) ?? r.source })
+      }
+      // changed reporting views go first (they pin the base columns they read) and come back after the base tables
+      const views = ops.changedTables.filter((c) => c.existing.reporting?.kind === 'view')
+      for (const v of views) {
+        const { connector: vc } = await resolveConnection(s, v.existing.connectionId)
+        await vc.dropTable(v.existing)
+      }
+      for (const c of ops.changedTables) if (c.existing.reporting?.kind !== 'view') await changeTable(s, c.existing, c.pkg, c.columns, ops.tableMap)
+      for (const v of views) await recreateView(s, v.existing, v.pkg, ops.tableMap)
       // relationships and their delete behaviours (package K)
       await restorePkgRelationships(s, pkg.tables, ops.tableMap)
       // table events and validation rules (checked against this environment; run-as-system ones were confirmed)

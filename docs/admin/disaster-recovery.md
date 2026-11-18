@@ -14,6 +14,26 @@ newer), the Appbuilder source **of the same version as the backup or newer** (a 
 an older one refuses it), `npm ci` and `npm run build`. Create an **empty** database and its owner role
 (`scripts/setup-postgres.ps1` or `.sh`). Do **not** run the setup screen.
 
+**With the installers** (the usual case): run the installer of the same release (or newer) on the new machine
+([Installation](installation.md)); it creates PostgreSQL, the role and the database and starts the service, which creates
+empty Appbuilder schemas. Then stop the service and restore over them with `--force`, using the installed command (it
+reads the database login and workspace from the service configuration, and on Linux runs as the service account):
+
+```bash
+sudo systemctl stop appbuilder
+sudo appbuilder restore /path/appbuilder-install-<date>-<id>.abbak --force
+sudo systemctl start appbuilder
+```
+
+```powershell
+Stop-Service Appbuilder
+& 'C:\Program Files\Appbuilder\appbuilder.cmd' restore D:\Restore\appbuilder-install-<date>-<id>.abbak --force
+Start-Service Appbuilder
+```
+
+Then go on with [3. Start and check](#3-start-and-check). (Tested on Linux by the installer's end-to-end test; not yet on
+Windows.) The rest of this section is for a machine set up from source.
+
 ## 2. Restore
 
 In the Appbuilder folder, with the database login in the environment (PowerShell: `$env:APPBUILDER_DB_PASSWORD = '...'`):

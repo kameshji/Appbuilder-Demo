@@ -36,6 +36,7 @@ export interface SecurityExtras {
   shares?: PredicateEnv['shares']
   /** may a rule on `outer` read `inner` in the same statement? default: same connection id */
   sameStore?: PredicateEnv['sameStore']
+  directory?: PredicateEnv['directory']
 }
 
 const sameConnection = (a: TableDef, b: TableDef): boolean => (a.connectionId || DEFAULT_CONNECTION_ID) === (b.connectionId || DEFAULT_CONNECTION_ID)
@@ -93,6 +94,7 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
     tables,
     sameStore: extras.sameStore ?? sameConnection,
     shares: extras.shares,
+    ...(extras.directory ? { directory: extras.directory } : {}),
   }
 
   /**
@@ -256,7 +258,7 @@ export function createSecurityEngine(getMeta: () => MetaStore, ttlMs = 5000): Se
   invalidateShares(environment?: string): void
   directory(): Promise<OrgDirectory>
 } {
-  interface Loaded { roles: RoleDef[]; tables: TableDef[]; sqlConnections: Set<string> }
+  interface Loaded { roles: RoleDef[]; tables: TableDef[]; sqlConnections: Set<string>; directory: PredicateEnv['directory'] }
   /** per environment id (roles and tables are environment objects) */
   interface Slot { cache: (Loaded & { at: number }) | null; loading: Promise<Loaded> | null; generation: number }
   const slots = new Map<string, Slot>()
@@ -277,12 +279,13 @@ export function createSecurityEngine(getMeta: () => MetaStore, ttlMs = 5000): Se
       const roles = await meta.roles.list()
       const tables = await meta.tables.list()
       const connections = await Promise.resolve().then(() => meta.connections?.list() ?? []).catch(() => [])
-      return [roles, tables, connections] as const
+      const directory = await Promise.resolve().then(() => meta.directoryVisibility?.get(currentEnvironment().id)).catch(() => undefined)
+      return [roles, tables, connections, directory] as const
     })()
-      .then(([roles, tables, connections]) => {
+      .then(([roles, tables, connections, directory]) => {
         const sqlConnections = new Set<string>([DEFAULT_CONNECTION_ID])
         for (const c of connections) if (c.connector === 'postgres' || c.connector === 'mysql') sqlConnections.add(c.id)
-        const loaded = { roles, tables, sqlConnections }
+        const loaded = { roles, tables, sqlConnections, directory: directory ?? 'everyone' }
         if (gen === s.generation) s.cache = { ...loaded, at: Date.now() }
         return loaded
       })
@@ -341,12 +344,12 @@ export function createSecurityEngine(getMeta: () => MetaStore, ttlMs = 5000): Se
   return {
     async forUser(user: UserDef, expiresOn?: Date) {
       const envId = currentEnvironment().id
-      const { roles, tables, sqlConnections } = await load()
+      const { roles, tables, sqlConnections, directory: visibility } = await load()
       const dir = await directory()
       const orgCtx = orgContextFor(dir, user.id, envId)
       const shares = await sharesFor(user.id, orgCtx.teams, tables)
       const sameStore = (a: TableDef, b: TableDef) => sameConnection(a, b) && sqlConnections.has(a.connectionId || DEFAULT_CONNECTION_ID)
-      return buildUserContext(user, roles, tables, expiresOn, envId, { org: orgCtx, orgInfo: userOrgInfo(dir, user.id, envId), shares, sameStore })
+      return buildUserContext(user, roles, tables, expiresOn, envId, { org: orgCtx, orgInfo: userOrgInfo(dir, user.id, envId), shares, sameStore, directory: visibility })
     },
     invalidate(scope?: 'all' | { environment: string }) {
       shareGeneration++

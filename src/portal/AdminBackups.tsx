@@ -30,8 +30,7 @@ import { useCaps } from './security'
 import { fmtBytes } from './AdminEnvironments'
 import {
   backupNow, browseBackup, deleteBackup, downloadBackup, fetchBackupHealth, fetchBackupSettings, fetchBackups, fetchContents, isBackupRefusal, needsPassphrase, needsReauth,
-  planTableRestore, reauthenticate, restoreBackup, restoreTables, runRestoreTest, saveBackupSettings, updateBackup, uploadBackup, verifyBackup, waitForOp,
-} from './backupApi'
+  planTableRestore, reauthenticate, restoreBackup, restoreTables, runRestoreTest, saveBackupSettings, updateBackup, uploadBackup, verifyBackup, waitForOp, downloadEnvironmentData } from './backupApi'
 
 type Title = (title: string, subtitle?: ReactNode, actions?: ReactNode) => ReactNode
 
@@ -129,10 +128,6 @@ export function BackupsSection({ title }: { title: Title }) {
   }, null)
 
   if (!caps.server) return <div data-testid="admin-backups">{title('Backups')}<ServerOnly /></div>
-  if (!caps.isInstallAdmin) {
-    return <div data-testid="admin-backups">{title('Backups')}<Empty icon={Lock} title="Install administrators only" description="Backups contain every environment's data, so only install administrators can see, make and restore them." /></div>
-  }
-
   const withReauth = async (fn: () => Promise<void>) => {
     try {
       await fn()
@@ -140,6 +135,19 @@ export function BackupsSection({ title }: { title: Title }) {
       if (needsReauth(e)) setReauth(() => fn)
       else fail(e)
     }
+  }
+  const exportPanel = caps.isAdmin && (
+    <Panel className="mb-4 flex flex-wrap items-center gap-3 p-3 text-sm" data-testid="export-data">
+      <div className="min-w-0 flex-1">
+        <div className="font-medium">Export environment data</div>
+        <div className="text-xs text-muted-foreground">Every table of this environment as CSV files in one ZIP, with a list of the attachment files and a manifest. For moving data to another system or keeping a readable copy; it is not a backup (use a backup to restore).</div>
+      </div>
+      <Button size="sm" variant="outline" onClick={() => void withReauth(() => downloadEnvironmentData())} data-testid="export-data-button"><Download /> Export data</Button>
+    </Panel>
+  )
+
+  if (!caps.isInstallAdmin) {
+    return <div data-testid="admin-backups">{title('Backups')}{exportPanel}<Empty icon={Lock} title="Install administrators only" description="Backups contain every environment's data, so only install administrators can see, make and restore them." /><ReauthDialog retry={reauth} onClose={() => setReauth(null)} /></div>
   }
   const upload = async (f: File | undefined) => {
     if (!f) return
@@ -170,6 +178,7 @@ export function BackupsSection({ title }: { title: Title }) {
       )}
       {error && <p className="mb-3 text-sm text-destructive" role="alert">{error}</p>}
       <div className="mb-4"><BackupHealthBanner health={data?.health ?? null} /></div>
+      {exportPanel}
       {running.map((o) => <OpProgress key={o.id} op={o} />)}
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>

@@ -72,6 +72,12 @@ export interface JobTypeDef<P = unknown> {
   timeoutMs?: number
   /** may be enqueued by a table event (EnqueueJob); default false */
   eventAllowed?: boolean
+  /**
+   * Schedules of this type (P0 package M): 'custom' an environment administrator may create, change and delete their own
+   * schedules of it (Admin console > Jobs); 'install' install-wide maintenance whose schedules only install
+   * administrators may change or run; undefined: built-in schedules only.
+   */
+  schedule?: 'custom' | 'install'
 }
 
 export interface EnqueueOptions {
@@ -263,7 +269,7 @@ export function createJobQueue(deps: JobDeps, options: JobQueueOptions = {}) {
     if (!/^[a-z][a-z0-9_.-]{0,63}$/.test(def.type)) throw new Error(`bad job type name ${def.type}`)
     types.set(def.type, def as JobTypeDef<unknown>)
   }
-  const typeInfo = (): JobTypeInfo[] => [...types.values()].map((t) => ({ type: t.type, description: t.description, concurrency: t.concurrency ?? 4, maxAttempts: t.maxAttempts ?? DEFAULT_MAX_ATTEMPTS }))
+  const typeInfo = (): JobTypeInfo[] => [...types.values()].map((t) => ({ type: t.type, description: t.description, concurrency: t.concurrency ?? 4, maxAttempts: t.maxAttempts ?? DEFAULT_MAX_ATTEMPTS, ...(t.schedule ? { schedule: t.schedule } : {}) }))
 
   /* ---------------------------------------------------------------- enqueue */
 

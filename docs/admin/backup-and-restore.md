@@ -167,6 +167,24 @@ another machine, or copy the backup folder elsewhere with a tool made for it:
 
 Appbuilder does not upload to clouds itself. Keep `.secret-key` and the passphrase **apart** from the backups.
 
+## Export environment data
+
+**Export data** (on the Backups page; environment administrators see it too) downloads every table of the current
+environment as CSV files in one ZIP:
+
+- `tables/<Table>.csv`: one file per table of the default database, system tables with rows included (comments,
+  activities, reference data); projections (Users, Roles, logs) and reporting views are left out. UTF-8, comma separated,
+  first line = column names, dates in ISO format, lists and records as JSON.
+- `attachments.csv`: the attachment files (table, row, column, file name, type, size, SHA-256). The files themselves
+  are not in the export: they are in a backup.
+- `manifest.json`: environment, time, who exported, every table with its file, row count and columns.
+
+It is streamed (a table of a million rows does not need memory or a temporary file) and is **not a backup**: use it to
+move data to another system or keep a readable copy. Text that a spreadsheet would run as a formula (starting with `=`,
+`+`, `-`, `@`) gets a leading `'`. Security: environment administrators only (it is every row of every table: row and
+column security do not apply), after a recent sign-in (you are asked for your password or a code first), recorded in
+the audit log as `environment.export_data`. Not supported yet: choosing tables, other formats, a ZIP over 4 GB.
+
 ## Restore drill
 
 `node scripts/drill/restore-drill.mjs` runs the Phase-0 exit drill end to end: it starts a server on a database it

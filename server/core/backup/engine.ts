@@ -277,7 +277,7 @@ export async function createArchive(conn: Connection, spec: CreateSpec): Promise
       const cat = catalogs.get(e.schema)!
       const rowsOf = new Map(cat.tables.map((t) => [t.name, t.rows ?? null]))
       const defs = await client.query<{ id: string; name: string; source: string | null; connection_id: string | null; def: { columns?: { name: string; type: string }[]; displayName?: string } }>(
-        `SELECT id, name, source, connection_id, def FROM ${qi(e.schema)}."ab_tables" ORDER BY lower(name)`)
+        `SELECT id, name, source, connection_id, def FROM ${qi(e.schema)}."ab_tables" ORDER BY lower(name) COLLATE "C", id`)
       envManifest.push({
         id: e.id, name: e.name, type: e.type, schema: e.schema, schemaVersion: e.schemaVersion, ...(e.locked ? { locked: true } : {}), ...(e.description ? { description: e.description } : {}),
         attachments: { count: 0, bytes: 0, missing: 0 }, dataFiles: { count: 0, bytes: 0 },

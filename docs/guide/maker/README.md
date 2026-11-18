@@ -11,4 +11,4 @@ For people who build apps.
 - [Security for makers](security-for-makers.md): what your app does when a user lacks access.
 - [Solutions](solutions.md): moving work between machines.
 
-Also see the [controls reference](../../reference/controls.md) and the [formula reference](../../reference/formulas.md). New here? Start with [Getting started](../getting-started.md).
+Also see the [UI components reference](../../reference/ui-components.md) and the [formula reference](../../reference/formulas.md). New here? Start with [Getting started](../getting-started.md).

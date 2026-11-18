@@ -1,6 +1,7 @@
 # Phase 0 (Kernel) specification
 
-Status: IN PROGRESS. Owner approved "proceed phase by phase" on 18 Nov 2026.
+Status: **DONE** (18 Nov 2026, version 0.5.0), with exit check 5 (installer) reported by package L. Owner approved "proceed
+phase by phase" on 18 Nov 2026.
 Source of truth for scope: `master-plan.md` sections 3, 5, 9, 10. This file splits P0 into work packages,
 fixes the cross-package contracts, and records the exit check.
 
@@ -56,3 +57,42 @@ fixes the cross-package contracts, and records the exit check.
 | M | Phase close: rename "controls" to "UI components" in UI and docs, docs sweep, exit-check run, security re-check of new surface | all | wave 5 |
 
 Each package ends with: tests, typecheck, build, a real run of the affected flows, and its docs.
+
+## Exit check results (package M, 18 Nov 2026)
+
+`node scripts/exit-check/p0.mjs` against a freshly started server on an empty database (PostgreSQL 16, sandbox), 151 s:
+
+| # | Check | Result | Evidence |
+| --- | --- | --- | --- |
+| 1 | Test suite green on PostgreSQL in CI; MySQL connector tests green | see evidence | `.github/workflows/ci.yml`; locally the full suite passes twice on PostgreSQL 16 + MariaDB (package M report) |
+| 2 | 1,000,000 rows through the API | PASS | first page + exact count 71 ms; indexed filter 8 ms; indexed filter + count of 250,000 206 ms; non-indexed filter 8 ms; sorted page 7 ms; search + count 26 ms; exact count 70 ms; grouped aggregate 387 ms; whole-table sum 99 ms; 20 pages by cursor 8 ms each (all under their limits, median of 3) |
+| 2 | Headless browser: portal grid and an app DataTable on that table | PASS | 29 checks of `scripts/bench/browser-check.mjs` (exact count, paging by scroll, server sort and search, Dropdown type-ahead, Studio delegation messages) |
+| 3 | A formula that cannot be pushed down is an error, not partial data | PASS | translator: `not-delegable-expression` on `Len(Note)`, no plan sent; an unpaged query of 250,000 rows is a 422 ("ask for it page by page") |
+| 4 | Backup, wipe, restore drill by script | PASS | `scripts/drill/restore-drill.mjs`: 10 steps, 25.9 s (backup + verification 1.0 s, restore 3.2 s) |
+| 5 | Clean install on Windows by one script in under an hour | see evidence | package L (installer) reports its own evidence |
+| 6 | Password reset, TOTP and session list end to end | PASS | reset by emailed link (fake SMTP relay), sign-in with the new password; TOTP enrolled, the password alone answers `mfa_required`, the code signs in; session list (2), ending the other session signs it out |
+| 7 | Second environment: create, write, isolate, delete | PASS | row visible there, 404 in Default, Default's table 404 there; deleted, schema dropped |
+| 8 | Docs updated | done | guide, admin, dev, reference (regenerated), CHANGELOG 0.5.0, decisions D24; `scripts/docs-links.test.ts` finds no broken link |
+
+## What moved, and what is carried forward to Phase 1
+
+Moved during Phase 0: Tasks and Mentions (planned for P3) shipped with the core data model (N); identity basics and the
+data model designer core were pulled into P0; templates are split between P2 (catalogue, UI component / screen / app / data
+model templates) and P3 (solution templates); identity advanced is P3.5 (master plan section 5).
+
+Carried forward (open items, none blocks the exit check):
+
+- Validation rules (table events) in demo mode: there is no event storage or evaluator in the browser store; not a small
+  change (gap 2f). Delete behaviours are enforced in demo mode.
+- Relationships removed from a solution package are not removed by an upgrade (packages do not say "no relationships"
+  apart from "older package"); changes and additions are carried.
+- Directory visibility exists in server mode only (demo mode has one user at a time).
+- Export environment data: choosing tables, other formats, ZIP64 (exports over 4 GB).
+- Security residuals (docs/internal/security-review-p0.md): `uuid` override for ExcelJS (`npm audit`, not exploitable
+  here), DNS rebinding for database connections, unsigned backup archives, download tickets in URLs, outside review.
+- Data API v1 stays for one more phase (decided in P0), then goes.
+- Installer evidence (exit check 5) and the server logs / usage pages: package L.
+- Screenshots: the walkthrough (`scripts/docs-shots/capture.mjs`, Studio with the "UI components" wording) and the events
+  and jobs pages (`events.mjs`, with the new schedule editor and the rollup warning) were refreshed; the Users page's
+  directory visibility and the Backups page's export panel have no screenshot yet, and the other capture scripts
+  (backups, identity, environments, organisation, data model, core data model, live) were not re-run.

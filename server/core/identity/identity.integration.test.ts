@@ -256,12 +256,16 @@ describe.skipIf(!PG_URL)('identity basics (PostgreSQL)', () => {
     await sleep(800)
     expect(mailsTo('pat@example.com', RESET).length).toBe(3)
     expect(mailsTo('nobody0@example.com').length).toBe(0)
-    const mail = mailsTo('pat@example.com', RESET)[2]
+    // only the newest link works (asking again revokes the earlier ones). The mail jobs run two at a time, so the relay
+    // may receive the three messages in any order: exactly one of the three links works
+    const links = mailsTo('pat@example.com', RESET).map((m) => ({ m, t: linkToken(m.text, 'reset') }))
+    const checks = await Promise.all(links.map((l) => anon.post('/auth/password/reset/check', { token: l.t })))
+    expect(checks.map((c) => c.status).sort()).toEqual([200, 422, 422])
+    const newest = links[checks.findIndex((c) => c.status === 200)]!
+    const mail = newest.m
     expect(mail.subject).not.toMatch(/http|#reset/)
-    const token = linkToken(mail.text, 'reset')
+    const token = newest.t
     expect(mail.text).toContain(`http://apps.example.com/#reset=${token}`)
-    // only the newest link works (asking again revokes the earlier ones)
-    expect((await anon.post('/auth/password/reset/check', { token: linkToken(mailsTo('pat@example.com', RESET)[0].text, 'reset') })).status).toBe(422)
     expect((await anon.post('/auth/password/reset/check', { token })).data).toMatchObject({ ok: true, email: 'pat@example.com' })
     // policy applies: a common password is refused
     const weak = await anon.post('/auth/password/reset', { token, password: 'password1234' })

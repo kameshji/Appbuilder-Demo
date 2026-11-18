@@ -139,6 +139,43 @@ strips NUL characters; a table or app definition containing one is refused with 
 per schema in PostgreSQL; user tables can never start with `ab_`, see below). There are no foreign keys: integrity is kept by the
 service layer, as before.
 
+Because `jsonb` reorders keys, code that compares a stored definition with one from a package or a client compares them with
+sorted keys (`canonical()` in `server/routes/meta/alm.ts`), never with a plain `JSON.stringify`.
+
+**Collation.** `CREATE DATABASE` takes the server's default locale: `C.UTF-8` in the sandbox, `en_US.utf8` in the CI image,
+often `English_India.1252` on Windows. A plain `ORDER BY name` therefore orders differently on different installs
+(`Documents` / `DocumentVersions` swap between `en_US` and `C`). Every ordering the product shows uses `COLLATE "C"` on a
+lower-cased key, and tests that compare database order with JavaScript order sort both sides the same way. (This was the
+cause of a transactions test that failed once in CI: it compared `ORDER BY name` under `en_US` with a code-point sort in
+JavaScript. The product was not affected; `server/core/transactions.integration.test.ts` now also checks that the table
+list is in code-point order.)
+
+## Connection settings: `jit=off`
+
+Every pooled connection starts with `-c search_path=pg_catalog,pg_temp -c TimeZone=UTC -c jit=off` (`SESSION_OPTIONS` in
+`server/connectors/postgres/db.ts`). PostgreSQL's JIT compiles expressions of queries whose estimated cost is above
+`jit_above_cost` (100,000 by default). Row-security predicates make big expressions with high estimates, so JIT kicked in
+on queries that run in milliseconds and spent seconds compiling them. Measured on PostgreSQL 16 (sandbox, median of 5):
+
+| Query (1,000,000 rows) | JIT on (ms) | JIT off (ms) |
+| --- | ---: | ---: |
+| Comments, "own" scope on 50 tables (regarding predicate): page of 50 + exact count | 42,350 | 518 |
+| Comments, same predicate: count by regarding table | 41,600 | 735 |
+| Comments, administrator (no predicate): count by regarding table | 318 | 285 |
+| Production, no predicate: Query v2 SUM(Qty) by Line | 456 | 347 |
+| Production, no predicate: page of 50 + exact count | 66 | 65 |
+| Production, department-tree scope (200,000 rows): SUM by Line | 142 | 139 |
+| Production, exists rule (10,000 rows): page of 50 + exact count | 278 | 349 |
+| Production, department tree AND rule: SUM by Line | 204 | 229 |
+
+JIT off is neutral or better for most aggregate queries; a few organisation-scope cases are 10 to 70 ms slower with it
+off (at most 25 %), against an 80x regression of the collaboration predicate with it on. It stays off for every
+connection; scoping it with `jit_above_cost` would not help, because the slow case is exactly the one with the highest
+cost estimate. Reproduce: `JIT=compare node scripts/bench/orgsec-bench.mjs`
+(organisation scopes and Query v2 aggregates) and `APPBUILDER_BENCH=1 APPBUILDER_BENCH_JIT=1 npx vitest run
+server/core/core-data-model-scale.integration.test.ts` (collaboration). Database tools outside Appbuilder (psql, pg_dump)
+keep the server's own JIT setting.
+
 ## Schema `ab` (install-wide)
 
 ### `ab.settings`: key/value

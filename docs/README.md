@@ -4,42 +4,59 @@ Appbuilder is a desktop low-code platform for small businesses: makers design ap
 Excel-style formulas, keep data in PostgreSQL, existing databases, data files or Google Sheets, and control who sees what with roles, row
 filters and column security. ("Appbuilder" is a working name.)
 
+## Status
+
+Version **0.5.0** (Phase 0, "Kernel", is done: see [CHANGELOG](../CHANGELOG.md) and [the Phase 0 spec](plan/p0-spec.md)). Every
+page below describes what exists in this version; each page says what is not supported yet. "Current" means the page was
+checked against the code for 0.5.0.
+
 ## For customers
 
 | Guide | Who it is for | Status |
 | --- | --- | --- |
-| [Getting started](guide/getting-started.md) | Anyone installing it on a Windows PC | planned |
-| [Maker guide](guide/maker/README.md) | People who build apps and tables | planned |
-| [Admin guide](admin/README.md) | The person who runs it: users, roles, connections, backups, upgrades | planned |
-| [Security model](admin/security-model.md) | Admins and buyers evaluating it | planned |
-| [Controls reference](reference/controls.md) | Makers (generated from the code) | planned |
-| [Formula reference](reference/formulas.md) | Makers (generated from the code) | planned |
-| [Signing in, two-step verification, forgotten password](guide/signing-in.md) | Everyone using the server | current (P0 package I) |
-| [Troubleshooting](guide/troubleshooting.md) | Everyone | planned |
+| [Getting started](guide/getting-started.md) | Anyone installing it on a Windows PC (one installer script) | current |
+| [Signing in, two-step verification, forgotten password](guide/signing-in.md) | Everyone using the server | current |
+| [Your settings](guide/settings.md) | Everyone | current |
+| [Maker guide](guide/maker/README.md): [apps](guide/maker/apps.md), [the Studio](guide/maker/studio.md), [formulas](guide/maker/formulas.md), [data](guide/maker/data.md), [data model designer](guide/maker/data-model.md), [core data model](guide/maker/core-data-model.md), [security for makers](guide/maker/security-for-makers.md), [solutions](guide/maker/solutions.md) | People who build apps and tables | current |
+| [Admin guide](admin/README.md): installation (Windows and Linux installers, offline, HTTPS), operations (services, logs, health, diagnostics), users and roles, sign-in and identity, organisation, reference data, environments, connections, backup and restore, disaster recovery, upgrades, audit log, jobs | The person who runs it | current |
+| [Security model](admin/security-model.md) and [hardening checklist](admin/hardening-checklist.md) | Admins and buyers evaluating it | current |
+| [UI components reference](reference/ui-components.md) | Makers (generated from the code) | current (generated) |
+| [Formula reference](reference/formulas.md) | Makers (generated from the code) | current (generated) |
+| [Troubleshooting](guide/troubleshooting.md) | Everyone | current |
 
 ## For developers
 
 | Document | Status |
 | --- | --- |
-| [Architecture](dev/architecture.md) | planned |
-| [Data API v1 reference](dev/data-api.md) | planned |
-| [Query v2: formula-to-query translation](dev/query-v2.md) | current (library; the endpoint is P0 package D) |
-| [Realtime: live data refresh, presence, notifications](dev/live.md) | current (P0 package H) |
-| [Authentication and identity design](dev/auth.md) | current (P0 package I) |
-| [Data model designer: relationships, plans, reporting views and their security](dev/data-model.md) | current (P0 package K) |
-| [Core data model: system tables, the regarding rule, NextNumber](dev/core-data-model.md) | current (P0 package N) |
-| [Database schema](dev/schema.md) | planned |
-| [Writing a connector](dev/connectors.md) | planned |
-| [Testing](dev/testing.md) | planned |
+| [Architecture](dev/architecture.md) | current |
+| [Frontend: UI components, Fx functions, the Studio store, the platform facade](dev/frontend.md) | current |
+| [Database schema (system store, environments, JIT and collation notes)](dev/schema.md) | current |
+| [Data API v1 reference](dev/data-api.md) | current (v1 stays for one more phase) |
+| [Query v2: the endpoint and formula-to-query translation](dev/query-v2.md) | current |
+| [Security engine: roles, row and column security, organisation scopes, sharing](dev/security-engine.md) | current |
+| [Authentication and identity](dev/auth.md) | current |
+| [Table events, outbox, jobs and schedules](dev/events-and-jobs.md) | current |
+| [Realtime: live data refresh, presence, notifications](dev/live.md) | current |
+| [Data model designer: relationships, plans, reporting views and their security](dev/data-model.md) | current |
+| [Core data model: system tables, the regarding rule, NextNumber](dev/core-data-model.md) | current |
+| [Backups: archive format, engine, restore](dev/backup.md) | current |
+| [Release process: building, signing, the installers and the updater](dev/release-process.md) | current |
+| [Writing a connector](dev/connectors.md) | current |
+| [Testing](dev/testing.md) | current |
 | [Decision log](decisions.md) | current |
-| [Changelog](../CHANGELOG.md) | planned |
-| [Third-party notices](../THIRD-PARTY-NOTICES.md) | planned |
-| Build specs used while developing each phase | [internal/specs](internal/specs) (historical, not maintained) |
+| [Changelog](../CHANGELOG.md) | current |
+| [Third-party notices](../THIRD-PARTY-NOTICES.md) | current (generated by `npm run notices`) |
+| Plans: [master plan](plan/master-plan.md), [Phase 0 spec](plan/p0-spec.md) | current |
+| Security review of Phase 0: [internal/security-review-p0.md](internal/security-review-p0.md) | current |
+| Build specs used while developing earlier phases | [internal/specs](internal/specs) (historical, not maintained) |
 
 ## Documentation rules
 1. Docs live in this repository and change in the same commit as the behaviour they describe.
 2. Reference pages that can be generated are generated (`npm run docs:gen`); a test fails when they are stale.
 3. Every page says what is not supported yet. No page describes a feature that does not exist.
 4. Plain English, short sentences, task-first ("To add a table, ..."). Screenshots live in `docs/images/` and are
-   regenerated by `node scripts/docs-shots/capture.mjs` (needs `puppeteer-core` and a local Chrome).
+   regenerated by the scripts in `scripts/docs-shots/` (need `puppeteer-core` and a local Chrome).
 5. Security statements must match the code and the security tests; when they change, the security model page changes.
+6. Links are checked: `scripts/docs-links.test.ts` fails on a relative link or image that points nowhere.
+7. "UI components", never "controls", in anything a person reads (`scripts/naming.test.ts` guards string tables and
+   the generated reference); code identifiers (`src/controls`, `ControlType`) keep their names.

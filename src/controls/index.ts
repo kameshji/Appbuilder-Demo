@@ -22,7 +22,7 @@ const propsCache = new Map<string, PropMeta[]>()
 
 function get(type: string): ControlType {
   const c = byType.get(type)
-  if (!c) throw new Error(`Unknown control type: ${type}`)
+  if (!c) throw new Error(`Unknown UI component type: ${type}`)
   return c
 }
 

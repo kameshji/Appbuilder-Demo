@@ -3,17 +3,19 @@
  * retention settings) and the Events run log (docs/admin/jobs.md). Server mode only; one environment at a time.
  */
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { Ban, Play, RefreshCw, RotateCcw } from 'lucide-react'
+import { Ban, Pencil, Play, Plus, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import { usePlatform } from '@/platform'
-import type { EventRunEntry, JobInfo, JobMetrics, JobState, ScheduleInfo } from '@/platform/events'
+import type { EventRunEntry, JobInfo, JobMetrics, JobState, JobTypeInfo, ScheduleInfo } from '@/platform/events'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Empty, Panel, Segmented, errMsg, fmtDate, fmtRelative, useToast } from './kit'
+import { ConfirmDialog, Empty, Field, Panel, Segmented, errMsg, fmtDate, fmtRelative, useToast } from './kit'
 import { useCaps } from './security'
-import { cancelJob, fetchEventRuns, fetchJobMetrics, fetchJobs, fetchSchedules, retryJob, runSchedule, updateSchedule } from './eventsApi'
+import { cancelJob, createSchedule, deleteSchedule, fetchEventRuns, fetchJobMetrics, fetchJobs, fetchSchedules, retryJob, runSchedule, updateSchedule } from './eventsApi'
 import { RunStatus } from './TableLogic'
 
 type Title = (title: string, subtitle?: ReactNode, actions?: ReactNode) => ReactNode
@@ -47,6 +49,7 @@ export function JobsSection({ title }: { title: Title }) {
   const [filter, setFilter] = useState<Filter>('active')
   const [jobs, setJobs] = useState<{ items: JobInfo[]; total: number } | null>(null)
   const [schedules, setSchedules] = useState<ScheduleInfo[] | null>(null)
+  const [editing, setEditing] = useState<ScheduleInfo | 'new' | null>(null)
   const [error, setError] = useState('')
   const load = useCallback(() => {
     if (!caps.server) return
@@ -109,24 +112,29 @@ export function JobsSection({ title }: { title: Title }) {
           </div>
         ))}
       </Panel>
-      <h3 className="mb-1 text-sm font-semibold">Schedules</h3>
-      <p className="mb-2 text-xs text-muted-foreground">Times are in each schedule's time zone. A slot missed while the server was off runs once when it is back. Retention: how many days of old outbox rows, run log entries and finished jobs (or audit entries) to keep.</p>
+      <div className="mb-1 flex items-center gap-2">
+        <h3 className="text-sm font-semibold">Schedules</h3>
+        <Button size="sm" variant="outline" className="ml-auto" onClick={() => setEditing('new')} disabled={!m?.types?.some((t) => t.schedule === 'custom')} data-testid="schedule-new"><Plus /> New schedule</Button>
+      </div>
+      <p className="mb-2 text-xs text-muted-foreground">Times are in each schedule's time zone. A slot missed while the server was off runs once when it is back. Retention: how many days of old outbox rows, run log entries and finished jobs (or audit entries) to keep. Schedules of install-wide work (backups, email, sign-in and email log retention) can only be changed by install administrators.</p>
       <Panel className="divide-y divide-border" data-testid="schedule-list">
-        {schedules?.map((s) => <ScheduleRow key={s.id} s={s} onChange={load} />)}
+        {schedules?.map((s) => <ScheduleRow key={s.id} s={s} onChange={load} onEdit={() => setEditing(s)} />)}
       </Panel>
+      {editing && <ScheduleDialog schedule={editing === 'new' ? null : editing} types={(m?.types ?? []).filter((t) => t.schedule === 'custom')} onClose={() => setEditing(null)} onSaved={load} />}
     </div>
   )
 }
 
-function ScheduleRow({ s, onChange }: { s: ScheduleInfo; onChange(): void }) {
+function ScheduleRow({ s, onChange, onEdit }: { s: ScheduleInfo; onChange(): void; onEdit(): void }) {
   const { fail, toast } = useToast()
+  const [deleting, setDeleting] = useState(false)
   const p = (s.payload ?? {}) as Record<string, unknown>
   const [days, setDays] = useState(String(p.days ?? ''))
   useEffect(() => setDays(String(p.days ?? '')), [p.days])
   const retention = typeof p.days === 'number'
   const save = (patch: Partial<ScheduleInfo>, msg: string) => updateSchedule(s.id, patch).then(() => { toast(msg, 'success'); onChange() }).catch(fail)
   return (
-    <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-3 py-2 text-sm" data-testid="schedule-row">
+    <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto_auto] items-center gap-3 px-3 py-2 text-sm" data-testid="schedule-row">
       <Switch checked={s.enabled} onCheckedChange={(v) => void save({ enabled: v }, v ? 'Schedule on' : 'Schedule off')} aria-label={`${s.name} enabled`} />
       <div className="min-w-0">
         <div className="truncate font-medium">{s.name} {s.builtIn && <Badge variant="outline">Built in</Badge>}</div>
@@ -139,6 +147,90 @@ function ScheduleRow({ s, onChange }: { s: ScheduleInfo; onChange(): void }) {
         <label className="flex items-center gap-1.5 text-xs">Keep <Input className="h-7 w-16" value={days} onChange={(e) => setDays(e.target.value)} onBlur={() => { if (days !== String(p.days)) void save({ payload: { ...p, days: Number(days) } }, 'Retention saved') }} inputMode="numeric" aria-label="Days to keep" /> days</label>
       ) : <span />}
       <Button variant="outline" size="sm" onClick={() => runSchedule(s.id).then(() => { toast('Started', 'success'); onChange() }).catch(fail)} data-testid="schedule-run"><Play /> Run now</Button>
+      {s.builtIn ? <span /> : (
+        <span className="flex gap-1">
+          <Button variant="ghost" size="icon-sm" onClick={onEdit} aria-label={`Edit ${s.name}`} data-testid="schedule-edit"><Pencil /></Button>
+          <Button variant="ghost" size="icon-sm" onClick={() => setDeleting(true)} aria-label={`Delete ${s.name}`} data-testid="schedule-delete"><Trash2 /></Button>
+          <ConfirmDialog open={deleting} onOpenChange={setDeleting} title={`Delete "${s.name}"?`} description="The schedule stops; jobs it already started finish." onConfirm={async () => { await deleteSchedule(s.id); toast('Schedule deleted', 'success'); onChange() }} />
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** create or edit a custom schedule (job types an environment administrator may schedule, docs/admin/jobs.md) */
+function ScheduleDialog({ schedule, types, onClose, onSaved }: { schedule: ScheduleInfo | null; types: JobTypeInfo[]; onClose(): void; onSaved(): void }) {
+  const { fail, toast } = useToast()
+  const [name, setName] = useState(schedule?.name ?? '')
+  const [jobType, setJobType] = useState(schedule?.jobType ?? types[0]?.type ?? '')
+  const [cron, setCron] = useState(schedule?.cron ?? '0 2 * * *')
+  const [timeZone, setTimeZone] = useState(schedule?.timeZone ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'))
+  const [payload, setPayload] = useState(JSON.stringify(schedule?.payload ?? {}, null, 2))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const save = async () => {
+    let p: unknown
+    try { p = payload.trim() ? JSON.parse(payload) : {} } catch { setError('The payload is not valid JSON.'); return }
+    setBusy(true)
+    setError('')
+    try {
+      const body = { name, jobType, cron, timeZone, payload: p } as Partial<ScheduleInfo>
+      if (schedule) await updateSchedule(schedule.id, body)
+      else await createSchedule({ ...body, enabled: true })
+      toast(schedule ? 'Schedule saved' : 'Schedule created', 'success')
+      onSaved()
+      onClose()
+    } catch (e) {
+      setError(errMsg(e))
+      fail(e)
+    } finally { setBusy(false) }
+  }
+  return (
+    <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
+      <DialogContent className="sm:max-w-lg" data-testid="schedule-dialog">
+        <DialogHeader>
+          <DialogTitle>{schedule ? 'Edit schedule' : 'New schedule'}</DialogTitle>
+          <DialogDescription>Runs a job of this environment at the times of a cron expression (minute, hour, day of month, month, weekday).</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-3">
+          <Field label="Name" htmlFor="sched-name"><Input id="sched-name" value={name} onChange={(e) => setName(e.target.value)} data-testid="schedule-name" /></Field>
+          <Field label="Job" hint={types.find((t) => t.type === jobType)?.description}>
+            <Select value={jobType} onValueChange={setJobType}>
+              <SelectTrigger size="sm" data-testid="schedule-type"><SelectValue /></SelectTrigger>
+              <SelectContent>{types.map((t) => <SelectItem key={t.type} value={t.type}>{t.type}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Cron" htmlFor="sched-cron" hint="0 2 * * * is every night at 02:00."><Input id="sched-cron" value={cron} onChange={(e) => setCron(e.target.value)} data-testid="schedule-cron" className="font-mono" /></Field>
+            <Field label="Time zone" htmlFor="sched-tz"><Input id="sched-tz" value={timeZone} onChange={(e) => setTimeZone(e.target.value)} data-testid="schedule-tz" /></Field>
+          </div>
+          <Field label="Payload (JSON)" htmlFor="sched-payload" hint={'For example {"tableId": "tbl_..."} for a summary refresh, {"days": 30} for a retention job.'}>
+            <Textarea id="sched-payload" value={payload} onChange={(e) => setPayload(e.target.value)} rows={4} className="font-mono text-xs" data-testid="schedule-payload" />
+          </Field>
+          {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button onClick={() => void save()} disabled={busy || !name.trim() || !jobType || !cron.trim()} data-testid="schedule-save">{schedule ? 'Save' : 'Create'}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** "Keep N days" for one built-in retention schedule of the current environment (Audit log page) */
+export function RetentionSetting({ scheduleId, what }: { scheduleId: string; what: string }) {
+  const { fail, toast } = useToast()
+  const [s, setS] = useState<ScheduleInfo | null>(null)
+  const [days, setDays] = useState('')
+  const load = useCallback(() => { fetchSchedules().then((l) => { const x = l.find((i) => i.id === scheduleId) ?? null; setS(x); setDays(String((x?.payload as { days?: number } | null)?.days ?? '')) }).catch(() => setS(null)) }, [scheduleId])
+  useEffect(load, [load])
+  if (!s) return null
+  const save = (patch: Partial<ScheduleInfo>, msg: string) => updateSchedule(s.id, patch).then(() => { toast(msg, 'success'); load() }).catch(fail)
+  return (
+    <div className="flex items-center gap-2 text-xs" data-testid={`retention-${scheduleId}`}>
+      <Switch checked={s.enabled} onCheckedChange={(v) => void save({ enabled: v }, v ? 'Retention on' : 'Retention off: entries are kept forever')} aria-label={`Delete old ${what}`} />
+      {s.enabled ? <>Delete {what} older than <Input className="h-7 w-16" value={days} inputMode="numeric" aria-label="Days to keep" onChange={(e) => setDays(e.target.value)} onBlur={() => { if (days !== String((s.payload as { days?: number }).days)) void save({ payload: { ...(s.payload as object), days: Number(days) } }, 'Retention saved') }} /> days</> : <span className="text-muted-foreground">{what[0]!.toUpperCase() + what.slice(1)} are kept forever.</span>}
     </div>
   )
 }

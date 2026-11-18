@@ -3,6 +3,8 @@
  * Appbuilder local server: `node server/main.ts` (Node 22.18+ type stripping).
  * Serves the Data API v1 under /api/v1 and the built app from dist/ (SPA fallback).
  * `node server/main.ts restore <archive.abbak> [options]` restores an install from a backup instead (backup/cli.ts).
+ * `node server/main.ts version|verify-release|update|diagnostics|health|seed-config`: tools of an installed server
+ * (update/cli.ts; the installers wrap them as the `appbuilder` command).
  *   PORT (5174)   APPBUILDER_HOST (127.0.0.1)   APPBUILDER_WORKSPACE (./workspace)   APPBUILDER_SECRET_KEY
  *   APPBUILDER_DB_HOST / _PORT (5432) / _NAME / _USER / _PASSWORD / _SSL  (optional PostgreSQL bootstrap, skips the setup screen)
  *   APPBUILDER_ALLOWED_HOSTS (extra Host names)  APPBUILDER_SECURE_COOKIE=1  APPBUILDER_TRUST_PROXY=1
@@ -11,12 +13,23 @@ import http from 'node:http'
 import { createApp } from './core/app.ts'
 import { serveStatic } from './core/static.ts'
 import { log } from './core/util.ts'
+import { startFileLogging } from './core/diagnostics/logger.ts'
+import { loadConfig } from './core/config.ts'
+
+// installed-server tools: version, verify-release, update, diagnostics, health, seed-config (update/cli.ts)
+const { CLI_COMMANDS, runOpsCli } = await import('./core/update/cli.ts')
+// an installed server's `appbuilder restore` uses the service's environment file (database login, workspace)
+if (process.argv[2] === 'restore') (await import('./core/update/cli.ts')).loadInstallEnv()
+if (CLI_COMMANDS.has(process.argv[2] ?? '')) process.exit(await runOpsCli(process.argv.slice(2)))
 
 // `node server/main.ts restore <archive>`: install restore from a backup (docs/admin/disaster-recovery.md), no server
 if (process.argv[2] === 'restore') {
   const { runCli } = await import('./core/backup/cli.ts')
   process.exit(await runCli(process.argv.slice(2)))
 }
+
+// the rotating JSON-lines file log in <workspace>/logs (package L); the console keeps human-readable lines
+startFileLogging(loadConfig().workspaceDir)
 
 const app = await createApp()
 const { host, port, distDir, workspaceDir } = app.config

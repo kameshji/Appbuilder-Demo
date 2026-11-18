@@ -61,7 +61,7 @@ export const CATEGORY_OF: Record<string, CategoryId> = {
 /** One-line notes for enums. The "Used by" line is generated from the control registry. */
 export const ENUM_NOTES: Record<string, string> = {
   Color: 'Named colours. Each member is a colour value: `=Color.Red`. `Color.Transparent` has zero alpha.',
-  DisplayMode: 'Whether a control accepts input (Edit), only shows its value (View) or is greyed out (Disabled).',
+  DisplayMode: 'Whether a UI component accepts input (Edit), only shows its value (View) or is greyed out (Disabled).',
   SortOrder: 'Direction argument of Sort and SortByColumns.',
   NotificationType: 'Second argument of Notify.',
   FormMode: 'Mode of a Form. NewForm, EditForm and ViewForm switch it.',
@@ -80,12 +80,12 @@ const ICON_PICKER_NOTE =
 
 const INTRO = `# Formula reference
 
-Formulas are how makers say what an app does. Every property of every control holds one, a screen can have an \`OnVisible\`
+Formulas are how makers say what an app does. Every property of every UI component holds one, a screen can have an \`OnVisible\`
 formula, and the app itself can define named formulas and functions. The language is called Fx. It looks like an Excel
 formula and has familiar function names, but it is our own engine, so a few things differ from Power Fx (see
 [Differences from Power Fx](#differences-from-power-fx)).
 
-This page is generated from the formula engine and the control registry. Do not edit it by hand; run \`npm run docs:gen\`.`
+This page is generated from the formula engine and the UI component registry. Do not edit it by hand; run \`npm run docs:gen\`.`
 
 const SYNTAX = `## The basics
 
@@ -151,7 +151,7 @@ const BLANK_AND_ERRORS = `## Blank and errors
 - \`IfError(value, fallback)\` gives the fallback when the value is an error. \`IsError\` and \`IsBlankOrError\` test for one.
 - Inside a fallback, \`FirstError.Message\` is the message.
 - Some mistakes can never be caught by \`IfError\`: an unknown name or function, the wrong number of arguments, and a behaviour function in a data property. They are always reported.
-- When a property's formula fails, the control behaves as if the property had its default value,.`
+- When a property's formula fails, the UI component behaves as if the property had its default value,.`
 
 const PROPERTIES = `## Data properties and behaviour properties
 
@@ -163,7 +163,7 @@ A property is either a **data property** or a **behaviour property**.
 =Set(Total, 0); Collect(Cart, { Item: Name }); Navigate(CartScreen)
 \`\`\`
 
-The controls reference marks events with the kind \`action\`. The chain gives the value of its last step. A trailing \`;\` is allowed.`
+The UI components reference marks events with the kind \`action\`. The chain gives the value of its last step. A trailing \`;\` is allowed.`
 
 const ROW_SCOPE = `## Row scope: \`ThisRecord\`, \`As\` and \`ThisItem\`
 
@@ -173,7 +173,7 @@ Functions that take a formula to run for each row (\`Filter\`, \`Sort\`, \`ForAl
 =Filter(Contacts, Age > 30 && City = "Pune")
 \`\`\`
 
-- **Shadowing.** A field name wins over a variable or control with the same name. Names of outer rows stay reachable when nothing in the inner row has that name.
+- **Shadowing.** A field name wins over a variable or UI component with the same name. Names of outer rows stay reachable when nothing in the inner row has that name.
 - **\`ThisRecord\`** is the whole current row (the innermost one): \`ForAll(Contacts, ThisRecord.Name)\`.
 - **\`As\`** names the row so that nested formulas can tell rows apart: \`ForAll(Orders As o, CountRows(Filter(Lines As l, l.OrderId = o.Id)))\`. \`As\` goes after a table argument inside a function call, not on its own.
 - **\`ThisItem\`** is the item of a Gallery row. The Gallery supplies it; it is not a function row scope.
@@ -202,7 +202,7 @@ Fx was written from the documented behaviour of Power Fx and is **not compatible
 - **Division by zero is an error** ("Can't divide by zero"), in \`/\` and in \`Mod\`. So is any result that is not a finite number.
 - **\`IfError\` has two forms.** \`IfError(value, fallback)\` and the multi-pair form \`IfError(value1, fallback1, value2, fallback2, ..., default)\`: the first value that fails gives its fallback; the optional last argument is returned when nothing failed. Inside a fallback only \`FirstError.Message\` and \`FirstError.Kind\` (always \`"Custom"\`) exist; there is no \`AllErrors\`.
 - **User-defined functions have a single expression as their body** (no \`;\` chaining). See "Named formulas" above.
-- **Enum names shadow your own names.** A variable, collection or control called \`Size\`, \`Side\`, \`Fit\`, \`Layout\`, \`Icon\`, \`Variant\`, \`Match\`, \`Anchor\`, \`Justify\`, \`Orientation\`, \`Color\`, \`Align\` or any other enum name (see the list of enums below) cannot be reached from a formula: the enum wins. Pick other names. A named formula with an enum's name is rejected.
+- **Enum names shadow your own names.** A variable, collection or UI component called \`Size\`, \`Side\`, \`Fit\`, \`Layout\`, \`Icon\`, \`Variant\`, \`Match\`, \`Anchor\`, \`Justify\`, \`Orientation\`, \`Color\`, \`Align\` or any other enum name (see the list of enums below) cannot be reached from a formula: the enum wins. Pick other names. A named formula with an enum's name is rejected.
 - **\`;\` chaining works only in behaviour properties.**
 - **Text is compared without regard to case** by \`=\`, \`<>\`, \`<\`, \`>\` and \`in\`. Use \`exactin\` for a case-sensitive test.
 - **One locale.** Syntax and numbers are always en-US: a point for decimals, a comma between arguments, \`Language()\` is always \`"en-US"\`. The optional language argument of \`DateValue\`, \`DateTimeValue\` and \`TimeValue\` is accepted but has no effect. Number text may contain commas as thousands separators, so \`Value("1,5")\` is 15.
@@ -244,7 +244,7 @@ function usageLine(uses: string[]): string {
   if (uses.length === 0) return 'Used by: no built-in property lists it as a default or a choice. It is available in formulas.'
   const controls = new Set(uses.map((u) => u.split('.')[0]!))
   if (uses.length <= 6) return `Used by: ${uses.map((u) => code(u)).join(', ')}.`
-  return `Used by: ${uses.length} properties on ${controls.size} controls (for example ${uses.slice(0, 3).map((u) => code(u)).join(', ')}).`
+  return `Used by: ${uses.length} properties on ${controls.size} UI components (for example ${uses.slice(0, 3).map((u) => code(u)).join(', ')}).`
 }
 
 export function buildFormulasPage(fx: FxApi, registry: ControlRegistryApi): Generated {

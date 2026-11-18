@@ -40,7 +40,7 @@ interface AnalyzeResult {
 }
 ```
 
-Values from outside the table are evaluated by the translator in the browser, with the caller's `scope` (controls, variables,
+Values from outside the table are evaluated by the translator in the browser, with the caller's `scope` (UI components, variables,
 collections, `User()`, `Param(...)`) and `engine` (its user-defined functions and named formulas), and embedded as literals:
 `Dropdown1.Selected.Value`, `User().Email`, `Today()`, `Now()`, `DateAdd(Today(), -7, "Days")`, `varMin * 2`. An expression is "from
 outside" when it reads no field of the current row (no column name, no `ThisRecord`, no `As` alias). A plan is therefore only
@@ -414,6 +414,9 @@ transaction with `SET LOCAL statement_timeout` (15 s, `APPBUILDER_QUERY_TIMEOUT_
 - **Aggregates.** No groups: `SELECT <measures> FROM t WHERE ...` (always one row). Groups over the natural order (no sort, no take):
   one pass `GROUP BY` the group keys (text lowercased, NULL its own group) with the measures and `min(N)`, then a hash join back to the
   rows with that createdOn and `DISTINCT ON` the lowest id: the group's first row gives the original-case values and the group order.
+  The table is never given an alias there: a row predicate's correlated semi-joins (the core data model's "regarding" rule) name the
+  outer row by the table's qualified name, which an alias would hide (until 0.5.0 a non-administrator's grouped aggregate over
+  Comments or Activities failed with PostgreSQL 42P01).
   Groups over a sorted or taken stream number it with `row_number()` and join on each group's first number. Measures are cast to
   `double precision` (count to `int`); `aggregate.sort` keys are the output columns' sort keys, ties by first row.
 - **Limits.** `page.size` <= 500 (422); an unpaged rows plan returns at most 5,000 rows (422 "ask for it page by page"); an aggregate

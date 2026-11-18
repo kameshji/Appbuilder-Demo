@@ -49,7 +49,18 @@ export function setQuiet(q: boolean): void {
   quiet = q
 }
 
+/** a second destination for log lines (the rotating file log of server/core/diagnostics/logger.ts); never throws */
+let sink: ((level: LogLevel, msg: string) => void) | null = null
+export function setLogSink(fn: ((level: LogLevel, msg: string) => void) | null): void {
+  sink = fn
+}
+
 export function log(level: LogLevel, msg: string): void {
+  if (sink) {
+    try {
+      sink(level, msg)
+    } catch { /* logging must never break the caller */ }
+  }
   if (quiet && level !== 'error') return
   const line = `[${new Date().toISOString()}] ${level.toUpperCase()} ${msg}`
   if (level === 'error') console.error(line)

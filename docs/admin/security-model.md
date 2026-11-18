@@ -146,9 +146,13 @@ Until the database is configured and the first user exists, the setup endpoints 
 - **This computer only.** Both routes are `loopbackOnly`: the router compares the TCP peer address of the connection
   (`req.socket.remoteAddress`) with 127.0.0.0/8, `::1` and `::ffff:127.x.y.z`, before reading the body. A request from
   another computer is refused with 403, whatever `Host` or `Origin` it sends. (Before, with `APPBUILDER_HOST=0.0.0.0`, a
-  LAN client sending `Host: localhost` could create the administrator.)
+  LAN client sending `Host: localhost` could create the administrator.) A request that carries proxy headers
+  (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`, `Via`, `X-Forwarded-Host`) is refused too, even from 127.0.0.1: a reverse
+  proxy on the same machine (the installers' Caddy) connects from loopback on behalf of any client. A local program could
+  of course leave the headers out; that is the same as being on this computer.
 - **A one-time setup code.** While setup is needed the server generates 8 random characters (alphabet without
-  look-alikes, `crypto.randomInt`) at start and prints them in a banner on its console. Both routes require it
+  look-alikes, `crypto.randomInt`) at start and prints them in a banner on its console (and, with
+  `APPBUILDER_SETUP_CODE_FILE`, in an owner-only file the installers point to; never in the log file). Both routes require it
   (`setupCode` in the body or the `X-Appbuilder-Setup-Code` header; case, spaces and dashes ignored; compared in
   constant time). 20 wrong codes in 15 minutes give 429 for a while; each is audited (`setup.code_rejected`). After the
   administrator is created the code is replaced by a new one that is never printed. So a local program that cannot read
@@ -324,6 +328,30 @@ with no CSP violation in the console.
   value. XLSX data files are written with typed cells by ExcelJS, so text never becomes a formula. Google Sheets writes
   use `RAW` mode, so values you save into a sheet are never turned into formulas (`server/connectors/gsheets/index.ts`).
 
+- **Computed columns are computed by the system.** A formula column's value, and a rollup's total over related rows,
+  are calculated without the reader's row or column security and stored in the row. Whoever can see the computed
+  column sees the result, even when it summarises rows or columns they cannot open (a rollup "Total of order lines"
+  shows the sum of every line, also lines in rows hidden from the reader). This is by design: limit the computed column
+  in the table's column security when that matters. The rollup editor and the formula column editor say so.
+- **Summary tables** (data model designer) are readable only by roles that may read every row and every used column of
+  their source; **reporting views** apply the base table's row and column security.
+- **The directory.** Who a non-administrator sees in the Users system table and in every picker built on it is set
+  per environment ([Directory visibility](users-and-roles.md#directory-visibility): everyone, same department, or
+  administrators only); people without access to the environment are never listed.
+- **Collaboration rows follow the record.** A comment, activity, follow, tag or file link can only be created about a
+  record the writer can read; mentioning someone who cannot read the record is refused; notifications go only to people
+  who can read it.
+
+## Outbound connections
+
+Appbuilder connects out to hosts administrators type in: database connections (and their introspection) and the SMTP
+relay. Always refused: link-local addresses (`169.254.0.0/16`, `fe80::/10`, where cloud metadata services live), the
+unspecified address (`0.0.0.0`, `::`), multicast and broadcast, and metadata host names (`metadata.google.internal`).
+Names are resolved and every address is checked. Loopback and private networks are allowed (an on-premises database and
+mail relay live there); set `APPBUILDER_OUTBOUND_PRIVATE=deny` to refuse them too. The SMTP client connects to the
+address it checked; the database drivers resolve the name again when they connect, so a DNS answer that changes in
+between is not caught for database connections. Connection hosts can only be set by administrators.
+
 ## Attachments
 
 (`server/core/attachments.ts`, `attachment-store.ts`)
@@ -386,6 +414,11 @@ beyond their role. Web pages the user visits are not trusted.
 | A user widening their own access through the organisation (choosing a manager, joining a team, giving rows away) | Departments, managers and organisation fields: install administrators only; teams: administrators; giving a row to a team: only a team of one's own, and the Update rules must still cover the row afterwards |
 | A share opening a table to someone with no access to it | Shares only add rows for users whose role already reads (or updates) the table; never Delete |
 | A rule or token that does not resolve opening rows (no department, a deleted team, a removed column) | Fail closed: an unresolved value never matches; a rule that no longer fits the table makes the role grant nothing |
+| An environment administrator reaching install-wide work (backups, mail, install log retention) through schedules | Custom schedules only for job types marked safe; schedules of install-wide jobs need an install administrator |
+| An administrator account used to reach cloud metadata or link-local services | Outbound policy: link-local, metadata, unspecified and multicast targets refused for connections and SMTP |
+| A crafted backup archive (path traversal, links, oversized members) | Only regular files are read, paths checked, members read into memory capped, every file checked against the manifest's SHA-256 |
+| A zip bomb uploaded as a workbook (data file, model import) | The ZIP directory is checked first: at most 256 MB unpacked, 200x compression, 10,000 parts, no ZIP64 |
+| Hostile DBML text freezing the designer | Lines over 4,000 characters skipped, texts over 2 MB refused |
 
 **Not defended (by design or not yet built):**
 
@@ -424,18 +457,26 @@ beyond their role. Web pages the user visits are not trusted.
 - Writes from the browser are optimistic (see above).
 - Pages hold at most 500 rows; a list read without paging, and a grouping, at most 5,000 (larger requests are refused with a
   message, not truncated). Tables on MySQL, data file and Google Sheets connections are queried over their first 5,000 rows.
-- Data is not encrypted at rest; backups are not encrypted.
-- The audit log is not tamper-proof, does not record reads, and has no viewer or retention.
+- Data is not encrypted at rest. Backups are encrypted only when a passphrase is set (Admin console > Backups).
+- **Export environment data** gives an environment administrator every row of every table of the environment (after a
+  recent sign-in, audited). Row and column security do not apply to it, as they do not apply to administrators.
+- The audit log is not tamper-proof and does not record reads. It has a viewer and an optional retention (off by
+  default); the sign-in log keeps 180 days and the email delivery log 90 days by default.
 - The Content-Security-Policy allows inline style (not inline script).
 - Anyone who may open an app can read its definition.
 - Rows of linked tables that existed before linking have no owner until an administrator assigns one.
 - The organisation directory and shares are cached per server process for at most 5 seconds: a change made by another
   server process, or directly in the database, applies within that time (changes through this server apply at once).
-- Any signed-in user can list the names and emails of active users and the teams of the environment (`GET /api/v1/org`,
-  for share pickers), and the names of the people a row they can read is shared with.
+- With directory visibility "everyone" (the default), any signed-in user can list the names and emails of the active
+  people of the environment and its teams (`GET /api/v1/org`, for share pickers); with "same department" or
+  "administrators only" less. The names of the people a row they can read is shared with, and of the people on its
+  timeline, are always shown to readers of that row.
+- Formula columns and rollups show results computed over data the reader may not see (see Data access).
+- Outbound policy: database drivers resolve host names themselves (DNS rebinding between the check and the connection
+  is not caught for database connections).
 - Rules can only use tables of the same connection; tables on data files and Google Sheets cannot use lookup or
   related-rows rules (such a role grants nothing).
-- No built-in backup, no integrity check of the workspace.
+- No integrity check of the workspace folder (backups are verified, the live folder is not).
 - Realtime state (subscriptions, presence, Studio locks) lives in the one server process. The Studio lock is a soft lock:
   without a live connection it cannot be checked (the Studio then says so and the last save wins). A "table changed"
   signal reveals to anyone who may read a table that something in it changed and when (not what).
@@ -458,6 +499,8 @@ beyond their role. Web pages the user visits are not trusted.
 | Stale save answers 409 without revealing hidden columns | Test: `live.integration.test.ts` ("a stale save answers 409 ...") |
 | Forced password change (`password_change_required`) | Tests: `hardening.test.ts` (router), `hardening.integration.test.ts`, `routes/meta/hardening.test.ts`; run in headless Chrome |
 | Per-email login backoff | Test: `hardening.test.ts` |
+| Phase 0 re-check: environment selection, Query v2 plan and cursor tampering, hidden-column inference, collaboration spoofing, system-table writes, outbound hosts | Tests: `security-p0.integration.test.ts`, `security-p0.test.ts`; review: `docs/internal/security-review-p0.md` |
+| Schedule policy, log retention, directory visibility, export environment data | Test: `phase-close.integration.test.ts` |
 | Re-link refused (also through a second connection), linked tables never dropped, columns only unmapped | Tests: `routes/meta/connections.test.ts`, `routes/meta/hardening.test.ts`, `hardening.integration.test.ts` (PostgreSQL) |
 | CSV formula escaping, XLSX text cells | Tests: `hardening.test.ts`, `routes/meta/hardening.test.ts` |
 | Audit: bulk delete ids, role/user diffs, failures logged | Test: `routes/meta/hardening.test.ts` |

@@ -4,11 +4,85 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 
 ## [Unreleased]
 
-Version 0.5.0-dev. **PostgreSQL replaces MySQL/MariaDB as Appbuilder's database** (P0 package A, decision D14). There is no
+### Added
+- **Installers, release packages, updater, health and diagnostics** (P0 package L, decision D25; exit check 5):
+  - **`npm run release`**: a versioned, self-contained, reproducible release folder and ZIP (web app, the server sources it
+    imports run by Node's type stripping, production `node_modules`, installers, licence list, `release.json`/`VERSION`,
+    `RELEASE-NOTES.md`, `SHA256SUMS`). **`npm run release:keygen`** / **`release:sign`**: Ed25519 signatures over
+    `SHA256SUMS` with a vendor key kept outside the repository (docs/dev/release-process.md).
+  - **Windows installer** `scripts/install/windows/install.ps1` (Windows PowerShell 5.1 and 7, elevated, idempotent, `-WhatIf`):
+    its own Node.js, PostgreSQL 17 from the EDB binaries (or an existing one), role and database with a generated password
+    sealed into `server.json` (the setup wizard skips its database step), the service **Appbuilder** (WinSW) under
+    `NT SERVICE\Appbuilder` with restart on failure and rolled logs, tight folder ACLs, optional HTTPS with Caddy as a second
+    service (LAN with its own CA, or a domain with Let's Encrypt), firewall only with `-OpenFirewall`, Start-menu entry,
+    `appbuilder.cmd`, offline installs from a bundle (`-Offline`), `uninstall.ps1` (keeps data unless `-RemoveData` and a
+    typed confirmation). **Not yet run on Windows**: parsed, linted for 5.1, unit-tested and dry-run on PowerShell 7.
+  - **Linux installer** `scripts/install/linux/install.sh` (Ubuntu 22.04/24.04, Debian 12): Node.js tarball, PostgreSQL 17
+    from PGDG (or the distribution's, or an existing one), a system user, a hardened systemd unit, Caddy from its apt
+    repository, optional ufw rules, `--offline`, `--dry-run`, `uninstall.sh`. Run end to end on all three systems.
+  - Every download is pinned with its checksum and licence in `scripts/install/manifest.txt`, https only;
+    `scripts/install/prepare-offline.mjs` prepares offline bundles.
+  - **Updater** `appbuilder update <zip|folder>`: checks checksums and the signature against the installed release's keys,
+    refuses downgrades, an older schema or a too-old Node.js, stops the service, swaps the app folder (keeps
+    `app.previous`), lets the server migrate (with its pre-migration backup), waits for the health check and rolls the app
+    folder back by itself when it fails; the database restore is offered, not automatic. **Admin console > Updates**: the
+    installed release, upload and check a release ZIP, release notes, the command that installs it, the update history.
+  - **Health**: `GET /api/v1/health` (ok / starting / degraded only, for anyone) and the detailed health for install
+    administrators (database, clock skew, environments, disk space, backup age, job queue, email, live sockets, versions).
+  - **File log**: every log line also goes as JSON (with request, correlation and job ids) to `workspace/logs/appbuilder.log`,
+    rotated by size; log level setting. **Admin console > Server logs** (health, filters, follow, download, level) and
+    **Usage** (users, storage, tables and row counts, job statistics) replace their "Soon" pages.
+  - **Diagnostics bundle** (Admin console > Server logs, or `appbuilder diagnostics`, also when the server is down): logs,
+    versions, configuration, health, schema versions, recent failures and a release integrity check, with secrets removed.
+  - Command-line tools of an installed server: `appbuilder version | health | update | verify-release | diagnostics |
+    restore` (docs/admin/operations.md).
+
+### Changed
+- The first-run setup refuses requests that came through a reverse proxy (proxy headers), also from 127.0.0.1.
+- The setup code can also be written to a file (`APPBUILDER_SETUP_CODE_FILE`, set by the installers) and is never written
+  to the server's log file.
+- docs/admin/installation.md is rewritten around the installers (sizing, LAN versus internet, HTTPS, offline); new
+  docs/admin/operations.md and docs/dev/release-process.md; docs/admin/upgrades.md covers the updater and rolling back.
+
+## [0.5.0] - 2026-11-18
+
+**Phase 0 "Kernel" is done** (docs/plan/p0-spec.md, with the exit check results). In one paragraph: Appbuilder now runs on
+**PostgreSQL** with one schema per **environment** (create, copy, switch, delete, lock production, deploy solutions between
+them, upgrade in place); tables of a **million rows** are usable because filters, sorting, search, counts and totals run in
+the database through **Query v2**, with security inside the same statement, and a formula that cannot run there is an
+error, never a partial result; an **organisation model** (departments, managers, teams) drives row scopes, relationship
+rules and record sharing; **table events, validation rules, formula columns, rollups, a job queue and schedules** run on
+the server; a **realtime hub** refreshes screens live and carries notifications and presence; **identity basics** (email
+relay, password reset, invitations, two-step verification, sessions, API keys); verified **backups and restores** with a
+drill; a visual **data model designer**; and a **core data model** of system tables (people, comments, tasks, files,
+reference data) with record timelines. Package M closed the phase: "controls" are now called **UI components** everywhere
+a person reads, nine gaps were closed, the new surface was reviewed for security (docs/internal/security-review-p0.md),
+and the documentation was checked end to end.
+
+**PostgreSQL replaces MySQL/MariaDB as Appbuilder's database** (P0 package A, decision D14). There is no
 migration from a MySQL installation: install PostgreSQL, run `scripts/setup-postgres.ps1` (or `.sh`) and start with an empty
 database; carry apps and tables over as solution packages with data.
 
 ### Added
+- **Phase close** (P0 package M, decision D24):
+  - **Export environment data** (Admin console > Backups, environment administrators): every table of the environment as
+    CSV files in one streamed ZIP with an attachments list and a manifest; after a recent sign-in, audited
+    (docs/admin/backup-and-restore.md).
+  - **Directory visibility** per environment (Admin console > Users): everyone, the same department, or administrators only
+    see people in the Users table, person pickers, @mentions and the share dialog (docs/admin/users-and-roles.md).
+  - **Your own schedules** on the Jobs page (create, edit, delete for job types that are safe to schedule), the
+    **audit retention** switch on the Audit log page, and nightly **sign-in log** (180 days) and **email delivery log**
+    (90 days) retention (docs/admin/jobs.md).
+  - Solution **upgrade in place** carries unique pairs, reporting views (re-created), date dimensions (refilled), summary
+    tables (new measures, schedule, refresh) and relationship changes; a first install fills date dimensions and schedules
+    summaries; **environment copies** keep summary schedules and fill date dimensions (docs/guide/maker/solutions.md).
+  - Demo mode enforces **delete behaviours** (restrict, cascade, set blank) in the browser, with the server's rules.
+  - The portal grid's **lookup editor** searches the target table on the server as you type (server mode).
+  - `scripts/exit-check/p0.mjs`: the Phase 0 exit check against a fresh server (a million rows through the API and in a
+    headless browser, the delegation error, the restore drill, reset + TOTP + sessions with a fake SMTP relay, a second
+    environment). `docs/guide/settings.md` (your settings), `docs/internal/security-review-p0.md`.
+  - Tests: `scripts/naming.test.ts` (no "control" in user-facing text), `scripts/docs-links.test.ts` (no broken link or
+    missing image in the docs), and the security, gap and upgrade suites listed in docs/dev/testing.md.
 - **Core data model** (P0 package N, decision D23; docs/guide/maker/core-data-model.md, docs/admin/reference-data.md,
   docs/dev/core-data-model.md). Every environment now has **34 system tables**, listed under Dev mode > Tables >
   **System tables**: people and organisation (Users, Departments, Teams, Team members, Roles, Role assignments, as
@@ -217,8 +291,14 @@ database; carry apps and tables over as solution packages with data.
 - README links to the documentation, and run instructions that match the current start-up steps (PostgreSQL and the first-run setup screen).
 
 ### Changed
+- **"Controls" are now "UI components"** in the Studio (Insert pane, search, properties, formula bar), the portal, settings,
+  error messages, the formula reference and all documentation. The UI components reference moved to
+  `docs/reference/ui-components.md` (the old page is a redirect). Code names (`src/controls`, `ControlType`), stored app
+  definitions and the formula language did not change; `Reset`, `Select` and `SetFocus` show `component` as their argument.
 - PostgreSQL connections start with `jit=off`: row-security predicates over many tables made JIT compilation take
-  seconds per statement (core data model, P0 package N).
+  seconds per statement (core data model, P0 package N). Kept after measuring at package M: the collaboration predicate
+  takes 42 s with JIT and 0.5 s without, aggregates are neutral (docs/dev/schema.md).
+- Version 0.5.0 (was 0.5.0-dev).
 - `createdBy` and `owner` of every table are lookups to the Users system table (were plain text ids).
 - Deleting a row now applies the delete behaviour of every relationship pointing at its table. Lookups that existed
   before version 7: a **required** lookup now refuses the parent's delete while children exist (409); an **optional**
@@ -272,6 +352,14 @@ database; carry apps and tables over as solution packages with data.
 - Build specifications moved to `docs/internal/specs`. They are kept for history and are no longer maintained.
 
 ### Security
+- Phase 0 security review (package M, docs/internal/security-review-p0.md): only job types marked safe can be scheduled by
+  environment administrators, and schedules of install-wide work (backups, mail, install log retention) need an install
+  administrator (before, any environment administrator could schedule any job); uploaded workbooks are checked for zip
+  bombs before they are unpacked; database connections and the SMTP relay refuse link-local, cloud-metadata, unspecified
+  and multicast addresses (`APPBUILDER_OUTBOUND_PRIVATE=deny` refuses private networks too); `GET /api/v1/org` lists only
+  people with access to the environment (it listed every active user of the install); crafted backup archives cannot make
+  the restore read huge members into memory; hostile DBML text is bounded. Formula columns and rollups are documented as
+  computed by the system, with a warning in their editors.
 - Realtime connection (package H): the upgrade passes the HTTP Host/Origin checks and requires this Origin (cross-site
   WebSocket hijacking), then the session cookie; forced-password-change sessions cannot connect. Table messages carry no
   values, no hidden column names, and row ids only for people who may read every row; sockets close at once on sign-out,
@@ -292,6 +380,12 @@ database; carry apps and tables over as solution packages with data.
 - The audit log records the row ids of bulk deletes, before/after of role and user changes, and schema migrations; failed audit writes are reported as errors.
 
 ### Fixed
+- A grouped Query v2 aggregate over Comments or Activities by a non-administrator failed ("table does not exist").
+- Two refreshes of one summary table at the same time could insert its groups twice.
+- Reading a reporting view tried to build an index on the view in the background, logging an error each time.
+- Re-importing an unchanged solution listed reporting tables as changed (definitions read back from the database have
+  their keys in another order).
+- The data model designer's demo-mode plan said delete behaviours were enforced "by the server only".
 - The Studio in a locked production environment let you make local edits that were never saved: the canvas, properties and
   formula bar are now truly read-only there (and while another maker holds the edit lock).
 - Deleting a table removed its attachment files before the change was saved; a failed delete lost the files. Files are now

@@ -9,16 +9,16 @@ import { GENERATED_NOTICE, anchor, cell, code, page, table } from './markdown'
  * ---------------------------------------------------------------------------------------------- */
 
 export const DESCRIPTIONS: Record<string, string> = {
-  Screen: 'One page of the app. Every app has at least one; controls are placed on a screen. A screen is not inserted from the Insert pane.',
+  Screen: 'One page of the app. Every app has at least one; UI components are placed on a screen. A screen is not inserted from the Insert pane.',
   // Layout
-  Container: 'A box that holds other controls. Children are placed by hand or arranged in a row, column or grid.',
+  Container: 'A box that holds other UI components. Children are placed by hand or arranged in a row, column or grid.',
   Row: 'A container that lays its children out in a horizontal row.',
   Column: 'A container that lays its children out in a vertical column.',
   Grid: 'A container that lays its children out in a grid with a number of columns.',
   Card: 'A container with an optional title and description above its content, with a fill and a border.',
   ScrollArea: 'A container whose content scrolls when it is bigger than the box.',
   Divider: 'A thin line, with an optional label, that separates parts of a screen.',
-  Spacer: 'Empty space between controls in a row, column or grid.',
+  Spacer: 'Empty space between UI components in a row, column or grid.',
   Dialog: 'A pop-up window over the screen with a title, content and a close button. Shown only while Open is true.',
   Sheet: 'A panel that slides in from one side of the screen. Shown only while Open is true.',
   Accordion: 'A list of sections that expand and collapse.',
@@ -80,7 +80,7 @@ export const DESCRIPTIONS: Record<string, string> = {
   Breadcrumb: 'A trail of links showing where the user is.',
   Pagination: 'Page buttons for moving through a long list.',
   NavMenu: 'A side menu of items. It does not navigate by itself: write Navigate(...) in OnSelect.',
-  TopBar: 'A bar across the top of a screen with a title, a subtitle and optional items. It can hold other controls.',
+  TopBar: 'A bar across the top of a screen with a title, a subtitle and optional items. It can hold other UI components.',
   Steps: 'A progress trail through the steps of a process.',
   // Feedback
   Progress: 'A horizontal bar showing how far something has got.',
@@ -114,7 +114,7 @@ export const NOTES: Record<string, string[]> = {
   Timer: ['The timer never runs while you design; it runs in preview and in the running app. `Start` is edge-triggered (it acts when it becomes true); `AutoStart` starts it when the screen appears.'],
   Dialog: ['Close button, a click on the backdrop (when `CloseOnBackdrop` is true) and the Escape key run `OnClose`. Your `OnClose` formula should set the variable that `Open` reads to false.'],
   Sheet: ['Close button, a click on the backdrop (when `CloseOnBackdrop` is true) and the Escape key run `OnClose`. Your `OnClose` formula should set the variable that `Open` reads to false. `Side` chooses the edge: left and right sheets are `Width` wide and full height; top and bottom sheets are `Height` tall and full width.'],
-  Screen: ['A screen has no X, Y, Width, Height or other common properties: it is not positioned like other controls. `OnVisible` runs when the screen is shown while the app is running.'],
+  Screen: ['A screen has no X, Y, Width, Height or other common properties: it is not positioned like other UI components. `OnVisible` runs when the screen is shown while the app is running.'],
 }
 
 /* ------------------------------------------------------------------------------------------------ helpers */
@@ -168,21 +168,21 @@ function propTable(props: PropMeta[], defaultOf: (p: PropMeta) => string = (p) =
   )
 }
 
-const INTRO = `# Controls reference
+const INTRO = `# UI components reference
 
-A control is one building block on a screen. Each control has **properties** (each holds a formula), **outputs** (values the control produces, such as what the user typed) and **events** (properties whose formula runs when something happens). Outputs are read in formulas like a field of the control: \`TextInput1.Value\`, \`Gallery1.Selected.Name\`.
+A UI component is one building block on a screen. Each UI component has **properties** (each holds a formula), **outputs** (values the UI component produces, such as what the user typed) and **events** (properties whose formula runs when something happens). Outputs are read in formulas like a field of the UI component: \`TextInput1.Value\`, \`Gallery1.Selected.Name\`.
 
-This page is generated from the control registry. Do not edit it by hand; run \`npm run docs:gen\`. How formulas work is in the [Formula reference](formulas.md).
+This page is generated from the UI component registry. Do not edit it by hand; run \`npm run docs:gen\`. How formulas work is in the [Formula reference](formulas.md).
 
 How to read the tables:
 - **Kind** is the type of value the property expects: \`text\`, \`number\`, \`boolean\`, \`color\`, \`enum\`, \`table\`, \`record\`, \`any\`, \`tableName\` (the name of a data table as text), \`icon\` (an icon name as text, or \`anim:<id>\` for an animated icon) and \`action\` (an event).
-- **Default** is the formula a new control starts with.
+- **Default** is the formula a new UI component starts with.
 - **Level**: Simple properties are on the Simple tab of the property pane; Advanced ones are only on the Advanced tab.
 - **Shown as** is the label on the Simple tab when it differs from the property name. **Values** lists the choices of an \`enum\` property.
 - Outputs whose names start with two underscores are internal and not listed.
-- Controls are listed in the order of the Insert pane's categories.
+- UI components are listed in the order of the Insert pane's categories.
 
-**Not supported yet.** The set of controls is fixed: makers cannot add their own controls or import component packs. Phone and tablet apps are separate apps with their own design size; one app does not switch between a desktop and a phone layout.`
+**Not supported yet.** The set of UI components is fixed: makers cannot add their own UI components or import component packs. Phone and tablet apps are separate apps with their own design size; one app does not switch between a desktop and a phone layout.`
 
 export interface ControlsGenerated {
   text: string
@@ -201,9 +201,9 @@ export function buildControlsPage(registry: ControlRegistryApi, enums: Record<st
   const missingDescriptions = all.map((c) => c.type).filter((t) => !DESCRIPTIONS[t])
   const types = new Set(all.map((c) => c.type))
   const extra = Object.keys(DESCRIPTIONS).filter((t) => !types.has(t))
-  if (extra.length) warnings.push(`DESCRIPTIONS has entries for controls that do not exist: ${extra.join(', ')}`)
+  if (extra.length) warnings.push(`DESCRIPTIONS has entries for UI components that do not exist: ${extra.join(', ')}`)
   const extraNotes = Object.keys(NOTES).filter((t) => !types.has(t))
-  if (extraNotes.length) warnings.push(`NOTES has entries for controls that do not exist: ${extraNotes.join(', ')}`)
+  if (extraNotes.length) warnings.push(`NOTES has entries for UI components that do not exist: ${extraNotes.join(', ')}`)
 
   // common properties, taken from a plain control and checked against every other one
   const base = registry.propsOf('Label')
@@ -234,19 +234,19 @@ export function buildControlsPage(registry: ControlRegistryApi, enums: Record<st
   // common properties
   const commonBlock = [
     '## Common properties',
-    `Every control except a screen has these ${common.length} properties. They are not repeated in the tables below.`,
-    propTable(common, (p) => (p.name === 'Width' || p.name === 'Height' ? "the control's default size (listed under each control)" : code(p.default))),
+    `Every UI component except a screen has these ${common.length} properties. They are not repeated in the tables below.`,
+    propTable(common, (p) => (p.name === 'Width' || p.name === 'Height' ? "the UI component's default size (listed under each UI component)" : code(p.default))),
   ]
   if (displayMode) {
     commonBlock.push(
-      `**\`DisplayMode\`** is shared by the controls that can be switched off: ${code(displayMode.default)} by default, one of ${displayMode.options!.map((o) => code(o)).join(', ')}. A control that has it says "also has \`DisplayMode\`" under its name; it is not repeated in the tables.`,
+      `**\`DisplayMode\`** is shared by the UI components that can be switched off: ${code(displayMode.default)} by default, one of ${displayMode.options!.map((o) => code(o)).join(', ')}. A UI component that has it says "also has \`DisplayMode\`" under its name; it is not repeated in the tables.`,
     )
   }
   blocks.push(commonBlock.join('\n\n'))
 
   const shown = catOrder.filter((cat) => groups.get(cat)!.length > 0)
   blocks.push(
-    ['## Controls by category', shown.map((cat) => `- [${cat}](#${anchor(cat)}): ${groups.get(cat)!.map((c) => `[${c.label}](#${anchor(c.label)})`).join(', ')}`).join('\n')].join('\n\n'),
+    ['## UI components by category', shown.map((cat) => `- [${cat}](#${anchor(cat)}): ${groups.get(cat)!.map((c) => `[${c.label}](#${anchor(c.label)})`).join(', ')}`).join('\n')].join('\n\n'),
   )
 
   for (const cat of shown) {
@@ -283,12 +283,12 @@ export function buildControlsPage(registry: ControlRegistryApi, enums: Record<st
         notes.push('**Overlay.** Shown above everything else on the screen, and only while `Open` is true. The Studio canvas shows it in place so that its children can be edited.')
       }
       if (c.isTemplate) {
-        notes.push('**Template.** The controls inside it are a template that is repeated for every item in `Items`. Inside the template, `ThisItem` is the current item. The Studio shows one blank template row when `Items` is empty.')
+        notes.push('**Template.** The UI components inside it are a template that is repeated for every item in `Items`. Inside the template, `ThisItem` is the current item. The Studio shows one blank template row when `Items` is empty.')
       } else if (c.isContainer) {
         notes.push(
           c.type === 'Screen'
-            ? '**Container.** Holds the controls of the screen. `LayoutMode` decides how they are placed: `Layout.Manual` (each child uses its own X and Y) or a row, column or grid. `Padding` applies in every mode.'
-            : '**Container.** Holds other controls. `LayoutMode` decides how they are placed: `Layout.Manual` (each child uses its own X and Y) or a row, column or grid. `Padding` applies in every mode, so children in a manual layout are offset by it.',
+            ? '**Container.** Holds the UI components of the screen. `LayoutMode` decides how they are placed: `Layout.Manual` (each child uses its own X and Y) or a row, column or grid. `Padding` applies in every mode.'
+            : '**Container.** Holds other UI components. `LayoutMode` decides how they are placed: `Layout.Manual` (each child uses its own X and Y) or a row, column or grid. `Padding` applies in every mode, so children in a manual layout are offset by it.',
         )
       }
       if (c.outputs.some((o) => o.name === 'SelectedItems')) {

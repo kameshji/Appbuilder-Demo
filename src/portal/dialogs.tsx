@@ -74,7 +74,7 @@ export function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChan
             <SizePicker key={epoch} value={size} onChange={setSize} testId="new-app-size" />
             {customError && <p className="text-xs text-destructive">{customError}</p>}
           </Field>
-          <Field label="Scaling" hint={scale === 'responsive' ? 'Controls follow their anchors as the window changes size.' : 'The design is scaled uniformly and letterboxed.'}>
+          <Field label="Scaling" hint={scale === 'responsive' ? 'UI components follow their anchors as the window changes size.' : 'The design is scaled uniformly and letterboxed.'}>
             <Segmented label="Scaling" value={scale} onChange={setScale} options={[{ value: 'responsive', label: 'Responsive' }, { value: 'fit', label: 'Fit (letterbox)' }]} />
           </Field>
           <DialogFooter>
@@ -148,7 +148,7 @@ export function StartWithDataDialog({ open, onOpenChange }: { open: boolean; onO
                   <SelectTrigger className="w-full" data-testid="start-table-select"><SelectValue placeholder="Choose a table" /></SelectTrigger>
                   <SelectContent>
                     {tables.map((t) => (
-                      <SelectItem key={t.id} value={t.id}>{t.displayName} ({platform.tables.rows(t.name, { secure: false }).length} rows)</SelectItem>
+                      <SelectItem key={t.id} value={t.id}>{t.displayName}{platform.getState().mode === 'demo' ? ` (${platform.tables.rows(t.name, { secure: false }).length} rows)` : ''}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>

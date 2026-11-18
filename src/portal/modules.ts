@@ -79,7 +79,7 @@ export const MODULES: readonly ModuleEntry[] = [
     key: 'dashboards', label: 'Dashboards', icon: LayoutDashboard, modes: ['dev', 'user'], status: 'soon', phase: 'P2',
     tagline: 'Charts and KPIs over your tables, trimmed to what each viewer may see.',
     details: [
-      'Build dashboards from chart controls on top of server-side aggregates; share them as pages or chat cards.',
+      'Build dashboards from chart UI components on top of server-side aggregates; share them as pages or chat cards.',
       'An OData feed for people who prefer Excel or Power BI.',
     ],
   },
@@ -103,15 +103,15 @@ export const MODULES: readonly ModuleEntry[] = [
     key: 'admin', label: 'Admin console', icon: ShieldHalf, modes: ['dev'], status: 'live', route: { page: 'admin' }, phase: 'P0', need: 'admin',
     tagline: 'Environments, users, licences and the audit log in one place.',
     details: [
-      'Environments (today the built-in Default), users with their roles and sign-in state, the planned licence passes and the audit log.',
-      'Backups, server logs and usage arrive with P0 Kernel.',
+      'Environments, users with their roles and sign-in state, sign-in and security, email, service accounts, organisation and licence passes.',
+      'The audit log, jobs and schedules, backups, server logs and health, usage and updates.',
     ],
   },
   {
-    key: 'templates', label: 'Templates', icon: LayoutTemplate, modes: ['dev'], status: 'soon', phase: 'P3', need: 'maker',
-    tagline: 'Ready-made apps: CRM, ERP and the manufacturing pack.',
+    key: 'templates', label: 'Templates', icon: LayoutTemplate, modes: ['dev'], status: 'soon', phase: 'P2', need: 'maker',
+    tagline: 'Ready-made UI components, screens, apps and solutions.',
     details: [
-      'Tasks, Notes, CRM and the manufacturing pack (production log with OEE, quality inspection with NCR, maintenance).',
+      'The catalogue with UI component, screen, app and data model templates in P2 Reach; solution templates (manufacturing pack with OEE, quality inspection with NCR, maintenance; CRM) in P3 Collaboration and templates.',
       'ERP templates (inventory, purchase, sales, ledgers and GST) built on the platform; data import from other systems, with an optional Tally exchange.',
     ],
   },
@@ -126,19 +126,19 @@ export const MODULES: readonly ModuleEntry[] = [
     ],
   },
   {
-    key: 'logs', label: 'Server logs', icon: ScrollText, modes: ['dev'], status: 'soon', phase: 'P0', need: 'admin', inMenu: false,
-    tagline: 'The server console, readable from the browser.',
+    key: 'logs', label: 'Server logs', icon: ScrollText, modes: ['dev'], status: 'live', route: { page: 'admin', id: 'logs' }, phase: 'P0', need: 'admin', inMenu: false,
+    tagline: 'The server log and health checks, readable from the browser.',
     details: [
-      'Warnings and errors of the server (database reconnects, failed audit writes, connector errors) with search and a time filter.',
+      'Health checks (database, disk space, backup age, job queue, clock, email) and the server log with level, time and text filters.',
       'A diagnostics bundle (logs, versions, settings without secrets) to send to support.',
     ],
   },
   {
-    key: 'usage', label: 'Usage', icon: Activity, modes: ['dev'], status: 'soon', phase: 'P0', need: 'admin', inMenu: false,
-    tagline: 'Who uses which apps, and how big the data is.',
+    key: 'usage', label: 'Usage', icon: Activity, modes: ['dev'], status: 'live', route: { page: 'admin', id: 'usage' }, phase: 'P0', need: 'admin', inMenu: false,
+    tagline: 'Who uses this install, and how big the data is.',
     details: [
-      'Active users, app opens and table sizes over time.',
-      'Later also flow runs and the AI budget (P1 and P4).',
+      'Active and recently signed-in users, storage sizes, tables and row counts per environment, job statistics.',
+      'Later also app opens over time, flow runs and the AI budget (P1 and P4).',
     ],
   },
 

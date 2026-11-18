@@ -413,6 +413,10 @@ export interface SystemPredicateEnv {
   /** the read predicate of an ordinary (or another system) table for this user */
   readOf(table: TableDef): Condition
   isAdmin: boolean
+  /** directory visibility of the environment (Users for non-administrators); default everyone */
+  directory?: 'everyone' | 'department' | 'admins'
+  /** users of the own department (ids, including the user) */
+  departmentUsers?: string[]
   /** nesting guard: a regarding predicate inside another one does not expand its own regarding branches */
   depth?: number
 }
@@ -432,7 +436,11 @@ export function systemPredicate(table: TableDef, op: SystemOp, env: SystemPredic
   switch (policy) {
     case 'directory':
       if (op !== 'read') return FALSE
-      return table.id === SYS.users ? eq('Status', 'active') : TRUE
+      if (table.id !== SYS.users) return TRUE
+      // directory visibility (environment setting): everyone always sees their own row
+      if (env.directory === 'admins') return eq('id', me)
+      if (env.directory === 'department') return { and: [eq('Status', 'active'), inList('id', [...new Set([me, ...(env.departmentUsers ?? [])])])] }
+      return eq('Status', 'active')
     case 'adminOrOwn':
       if (op !== 'read') return FALSE
       if (table.id === SYS.roles) return inList('id', env.user.roleIds ?? [])

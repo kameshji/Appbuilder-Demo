@@ -18,7 +18,9 @@ import { randomBytes } from 'node:crypto'
 import Papa from 'papaparse'
 import type { DepartmentDef, RoleDef, ShareDef, TableDef, TeamDef, UserDef } from '../../../src/platform/contracts.ts'
 import type { OrgDirectory, PredicateReason } from '../../../src/platform/orgsec.ts'
-import { departmentCycle, managerCycle, teamsInEnvironment } from '../../../src/platform/orgsec.ts'
+import { DIRECTORY_VISIBILITY, departmentCycle, managerCycle, teamsInEnvironment } from '../../../src/platform/orgsec.ts'
+import type { DirectoryVisibility } from '../../../src/platform/orgsec.ts'
+import { SYS } from '../../../src/platform/system-tables.ts'
 import type { Condition, QueryValue } from '../../../src/platform/http.ts'
 import { HttpError } from '../../core/contracts.ts'
 import type { Ctx, RawRow, Router, Services, UserContext, UserRecord } from '../../core/contracts.ts'
@@ -347,13 +349,32 @@ export function registerOrgRoutes(router: Router, s: Services): void {
     const admin = !!ctx.user?.privileges.isAdmin
     const envId = currentEnvironment().id
     if (admin) return { departments: dir.departments, teams: dir.teams, users: dir.users }
-    // everyone else: what a share picker needs (active people and the teams of this environment)
+    // everyone else: what a share picker needs (active people and the teams of this environment). The people are the
+    // rows of the Users system table this user may read: people with access to this environment, narrowed by the
+    // environment's directory visibility (P0 package M), never the whole install
+    const usersTable = (await s.meta.tables.list()).find((t) => t.id === SYS.users)
+    const visible = usersTable && ctx.user ? (await s.data.query(ctx.user, usersTable, { select: ['FullName', 'Email'], top: 5000 })).rows : []
     return {
       departments: dir.departments.map((d) => ({ id: d.id, code: d.code, name: d.name, ...(d.parentId ? { parentId: d.parentId } : {}) })),
       teams: teamsInEnvironment(dir, envId).map((t) => ({ id: t.id, code: t.code, name: t.name, memberIds: [] })),
-      users: dir.users.filter((u) => u.status !== 'disabled').map((u) => ({ id: u.id, name: u.name, email: u.email })),
+      users: visible.map((u) => ({ id: String(u.id), name: String(u.FullName ?? ''), email: String(u.Email ?? '') })),
     }
   }, { auth: 'user' })
+
+  /* directory visibility of the current environment (environment administrators) */
+  router.add('GET', '/api/v1/environment/directory', async () => ({ visibility: (await s.meta.directoryVisibility?.get(currentEnvironment().id)) ?? 'everyone' }), { auth: 'admin' })
+  router.add('PUT', '/api/v1/environment/directory', async (ctx) => {
+    const b = bodyObj(ctx)
+    const v = b.visibility as DirectoryVisibility
+    if (!DIRECTORY_VISIBILITY.includes(v)) throw invalid(`visibility must be one of ${DIRECTORY_VISIBILITY.join(', ')}.`, 'visibility')
+    if (!s.meta.directoryVisibility) throw new HttpError(503, 'unavailable', 'Directory visibility needs the server database.')
+    const envId = currentEnvironment().id
+    const before = await s.meta.directoryVisibility.get(envId)
+    await s.meta.directoryVisibility.set(envId, v)
+    s.security.invalidate({ environment: envId })
+    await audit(s, ctx, 'environment.directory_visibility', { before, after: v })
+    return { visibility: v }
+  }, { auth: 'admin' })
 
   /* departments */
   router.add('POST', '/api/v1/departments', async (ctx) => {

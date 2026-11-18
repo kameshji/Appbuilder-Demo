@@ -451,6 +451,29 @@ access (`GET /api/v1/security/preview`), not a copy. We confirmed that the previ
 Test as user shows what the *rules* give. It does not sign you in as them. To see an app as someone sees it, sign in
 with their account, or a test account that has the same roles.
 
+## Directory visibility
+
+Admin console > Users > **Directory visibility** decides whom people who are not administrators see in the **Users**
+system table and everything built on it: person pickers, @mention suggestions, the share dialog's people list, and
+avatars of people looked up by id. One setting per environment, changed by its administrators (audited as
+`environment.directory_visibility`):
+
+| Setting | A non-administrator sees |
+| --- | --- |
+| Everyone in this environment (default) | every active person with access to this environment |
+| People in the same department | active people of their own department (Admin console > Departments), and themselves |
+| Only administrators see the directory | only themselves |
+
+Everyone always sees their own row; administrators always see everyone. People with no access to the environment are
+never listed, whatever the setting. Names of the people who wrote a comment or own a task **on a record you can read**
+are still shown on that record's timeline (they are part of the record's history).
+
+## Licences (preview)
+
+Admin console > **Licences** shows the planned model only: this build checks no licence file and limits nothing. The page
+previews which pass each active person would need (Full user: builds and administers; Operator: uses apps; External:
+supplier and customer portals, nobody yet) from their roles. Uploading a licence file arrives with P3.
+
 ## Not supported yet
 
 - Denying access that another role grants (roles only add).

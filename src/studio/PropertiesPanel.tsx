@@ -38,7 +38,7 @@ export function PropertiesPanel() {
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-muted-foreground">
           <SlidersHorizontal className="size-6 opacity-50" />
-          <p className="text-xs">{selection.length > 1 ? `${selection.length} controls selected` : 'Nothing selected'}</p>
+          <p className="text-xs">{selection.length > 1 ? `${selection.length} UI components selected` : 'Nothing selected'}</p>
           {selection.length > 1 && (
             <div className="flex gap-2">
               <Button size="xs" variant="outline" onClick={() => useStore.getState().duplicate(selection)}>

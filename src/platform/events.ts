@@ -166,7 +166,7 @@ export interface ScheduleInfo {
   lastJobState?: JobState
 }
 
-export interface JobTypeInfo { type: string; description: string; concurrency: number; maxAttempts: number }
+export interface JobTypeInfo { type: string; description: string; concurrency: number; maxAttempts: number; schedule?: 'custom' | 'install' }
 
 /** GET /admin/jobs/metrics */
 export interface JobMetrics {

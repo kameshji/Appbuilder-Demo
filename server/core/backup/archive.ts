@@ -422,6 +422,8 @@ export async function listTar(r: RandomReader): Promise<TarEntry[]> {
     let size = parseOctal(h.subarray(124, 136))
     const data = pos + BLOCK
     if (type === 'x') {
+      // a pax record holds a name and a size: anything bigger is a crafted archive, not one of ours
+      if (size > 64 * 1024) throw new ArchiveError('corrupt', `The backup file is damaged (an oversized extended header at byte ${pos}).`)
       pax = parsePax(await r.read(data, size))
       pos = data + Math.ceil(size / BLOCK) * BLOCK
       continue
@@ -460,7 +462,11 @@ export function memberStream(r: RandomReader, e: TarEntry, step = 1024 * 1024): 
   })
 }
 
-export async function memberBuffer(r: RandomReader, e: TarEntry): Promise<Buffer> {
+/** members read whole into memory (marker, manifest, catalogs) are small; a crafted archive must not exhaust memory */
+export const MAX_BUFFERED_MEMBER = 256 * 1024 * 1024
+
+export async function memberBuffer(r: RandomReader, e: TarEntry, max = MAX_BUFFERED_MEMBER): Promise<Buffer> {
+  if (e.size > max) throw new ArchiveError('corrupt', `The backup file is damaged (${e.name} is ${e.size} bytes, more than a member of this kind can be).`)
   return r.read(e.offset, e.size)
 }
 

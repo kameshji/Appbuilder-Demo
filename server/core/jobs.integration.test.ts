@@ -49,7 +49,7 @@ describe.skipIf(!PG_URL)('job queue and kernel guarantees (PostgreSQL)', () => {
     })
     k().jobs.register<{ x: number }>({ type: 'test.permanent', description: 'permanent failure', backoff: fast, handler: async () => { throw new JobError('bad input', { retry: false }) } })
     k().jobs.register<Record<string, unknown>>({ type: 'test.where', description: 'records its environment and identity', eventAllowed: true, handler: async (_p, ctx) => ({ env: currentEnvironment().id, user: ctx.user?.user.email ?? 'system' }) })
-    k().jobs.register<Record<string, unknown>>({ type: 'test.noop', description: 'does nothing', concurrency: 8, handler: async () => null })
+    k().jobs.register<Record<string, unknown>>({ type: 'test.noop', description: 'does nothing', concurrency: 8, schedule: 'custom', handler: async () => null })
   }, 120000)
 
   afterAll(async () => { await h?.close() }, 60000)
@@ -123,8 +123,9 @@ describe.skipIf(!PG_URL)('job queue and kernel guarantees (PostgreSQL)', () => {
     expect(off.data).toMatchObject({ enabled: false })
     expect(off.data.nextRunAt).toBeUndefined()
     const list = (await A().get('/admin/schedules')).data.items
-    // the backup schedules (package J) are managed on the Backups page; they live in Default's schedules too
-    expect(list.filter((x: any) => x.builtIn && !x.jobType.startsWith('backup.')).map((x: any) => x.jobType).sort()).toEqual(['attachments.sweep', 'audit.retention', 'collab.orphan-sweep', 'outbox.retention', 'rollup.reconcile'])
+    // the backup schedules (package J) are managed on the Backups page; they live in Default's schedules too, as do the
+    // install-wide log retention schedules (package M)
+    expect(list.filter((x: any) => x.builtIn && !x.jobType.startsWith('backup.')).map((x: any) => x.jobType).sort()).toEqual(['attachments.sweep', 'audit.retention', 'collab.orphan-sweep', 'identity.mail-log.retention', 'identity.signin-log.retention', 'outbox.retention', 'rollup.reconcile'])
     expect((await A().post('/admin/schedules', { name: 'bad', cron: '61 * * * *', jobType: 'test.noop' })).status).toBe(422)
   }, 60000)
 

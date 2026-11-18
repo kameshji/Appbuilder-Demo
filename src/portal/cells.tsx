@@ -1,5 +1,7 @@
 /** Typed value helpers and the cell editor shared by the data grid and the "Add row" dialog. */
+import { useEffect, useState } from 'react'
 import type { ColumnDef, ColumnType } from '@/platform'
+import type { QueryPlan } from '@/platform/query'
 import { platform } from '@/platform'
 import type { FxValue } from '@/contracts'
 import { cn } from '@/lib/utils'
@@ -121,6 +123,10 @@ export function CellEditor({
       )
     case 'lookup': {
       const m = lookups[col.name]
+      // server mode: the target table may be large and only the labels on screen are loaded: search it on the server
+      if (platform.getState().mode === 'server' && col.lookupTable && platform.tables.get(col.lookupTable)) {
+        return <LookupSearch id={id} cls={cls} col={col} value={value} label={value ? m?.get(value) : undefined} onChange={onChange} autoFocus={autoFocus} onKeyDown={onKeyDown} onBlur={onBlur} />
+      }
       return (
         <select id={id} autoFocus={autoFocus} className={cls} value={value} onChange={(e) => onChange(e.target.value)} onKeyDown={onKeyDown} onBlur={onBlur} aria-label={col.displayName}>
           <option value="">(blank)</option>
@@ -156,4 +162,74 @@ export function CellEditor({
       )
     }
   }
+}
+
+const TEXTISH: ColumnType[] = ['text', 'multiline', 'email', 'url', 'phone', 'choice', 'autonumber']
+
+/** the server query of the lookup type-ahead: 20 rows of the target, by its display column (contains, case-insensitive) */
+export function lookupSearchPlan(target: { name: string; primaryColumn: string; columns: ColumnDef[] }, text: string): QueryPlan {
+  const primary = target.columns.find((c) => c.name === target.primaryColumn)
+  const needle = text.trim()
+  const byText = !!primary && TEXTISH.includes(primary.type)
+  return {
+    version: 2, table: target.name, select: [target.primaryColumn], page: { size: 20 },
+    ...(byText ? { sort: [{ col: target.primaryColumn, dir: 'asc' as const }] } : {}),
+    ...(needle && byText ? { filter: { col: target.primaryColumn, op: 'contains' as const, value: needle } } : {}),
+  }
+}
+
+/**
+ * Lookup editor with type-ahead (server mode): the target table is searched on the server by its display column
+ * (Query v2, delegated, 20 at a time), so a table of a million rows works like a small one. Enter or a click picks the
+ * highlighted row; Backspace on an empty box clears the value.
+ */
+function LookupSearch({ col, value, label, onChange, autoFocus, onKeyDown, onBlur, id, cls }: {
+  col: ColumnDef; value: string; label?: string; onChange(v: string): void; autoFocus?: boolean
+  onKeyDown?(e: React.KeyboardEvent): void; onBlur?(): void; id?: string; cls: string
+}) {
+  const target = platform.tables.get(col.lookupTable!)!
+  const [text, setText] = useState('')
+  const [items, setItems] = useState<{ id: string; label: string }[]>([])
+  const [hi, setHi] = useState(0)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let alive = true
+    const t = setTimeout(() => {
+      const plan = lookupSearchPlan(target, text)
+      platform.tables.query(plan).then((st) => {
+        if (!alive) return
+        if (st.status === 'error') { setError(st.error?.message ?? 'The search failed.'); return }
+        setError('')
+        setItems(st.rows.map((r) => ({ id: String(r.__id ?? r.id), label: r[target.primaryColumn] === null || r[target.primaryColumn] === undefined ? '(blank)' : String(r[target.primaryColumn]) })))
+        setHi(0)
+      }).catch((e: unknown) => { if (alive) setError((e as Error).message) })
+    }, 200)
+    return () => { alive = false; clearTimeout(t) }
+  }, [text, target])
+  return (
+    <div className="relative" data-testid="lookup-search">
+      <input
+        id={id} autoFocus={autoFocus} className={cls} value={text} placeholder={label ?? (value ? value : `Search ${target.displayName}`)}
+        aria-label={col.displayName} role="combobox" aria-expanded={items.length > 0} aria-autocomplete="list"
+        onChange={(e) => setText(e.target.value)} onBlur={onBlur}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown') { e.preventDefault(); setHi((h) => Math.min(items.length - 1, h + 1)); return }
+          if (e.key === 'ArrowUp') { e.preventDefault(); setHi((h) => Math.max(0, h - 1)); return }
+          if (e.key === 'Enter' && items[hi] && text) { e.preventDefault(); e.stopPropagation(); onChange(items[hi]!.id); return }
+          if (e.key === 'Backspace' && !text && value) { e.preventDefault(); onChange(''); return }
+          onKeyDown?.(e)
+        }}
+      />
+      {(items.length > 0 || error) && (
+        <ul role="listbox" className="absolute left-0 top-full z-50 mt-0.5 max-h-60 min-w-full overflow-auto rounded-md border border-border bg-popover py-1 text-sm shadow-md" data-testid="lookup-results">
+          {error && <li className="px-2 py-1 text-xs text-destructive">{error}</li>}
+          {items.map((it, i) => (
+            <li key={it.id} role="option" aria-selected={i === hi}
+              className={cn('cursor-pointer truncate px-2 py-1', i === hi && 'bg-accent text-accent-foreground', it.id === value && 'font-medium')}
+              onMouseDown={(e) => { e.preventDefault(); onChange(it.id) }} onMouseEnter={() => setHi(i)}>{it.label}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
 }

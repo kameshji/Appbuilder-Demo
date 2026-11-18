@@ -25,6 +25,7 @@ import {
 import type { Dialect } from './sql.ts'
 import { rowUid } from '../../core/util.ts'
 import { DEFAULT_CONNECTION_ID } from '../../core/connections.ts'
+import { hostProblem } from '../../core/net-policy.ts'
 
 export { createPgDb, friendlyConnectionError, mapPgError }
 
@@ -43,7 +44,7 @@ function parseSettings(conn: ConnectionRecord): PgSettings {
     user: (s.user ?? '').trim(),
     ssl: String(s.ssl ?? 'false').toLowerCase() === 'true',
     schema,
-    valid: !!(s.host && s.database && s.user) && SCHEMA_RE.test(schema),
+    valid: !!(s.host && s.database && s.user) && SCHEMA_RE.test(schema) && (conn.id === 'conn_default' || !hostProblem(String(s.host))),
   }
 }
 
@@ -184,7 +185,8 @@ export const createPostgresConnector: ConnectorFactory = (conn: ConnectionRecord
    */
   const naturalChecked = new Set<string>()
   function ensureNaturalIndex(def: TableDef): void {
-    if (!def.managed) return
+    // a reporting view (package K) has no indexes of its own: its base table's serve it
+    if (!def.managed || def.reporting?.kind === 'view') return
     const key = `${schema}.${physicalName(def)}`
     if (naturalChecked.has(key)) return
     naturalChecked.add(key)

@@ -43,7 +43,8 @@ export function summaryRefreshSql(schema: string, def: TableDef, src: TableDef):
     sel.push('date_trunc(\'milliseconds\', now())')
   }
   const group = r.groupBy.length ? ` GROUP BY ${r.groupBy.map((g) => `s.${quoteId(g)}`).join(', ')}` : ''
-  return [`DELETE FROM ${T}`, `INSERT INTO ${T} (${cols.join(', ')}) SELECT ${sel.join(', ')} FROM ${S} AS s${group}`]
+  // one refresh at a time per table: two concurrent refreshes would each delete what they see and both insert
+  return [`LOCK TABLE ${T} IN SHARE ROW EXCLUSIVE MODE`, `DELETE FROM ${T}`, `INSERT INTO ${T} (${cols.join(', ')}) SELECT ${sel.join(', ')} FROM ${S} AS s${group}`]
 }
 
 export function registerSummaryJob(s: CoreServices): void {
@@ -51,6 +52,7 @@ export function registerSummaryJob(s: CoreServices): void {
   if (!jobs) return
   jobs.register<{ tableId: string }>({
     type: SUMMARY_JOB,
+    schedule: 'custom',
     description: 'Recomputes a summary table of the data model designer from its source table.',
     concurrency: 2,
     maxAttempts: 3,

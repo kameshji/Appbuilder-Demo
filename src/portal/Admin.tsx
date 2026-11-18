@@ -1,12 +1,12 @@
 /**
  * Admin console (#admin, #admin-<section>; Dev mode, administrators): its own sub-navigation over environments,
- * users, licences, the audit log, jobs, backups (with the backup health line on every page), and the planned logs
- * and usage pages (ComingSoon, P0).
+ * users, licences, the audit log, jobs, backups (with the backup health line on every page), server logs, usage and
+ * updates (AdminOps.tsx, package L).
  * Everything shown is real data or clearly marked: "preview" (derived, not enforced) and "Soon" (not built).
  */
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  Activity, Archive, BadgeCheck, KeySquare, Mail, ShieldCheck, ChevronLeft, ChevronRight, FileKey2, GitFork, Layers, ListChecks, Network, RefreshCw, ScrollText, ShieldHalf, Upload, Users, UsersRound, Zap,
+  Activity, Archive, BadgeCheck, KeySquare, Mail, ShieldCheck, ChevronLeft, ChevronRight, FileKey2, GitFork, Layers, ListChecks, Network, PackageCheck, RefreshCw, ScrollText, ShieldHalf, Upload, Users, UsersRound, Zap,
   type LucideIcon,
 } from 'lucide-react'
 import { usePlatform, type UserDef } from '@/platform'
@@ -17,9 +17,10 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
-import { ComingSoon, SoonBadge } from './ComingSoon'
+import { SoonBadge } from './ComingSoon'
+import { ServerLogsSection, UpdatesSection, UsageSection } from './AdminOps'
 import { EnvironmentsSection } from './AdminEnvironments'
-import { EventRunsSection, JobsSection } from './AdminJobs'
+import { EventRunsSection, JobsSection, RetentionSetting } from './AdminJobs'
 import { BackupHealthBanner, BackupsSection } from './AdminBackups'
 import { fetchInstallAuditPage } from './environmentApi'
 import { useCaps } from './security'
@@ -30,7 +31,7 @@ import { UsersPanel } from './Users'
 import { DepartmentsSection, OrgChartSection, TeamsSection } from './Organisation'
 import { EmailSection, ServiceAccountsSection, SignInSecuritySection } from './AdminIdentity'
 
-export type AdminSection = 'environments' | 'users' | 'security' | 'email' | 'service-accounts' | 'departments' | 'teams' | 'orgchart' | 'licences' | 'audit' | 'jobs' | 'events' | 'backups' | 'logs' | 'usage'
+export type AdminSection = 'environments' | 'users' | 'security' | 'email' | 'service-accounts' | 'departments' | 'teams' | 'orgchart' | 'licences' | 'audit' | 'jobs' | 'events' | 'backups' | 'logs' | 'usage' | 'updates'
 interface SectionDef { key: AdminSection; label: string; icon: LucideIcon; soon?: boolean }
 export const ADMIN_SECTIONS: SectionDef[] = [
   { key: 'environments', label: 'Environments', icon: Layers },
@@ -46,8 +47,9 @@ export const ADMIN_SECTIONS: SectionDef[] = [
   { key: 'jobs', label: 'Jobs', icon: ListChecks },
   { key: 'events', label: 'Events run log', icon: Zap },
   { key: 'backups', label: 'Backups', icon: Archive },
-  { key: 'logs', label: 'Server logs', icon: ScrollText, soon: true },
-  { key: 'usage', label: 'Usage', icon: Activity, soon: true },
+  { key: 'logs', label: 'Server logs', icon: ScrollText },
+  { key: 'usage', label: 'Usage', icon: Activity },
+  { key: 'updates', label: 'Updates', icon: PackageCheck },
 ]
 export const isAdminSection = (s: string | undefined): s is AdminSection => !!s && ADMIN_SECTIONS.some((x) => x.key === s)
 
@@ -92,7 +94,9 @@ export function AdminConsole({ section }: { section?: string }) {
           {current === 'jobs' && <JobsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'events' && <EventRunsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'backups' && <BackupsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
-          {(current === 'logs' || current === 'usage') && <ComingSoon moduleKey={current} mode="dev" embedded />}
+          {current === 'logs' && <ServerLogsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
+          {current === 'usage' && <UsageSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
+          {current === 'updates' && <UpdatesSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
         </section>
       </div>
     </div>
@@ -274,6 +278,7 @@ function AuditSection() {
           </div>
         }
       />
+      {scope === 'env' && <div className="mb-3"><RetentionSetting scheduleId="sched_audit_retention" what="audit entries" /></div>}
       <Panel className="mb-3 grid grid-cols-[1.2fr_1.2fr_1fr_1fr_auto] items-end gap-3 p-3" data-testid="audit-filters">
         <Field label="Action" htmlFor="audit-action">
           <select id="audit-action" value={action} onChange={(e) => filter({ action: e.target.value })} data-testid="audit-action" className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm">

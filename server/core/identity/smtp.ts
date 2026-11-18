@@ -12,6 +12,7 @@ import net from 'node:net'
 import tls from 'node:tls'
 import os from 'node:os'
 import { randomBytes } from 'node:crypto'
+import { assertOutboundHost } from '../net-policy.ts'
 
 export type SmtpSecurity = 'starttls' | 'tls' | 'none'
 
@@ -226,12 +227,14 @@ class Conversation {
   }
 }
 
-function connect(s: SmtpSettings, timeoutMs: number): Promise<net.Socket | tls.TLSSocket> {
+function connect(s: SmtpSettings, timeoutMs: number, address?: string): Promise<net.Socket | tls.TLSSocket> {
+  // the address the outbound policy checked (no second DNS answer in between); TLS still checks the host name
+  const host = address ?? s.host
   return new Promise((resolve, reject) => {
     const onErr = (e: Error) => reject(new SmtpError(`Could not connect to ${s.host}:${s.port}: ${e.message}`))
     const sock = s.security === 'tls'
-      ? tls.connect({ host: s.host, port: s.port, servername: net.isIP(s.host) ? undefined : s.host, rejectUnauthorized: s.verifyCertificate !== false, minVersion: 'TLSv1.2' }, () => resolve(sock))
-      : net.connect({ host: s.host, port: s.port }, () => resolve(sock))
+      ? tls.connect({ host, port: s.port, servername: net.isIP(s.host) ? undefined : s.host, rejectUnauthorized: s.verifyCertificate !== false, minVersion: 'TLSv1.2' }, () => resolve(sock))
+      : net.connect({ host, port: s.port }, () => resolve(sock))
     sock.once('error', onErr)
     sock.setTimeout(timeoutMs, () => {
       sock.destroy()
@@ -247,7 +250,13 @@ export async function sendSmtp(s: SmtpSettings, msg: MailMessage): Promise<{ mes
   const timeoutMs = s.timeoutMs ?? 20_000
   const { data, messageId } = buildMime(msg)
   if (!validAddress(msg.from.address)) throw new SmtpError(`"${msg.from.address}" is not a valid sender address.`)
-  const socket = await connect(s, timeoutMs)
+  let addrs: string[]
+  try {
+    addrs = await assertOutboundHost(s.host, 'SMTP relay')
+  } catch (e) {
+    throw new SmtpError((e as Error).message)
+  }
+  const socket = await connect(s, timeoutMs, addrs[0])
   const c = new Conversation(socket, timeoutMs)
   try {
     const greeting = await c.read()

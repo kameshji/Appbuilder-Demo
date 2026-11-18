@@ -4,70 +4,77 @@ Appbuilder is a tool for building small business apps (forms, lists, dashboards)
 
 ## What you need
 
-- Windows 10 or 11.
-- Node.js. The installer checks for version 20, but the server itself needs **Node 22.18 or newer**. Install the current LTS release to be safe.
-- git.
-- PostgreSQL 15 or newer (17 recommended). The next section shows how to install it.
+- A Windows 10 or 11 PC (or Windows Server 2016 or newer) with at least 4 GB of memory (8 GB recommended) and 3 GB of free
+  disk space, and an account that can run programs as administrator. A Linux server works too (Ubuntu 22.04/24.04,
+  Debian 12): see [Installation](../admin/installation.md#install-on-linux).
+- The release file `appbuilder-<version>.zip`.
+- Internet access during the install (about 450 MB of downloads), or an [offline bundle](../admin/installation.md#offline-install)
+  your IT person prepared.
+
+Nothing else: the installer brings Node.js, PostgreSQL and everything Appbuilder needs.
 
 ## Install
 
-1. Open PowerShell and run `scripts\setup-offline.ps1`. By default it installs into `%USERPROFILE%\Appbuilder-Demo`. Use `-Path` to choose another folder.
-2. The script downloads or updates the code, installs dependencies, builds the app, starts the server in a new window, and opens http://localhost:5174 in your browser.
-
-Leave the server window open while you use Appbuilder. Closing it stops the server.
-
-## Set up the database
-
-Appbuilder keeps everything in a PostgreSQL database.
-
-1. If PostgreSQL is not installed yet, install it (the installer asks for a password for the `postgres` superuser; note it):
+1. Right-click `appbuilder-<version>.zip` > **Extract All**, for example to `C:\Install`.
+2. Click Start, type **PowerShell**, right-click **Windows PowerShell** > **Run as administrator**.
+3. Type (adjust the folder name) and press Enter:
 
    ```powershell
-   winget install --id PostgreSQL.PostgreSQL.17 -e --interactive
+   cd C:\Install\appbuilder-<version>
+   powershell -ExecutionPolicy Bypass -File .\scripts\install\windows\install.ps1
    ```
 
-2. Run `scripts\setup-postgres.ps1` (on Linux `scripts/setup-postgres.sh`). It:
-   1. Finds PostgreSQL (`psql.exe` in `C:\Program Files\PostgreSQL\<version>\bin` or on the PATH) and starts its service if needed.
-      If PostgreSQL is missing it tells you the `winget` command above.
-   2. Asks for the `postgres` superuser password, then twice for a password for the new `appbuilder` role (at least 12
-      characters). Nothing you type is shown or saved.
-   3. Creates the `appbuilder` role and an empty `appbuilder` database that it owns.
-   4. Prints the values to type into the setup wizard.
+4. Wait until it says **Done** (a few minutes; most of it is downloading). It prints each step. If it stops with an
+   ERROR line, the line says what to do; you can run it again safely.
 
-Options: `-Database`, `-User`, `-Port` (default 5432), `-SuperUser`, `-PsqlPath`. See
-[Installation](../admin/installation.md#prepare-the-database) for details and the manual SQL.
+Appbuilder now runs as a Windows service: it starts by itself when the PC starts, and keeps running when you sign out. You
+do not need to keep any window open.
 
-## Start Appbuilder later
+To let other PCs in your office use it too, add `-Https Lan -OpenFirewall` to the command (see
+[Installation](../admin/installation.md#which-way-users-reach-it) first, including how the other PCs trust its certificate).
 
-Run `npm start` in the Appbuilder folder, or run `scripts\start.ps1`, which also opens your browser. The default address is http://localhost:5174. To use another port, set the `PORT` environment variable.
+## First run: create the administrator
 
-## First run: the setup wizard
+The installer already connected Appbuilder to its database. One step is left, and it must be done **on this PC**:
 
-The first time you open Appbuilder it asks you to set up a database and the first administrator. Do this **on the PC where Appbuilder runs** (the setup refuses other computers).
+1. Read the one-time **setup code**: in the same administrator PowerShell, type
 
-**The setup code.** When the server starts for the first time it prints a setup code in its window (the PowerShell window of `npm start` or `scripts\start.ps1`), for example:
+   ```powershell
+   Get-Content 'C:\ProgramData\Appbuilder\workspace\setup-code.txt'
+   ```
 
-```
-  FIRST-RUN SETUP CODE:  K7QD-M2XP
-```
-
-Type it in the first field, **Setup code (shown in the server window)**. It proves that the person doing the setup is at this PC. The code changes every time the server starts, so if you restarted it, use the newest one. After the administrator is created the code is no longer needed.
-
-**Step 1: Database.** Enter the host (default `127.0.0.1`), port (`5432`), database name (`appbuilder`), user (`appbuilder`) and the password you chose in `setup-postgres`. "Create the database if it does not exist" is only needed when you did not run the script and your PostgreSQL role may create databases. Tick "Use SSL" for a database on another machine.
-
-![Setup wizard, database step](../images/setup-database.png)
-
-If something is wrong the wizard tells you in plain words, for example that the password is wrong:
-
-![Database error](../images/setup-database-error.png)
-
-See [Troubleshooting](troubleshooting.md) for each message.
-
-**Step 2: Administrator.** Enter your name, email, and a password of at least 10 characters. A strength meter helps you choose. (If you skipped step 1 because the database is configured with `APPBUILDER_DB_*` settings, this step asks for the setup code.)
+   It shows something like `K7QD-M2XP`. The code changes every time Appbuilder starts; the file disappears once you have
+   created the administrator.
+2. Open **Appbuilder** from the Start menu (or `http://localhost:5174` in your browser).
+3. Type the setup code, your name, email and a password of at least 10 characters (a strength meter helps), and click
+   **Create administrator**.
 
 ![Setup wizard, administrator step](../images/setup-admin.png)
 
-When you finish, you are signed in. Appbuilder also adds a few sample tables (Contacts and Orders) and a sample "Contacts app".
+When you finish, you are signed in. Appbuilder also adds a few sample tables (Contacts and Orders) and a sample
+"Contacts app".
+
+Then, in the Admin console: set up **Email** (so people can reset forgotten passwords), check **Backups** (a nightly
+backup is on; copy backups to another disk), and create a second administrator. The
+[hardening checklist](../admin/hardening-checklist.md) lists the rest.
+
+## Later
+
+- Appbuilder starts with the PC. To restart it: `Restart-Service Appbuilder` in an administrator PowerShell.
+- New versions: [Upgrades](../admin/upgrades.md) (`appbuilder update <file>`, or upload it in Admin console > Updates).
+- Something wrong: Admin console > **Server logs** shows the health checks and the log; the **Diagnostics bundle** button
+  there makes a file for support ([Operations](../admin/operations.md)).
+
+**Developers** can also run Appbuilder from its source folder without installing it (`npm ci`, `npm run build`,
+`npm start`, and a PostgreSQL database you prepare yourself): [Install from source](../admin/installation.md#install-from-source-developers).
+The setup screen then also asks for the database (host, port, database, user, password):
+
+![Setup wizard, database step](../images/setup-database.png)
+
+If something is wrong it tells you in plain words, for example that the password is wrong (see
+[Troubleshooting](troubleshooting.md) for each message):
+
+![Database error](../images/setup-database-error.png)
 
 ## A tour of the portal
 

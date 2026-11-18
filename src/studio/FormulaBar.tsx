@@ -127,7 +127,7 @@ function suggestionsFor(text: string, caret: number, node: ControlNode, ev: Eval
   for (const f of ev.engine.functions()) all.push({ label: f.name, insert: f.name + '(', kind: f.kind === 'behaviour' ? 'action' : 'fn', detail: f.signature, doc: f.summary })
   for (const name of ev.byName.keys()) {
     const info = ev.byName.get(name)!
-    all.push({ label: name, insert: name, kind: info.node.type === 'Screen' ? 'screen' : 'control', detail: info.node.type })
+    all.push({ label: name, insert: name, kind: info.node.type === 'Screen' ? 'screen' : 'component', detail: info.node.type })
   }
   for (const c of Object.keys(ev.rt.collections)) all.push({ label: c, insert: c, kind: 'collection' })
   for (const v of Object.keys(ev.rt.vars)) all.push({ label: v, insert: v, kind: 'variable' })
@@ -147,7 +147,7 @@ function suggestionsFor(text: string, caret: number, node: ControlNode, ev: Eval
 const kindColor: Record<string, string> = {
   fn: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300',
   action: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
-  control: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+  component: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
   screen: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
   table: 'bg-sky-500/15 text-sky-700 dark:text-sky-300',
   column: 'bg-sky-500/15 text-sky-700 dark:text-sky-300',
@@ -334,7 +334,7 @@ function FormulaEditor({ node, prop, ev, multi }: { node: ControlNode; prop: str
           rows={1}
           value={draft}
           disabled={multi}
-          placeholder={multi ? 'Multiple controls selected' : 'Type a formula'}
+          placeholder={multi ? 'Multiple UI components selected' : 'Type a formula'}
           className={cn(
             'block w-full min-w-0 resize-none bg-transparent py-[3px] pr-2 font-mono text-[13px] leading-[18px] outline-none placeholder:text-muted-foreground/60',
             !focused && 'overflow-hidden whitespace-nowrap text-ellipsis',

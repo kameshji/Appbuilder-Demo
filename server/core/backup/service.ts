@@ -1417,6 +1417,7 @@ export function createBackupService(deps: BackupServiceDeps) {
   const obj = (raw: unknown): Record<string, unknown> => (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {})
   deps.kernel.jobs.register<Record<string, unknown>>({
     type: BACKUP_JOB,
+    schedule: 'install',
     description: 'Makes a backup (install or one environment), verifies it, copies it off-site and applies retention.',
     parse: obj,
     concurrency: 1,
@@ -1464,6 +1465,7 @@ export function createBackupService(deps: BackupServiceDeps) {
   })
   deps.kernel.jobs.register({
     type: RESTORE_TEST_JOB,
+    schedule: 'install',
     description: 'Restores the newest good backup into temporary schemas, compares row counts, and drops them.',
     concurrency: 1, maxAttempts: 1, timeoutMs: 24 * 3_600_000,
     async handler(_p, ctx) {
@@ -1479,6 +1481,7 @@ export function createBackupService(deps: BackupServiceDeps) {
   })
   deps.kernel.jobs.register({
     type: HEALTH_JOB,
+    schedule: 'install',
     description: 'Applies backup retention and warns install administrators when backups are out of date.',
     concurrency: 1, maxAttempts: 2, timeoutMs: 10 * 60_000,
     async handler() {

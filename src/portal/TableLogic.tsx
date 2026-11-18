@@ -386,6 +386,7 @@ export function FormulaColumnsPanel({ table }: { table: TableDef }) {
   }
   const editor = (
     <Panel className="grid gap-4 p-5" data-testid="formula-column-editor">
+      <p className="text-xs text-muted-foreground" role="note" data-testid="formula-visibility-note">Calculated by the system: if the formula reads a column some people may not see, they still see its result in this column. Limit this column in column security when that matters.</p>
       {!editing && (
         <div className="grid grid-cols-[minmax(0,1fr)_200px] gap-4">
           <Field label="Column name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Line total" data-testid="formula-column-name" /></Field>
@@ -468,6 +469,10 @@ export function RollupsPanel({ table }: { table: TableDef }) {
       {!sources.length && <p className="text-sm text-muted-foreground">No table has a lookup column pointing at {table.displayName} yet; add one there first.</p>}
       {adding && (
         <Panel className="grid gap-4 p-5" data-testid="rollup-editor">
+          <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200" role="note" data-testid="rollup-visibility-warning">
+            A rollup is calculated by the system over <b>all</b> related rows, including rows and columns some people may not open. Everyone who can see this column sees the total.
+            If the related rows are private (own rows, a row rule, a hidden column), limit who sees this column in the table's column security.
+          </p>
           <Field label="Column name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Order total" data-testid="rollup-name" /></Field>
           <div className="grid grid-cols-2 gap-4">
             <Field label="Related table">

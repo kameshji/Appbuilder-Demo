@@ -2,8 +2,8 @@
  * The data model designer's backend (docs/dev/data-model.md). Server mode: /api/v1/model (plans with row counts and
  * conversion pre-checks, one-transaction apply, explicit relationships with delete behaviours, reporting views).
  * Demo mode: the browser workspace; relationships, layout and draft in localStorage; apply runs the changes one by
- * one through platform.tables (not transactional), and what needs the server (reporting views, summary tables,
- * enforced delete behaviours) is explained instead.
+ * one through platform.tables (not transactional), and what needs the server (reporting views, summary tables) is
+ * explained instead. Delete behaviours are enforced by the browser store too (src/platform/delete-rules.ts).
  */
 import { PlatformError, platform } from '@/platform'
 import type { ColumnDef, TableDef } from '@/platform'
@@ -126,7 +126,7 @@ function demoPlan(ops: ModelOp[]): ModelPlan {
       if (o.patch.uniqueTogether?.length) problems.push(`Unique pairs ${SERVER_ONLY}.`)
       items.push({ kind: 'table', change: 'changed', table: live.tables.find((x) => x.id === o.id)?.displayName ?? o.id, name: '' })
     } else if (o.op === 'putRelationship') {
-      items.push({ kind: 'relationship', change: o.before ? 'changed' : 'new', table: live.tables.find((x) => x.id === o.rel.fromTable)?.displayName ?? o.rel.fromTable, name: describeOp(applyOps(live, ops).model, o), note: `on delete: ${o.rel.onDelete} (enforced by the server only)` })
+      items.push({ kind: 'relationship', change: o.before ? 'changed' : 'new', table: live.tables.find((x) => x.id === o.rel.fromTable)?.displayName ?? o.rel.fromTable, name: describeOp(applyOps(live, ops).model, o), note: `on delete: ${o.rel.onDelete}` })
     } else if (o.op === 'dropRelationship') {
       items.push({ kind: 'relationship', change: 'removed', table: '', name: o.id })
     }

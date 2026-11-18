@@ -11,7 +11,8 @@ The browser-only demo mode has no server, no real security and is not covered (s
 
 | Page | Read it when |
 | --- | --- |
-| [Installation](installation.md) | You are setting Appbuilder up for the first time, or moving it to another PC |
+| [Installation](installation.md) | You are setting Appbuilder up for the first time (the Windows and Linux installers, offline bundles, HTTPS), or moving it to another machine |
+| [Operations](operations.md) | You run it day to day: services, where files live, logs, health, the diagnostics bundle for support, usage |
 | [Users and roles](users-and-roles.md) | You add people, decide who can build, and control which rows and columns each person sees |
 | [Sign-in and identity](sign-in-and-identity.md) | You set up email, two-step verification, password and session rules, invitations, reset codes, service accounts and API keys |
 | [Organisation](organisation.md) | You set up departments, managers and teams, import people from a CSV file, or look at the org chart |
@@ -20,7 +21,7 @@ The browser-only demo mode has no server, no real security and is not covered (s
 | [Connections](connections.md) | You change the database, link existing PostgreSQL or MySQL tables, use data files or Google Sheets |
 | [Backup and restore](backup-and-restore.md) | You need to protect the data, or recover it |
 | [Disaster recovery](disaster-recovery.md) | The machine or the database is gone and you have a backup |
-| [Upgrades](upgrades.md) | You are installing a newer version |
+| [Upgrades](upgrades.md) | You are installing a newer version (the updater, Admin console > Updates, rolling back) |
 | [Audit log](audit-log.md) | You need to know who did what |
 | [Jobs](jobs.md) | You check background work, retry failed jobs, change retention, or read the events run log |
 | [Security model](security-model.md) | You are evaluating Appbuilder, or need to know exactly what is and is not protected |
@@ -28,9 +29,10 @@ The browser-only demo mode has no server, no real security and is not covered (s
 
 ## What you need to know first
 
-- **One PC.** The server listens on `127.0.0.1` (this PC only). People use it from a browser on that PC, for example
-  over Remote Desktop. Serving other PCs on your network is **not supported**, and changing the listening address makes
-  the server less safe, not more usable. See [Installation](installation.md#changing-the-listening-address-is-not-supported).
+- **One machine, HTTPS in front for others.** The server listens on `127.0.0.1` only. Other PCs reach it through the
+  HTTPS reverse proxy (Caddy) the installers set up on request, for the local network or a domain name
+  ([Installation](installation.md#which-way-users-reach-it)). Changing the listening address itself makes the server less
+  safe, not more usable ([Installation](installation.md#changing-the-listening-address-is-not-supported)).
 - **Two things hold your data.** The PostgreSQL database, and the *workspace folder* (data files, attachments, the
   encryption key and the saved database login). Admin console > Backups backs up both, nightly by default, and restores
   an environment, tables or the whole install ([Backup and restore](backup-and-restore.md)). Keep copies off the machine,
@@ -46,11 +48,9 @@ The browser-only demo mode has no server, no real security and is not covered (s
 
 These are missing in this version and are listed again, with detail, where they matter:
 
-- TLS/HTTPS, multi-factor sign-in, single sign-on, password reset by email, and any rate limit other than the login
-  throttle.
-- Serving other computers on a network.
+- Single sign-on, and any rate limit other than the sign-in throttles.
 - A screen for the audit log, and automatic deletion of old audit entries.
-- Automatic updates. Updating is a manual procedure ([Upgrades](upgrades.md)).
+- Automatic downloads of updates: you bring the release file to `appbuilder update` ([Upgrades](upgrades.md)).
 - Version-compatibility checks when going back to an older version.
 
 Everything in these pages was checked against the code in `server/` and the tests next to it. Where a statement could

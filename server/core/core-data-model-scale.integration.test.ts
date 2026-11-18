@@ -6,6 +6,8 @@
  *   APPBUILDER_BENCH=1 APPBUILDER_TEST_DB=postgres://... npx vitest run server/core/core-data-model-scale.integration.test.ts
  *
  * Results are written to the console (docs/dev/core-data-model.md quotes them). Skipped without APPBUILDER_BENCH.
+ * APPBUILDER_BENCH_JIT=1 also times the SQL of the generic Comments query (page + exact count, and a grouped count) with
+ * PostgreSQL's JIT on and off (docs/dev/schema.md, "JIT").
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PG_URL } from './testdb.ts'
@@ -109,6 +111,38 @@ describe.skipIf(!RUN)('core data model at scale (PostgreSQL)', () => {
           process.stdout.write(`\n--- ${id}\n${plan.map((r) => r['QUERY PLAN']).join('\n').replace(/OR \(\(\("regardingTable"[^\n]*?SubPlan \d+\)\)/g, '').slice(0, 6000)}\n`)
         }
       })
+    }
+    if (process.env.APPBUILDER_BENCH_JIT === '1') {
+      const { buildV2 } = await import('../connectors/postgres/query-v2.ts')
+      const pg = (await import('pg')).default
+      const { pgServer } = await import('./testdb.ts')
+      const c = new pg.Client({ host: pgServer!.host, port: pgServer!.port, user: pgServer!.user, password: pgServer!.password, database: h.dbName })
+      await c.connect()
+      const lines: string[] = []
+      try {
+        await runInEnvironment('default', async () => {
+          const ctx = await h.app.services.security.forUser((await h.app.services.meta.users.get('user_bo'))!)
+          const def = (await h.app.services.meta.tables.get('sys_comments'))!
+          const visible = def.columns.map((x) => x.name)
+          const opts = { rowFilter: ctx.rowPredicate(def, 'read') as never, visible, maxUnpagedRows: 5000, maxGroups: 10000 }
+          const cases: [string, { sql: string; params: unknown[] }][] = [
+            ['Comments, own scope on 50 tables: page of 50 + exact count', buildV2({ schema: 'env_default', icu: true }, def, { version: 2, table: 'Comments', sort: [{ col: 'createdOn', dir: 'desc' }], page: { size: 50 }, count: true }, opts)],
+            ['Comments, own scope: count by regarding table', buildV2({ schema: 'env_default', icu: true }, def, { version: 2, table: 'Comments', aggregate: { groupBy: ['regardingTable'], measures: [{ name: 'n', fn: 'count' }] } }, opts)],
+            ['Comments, administrator (no predicate): count by regarding table', buildV2({ schema: 'env_default', icu: true }, def, { version: 2, table: 'Comments', aggregate: { groupBy: ['regardingTable'], measures: [{ name: 'n', fn: 'count' }] } }, { ...opts, rowFilter: undefined })],
+          ]
+          for (const [name, st] of cases) {
+            const t: Record<string, number> = {}
+            for (const jit of ['on', 'off']) {
+              await c.query(`SET jit = ${jit}`)
+              t[jit] = await median(() => c.query(st.sql, st.params as unknown[]))
+            }
+            lines.push(`| ${name} | ${t.on} | ${t.off} |`)
+          }
+        })
+      } finally {
+        await c.end()
+      }
+      process.stdout.write(`\n[core-data-model jit]\n| Query | JIT on (ms) | JIT off (ms) |\n| --- | ---: | ---: |\n${lines.join('\n')}\n`)
     }
     expect(timeline).toBeLessThan(500)
     expect(tasks).toBeLessThan(1000)

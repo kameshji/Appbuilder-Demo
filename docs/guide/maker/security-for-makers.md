@@ -53,4 +53,4 @@ Navigate runs immediately, before the server has answered. If the write is refus
 
 ## Recommended pattern
 
-Use a **Form** control. It waits for the server. Put the follow-up in **OnSuccess** (`Navigate(Done)`) and the error message in **OnFailure** (`Notify(Form1.Error, NotificationType.Error)`).
+Use a **Form** UI component. It waits for the server. Put the follow-up in **OnSuccess** (`Navigate(Done)`) and the error message in **OnFailure** (`Notify(Form1.Error, NotificationType.Error)`).
