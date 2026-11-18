@@ -2,7 +2,7 @@
 
 Appbuilder is a desktop low-code app builder. Makers design apps on a canvas with Excel-style formulas; data lives in PostgreSQL
 (the default database), external MySQL/PostgreSQL databases, data files or Google Sheets; the server decides who may see what. The decisions behind the shape are in
-`/home/claude/appbuilder-demo/docs/decisions.md` (D1 to D13). This page describes the code as it is.
+`/home/claude/appbuilder-demo/docs/decisions.md` (D1 to D19). This page describes the code as it is.
 
 - **Browser**: React 19 + TypeScript, built with Vite into **one HTML file** (`dist/index.html`). Hash routes, zustand + immer for
   state, Tailwind 4 for styles.
@@ -13,9 +13,10 @@ Appbuilder is a desktop low-code app builder. Makers design apps on a canvas wit
 - **Demo mode**: the same browser build can run with no server at all, simulating the platform over IndexedDB.
 
 What is not supported: multi-tenant hosting, horizontal scaling of the Node server (it keeps session throttling, security caches and
-the files store in process memory), real-time collaboration (two makers saving the same app overwrite each other, last write wins),
-and server-side formula evaluation in the request path (the engine is shared and runs under Node, see rule 3, but no route
-evaluates formulas yet; P0 package D adds query pushdown).
+the files store and the realtime hub's subscriptions in process memory), real-time co-editing (the Studio has a soft edit lock instead:
+one maker edits, others watch read-only, see `live.md`),
+and arbitrary formulas in the request path: the server evaluates formulas only where the platform defines them (Query v2
+pushdown, and table events, validation rules and formula columns; see `events-and-jobs.md`).
 
 ## Component diagram
 
@@ -79,6 +80,8 @@ flowchart TB
   end
 
   Remote -->|"HTTPS JSON /api/v1<br/>cookie ab_session"| Router
+  Remote <-->|"WebSocket /api/v1/live<br/>table ticks, presence, notifications"| Hub["Realtime hub<br/>(server/core/live)"]
+  Hub -.->|"committed outbox rows"| Data
   Meta --> DB
   PGc --> DB
   PGc -.-> ExtDB
@@ -87,6 +90,7 @@ flowchart TB
   Att --> WS
   Gsc --> Google
   Demo -.->|"IndexedDB"| BrowserStore[("Browser storage")]
+  Demo -.->|"BroadcastChannel between tabs"| Demo
 ```
 
 A PHP gateway for shared hosting (D12) replaces the whole Server box and keeps the arrow labelled `/api/v1` unchanged; see
@@ -104,6 +108,7 @@ A PHP gateway for shared hosting (D12) replaces the whole Server box and keeps t
 | `src/runtime/` | App stores (`createAppStore`: definition and runtime state; the shared `useStore` plus one per app tab), store context, evaluator, Fx host, player (`RunApp`, `RenderNode`), design sizes, autosave session. |
 | `src/studio/` | The editor: canvas, formula bar, properties panel, left rail, command bar. |
 | `src/portal/` | The application shell (`Portal.tsx`, `Shell.tsx`: Dev mode and User mode, app tabs in `UserMode.tsx`, `workspace.ts`), the planned-module registry (`modules.ts`) and the maker pages: home, apps, tables, data grid, roles, solutions, connections, data files, sign-in. |
+| `server/core/live/`, `server/core/notifications.ts` | Realtime hub (WebSocket `/api/v1/live`: table-changed ticks from the outbox, presence, Studio locks, app and environment messages) and in-app notifications. See `live.md`. |
 | `src/chat/` | Chat dock, pop-out window and their coordination; `ChatPanel.tsx` is the boundary the chat module will fill. |
 | `src/router.ts`, `src/App.tsx`, `src/main.tsx` | Hash router, top-level composition, entry. |
 | `server/main.ts` | Process entry: creates the app, HTTP server, static files, graceful shutdown. |
@@ -327,6 +332,11 @@ users, sessions, the registry (`ab.environments`), access (`ab.environment_acces
    column access), then the **RLS guard**: for update and delete the user's update or delete predicate is passed to the connector and
    applied atomically with the write (`WHERE id = ? AND <guard>`); `0` affected rows becomes 403 (the user can read the row) or 404.
    Insert needs the table's `create` privilege. Every successful write is written to `ab_audit`.
+   Each write is one **unit of work** of the event and job kernel (`server/core/kernel.ts`, `events-and-jobs.md`): on the
+   default database one transaction holding the before phase (table events, formula columns, validation rules: they may set
+   columns or refuse with a 422 bound to a field), the change, the audit entry and the **outbox row**. After commit the outbox
+   dispatcher turns the change into after-event and rollup jobs and notifies subscribers (realtime hub); the job worker runs
+   them in the background.
 6. **Success**: the server's row is folded into the confirmed rows (the optimistic row is replaced by what was really stored: server
    timestamps, autonumber, trimmed values) and the epoch advances.
 7. **Failure (rollback)**: the op is dropped, the visible rows are recomputed without it (the optimistic change disappears) and a
@@ -344,6 +354,18 @@ transaction on the SQL connectors. On the files and Google Sheets connectors the
 `POST /auth/login` verifies the scrypt hash (with a dummy comparison for unknown users), rotates the session, sets the `ab_session`
 cookie and returns the `Session` including effective privileges. The client loads `GET /workspace` and shows the portal. Details in
 `data-api.md`.
+
+## Event and job kernel
+
+`services.kernel` (`server/core/kernel.ts`) holds the job queue and worker (`jobs.ts`), schedules and cron (`cron.ts`), the
+outbox (`outbox.ts`) and table events (`table-events.ts`, formulas in `event-fx.ts`). `createApp` starts the worker after boot
+(option `jobs: false` for tests that drive it with `services.kernel.drain()`); `services.close()` stops it gracefully. One
+worker per process serves every ready environment: each tick reaps jobs that lost their worker, runs the scheduler, dispatches
+the outbox and claims due jobs (`FOR UPDATE SKIP LOCKED`); LISTEN `ab_jobs` / `ab_outbox` wakes it, polling is the fallback.
+Every job runs inside its environment and as its identity. Admin console: Jobs and Events run log
+(`src/portal/AdminJobs.tsx`); table designer: Validation rules, Formula columns, Rollups, Events (`src/portal/TableLogic.tsx`).
+The request id and correlation id (`X-Request-Id` / `X-Correlation-Id` or generated; `work-context.ts`) travel from a request
+into its outbox rows, jobs and run log entries.
 
 ## Server startup and shutdown
 
@@ -406,5 +428,5 @@ connections and the database pool, then exit.
 
 ## Where to read next
 
-`data-api.md` (the HTTP contract), `schema.md` (tables), `security-engine.md`, `connectors.md`, `frontend.md` (extending the client),
-`testing.md`.
+`data-api.md` (the HTTP contract), `live.md` (the realtime WebSocket), `schema.md` (tables), `security-engine.md`, `connectors.md`,
+`frontend.md` (extending the client), `testing.md`.

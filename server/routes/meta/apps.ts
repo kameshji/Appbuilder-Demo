@@ -4,7 +4,7 @@ import type { Router, Services } from '../../core/contracts.ts'
 import { bodyObj, clone, conflict, denied, invalid, isObj, me, notFound, optString, reqString, uniqueLabel } from './util.ts'
 import type { RoleX } from './util.ts'
 import { audit, requireTable } from './tables-core.ts'
-import { addApp, blankApp, checkSize, ensurePkgTables, exportAppPackage, parsePackage, readPkgApp, readPkgTables, validateDef } from './packages.ts'
+import { addApp, blankApp, checkSize, ensurePkgTables, exportAppPackage, importPkgEventsAsCopies, parsePackage, readPkgApp, readPkgTables, validateDef } from './packages.ts'
 import { createSampleApp } from './seed.ts'
 
 const actorName = (ctx: { user?: { user: { name: string } } }): string => ctx.user?.user.name ?? 'Unknown'
@@ -105,7 +105,9 @@ export function registerAppRoutes(router: Router, s: Services): void {
     const doc = parsePackage(b.yaml, 'appbuilder/app')
     const app = readPkgApp(doc.app)
     const tables = readPkgTables(doc.tables, s.now())
-    await ensurePkgTables(s, tables, ctx.user?.user.id)
+    const { map, created } = await ensurePkgTables(s, tables, ctx.user?.user.id)
+    const warnings: string[] = []
+    await importPkgEventsAsCopies(s, tables, map, created, ctx.user?.user.id ?? null, warnings)
     const meta = await addApp(s, actorName(ctx), app.def, app.name, app.description)
     await audit(s, ctx, 'app.import', { id: meta.id, name: meta.name })
     return meta

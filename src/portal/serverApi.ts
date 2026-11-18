@@ -12,6 +12,8 @@ export interface TablePreview {
   visibleRows: number
   hiddenColumns: string[]
   readOnlyColumns: string[]
+  /** why rows are readable (one line per granting role, shares) */
+  why: string[]
 }
 
 export async function toError(res: Response): Promise<PlatformError> {
@@ -47,6 +49,7 @@ export function normalizeSecurityPreview(body: unknown): TablePreview[] {
     visibleRows: Number(p.visibleRows ?? p.rowCount ?? 0),
     hiddenColumns: Array.isArray(p.hiddenColumns) ? p.hiddenColumns.map(String) : [],
     readOnlyColumns: Array.isArray(p.readOnlyColumns) ? p.readOnlyColumns.map(String) : [],
+    why: Array.isArray(p.why) ? p.why.map(String) : [],
   }))
 }
 

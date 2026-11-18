@@ -3,6 +3,7 @@
  * registry. Used by server/main.ts and by the Vite dev plugin (server/vite-plugin.mjs).
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { Duplex } from 'node:stream'
 import type { ServerConfig } from './contracts.ts'
 import { loadConfig } from './config.ts'
 import { createServices } from './services.ts'
@@ -16,6 +17,13 @@ import { registerConnectors } from '../connectors/index.ts'
 import { metaRoutes } from '../routes/meta/index.ts'
 import { errText, log } from './util.ts'
 import { runInEnvironment } from './env-context.ts'
+import { notificationSink } from './kernel.ts'
+import { kernelRoutes } from './kernel-routes.ts'
+import { createLiveHub } from './live/hub.ts'
+import type { LiveHub } from './live/hub.ts'
+import { wireLive } from './live/wiring.ts'
+import { bridgeOutbox } from './live/changes.ts'
+import { createNotificationService, notificationRoutes } from './notifications.ts'
 
 export interface AppServer {
   services: CoreServices
@@ -23,6 +31,10 @@ export interface AppServer {
   config: ServerConfig
   /** answers /api/* (resolves true); resolves false for everything else */
   handle(req: IncomingMessage, res: ServerResponse): Promise<boolean>
+  /** the realtime hub (WebSocket /api/v1/live) */
+  live: LiveHub
+  /** HTTP 'upgrade' event: true when it was the live endpoint (handled), false otherwise (the caller closes the socket) */
+  handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): boolean
   close(): Promise<void>
 }
 
@@ -37,6 +49,8 @@ export interface CreateAppOptions {
   boot?: boolean
   /** default true: print the first-run setup code to the console (tests read services.setupCode.current()) */
   printSetupCode?: boolean
+  /** default true: start the job worker (jobs, schedules, outbox dispatch); tests may drive it with services.kernel.drain() */
+  jobs?: boolean
 }
 
 export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer> {
@@ -49,11 +63,35 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
     log('warn', `listening on ${config.host}: other computers can reach the sign-in page. There is no TLS; see docs/admin/hardening-checklist.md.`)
   }
   router.setSessionResolver(sessionResolver(services))
+  // realtime hub and notifications (package H): the hub pushes notifications; hidden presence follows the settings
+  const notifications = createNotificationService({ services })
+  services.notifications = notifications
+  const live = createLiveHub(services, { allowAnyHost: opts.allowAnyHost, env })
+  notifications.setPush(live.pushUser)
+  // teams (organisation model, package F): members of teams of this environment or install-wide ones, by id or code
+  notifications.setTeamResolver(async (envId, teamIds) => {
+    const db = services.state.db
+    if (!db || !teamIds.length) return []
+    const rows = await db.query<{ user_id: string }>(
+      `SELECT DISTINCT m.user_id FROM "ab"."team_members" m JOIN "ab"."teams" t ON t.id = m.team_id
+        WHERE (t.id = ANY($1::text[]) OR lower(t.code) = ANY($2::text[])) AND (t.environment_id IS NULL OR t.environment_id = $3)`,
+      [teamIds, teamIds.map((x) => x.toLowerCase()), envId],
+    )
+    return rows.map((r) => r.user_id)
+  })
+  notifications.setSettingsListener((userId, st) => live.setHidden(userId, st.hidePresence))
+  wireLive(router, live)
+  // table-changed pushes come from the committed outbox rows (package G), in outbox order
+  const offOutbox = bridgeOutbox(services.kernel.outbox, async (id) => (await services.meta.users.get(id))?.name)
+  notificationRoutes(router, services, notifications)
   // core routes first; the router prefers literal segments over :params regardless of order
   authRoutes(router, services)
   dataRoutes(router, services)
   attachmentRoutes(router, services)
   metaRoutes(router, services)
+  kernelRoutes(router, services)
+  // table events' NotifyUser goes to the in-app notifications when they are available
+  services.kernel.events.setNotificationSink(notificationSink(services))
   if (opts.boot !== false) {
     await services.boot()
     if (services.ready()) {
@@ -75,11 +113,22 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
     if (!needsSetup && services.ready()) needsSetup = (await services.meta.users.count().catch(() => 1)) === 0
     if (needsSetup && !services.state.incompatible) services.setupCode.issue({ print: opts.printSetupCode !== false })
   }
+  if (opts.jobs !== false) services.kernel.start()
   return {
     services,
     router,
     config,
     handle: (req, res) => router.handle(req, res),
-    close: () => services.close(),
+    live,
+    handleUpgrade(req, socket, head) {
+      if (!live.isLiveRequest(req)) return false
+      live.handleUpgrade(req, socket, head)
+      return true
+    },
+    async close() {
+      offOutbox()
+      await live.close().catch(() => {})
+      await services.close()
+    },
   }
 }

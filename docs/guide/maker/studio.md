@@ -71,6 +71,22 @@ The chat button in the top bar opens the chat panel on the right, the same panel
 make it wider or narrower; it remembers whether it was open and its width. **Pop out** moves chat into its own window;
 the panel then says "Chat is open in another window" and **Bring back** closes that window and shows chat in the panel
 again (closing the window yourself does the same). Chat itself is not built yet: the panel lists what it will do.
+The bell next to it shows your notifications (see [Formulas: SendNotification](formulas.md#sendnotification-notify-another-person)).
+
+## When another maker opens the same app
+
+The Studio has one editor per app at a time (a soft lock, not co-editing):
+
+- The first maker who opens an app edits it. Others who open it see **Read-only. <name> is editing this app.** The canvas, the
+  properties and the formula bar do not change anything, and they see the editor's saves as they happen.
+- **Take over editing** moves the edit right to you: the other maker's last changes are kept, and they become read-only with a
+  note that you took over.
+- The avatars next to the save state show who else has the app open in the Studio.
+- If the live connection is not available, the Studio cannot tell whether someone else is editing; it stays editable and says so
+  (the last save wins).
+- In a locked production environment the Studio is read-only for everyone (the canvas and properties do not accept edits).
+
+![Read-only while another maker edits](../../images/live-studio-readonly.png)
 
 ## Viewports and anchors
 

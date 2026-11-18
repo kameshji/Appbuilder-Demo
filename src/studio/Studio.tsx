@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { CircleAlert, Loader2, Lock } from 'lucide-react'
-import { usePlatform } from '@/platform'
+import { platform, usePlatform } from '@/platform'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import { controls } from '@/controls'
@@ -19,6 +19,7 @@ import { Preview } from './Preview'
 import { PropertiesPanel } from './PropertiesPanel'
 import { StatusBar } from './StatusBar'
 import { Toasts } from './Toasts'
+import { StudioLiveBanner, useStudioLock } from './live'
 
 function isTyping(t: EventTarget | null): boolean {
   const el = t as HTMLElement | null
@@ -150,17 +151,21 @@ function LockedBanner() {
   return (
     <div role="status" data-testid="studio-locked" className="flex shrink-0 items-center gap-2 border-b border-rose-500/30 bg-rose-500/10 px-4 py-1.5 text-xs text-rose-800 dark:text-rose-200">
       <Lock className="size-3.5 shrink-0" />
-      <span><b>Read-only.</b> This production environment is locked: apps change only by deploying a solution into it. Changes you make here are not saved; make them in a sandbox and deploy.</span>
+      <span><b>Read-only.</b> This production environment is locked: apps change only by deploying a solution into it. Make changes in a sandbox and deploy.</span>
     </div>
   )
 }
 
 export function Studio({ appId }: { appId: string }) {
   const theme = useUi((s) => s.theme)
-  const locked = useEnvironmentLocked()
+  const envLocked = useEnvironmentLocked()
+  // soft lock (package H): the first maker edits, others see the app read-only and may take over
+  const edit = useStudioLock(appId, envLocked)
+  const readOnly = envLocked || edit !== 'edit'
   const loadState = useStore((s) => s.loadState)
   const loadedId = useStore((s) => s.appId)
   const loadError = useStore((s) => s.loadError)
+  const loaded = loadedId === appId && loadState === 'ready'
   useShortcuts()
   usePrefs(appId)
   useEffect(() => {
@@ -170,20 +175,46 @@ export function Studio({ appId }: { appId: string }) {
   useEffect(() => {
     setRunSurface(false)
     let alive = true
-    let stop: (() => void) | null = null
     void loadAppDef(appId).then((def) => {
       if (!alive || !def) return
       useStore.getState().loadApp(appId, def)
       useUi.setState({ viewSize: null, locked: [] })
       useUi.getState().requestFit()
-      // locked environment: no autosave (it would be refused); the banner says so
-      if (!locked) stop = startStudioSession(appId)
     })
+    return () => {
+      alive = false
+    }
+  }, [appId])
+
+  // the canvas, properties and formula bar ignore edits while read-only (locked environment or another editor)
+  useEffect(() => {
+    useStore.getState().setReadOnly(readOnly)
+  }, [readOnly])
+  useEffect(() => () => useStore.getState().setReadOnly(false), [])
+
+  // autosave only while this page may edit; gaining the edit right first reloads the latest saved version
+  const wasReadOnly = useRef<boolean | null>(null)
+  useEffect(() => {
+    if (!loaded) return
+    const before = wasReadOnly.current
+    wasReadOnly.current = readOnly
+    if (readOnly) return
+    let alive = true
+    let stop: (() => void) | null = null
+    const begin = () => {
+      if (alive) stop = startStudioSession(appId)
+    }
+    if (before === true) {
+      void platform.apps.load(appId).then((def) => {
+        if (alive && def && useStore.getState().appId === appId) useStore.getState().replaceDefinition(def)
+        begin()
+      }, begin)
+    } else begin()
     return () => {
       alive = false
       stop?.()
     }
-  }, [appId, locked])
+  }, [appId, readOnly, loaded])
 
   if (loadState === 'missing' || loadState === 'error') {
     return (
@@ -207,16 +238,23 @@ export function Studio({ appId }: { appId: string }) {
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div data-testid="studio-root" className="flex h-full min-w-[900px] flex-col overflow-hidden bg-background text-foreground">
+      <div data-testid="studio-root" data-readonly={readOnly ? 'true' : undefined} className="flex h-full min-w-[900px] flex-col overflow-hidden bg-background text-foreground">
         <CommandBar />
-        {locked && <LockedBanner />}
-        <FormulaBar />
+        {envLocked && <LockedBanner />}
+        <StudioLiveBanner appId={appId} envLocked={envLocked} />
+        <fieldset disabled={readOnly} className="contents" data-testid="studio-formula-bar-wrap">
+          <FormulaBar />
+        </fieldset>
         <div className="flex min-h-0 flex-1">
-          <LeftRail />
+          <fieldset disabled={readOnly} className="contents">
+            <LeftRail />
+          </fieldset>
           <main className="relative min-w-0 flex-1">
             <Canvas />
           </main>
-          <PropertiesPanel />
+          <fieldset disabled={readOnly} className="contents" data-testid="studio-properties-wrap">
+            <PropertiesPanel />
+          </fieldset>
         </div>
         <StatusBar />
         <Preview />

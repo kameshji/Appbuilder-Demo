@@ -20,6 +20,17 @@ export default function appbuilderApiPlugin() {
           (err) => next(err),
         )
     })
+    // the realtime endpoint (WebSocket /api/v1/live) on the same server; Vite's own HMR socket is left alone
+    server.httpServer?.on('upgrade', (req, socket, head) => {
+      const url = req.url ?? ''
+      if (url !== '/api/v1/live' && !url.startsWith('/api/v1/live?')) return
+      getApp().then(
+        (a) => {
+          if (!a.handleUpgrade(req, socket, head)) socket.destroy()
+        },
+        () => socket.destroy(),
+      )
+    })
     server.httpServer?.once('close', () => {
       if (app) app.then((a) => a.close()).catch(() => {})
     })

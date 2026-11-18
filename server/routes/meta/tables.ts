@@ -18,6 +18,7 @@ import {
   resolver, unregisterTable,
 } from './tables-core.ts'
 import { denied } from './util.ts'
+import { formulaInputs } from '../../../src/fx/rowrules.ts'
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -110,6 +111,37 @@ export async function dropColumnFromRoles(s: Services, tableId: string, column: 
 export async function rollbackCreate(s: Services, connector: Connector, def: TableDef): Promise<void> {
   await connector.dropTable(def).catch(() => {})
   await unregisterTable(s, def).catch(() => {})
+}
+
+/** rollup columns of other tables that read `def` ("Orders.Total (rollup)") */
+export function rollupReaders(tables: TableDef[], def: TableDef): string[] {
+  const out: string[] = []
+  for (const t of tables) {
+    if (t.id === def.id) continue
+    for (const c of t.columns) {
+      if (c.computed?.kind === 'rollup' && (c.computed.table.toLowerCase() === def.name.toLowerCase() || c.computed.table === def.id)) out.push(`${t.displayName}.${c.displayName} (rollup)`)
+    }
+  }
+  return out
+}
+
+/** formula columns of the table and rollups of other tables that read the column */
+export function calculatedUsers(tables: TableDef[], def: TableDef, col: ColumnDef): string[] {
+  const out: string[] = []
+  const names = ['id', ...def.columns.map((c) => c.name)]
+  for (const c of def.columns) {
+    if (c.name === col.name || c.computed?.kind !== 'formula') continue
+    const f = c.computed.formula.startsWith('=') ? c.computed.formula : `=${c.computed.formula}`
+    if (formulaInputs(f, names).has(col.name)) out.push(`the formula column ${c.displayName}`)
+  }
+  for (const t of tables) {
+    for (const c of t.columns) {
+      if (c.computed?.kind !== 'rollup') continue
+      const reads = c.computed.table.toLowerCase() === def.name.toLowerCase() || c.computed.table === def.id
+      if (reads && (c.computed.via === col.name || c.computed.column === col.name)) out.push(`the rollup ${t.displayName}.${c.displayName}`)
+    }
+  }
+  return out
 }
 
 /* ------------------------------------------------------------------ routes */
@@ -214,6 +246,13 @@ export function registerTableRoutes(router: Router, s: Services): void {
       if (!pc || !next.columns.some((c) => c.name === pc)) throw invalid(`Column "${String(b.primaryColumn)}" does not exist.`, 'primaryColumn')
       next.primaryColumn = pc
     }
+    // security options of the table (docs/admin/security-model.md): team-owned rows, record sharing
+    for (const k of ['teamOwnership', 'sharing'] as const) {
+      if (b[k] === undefined) continue
+      if (typeof b[k] !== 'boolean') throw invalid(`"${k}" must be true or false.`, k)
+      if (b[k]) next[k] = true
+      else delete next[k]
+    }
     next.modifiedOn = s.now()
     await s.meta.tables.upsert(next)
     s.security.invalidate()
@@ -226,6 +265,8 @@ export function registerTableRoutes(router: Router, s: Services): void {
     const def = await requireTable(s, ctx.params.id)
     const refs = await lookupReferrers(s, def)
     if (refs.length) throw conflict(`"${def.displayName}" is used by lookup columns in: ${refs.map((t) => t.displayName).join(', ')}. Remove those columns first.`)
+    const rollups = rollupReaders(await s.meta.tables.list(), def)
+    if (rollups.length) throw conflict(`"${def.displayName}" is rolled up by: ${rollups.join(', ')}. Remove those rollup columns first.`)
     // default: only the registration goes; the physical table is dropped only on explicit request, and only when
     // Appbuilder created it (a linked table belongs to whoever made it)
     const drop = ctx.query.get('dropSource') === '1' || ctx.query.get('dropSource') === 'true'
@@ -240,7 +281,9 @@ export function registerTableRoutes(router: Router, s: Services): void {
       }
     }
     await unregisterTable(s, def)
-    if ('internals' in s.data) await removeTableAttachments(s as CoreServices, def.id).catch(() => 0)
+    await s.kernel?.tableRemoved(def.id)
+    // attachment records go in this unit of work; their files are deleted by a job after it commits
+    if ('internals' in s.data) await removeTableAttachments(s as CoreServices, def.id)
     await audit(s, ctx, 'table.delete', { name: def.name, dropSource: drop }, def.id)
     return { ok: true }
   }), { auth: 'maker' })
@@ -254,6 +297,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
     const col = buildColumn(bodyObj(ctx) as Partial<ColumnDef>, {
       existing: def.columns, selfName: def.name, resolveTable: await tableResolver(s), now: new Date(),
     })
+    await s.kernel?.checkColumn(def, col)
     const total = col.unique && col.default !== undefined ? await rowCount(connector, def) : 0
     if (total > 1) throw invalid(`A unique column with a default value cannot be added to a table that already has ${total} rows.`, 'unique')
     const next: TableDef = { ...clone(def), columns: [...def.columns, col], modifiedOn: s.now() }
@@ -270,7 +314,9 @@ export function registerTableRoutes(router: Router, s: Services): void {
       throw friendly(e, 'Could not add the column')
     }
     s.security.invalidate()
-    await audit(s, ctx, 'column.add', { table: def.name, column: col.name }, def.id)
+    // formula columns are backfilled and rollups reconciled by jobs (they commit with this change)
+    await s.kernel?.columnChanged(next, null, col)
+    await audit(s, ctx, 'column.add', { table: def.name, column: col.name, ...(col.computed ? { computed: col.computed.kind } : {}) }, def.id)
     return next
   }), { auth: 'maker' })
 
@@ -305,6 +351,10 @@ export function registerTableRoutes(router: Router, s: Services): void {
     if ('lookupTable' in p) merged.lookupTable = p.lookupTable
     if ('prefix' in p) merged.prefix = p.prefix ?? ''
     for (const k of ['multiple', 'accept', 'maxSizeMB'] as const) if (k in p) (merged as unknown as Record<string, unknown>)[k] = p[k]
+    if ('computed' in p) {
+      if (p.computed) merged.computed = p.computed
+      else delete merged.computed
+    }
     // revalidate the merged column through the same rules as a new column
     const checked = buildColumn({ ...merged, name: undefined, displayName: merged.displayName }, {
       existing: def.columns.filter((c) => c.name !== old.name), selfName: def.name, resolveTable: await tableResolver(s), now: new Date(),
@@ -348,12 +398,16 @@ export function registerTableRoutes(router: Router, s: Services): void {
     const columns = [...def.columns]
     columns[idx] = next
     const nextDef: TableDef = { ...clone(def), columns, modifiedOn: s.now() }
+    await s.kernel?.checkColumn(nextDef, next)
+    // an `indexed` change on the default database: the indexes are built by a background job (CREATE INDEX
+    // CONCURRENTLY, no write lock on a big table) instead of inside this request
+    const bgIndex = indexedChanged && !typeChanged && !uniqueChanged && !!s.kernel && (def.connectionId ?? 'conn_default') === 'conn_default'
     // the indexed flag only changes something on PostgreSQL (other connectors keep their own indexes)
     if (indexedChanged && !connector) {
       const c = (await connectorOf(s, def)).connector
       if (c.kind === 'postgres' && c.capabilities.ddl) connector = c
     }
-    if (connector && (typeChanged || uniqueChanged || (indexedChanged && connector.kind === 'postgres'))) {
+    if (connector && (typeChanged || uniqueChanged || (indexedChanged && !bgIndex && connector.kind === 'postgres'))) {
       try {
         await connector.alterColumn(nextDef, old, next)
       } catch (e) {
@@ -362,7 +416,9 @@ export function registerTableRoutes(router: Router, s: Services): void {
     }
     await s.meta.tables.upsert(nextDef)
     s.security.invalidate()
-    await audit(s, ctx, 'column.update', { table: def.name, column: old.name, type: next.type }, def.id)
+    if (bgIndex) await s.kernel!.indexInBackground(nextDef, next)
+    await s.kernel?.columnChanged(nextDef, old, next)
+    await audit(s, ctx, 'column.update', { table: def.name, column: old.name, type: next.type, ...(bgIndex ? { indexedInBackground: true } : {}) }, def.id)
     return nextDef
   }), { auth: 'maker' })
 
@@ -373,6 +429,8 @@ export function registerTableRoutes(router: Router, s: Services): void {
     const col = def.columns.find((c) => c.name === ctx.params.name)
     if (!col) throw new HttpError(404, 'not-found', `Column "${ctx.params.name}" was not found.`)
     if (col.system) throw invalid(`"${col.displayName}" is a system column and cannot be removed.`)
+    const users = calculatedUsers(await s.meta.tables.list(), def, col)
+    if (users.length) throw conflict(`"${col.displayName}" is used by ${users.join(', ')}. Change or remove those first.`)
     const columns = def.columns.filter((c) => c.name !== col.name)
     const next: TableDef = {
       ...clone(def), columns, modifiedOn: s.now(),
@@ -391,6 +449,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
     await s.meta.tables.upsert(next)
     await dropColumnFromRoles(s, def.id, col.name)
     s.security.invalidate()
+    await s.kernel?.columnChanged(next, col, null)
     await audit(s, ctx, 'column.remove', { table: def.name, column: col.name, ...(unmapOnly ? { unmappedOnly: true } : {}) }, def.id)
     return next
   }), { auth: 'maker' })

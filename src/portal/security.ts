@@ -1,5 +1,6 @@
 /** Shared security helpers for the portal: plain-language descriptions of RLS/CLS, effective access of the signed-in user, password strength. */
-import { usePlatform, type AccessScope, type ColumnAccess, type ColumnDef, type RoleDef, type RowCondition, type TableDef, type TablePrivilege } from '@/platform'
+import { usePlatform, type AccessScope, type ColumnAccess, type ColumnDef, type RoleDef, type RowCompare, type RowCondition, type TableDef, type TablePrivilege } from '@/platform'
+import { isRowAny, isRowExists } from '@/platform/contracts'
 
 /* ------------------------------------------------------------------ roles */
 
@@ -11,7 +12,7 @@ export const emptyPrivilege = (table: string): TablePrivilege => ({ table, creat
 
 /* ------------------------------------------------------------------ row filter language */
 
-export const OPS: { value: RowCondition['op']; label: string; needsValue: boolean }[] = [
+export const OPS: { value: RowCompare['op']; label: string; needsValue: boolean }[] = [
   { value: 'eq', label: 'is', needsValue: true },
   { value: 'ne', label: 'is not', needsValue: true },
   { value: 'in', label: 'is one of', needsValue: true },
@@ -24,24 +25,63 @@ export const OPS: { value: RowCondition['op']; label: string; needsValue: boolea
   { value: 'isBlank', label: 'is empty', needsValue: false },
   { value: 'notBlank', label: 'is not empty', needsValue: false },
 ]
-export const opInfo = (op: RowCondition['op']) => OPS.find((o) => o.value === op) ?? OPS[0]
+export const opInfo = (op: RowCompare['op']) => OPS.find((o) => o.value === op) ?? OPS[0]
 export const TOKEN_ME = '@me'
 export const TOKEN_EMAIL = '@myEmail'
-/** operators that accept the "Current user" tokens */
-export const TOKEN_OPS: RowCondition['op'][] = ['eq', 'ne', 'contains', 'startsWith']
+/** operators that accept the user tokens */
+export const TOKEN_OPS: RowCompare['op'][] = ['eq', 'ne', 'contains', 'startsWith']
 
-function valueText(v: RowCondition['value']): string {
-  if (v === TOKEN_ME) return 'the current user'
-  if (v === TOKEN_EMAIL) return "the current user's email"
-  if (Array.isArray(v)) return v.map((x) => String(x)).join(', ')
+/** value tokens a rule may compare with, in plain language (the rule builder offers these) */
+export const TOKENS: { value: string; label: string; list?: boolean }[] = [
+  { value: '@me', label: 'the current user' },
+  { value: '@myEmail', label: "the current user's email" },
+  { value: '@myDepartment', label: "the current user's department" },
+  { value: '@myDepartmentCode', label: "the current user's department code" },
+  { value: '@myDepartmentTree', label: "the current user's department or one below it", list: true },
+  { value: '@myTeams', label: "one of the current user's teams", list: true },
+  { value: '@myManager', label: "the current user's manager" },
+  { value: '@myReports', label: "one of the current user's direct reports", list: true },
+  { value: '@myReportsTree', label: "anyone in the current user's reporting line", list: true },
+]
+export const tokenLabel = (v: string): string | undefined => {
+  const t = TOKENS.find((x) => x.value === v)
+  if (t) return t.label
+  if (v === '@this') return 'this row'
+  if (v.startsWith('@this.')) return `this row's ${v.slice(6)}`
+  const m = /^@(team|department|departmentTree):(.+)$/.exec(v)
+  if (m) return m[1] === 'team' ? `team ${m[2]}` : m[1] === 'department' ? `department ${m[2]}` : `department ${m[2]} or one below it`
+  return undefined
+}
+
+function valueText(v: RowCompare['value']): string {
+  if (typeof v === 'string' && tokenLabel(v)) return tokenLabel(v)!
+  if (Array.isArray(v)) return v.map((x) => (typeof x === 'string' && tokenLabel(x)) || String(x)).join(', ')
   if (v === undefined || v === null) return ''
   return String(v)
 }
 
-/** "Region is West", "Owner is the current user" */
-export function describeCondition(c: RowCondition, columns: ColumnDef[]): string {
-  const col = columns.find((x) => x.name === c.column)
-  const name = col?.displayName ?? c.column
+/** "Region" -> its display name; "Section.Teacher" -> "Section > Teacher" */
+function pathName(column: string, columns: ColumnDef[], tables: TableDef[]): string {
+  const parts = column.split('.')
+  let cols = columns
+  const names: string[] = []
+  for (const p of parts) {
+    const col = cols.find((x) => x.name === p)
+    names.push(col?.displayName ?? p)
+    const target = col?.lookupTable ? tables.find((t) => t.name === col.lookupTable || t.id === col.lookupTable) : undefined
+    cols = target?.columns ?? []
+  }
+  return names.join(' > ')
+}
+
+/** "Region is West", "Owner is the current user", "Section > Teacher is the current user" */
+export function describeCondition(c: RowCondition, columns: ColumnDef[], tables: TableDef[] = []): string {
+  if (isRowAny(c)) return `(${c.any.map((x) => describeCondition(x, columns, tables)).join(' OR ')})`
+  if (isRowExists(c)) {
+    const t = tables.find((x) => x.name === c.exists.table || x.id === c.exists.table)
+    return `a ${t?.displayName ?? c.exists.table} row exists where ${c.exists.where.map((x) => describeCondition(x, t?.columns ?? [], tables)).join(' AND ')}`
+  }
+  const name = pathName(c.column, columns, tables)
   const info = opInfo(c.op)
   if (!info.needsValue) return `${name} ${info.label}`
   const raw = valueText(c.value)
@@ -49,21 +89,45 @@ export function describeCondition(c: RowCondition, columns: ColumnDef[]): string
   return `${name} ${info.label} ${shown}`
 }
 
-export function describeFilter(conds: RowCondition[] | undefined, columns: ColumnDef[]): string {
-  return (conds ?? []).map((c) => describeCondition(c, columns)).join(' AND ')
+export function describeFilter(conds: RowCondition[] | undefined, columns: ColumnDef[], tables: TableDef[] = []): string {
+  return (conds ?? []).map((c) => describeCondition(c, columns, tables)).join(' AND ')
+}
+
+export const SCOPE_ROWS: Record<AccessScope, string> = {
+  none: '', all: '', own: 'the current user owns them',
+  team: 'the current user, a member of one of their teams, or one of those teams owns them',
+  manager: 'the current user or one of their direct reports owns them',
+  managerTree: 'the current user or someone in their reporting line owns them',
+  department: "someone in the current user's department owns them",
+  departmentTree: "someone in the current user's department, or a department below it, owns them",
 }
 
 /** "all rows", "rows where Owner is the current user AND Region is "West"" */
-export function describeRows(scope: AccessScope, conds: RowCondition[] | undefined, columns: ColumnDef[]): string {
+export function describeRows(scope: AccessScope, conds: RowCondition[] | undefined, columns: ColumnDef[], tables: TableDef[] = []): string {
   if (scope === 'none') return 'no rows'
   const parts: string[] = []
-  if (scope === 'own') parts.push('Owner is the current user')
-  const f = describeFilter(conds, columns)
+  if (SCOPE_ROWS[scope]) parts.push(SCOPE_ROWS[scope])
+  const f = describeFilter(conds, columns, tables)
   if (f) parts.push(f)
   return parts.length ? `rows where ${parts.join(' AND ')}` : 'all rows'
 }
 
-export const SCOPE_WORD: Record<AccessScope, string> = { none: 'No access', own: 'Own rows', all: 'All rows' }
+export const SCOPE_WORD: Record<AccessScope, string> = {
+  none: 'No access', own: 'Own rows', team: 'Team', manager: 'Direct reports', managerTree: 'Reporting line',
+  department: 'Department', departmentTree: 'Department tree', all: 'All rows',
+}
+
+/** the scopes a role editor offers, with plain-language descriptions */
+export const SCOPE_OPTIONS: { value: AccessScope; label: string; title: string }[] = [
+  { value: 'none', label: 'None', title: 'No access' },
+  { value: 'own', label: 'Own', title: 'Rows the user owns' },
+  { value: 'team', label: 'Team', title: 'Rows owned by the user, by anyone in one of their teams, or by those teams' },
+  { value: 'manager', label: 'Direct reports', title: 'Rows owned by the user or by someone who reports to them directly' },
+  { value: 'managerTree', label: 'Reporting line', title: 'Rows owned by the user or by anyone below them in the reporting line' },
+  { value: 'department', label: 'Department', title: "Rows owned by anyone in the user's department" },
+  { value: 'departmentTree', label: 'Department tree', title: "Rows owned by anyone in the user's department or a department below it" },
+  { value: 'all', label: 'All', title: 'All rows' },
+]
 
 /* ------------------------------------------------------------------ column access */
 

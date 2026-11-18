@@ -122,7 +122,10 @@ export function Canvas() {
   const screen = app.screens.find((s) => s.id === currentScreenId) ?? app.screens[0]
   const frameW = viewSize?.w ?? app.width
   const frameH = viewSize?.h ?? app.height
-  const readOnly = !!viewSize && (viewSize.w !== app.width || viewSize.h !== app.height)
+  const sizeView = !!viewSize && (viewSize.w !== app.width || viewSize.h !== app.height)
+  // read-only Studio (locked environment, or another maker holds the edit lock): no moving, resizing or drawing
+  const editLocked = useStore((s) => s.readOnly)
+  const readOnly = sizeView || editLocked
 
   /* ---- publish the canvas size as App.Width / App.Height while designing */
   useEffect(() => {
@@ -631,7 +634,7 @@ export function Canvas() {
               {screen.name}{' '}
               <span className="opacity-60">
                 · {frameW} × {frameH}
-                {readOnly ? ` (design ${app.width} × ${app.height})` : ''}
+                {sizeView ? ` (design ${app.width} × ${app.height})` : ''}
               </span>
             </div>
             <div
@@ -760,7 +763,7 @@ export function Canvas() {
         )}
       </div>
 
-      {readOnly && mode === 'design' && (
+      {sizeView && mode === 'design' && (
         <div data-chrome="1" data-testid="viewport-banner" className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-amber-500/40 bg-amber-50 px-3 py-1 text-xs text-amber-900 shadow-sm dark:bg-amber-950 dark:text-amber-100">
           <Eye className="size-3.5" />
           Viewing at {frameW}×{frameH}. Switch to design size to edit.

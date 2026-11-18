@@ -248,6 +248,7 @@ export function ColumnsPanel({ table }: { table: TableDef }) {
                           {c.required && <Badge variant="outline">Required</Badge>}
                           {c.unique && <Badge variant="outline">Unique</Badge>}
                           {c.indexed && <Badge variant="outline">Indexed</Badge>}
+                          {c.computed && <Badge variant="secondary" title={c.computed.kind === 'formula' ? c.computed.formula : `${c.computed.fn} of ${c.computed.table}`}>{c.computed.kind === 'formula' ? 'Formula' : 'Rollup'}</Badge>}
                         </span>
                         <span className="block truncate font-mono text-[11px] text-muted-foreground">{c.name}{c.type === 'choice' && c.choices?.length ? ` · ${c.choices.join(', ')}` : ''}{c.type === 'lookup' && c.lookupTable ? ` · to ${c.lookupTable}` : ''}{(c.type === 'file' || c.type === 'image') ? `${c.multiple ? ' · several' : ' · one'}${c.accept?.length ? ` · ${c.accept.join(', ')}` : ''}${c.maxSizeMB ? ` · max ${c.maxSizeMB} MB` : ''}` : ''}</span>
                       </span>

@@ -167,3 +167,68 @@ errors that name the sub-expression and a rewrite. `WorkspaceState.truncated` on
 unchanged. Parity: 0 mismatches over 870 formulas on PostgreSQL (`docs/dev/query-v2.md` section 15).
 **Status.** Active. Supersedes D10.
 
+
+## D17. Organisation scopes, relationship rules and record sharing compile into the one statement (P0 package F, Nov 2026)
+**Decision.** The organisation (departments as a tree, a manager per user, teams with members and an optional environment) is
+install-wide in schema `ab`. Table privileges gain the scopes `team`, `manager`, `managerTree`, `department`, `departmentTree`
+and a `share` scope; `rowFilter` becomes a small rule AST (compare on a column or a lookup path of at most two hops, `exists` over
+a junction table with exactly one `@this` correlation, `any`) with organisation tokens (`@myDepartment`, `@myTeams`,
+`@myReportsTree`, `@team:<code>` ...). One pure module, `src/platform/orgsec.ts`, builds the predicate for both the server and demo
+mode. Organisation sets and shared row ids are resolved per request (cached 5 s, invalidated on change) into parameter lists;
+lookup paths and junctions become `col IN (SELECT key FROM table WHERE ...)` sub-selects of the same connection, inside the one
+statement of Query v1, v2, writes and counts. Team-owned rows keep the team id in `owner` (no `ownerType` column): user and team
+ids come from disjoint registries, so `own` is unchanged and no data table needs a migration. A share only adds rows for users
+whose role already reads (or updates) the table, like Dataverse. Unresolved tokens and invalid rules fail closed.
+**Why.** The pilot needs "supervisor sees their line, plant manager the plant" and "teacher sees the students of their sections"
+without custom code (master plan section 3.4), and security that search, aggregates and later flows and agents inherit. Lists for
+organisation sets keep every connector and the in-memory evaluators working with no new node type; sub-selects keep relationship
+rules exact and indexable without materialising per-user tables. A rule AST instead of SQL keeps rules portable (solutions name
+tables and codes, not ids) and injection-free.
+**Consequences.** Rules cannot cross connections (such a role grants nothing). Very large sets (a share list of 100,000 rows) travel
+as one array parameter. Lookup values can only point at rows the user can read. The v2 row filter is no longer wrapped in
+`COALESCE` (index use). Measured at 1,000,000 rows: 17-85 ms per scope, 66 ms for a lookup rule, about 0.4 s for a junction rule
+(`docs/dev/security-engine.md`). Demo mode stores the organisation and shares in `workspace.yaml`.
+**Status.** Active.
+
+## D18. Table events, outbox and job queue in PostgreSQL; one mechanism for business logic (P0 package G, Nov 2026)
+
+**Decision.** Server logic of a table is one mechanism, *table events*, defined per environment: before-events run inside the
+write's transaction (SetField, Reject, pushed-down read-only lookups, time budget, ordered), after-events run after commit
+through a durable job queue (at least once, idempotency keys, retries, dead letter). Validation rules, formula columns
+(computed on write and stored) and rollup columns (recomputed from scratch by jobs, reconciled hourly) are built-in uses of
+it. Every data change writes an `ab_outbox` row in the same transaction; a per-table advisory lock makes outbox ids follow
+commit order per table. Jobs and schedules live in `ab_jobs` / `ab_schedules` per environment, claimed with
+`FOR UPDATE SKIP LOCKED` by a worker inside the server process (LISTEN/NOTIFY plus polling, heartbeat and reaper). Cron is
+parsed in-house. Event formulas are Fx evaluated on the server (`createEngine` with event natives); UI functions are refused
+at save time.
+
+**Why.** One durable path for "something changed" serves events, rollups, realtime refresh (package H) and flows (Phase 1)
+without polling or lost events; PostgreSQL gives transactions, SKIP LOCKED and NOTIFY, so no broker is needed for one PC.
+Recomputing rollups under a row lock is correct under concurrency where incremental updates are not.
+
+**Consequences.** Data writes on the default database now always run in a transaction (one more round trip for the outbox
+row; a row lock when a table has formula columns or before-events). Attachment files are deleted by a job after commit (fixes
+the table-delete issue). Tables on other connections get events and outbox rows, but not atomically with their data.
+Indexes of a column marked `indexed` are built in the background with `CREATE INDEX CONCURRENTLY`. Throughput measured at
+770-960 jobs/s for trivial jobs. See `docs/dev/events-and-jobs.md`.
+
+## D19. Realtime over one WebSocket per tab, fed by the outbox; ticks, not data; a soft lock instead of co-editing (P0 package H, Nov 2026)
+
+**Decision.** The server keeps a realtime hub in its own process: one WebSocket per browser tab at `/api/v1/live` (library
+`ws`, MIT, no other dependency), authenticated by the session cookie, with an Origin requirement as its CSRF guard. Clients
+subscribe to topics per environment (`table:<id>`, `user:<me>`, `presence:<scope>`, `env`, `app:<id>`). Table-changed messages
+come from package G's committed outbox rows (the outbox id is the sequence) and never carry values: changed column names the
+subscriber may see, and row ids only for subscribers who may read every row; everyone else gets a "table changed" tick and
+refetches through the secured query path. Forms and saves use optimistic concurrency (`ifModifiedOn`, 409). The Studio gets a
+soft edit lock (first editor, take over) instead of co-editing. In-app notifications live in `ab.notifications`, with
+per-user settings in `ab.user_settings`. Without a socket, clients refresh every 30 seconds. No SSE or long-poll fallback.
+
+**Why.** One connection serves data refresh, notifications, presence and (P3) chat. Evaluating each subscriber's row filters on
+every write would cost a query per subscriber per change; a tick plus a refetch costs one query per affected screen and cannot
+leak rows. Feeding the hub from the outbox means pushes never precede the commit and never miss a committed change. Real
+co-editing of app definitions needs operational transforms or CRDTs over the whole AppDef; a lock is enough for small teams.
+
+**Consequences.** All realtime state is in one process: no horizontal scaling (as for sessions and caches, see the
+architecture limits). A reverse proxy must pass WebSocket upgrades (documented for Caddy and nginx). Measured in the sandbox:
+300 sockets, 50 changes a second for 30 s, every message delivered, p95 37 ms, under half a CPU core. A "table changed" tick
+tells a reader that something in a table changed and when. See `docs/dev/live.md`.

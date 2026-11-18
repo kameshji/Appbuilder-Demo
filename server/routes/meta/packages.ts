@@ -6,6 +6,7 @@
  */
 import type { AppDef } from '../../../src/contracts.ts'
 import type { AppMeta, TableDef } from '../../../src/platform/contracts.ts'
+import type { TableEventInput } from '../../../src/platform/events.ts'
 import { HttpError } from '../../core/contracts.ts'
 import type { Ctx, Connector, ConnectionRecord, Services, UserContext } from '../../core/contracts.ts'
 import {
@@ -94,13 +95,25 @@ export function tablesUsedBy(def: AppDef, tables: TableDef[]): TableDef[] {
 
 /* ------------------------------------------------------------------ export */
 
+/** the table events and validation rules of a table as they travel in a package (ids kept, no times) */
+async function eventsOf(s: Services, tableId: string): Promise<PkgEvent[]> {
+  if (!s.kernel) return []
+  return (await s.kernel.listEvents(tableId)).map((e) => {
+    const { tableId: _t, createdOn: _c, modifiedOn: _m, modifiedBy: _b, ...rest } = e
+    void _t; void _c; void _m; void _b
+    return rest
+  })
+}
+
 export async function tableEntry(s: Services, user: UserContext | null, def: TableDef, includeData: boolean): Promise<Record<string, unknown>> {
   const schema = plainTableDef(def)
-  if (!includeData) return { schema }
+  const events = await eventsOf(s, def.id)
+  // events always travel (an empty list removes the target's events on an upgrade; old packages have no key)
+  if (!includeData) return { schema, events }
   const visible = user ? user.visibleDef(def) : def
   const rows = await queryAll(s, user, def)
   const csv = unparseCsv(visible.columns.map((c) => c.name), rows.map((r) => visible.columns.map((c) => jsonCellToCsv(r[c.name]))))
-  return { schema, csv }
+  return { schema, csv, events }
 }
 
 export async function appEntry(s: Services, id: string): Promise<{ id: string; name: string; description?: string; definition: AppDef }> {
@@ -132,13 +145,49 @@ export function parsePackage(text: unknown, kind: 'appbuilder/app' | 'appbuilder
   return doc
 }
 
-export interface PkgTable { def: TableDef; csv?: string }
+/** a table event in a package (TableEventDef without table and times) */
+export type PkgEvent = TableEventInput & { id?: string }
+export interface PkgTable { def: TableDef; csv?: string; events?: PkgEvent[] }
+
+const EVENT_KEYS = ['name', 'kind', 'timing', 'operations', 'order', 'enabled', 'condition', 'actions', 'message', 'field', 'runAs', 'description'] as const
+function readPkgEvents(v: unknown): PkgEvent[] | undefined {
+  if (v === undefined) return undefined
+  if (!Array.isArray(v)) throw invalid('The "events" of a table in the package must be a list.')
+  return v.map((e) => {
+    if (!isObj(e) || typeof e.name !== 'string') throw invalid('A table event in the package is malformed.')
+    const out: Record<string, unknown> = {}
+    for (const k of EVENT_KEYS) if (e[k] !== undefined) out[k] = e[k]
+    if (typeof e.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(e.id)) out.id = e.id
+    return out as PkgEvent
+  })
+}
+
+/**
+ * Events of the tables an import created (new copies): created with new ids. Events that run as the system are imported
+ * disabled (an administrator reviews and enables them); the warnings say so.
+ */
+export async function importPkgEventsAsCopies(s: Services, list: PkgTable[], map: Map<string, string>, created: TableDef[], by: string | null, warnings: string[]): Promise<void> {
+  if (!s.kernel) return
+  for (const p of list) {
+    if (!p.events?.length) continue
+    const target = created.find((t) => t.id === map.get(p.def.id || p.def.name) || t.name.toLowerCase() === p.def.name.toLowerCase())
+    if (!target) continue
+    for (const e of p.events) {
+      const { id: _id, ...input } = e
+      void _id
+      const system = input.runAs === 'system'
+      await s.kernel.putEvent(target, system ? { ...input, enabled: false } : input, by)
+      if (system) warnings.push(`The table event "${input.name}" of ${target.displayName} runs as the system: it was imported disabled. An administrator can review and enable it.`)
+    }
+  }
+}
 export function readPkgTables(v: unknown, now: string): PkgTable[] {
   if (v === undefined) return []
   if (!Array.isArray(v)) throw invalid('The package "tables" must be a list.')
   return v.map((e) => {
     if (!isObj(e) || !isObj(e.schema)) throw invalid('A table entry in the package has no schema.')
-    return { def: sanitizeTableDef(e.schema, now), ...(typeof e.csv === 'string' ? { csv: e.csv } : {}) }
+    const events = readPkgEvents(e.events)
+    return { def: sanitizeTableDef(e.schema, now), ...(typeof e.csv === 'string' ? { csv: e.csv } : {}), ...(events ? { events } : {}) }
   })
 }
 

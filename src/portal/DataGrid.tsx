@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, ChevronsUpDown, FileDown, FileUp, Lock, Plus, Rows3, Search, Trash2, TriangleAlert, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronsUpDown, Eye, FileDown, FileUp, Lock, Plus, Rows3, Search, Share2, Trash2, TriangleAlert, X } from 'lucide-react'
 import { platform, usePlatform, type ColumnDef, type TableDef } from '@/platform'
 import type { FxRecord } from '@/contracts'
 import { cn } from '@/lib/utils'
@@ -11,7 +11,10 @@ import { CodeDialog, ConfirmDialog, Empty, Field, Segmented, useToast } from './
 import { CellEditor, buildLookups, compareValues, displayText, draftToValue, isNumeric, valueToDraft } from './cells'
 import { TYPE_INFO } from './columnTypes'
 import { AttachmentCell, AttachmentsDialog, isAttachmentCol } from './Attachments'
-import { useMyAccess } from './security'
+import { useCaps, useMyAccess } from './security'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { ShareDialog } from './Share'
+import { WhoCanSeeDialog } from './Explain'
 import { QUERY_FALLBACK_ROW_CAP, columnKind, type QueryPlan } from '@/platform/query'
 import { useQuery } from '@/platform/useQuery'
 
@@ -23,7 +26,7 @@ function AddRowDialog({ open, onOpenChange, table, cols, onAdded, readOnlyCols }
   const { fail, toast } = useToast()
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const lookups = useMemo(() => (open ? buildLookups(cols) : {}), [open, cols])
-  const editable = cols.filter((c) => !c.system && c.type !== 'autonumber' && !isAttachmentCol(c) && !readOnlyCols.has(c.name))
+  const editable = cols.filter((c) => !c.system && !c.computed && c.type !== 'autonumber' && !isAttachmentCol(c) && !readOnlyCols.has(c.name))
   const hasAttach = cols.some((c) => isAttachmentCol(c))
   useEffect(() => {
     if (!open) return
@@ -52,7 +55,7 @@ function AddRowDialog({ open, onOpenChange, table, cols, onAdded, readOnlyCols }
       <DialogContent className="sm:max-w-lg" data-testid="add-row-dialog">
         <DialogHeader>
           <DialogTitle>Add row to {table.displayName}</DialogTitle>
-          <DialogDescription>Fields marked * are required. Autonumber and system columns are filled in for you.{hasAttach ? ' Attach files and images after the row is added.' : ''}</DialogDescription>
+          <DialogDescription>Fields marked * are required. Autonumber, system and calculated columns are filled in for you.{hasAttach ? ' Attach files and images after the row is added.' : ''}</DialogDescription>
         </DialogHeader>
         <form className="grid max-h-[60vh] gap-3 overflow-auto px-0.5 py-0.5" onSubmit={(e) => { e.preventDefault(); save() }}>
           {editable.map((c, i) => (
@@ -162,6 +165,9 @@ export function DataGrid({ table }: { table: TableDef }) {
   const [draft, setDraft] = useState('')
   const [limit, setLimit] = useState(PAGE)
   const [dlg, setDlg] = useState<'add' | 'import' | 'export' | 'delete' | null>(null)
+  const [shareRow, setShareRow] = useState<{ id: string; label: string } | null>(null)
+  const [whoRow, setWhoRow] = useState<string | null>(null)
+  const caps = useCaps()
   const editingRef = useRef(false)
   editingRef.current = editing
 
@@ -225,7 +231,7 @@ export function DataGrid({ table }: { table: TableDef }) {
     gridRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }, [active])
 
-  const isReadonly = (c: ColumnDef) => !!c.system || c.type === 'autonumber' || access.update === 'none' || access.readOnlyColumns.has(c.name)
+  const isReadonly = (c: ColumnDef) => !!c.system || !!c.computed || c.type === 'autonumber' || access.update === 'none' || access.readOnlyColumns.has(c.name)
   const openAttach = (ri: number, c: ColumnDef) => { const id = String(shown[ri]?.__id ?? shown[ri]?.id ?? ''); if (id) setAttach({ rowId: id, col: c }) }
   const refocus = () => requestAnimationFrame(() => gridRef.current?.focus({ preventScroll: true }))
 
@@ -401,7 +407,17 @@ export function DataGrid({ table }: { table: TableDef }) {
                       <td className="sticky left-0 z-[1] border-b border-r border-border bg-card px-2 text-center">
                         <Checkbox checked={sel} onCheckedChange={() => toggleRow(id)} aria-label={`Select row ${ri + 1}`} />
                       </td>
-                      <td className="border-b border-r border-border px-2 text-center text-[11px] tabular-nums text-muted-foreground">{ri + 1}</td>
+                      <td className="border-b border-r border-border p-0 text-center text-[11px] tabular-nums text-muted-foreground">
+                        {(table.sharing || caps.isAdmin) ? (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger className="h-8 w-full px-2 outline-none hover:bg-accent/60 focus-visible:bg-accent" aria-label={`Row ${ri + 1} menu`} data-testid={`row-menu-${id}`}>{ri + 1}</DropdownMenuTrigger>
+                            <DropdownMenuContent align="start">
+                              {table.sharing && <DropdownMenuItem onSelect={() => setShareRow({ id, label: String(row[table.primaryColumn] ?? '') })} data-testid={`row-share-${id}`}><Share2 /> Share...</DropdownMenuItem>}
+                              {caps.isAdmin && <DropdownMenuItem onSelect={() => setWhoRow(id)} data-testid={`row-who-${id}`}><Eye /> Who can see this row?</DropdownMenuItem>}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        ) : <span className="px-2">{ri + 1}</span>}
+                      </td>
                       {cols.map((c, ci) => {
                         const isActive = active?.r === ri && active.c === ci
                         const isEditing = isActive && editing
@@ -481,6 +497,8 @@ export function DataGrid({ table }: { table: TableDef }) {
 
       <AddRowDialog open={dlg === 'add'} onOpenChange={(o) => !o && setDlg(null)} table={table} cols={table.columns} readOnlyCols={access.readOnlyColumns} onAdded={() => setLimit((l) => Math.max(l, PAGE))} />
       {attach && <AttachmentsDialog open onOpenChange={(o) => !o && setAttach(null)} table={table} col={attach.col} rowId={attach.rowId} canEdit={!isReadonly(attach.col)} />}
+      <ShareDialog table={table} rowId={shareRow?.id ?? null} label={shareRow?.label} onOpenChange={(o) => !o && setShareRow(null)} />
+      <WhoCanSeeDialog open={!!whoRow} onOpenChange={(o) => !o && setWhoRow(null)} table={table.id} rowId={whoRow ?? undefined} />
       <CsvImportDialog open={dlg === 'import'} onOpenChange={(o) => !o && setDlg(null)} table={table} />
       <CodeDialog
         open={dlg === 'export'}

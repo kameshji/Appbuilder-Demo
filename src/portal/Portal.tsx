@@ -1,3 +1,5 @@
+import { setChatLive } from '@/chat/live'
+import { NotificationCenter } from './Notifications'
 import { useEffect, useRef, useState } from 'react'
 import { ShieldAlert } from 'lucide-react'
 import { go, routeToHash, type Route } from '@/router'
@@ -172,11 +174,17 @@ function Frame({ route }: { route: Route }) {
 /** The maker portal and the end-user shell: auth gate + shell + the page for `route`. Expects platform.init() to have completed. */
 export function Portal({ route }: { route: Route }) {
   useEffect(() => startChatDockSync(), [])
+  // the chat boundary gets the realtime connection (chat itself is P3)
+  useEffect(() => {
+    setChatLive(platform.live)
+    return () => setChatLive(null)
+  }, [])
   return (
     <TooltipProvider delayDuration={300}>
       <AuthGate>
         <ToastProvider>
           <DataErrorToasts />
+          <NotificationCenter />
           <SearchProvider>
             <Frame route={route} />
           </SearchProvider>

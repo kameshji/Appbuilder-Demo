@@ -5,7 +5,7 @@
  */
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  Activity, Archive, BadgeCheck, ChevronLeft, ChevronRight, FileKey2, Layers, RefreshCw, ScrollText, ShieldHalf, Upload, Users,
+  Activity, Archive, BadgeCheck, ChevronLeft, ChevronRight, FileKey2, GitFork, Layers, ListChecks, Network, RefreshCw, ScrollText, ShieldHalf, Upload, Users, UsersRound, Zap,
   type LucideIcon,
 } from 'lucide-react'
 import { usePlatform, type UserDef } from '@/platform'
@@ -18,20 +18,27 @@ import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { ComingSoon, SoonBadge } from './ComingSoon'
 import { EnvironmentsSection } from './AdminEnvironments'
+import { EventRunsSection, JobsSection } from './AdminJobs'
 import { fetchInstallAuditPage } from './environmentApi'
 import { useCaps } from './security'
 import { Empty, Field, PageHeader, Panel, Segmented, errMsg, fmtDate, fmtRelative } from './kit'
 import { UserAvatar } from './Profile'
 import { fetchAuditPage } from './serverApi'
 import { UsersPanel } from './Users'
+import { DepartmentsSection, OrgChartSection, TeamsSection } from './Organisation'
 
-export type AdminSection = 'environments' | 'users' | 'licences' | 'audit' | 'backups' | 'logs' | 'usage'
+export type AdminSection = 'environments' | 'users' | 'departments' | 'teams' | 'orgchart' | 'licences' | 'audit' | 'jobs' | 'events' | 'backups' | 'logs' | 'usage'
 interface SectionDef { key: AdminSection; label: string; icon: LucideIcon; soon?: boolean }
 export const ADMIN_SECTIONS: SectionDef[] = [
   { key: 'environments', label: 'Environments', icon: Layers },
   { key: 'users', label: 'Users', icon: Users },
+  { key: 'departments', label: 'Departments', icon: Network },
+  { key: 'teams', label: 'Teams', icon: UsersRound },
+  { key: 'orgchart', label: 'Org chart', icon: GitFork },
   { key: 'licences', label: 'Licences', icon: FileKey2 },
   { key: 'audit', label: 'Audit log', icon: ScrollText },
+  { key: 'jobs', label: 'Jobs', icon: ListChecks },
+  { key: 'events', label: 'Events run log', icon: Zap },
   { key: 'backups', label: 'Backups', icon: Archive, soon: true },
   { key: 'logs', label: 'Server logs', icon: ScrollText, soon: true },
   { key: 'usage', label: 'Usage', icon: Activity, soon: true },
@@ -66,8 +73,13 @@ export function AdminConsole({ section }: { section?: string }) {
         <section className="min-w-0" data-testid={`admin-section-${current}`}>
           {current === 'environments' && <EnvironmentsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'users' && <UsersPanel />}
+          {current === 'departments' && <DepartmentsSection />}
+          {current === 'teams' && <TeamsSection />}
+          {current === 'orgchart' && <OrgChartSection />}
           {current === 'licences' && <LicencesSection />}
           {current === 'audit' && <AuditSection />}
+          {current === 'jobs' && <JobsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
+          {current === 'events' && <EventRunsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {(current === 'backups' || current === 'logs' || current === 'usage') && <ComingSoon moduleKey={current} mode="dev" embedded />}
         </section>
       </div>

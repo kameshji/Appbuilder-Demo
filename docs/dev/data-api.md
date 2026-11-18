@@ -247,10 +247,20 @@ Body `{ changes: { [column]: value } }` -> `{ row }`. `changes.id`, if present, 
 - The row must match the caller's update predicate before **and after** the change (`WITH CHECK`); a change that would move it out
   of that predicate is 403 and nothing is written. Leaving the caller's *read* filter is allowed (the row then disappears for them).
 - Writing a column the caller may only read, or an unknown column: 403 / 422 as for insert.
+- **Optimistic concurrency** (optional): `ifModifiedOn` = the row's `modifiedOn` the caller started from (ISO time). When the row
+  was saved since (by anyone), the answer is **409** `{ error: { code: 'conflict', field: 'modifiedOn', message }, current, changedBy? }`:
+  `current` is the row as the caller may see it now (hidden columns left out), `changedBy` `{ id, name }` who saved it last when the
+  server knows. The check runs after the permission checks (a 409 never reveals a row the caller may not change) and the write is
+  guarded by the same version, so two saves racing each other cannot both win. Malformed `ifModifiedOn`: 422. Forms send it.
 
 ```bash
 curl -sS -b $JAR -H "$H" -H "$JSON" -X PATCH -d '{"changes":{"Status":"Closed"}}' $BASE/data/Tickets/rows/3b1f6f7a-2c1e-4c5e-9d3a-0f7c9d2e8a11
+# only if nobody saved it since the version I loaded
+curl -sS -b $JAR -H "$H" -H "$JSON" -X PATCH -d '{"changes":{"Status":"Closed"},"ifModifiedOn":"2026-11-18T09:30:12.345Z"}' $BASE/data/Tickets/rows/3b1f6f7a-2c1e-4c5e-9d3a-0f7c9d2e8a11
 ```
+
+Writes may carry `X-Appbuilder-Live: <connection id>` (the browser's live socket): the resulting `table` message reaches that
+socket marked `self` (see `live.md`).
 
 ### `POST /data/:table/delete` (user)
 
@@ -571,6 +581,70 @@ curl -sS -b $JAR -H "$H" -H 'Content-Type: application/octet-stream' --data-bina
 
 A PHP gateway on shared hosting does not need to implement these: data files are a device-only feature (decision D8) and the
 `files` connection has scope `device`.
+
+## Table events, jobs and schedules
+
+Package G (`server/core/kernel-routes.ts`; design and guarantees in [events-and-jobs.md](events-and-jobs.md)). Types in
+`src/platform/events.ts`.
+
+**Writes and refusals.** Every row write may be refused by a validation rule or a before-event: `422 invalid` with the rule's
+message and `field` = the column it names (the client shows it on that form field and as a toast). A before-event that fails
+or runs over its time budget is a `422` too. Columns with `computed` (formula, rollup) are ignored in `values` / `changes`;
+the stored row in the answer carries their new value (rollups follow a moment later, after commit).
+
+| Route | Level | Body / answer |
+| --- | --- | --- |
+| `GET /tables/:id/events` | maker | `{ items: TableEventDef[] }` |
+| `POST /tables/:id/events` | maker, design | `TableEventInput` -> `{ event }`. 422 with `problems: FormulaProblem[]` for formula errors (`field` = condition or actions). `runAs: "system"` needs an administrator (403) and is audited |
+| `PATCH /tables/:id/events/:eventId` | maker, design | partial `TableEventInput` -> `{ event }`; an event running as system can only be changed by an administrator |
+| `DELETE /tables/:id/events/:eventId` | maker, design | `{ ok: true }` |
+| `POST /tables/:id/events/test` | maker | `{ event, sample, op?, old? }` -> `EventTestResult` (changes, writes it would make, rejection, error, rows read). Nothing is written; reads use the event's identity |
+| `POST /tables/:id/formula/check` | maker | `{ formula, role: condition / validation / formulaColumn / before / after }` -> `{ problems }` |
+| `GET /tables/:id/event-runs?status=&eventId=&limit=&before=` | maker | `{ items: EventRunEntry[] }`, newest first |
+| `GET /admin/jobs?state=&type=&limit=&offset=` | admin | `{ items: JobInfo[], total }`; `state` one of queued, running, succeeded, failed, dead, cancelled, or `active` |
+| `GET /admin/jobs/metrics` | admin | `JobMetrics`: counts per state, depth per type, oldest waiting age, failures in 24 h, dead, running jobs, the worker, outbox backlog, job types |
+| `GET /admin/jobs/:id` | admin | `JobInfo` |
+| `POST /admin/jobs/:id/retry` | admin | failed / dead / cancelled -> queued now, attempts from 0; audited `job.retry` |
+| `POST /admin/jobs/:id/cancel` | admin | queued / failed (or running in this process) -> cancelled; audited `job.cancel` |
+| `GET /admin/schedules` | admin | `{ items: ScheduleInfo[] }` |
+| `POST /admin/schedules`, `PATCH /admin/schedules/:id` | admin | `{ name, cron or intervalSeconds, timeZone, jobType, payload, enabled, misfire }`; 422 for a bad cron, interval, time zone or payload. Built-in schedules can be changed (enabled, timing, payload such as retention `days`) but not deleted |
+| `DELETE /admin/schedules/:id` | admin | custom schedules only |
+| `POST /admin/schedules/:id/run` | admin | enqueue the schedule's job now -> `{ id }` |
+| `GET /admin/event-runs?tableId=&status=&limit=&before=` | admin | run log of the environment |
+
+Solution plans (`POST /solutions/import/plan`, deploy with `plan: true`) list table events as items of kind `event`, and
+`systemEvents` (names) when the package brings new or changed events that run as the system: then only an administrator
+may import, and `POST /solutions/import` answers 409 until `confirm` carries the plan's token (also for an install).
+
+Column definitions (`POST/PATCH /tables/:id/columns`) accept `computed: { kind: "formula", formula }` or
+`{ kind: "rollup", table, via, fn: count | sum | min | max, column? }`; invalid ones are 422 with `field: "computed"`. A column
+read by a formula column or a rollup, or a table read by a rollup, cannot be removed (409). Changing only `indexed` on the
+default database queues an `index.sync` job instead of building the index inside the request.
+
+## Notifications (user)
+
+The signed-in user's in-app notifications (install-wide; usable without an environment unless noted). Items:
+`{ id, kind, title, body, link, environmentId, createdOn, readOn, source, from? }`; `link` is a deep link inside Appbuilder
+(`#...`). New ones and unread counts are also pushed on the live socket (`user:<me>`, see `live.md`).
+
+| Route | Answer |
+| --- | --- |
+| `GET /notifications?limit=30&cursor=&unread=1` | `{ items, nextCursor, unread }`, newest first (keyset paging; `limit` at most 100) |
+| `GET /notifications/unread-count` | `{ unread }` |
+| `POST /notifications/:id/read`, `POST /notifications/read-all` | `{ unread }` |
+| `DELETE /notifications/:id` | `{ unread }`; someone else's or unknown: 404 |
+| `GET /notifications/settings`, `PUT /notifications/settings` | `{ kinds: { [kind]: boolean }, desktop, dnd: { start, end } \| null, hidePresence }` (unknown fields dropped). A kind set to false is not stored for this user at all. |
+| `POST /notifications/send` (environment) | `SendNotification` from apps: body `{ to, title, body?, link?, app? }`; `to` = user id or email of someone who may enter the request's environment (others, and unknown people: 404); title at most 200, body 2,000 characters; `link` must start with `#` (422 otherwise). Rate limit per sender: 30 a minute, 300 an hour (429). Stored with kind `app` and the sender's name. |
+
+```bash
+curl -sS -b $JAR -H "$H" -H "$JSON" -X POST -d '{"to":"bea@example.com","title":"Order 1042 approved","link":"#u-app_0193"}' $BASE/notifications/send
+curl -sS -b $JAR $BASE/notifications?unread=1
+```
+
+## Realtime (WebSocket)
+
+`GET /api/v1/live` with `Upgrade: websocket` (same origin, the session cookie, an `Origin` header naming this origin). The protocol,
+topics, limits and security rules are in `live.md`.
 
 ## Implementing the contract in another backend
 

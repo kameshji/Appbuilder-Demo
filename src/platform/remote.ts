@@ -14,6 +14,7 @@ import { PlatformError } from './contracts'
 import type {
   AccessScope, AppMeta, AttachmentRef, ColumnAccess, ColumnDef, ConnectionRef, DataErrorEvent, DataFileDef,
   DataOp, PlatformApi, RoleDef, Row, Session, SolutionDef, TableDef, UserDef, WorkspaceState,
+  DepartmentDef, ExplainResult, OrgDirectoryInfo, SharesInfo, TeamDef, UserImportResult,
 } from './contracts'
 import { API_BASE, CSRF_HEADER, DEFAULT_ROW_CAP } from './http'
 import type {
@@ -29,6 +30,9 @@ import { coerceValue, defaultValue, formatDate, isBlankValue, uniqueKey, uuid } 
 import type { QueryPlan, QueryV2Response } from './query'
 import { QueryCache, type QueryState } from './query-cache'
 import { rowsFromWire } from './query-wire'
+import { createRemoteLive } from './remote-live'
+import type { RemoteLiveDeps } from './remote-live'
+import type { LivePerson } from './live-protocol'
 
 /** tables with at most this many readable rows are held in memory whole (formulas the server can't run work in the browser) */
 export const SMALL_TABLE_ROWS = 2000
@@ -42,6 +46,8 @@ export interface RemotePlatformOptions {
   staleMs?: number
   /** listen to window focus (default: true when a window exists) */
   reloadOnFocus?: boolean
+  /** realtime connection (tests inject a fake socket); live: false turns it off */
+  live?: RemoteLiveDeps['live'] | false
 }
 
 const SIGNED_OUT: UserDef = { id: '', name: 'Signed out', email: '', roleIds: [] }
@@ -156,13 +162,15 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     ready: false, mode: 'server', setup: { needsDatabase: false, needsAdmin: false }, session: null,
     storage: { kind: 'postgres', location: '' },
     apps: [], tables: [], roles: [], users: [], currentUserId: '', connections: [], solutions: [], dataFiles: [],
-    dataVersion: 0, loading: [], truncated: [], environments: [], environmentId: '',
+    dataVersion: 0, loading: [], truncated: [], environments: [], environmentId: '', departments: [], teams: [],
   }
   const listeners = new Set<() => void>()
   const errorListeners = new Set<(e: DataErrorEvent) => void>()
   let entries = new Map<string, TableEntry>() // by table id
   let initPromise: Promise<void> | null = null
   let seq = 0
+  /** realtime glue (package H); created at the end of this function */
+  let rl: ReturnType<typeof createRemoteLive> | null = null
 
   const emit = () => {
     for (const l of [...listeners]) {
@@ -206,7 +214,11 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     }
     const headers: Record<string, string> = {}
     let body: BodyInit | undefined
-    if (method !== 'GET') headers[CSRF_HEADER] = '1'
+    if (method !== 'GET') {
+      headers[CSRF_HEADER] = '1'
+      // our own writes come back on the live socket marked `self` (already applied here)
+      Object.assign(headers, rl?.liveHeader() ?? {})
+    }
     // every request names the environment it works in (the server checks it against the session)
     Object.assign(headers, environmentHeaders())
     if (o.raw !== undefined) {
@@ -230,16 +242,20 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       let code: PlatformError['code'] | undefined
       let message: string | undefined
       let field: string | undefined
+      let extra: { current?: unknown; changedBy?: unknown } | undefined
       try {
-        const b = (await res.json()) as Partial<ApiError>
+        const b = (await res.json()) as Partial<ApiError> & { current?: unknown; changedBy?: unknown }
         if (b && isObj(b.error)) {
           code = b.error.code
           message = b.error.message
           field = b.error.field
         }
+        if (b && (b.current !== undefined || b.changedBy !== undefined)) extra = { current: b.current, changedBy: b.changedBy }
       } catch { /* not JSON */ }
       const err = new PlatformError(code ?? codeForStatus(res.status), message ?? `The server answered ${res.status}.`)
       if (field) Object.assign(err, { field })
+      // 409 version conflict: the row as it is now and who changed it (package H)
+      if (extra) Object.assign(err, extra)
       if (res.status === 401 && !path.startsWith('/auth/login')) onUnauthenticated()
       throw err
     }
@@ -255,6 +271,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
   /** the session ended (cookie expired / signed out elsewhere): drop rows, tell the UI to show the login */
   function onUnauthenticated() {
     if (state.session === null) return
+    rl?.stop()
     entries = new Map(state.tables.map((d) => [d.id, newEntry(d)]))
     queries.clear()
     setState({ session: null, loading: [], truncated: [] }, true)
@@ -382,7 +399,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     fail('denied', `You are not allowed to ${op} rows in "${def.displayName}".`)
 
   /** own scope can be checked on the client; `all` + RLS filters are left to the server */
-  const rowOk = (scope: AccessScope, row: Row | undefined) => scope === 'all' || (scope === 'own' && (!row || row.owner === null || row.owner === undefined || row.owner === meId()))
+  const rowOk = (scope: AccessScope, row: Row | undefined) => scope === 'all' || (scope === 'own' ? (!row || row.owner === null || row.owner === undefined || row.owner === meId()) : scope !== 'none')
+  // organisation scopes (team, manager, department ...) depend on the directory: the server decides (filtered is set)
 
   function can(tableName: string, op: DataOp, row?: Row): boolean {
     const e = findEntry(tableName)
@@ -435,6 +453,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
   function load(e: TableEntry, o: { quiet?: boolean; force?: boolean } = {}): Promise<void> {
     if (e.loadPromise) return e.loadPromise
     if (e.loaded && !o.force) return Promise.resolve()
+    rl?.trackTable(e.def.id)
     const name = e.def.name
     if (!o.quiet) setState({ loading: setNames(state.loading, name, true) })
     e.loadPromise = (async () => {
@@ -490,11 +509,39 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     recompute(e)
     // cached queries keep the confirmed change, then refetch the server's truth (a refused write simply disappears)
     queriesAfterWrite(e.def.name, apply ? fold : undefined)
+    if (apply) refreshRollupsOf(e.def.name)
     setState({}, true)
+  }
+
+  /**
+   * Rollup columns of other tables that read `child` are updated by the server shortly after a write (job queue):
+   * loaded parent tables are read again a little later (the realtime hub, when connected, also refreshes them).
+   */
+  const rollupTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  function refreshRollupsOf(child: string) {
+    for (const p of entries.values()) {
+      if (!p.loaded || !isCurrent(p)) continue
+      if (!p.def.columns.some((c: ColumnDef) => c.computed?.kind === 'rollup' && c.computed.table.toLowerCase() === child.toLowerCase())) continue
+      const prev = rollupTimers.get(p.def.name)
+      if (prev) clearTimeout(prev)
+      const run = (left: number) => rollupTimers.set(p.def.name, setTimeout(() => {
+        if (p.loaded && isCurrent(p)) load(p, { quiet: true, force: true }).catch(() => {})
+        queriesAfterWrite(p.def.name)
+        if (left > 0) run(left - 1)
+        else rollupTimers.delete(p.def.name)
+      }, left > 0 ? 700 : 2500))
+      run(1)
+    }
   }
   function rollback(e: TableEntry, op: Op, kind: DataErrorEvent['op'], ids: string[], err: unknown) {
     settle(e, op)
     const error = err instanceof PlatformError ? err : new PlatformError('storage', (err as Error)?.message ?? 'The write failed.')
+    if (error.code === 'conflict' && (error as PlatformError & { field?: string }).field === 'modifiedOn') {
+      // a stale save: remember who changed the row and fetch its current state (forms show the conflict dialog)
+      const by = (error as PlatformError & { changedBy?: LivePerson }).changedBy
+      if (by && ids[0]) rl?.noteRowChange(e.def.id, ids[0], by)
+      if (e.loaded && isCurrent(e)) load(e, { quiet: true, force: true }).catch(() => {})
+    }
     if (!firstError) firstError = error
     emitError({ table: e.def.name, op: kind, rowIds: ids, error })
   }
@@ -502,6 +549,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
   /* ------------------------------------------------------------------ workspace load */
 
   function applyWorkspace(ws: WorkspaceResponse, reset = false) {
+    const prevEnvironment = state.environmentId
     if (reset) {
       entries = new Map()
       queries.clear()
@@ -533,10 +581,14 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     }, true)
     for (const e of stale) if (e.loaded && isCurrent(e)) load(e, { quiet: true, force: true }).catch(() => {})
     for (const e of stale) queries.invalidateTable(e.def.name)
+    // realtime: connect once signed in; another environment means other topics
+    if (prevEnvironment && prevEnvironment !== environmentId) rl?.envChanged()
+    rl?.start()
   }
 
   /** signed in with a password an administrator set: only the change-password screen until it is changed */
   function applyPendingSession(session: Session) {
+    rl?.stop()
     entries = new Map()
     queries.clear()
     setState({
@@ -564,16 +616,19 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       throw e
     }
     applyWorkspace(ws, reset)
+    // organisation lists for the admin console and the rule builder (others ask platform.org.directory() on demand)
+    if (ws.session.privileges.isAdmin && (reset || !state.departments.length)) await loadOrg()
   }
   const refresh = () => loadWorkspace(false)
 
   function clearWorkspace() {
+    rl?.stop()
     entries = new Map()
     queries.clear()
     setRequestEnvironment('')
     setState({
       session: null, apps: [], tables: [], roles: [], users: [], connections: [], solutions: [], dataFiles: [], currentUserId: '',
-      loading: [], truncated: [], environments: [], environmentId: '',
+      loading: [], truncated: [], environments: [], environmentId: '', departments: [], teams: [],
     }, true)
   }
 
@@ -695,7 +750,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     return row
   }
 
-  function updateRow(tableName: string, id: string, changes: FxRecord): Row {
+  function updateRow(tableName: string, id: string, changes: FxRecord, opts: { ifVersion?: Date | string | null } = {}): Row {
     const e = needEntry(tableName)
     const def = e.def
     // the full-table cache (small tables) or any query result the row is shown in
@@ -727,7 +782,9 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     const optimistic = e.rows.find((r) => r.id === id) ?? { ...existing!, ...typed, modifiedOn: op.at }
     enqueue(async () => {
       try {
-        const res = await call<RowResponse>('PATCH', `/data/${enc(def.name)}/rows/${enc(id)}`, { json: { changes: payload } })
+        // a form started from a version of the row: a newer save by someone else answers 409 (the form offers reload / keep mine)
+        const ifModifiedOn = opts.ifVersion instanceof Date ? opts.ifVersion.toISOString() : typeof opts.ifVersion === 'string' && opts.ifVersion ? opts.ifVersion : undefined
+        const res = await call<RowResponse>('PATCH', `/data/${enc(def.name)}/rows/${enc(id)}`, { json: { changes: payload, ...(ifModifiedOn ? { ifModifiedOn } : {}) } })
         const saved = rowFromJson(e.def, res.row)
         settle(e, op, () => {
           const i = e.confirmed.findIndex((r) => r.id === id)
@@ -826,8 +883,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
    * `update` is overloaded in the contract: update(tableId, patch) edits the definition (async),
    * update(tableName, rowId, changes) edits a row (sync, optimistic). Dispatched on the second argument.
    */
-  const tablesUpdate = ((a: string, b: unknown, c?: FxRecord) => {
-    if (typeof b === 'string') return updateRow(a, b, c ?? {})
+  const tablesUpdate = ((a: string, b: unknown, c?: FxRecord, d?: { ifVersion?: Date | string | null }) => {
+    if (typeof b === 'string') return updateRow(a, b, c ?? {}, d ?? {})
     return (async () => {
       await call<TableDef>('PATCH', `/tables/${enc(a)}`, { json: b ?? {} })
       await refresh()
@@ -923,8 +980,14 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       }
       await Promise.all(todo)
     },
-    query: (plan, opts) => queries.fetch(plan, opts),
-    queryState: (plan, opts) => queries.get(plan, opts),
+    query: (plan, opts) => {
+      track(plan.table)
+      return queries.fetch(plan, opts)
+    },
+    queryState: (plan, opts) => {
+      track(plan.table)
+      return queries.get(plan, opts)
+    },
     loadMore: (key) => queries.loadMore(key),
     releaseQuery: (owner) => queries.release(owner),
     onQueryChange(listener) {
@@ -1135,6 +1198,74 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     },
   }
 
+  /* ------------------------------------------------------------------ API: organisation and sharing */
+
+  async function loadOrg() {
+    try {
+      const o = await call<{ departments: DepartmentDef[]; teams: TeamDef[] }>('GET', '/org')
+      setState({ departments: o.departments ?? [], teams: o.teams ?? [] })
+    } catch {
+      /* an older server, or no access: the organisation stays empty */
+    }
+  }
+
+  const orgApi: PlatformApi['org'] = {
+    refresh: loadOrg,
+    async createDepartment(input) {
+      const d = await call<DepartmentDef>('POST', '/departments', { json: input })
+      await loadOrg()
+      await refresh()
+      return d
+    },
+    async updateDepartment(id, patch) {
+      await call('PATCH', `/departments/${enc(id)}`, { json: { ...patch, ...('parentId' in patch && !patch.parentId ? { parentId: null } : {}) } })
+      await loadOrg()
+    },
+    async removeDepartment(id) {
+      await call('DELETE', `/departments/${enc(id)}`)
+      await loadOrg()
+      await refresh()
+    },
+    async createTeam(input) {
+      const t = await call<TeamDef>('POST', '/teams', { json: input })
+      await loadOrg()
+      return t
+    },
+    async updateTeam(id, patch) {
+      await call('PATCH', `/teams/${enc(id)}`, { json: { ...patch, ...('environmentId' in patch && !patch.environmentId ? { environmentId: null } : {}) } })
+      await loadOrg()
+    },
+    async removeTeam(id) {
+      await call('DELETE', `/teams/${enc(id)}`)
+      await loadOrg()
+    },
+    async directory() {
+      const o = await call<{ users: OrgDirectoryInfo['users']; teams: OrgDirectoryInfo['teams'] }>('GET', '/org')
+      return {
+        users: (o.users ?? []).filter((u) => (u as { status?: string }).status !== 'disabled').map((u) => ({ id: u.id, name: u.name, email: u.email })),
+        teams: (o.teams ?? []).map((t) => ({ id: t.id, code: t.code, name: t.name })),
+      }
+    },
+    async importUsers(csv, commit) {
+      const res = await call<UserImportResult>('POST', '/users/import', { json: { csv, commit } })
+      if (commit) {
+        await refresh()
+        await loadOrg()
+      }
+      return res
+    },
+    shares: (rowId, table) => call<SharesInfo>('GET', '/shares', { query: { row: rowId, table } }),
+    async share(rowId, principal, access, table) {
+      await call('POST', '/shares', { json: { row: rowId, principal, access: access ?? 'read', ...(table ? { table } : {}) } })
+      return call<SharesInfo>('GET', '/shares', { query: { row: rowId, table } })
+    },
+    async unshare(rowId, principal, table) {
+      await call('POST', '/shares/remove', { json: { row: rowId, principal, ...(table ? { table } : {}) } })
+      return call<SharesInfo>('GET', '/shares', { query: { row: rowId, table } }).catch(() => ({ table: table ?? '', row: rowId, sharing: true, canShare: false, canShareUpdate: false, shares: [] }))
+    },
+    explain: (table, rowId, userId) => call<ExplainResult>('GET', '/security/explain', { query: { table, row: rowId, user: userId } }),
+  }
+
   const connectionsApi: PlatformApi['connections'] = {
     async create(input) {
       const conn = await call<ConnectionRef>('POST', '/connections', { json: input })
@@ -1195,6 +1326,50 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     },
   }
 
+  /* ------------------------------------------------------------------ realtime (package H) */
+
+  /** a table this page reads: its live topic is subscribed (pushes invalidate it) */
+  function track(tableName: string) {
+    const e = findEntry(tableName)
+    if (e) rl?.trackTable(e.def.id)
+  }
+
+  /** rows of a table changed elsewhere: cached queries refetch (rows stay visible), the small-table cache reloads */
+  function invalidateFromRemote(tableId: string) {
+    const e = entries.get(tableId)
+    if (!e || !state.session) return
+    queries.invalidateTable(e.def.name)
+    if (e.loaded && isCurrent(e)) load(e, { quiet: true, force: true }).catch(() => {})
+  }
+
+  if (options.live !== false) {
+    rl = createRemoteLive({
+      call,
+      getState: () => state,
+      setState: (patch) => setState(patch),
+      invalidateTable: invalidateFromRemote,
+      invalidateAll: () => {
+        for (const id of [...entries.keys()]) invalidateFromRemote(id)
+      },
+      refreshWorkspace: () => {
+        refresh().catch(() => {})
+      },
+      async checkSession(code) {
+        try {
+          const s = await call<Session>('GET', '/auth/session')
+          if (s.user.mustChangePassword) {
+            if (!state.session?.user.mustChangePassword) applyPendingSession(s)
+            return false
+          }
+          return code !== 4403
+        } catch {
+          return false // a 401 has already switched the page to the sign-in screen
+        }
+      },
+      live: options.live,
+    })
+  }
+
   return {
     init,
     getState: () => state,
@@ -1216,8 +1391,28 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     attachments: attachmentsApi,
     files: filesApi,
     security: securityApi,
+    org: orgApi,
     connections: connectionsApi,
     solutions: solutionsApi,
     environments: environmentsApi,
+    live: rl ? rl.live : offlineLive(),
+    notifications: rl ? rl.notifications : offlineNotifications(),
   }
+}
+
+/** live: false (tests): a platform without realtime */
+function offlineLive(): PlatformApi['live'] {
+  return {
+    status: () => ({ state: 'off', since: 0 }),
+    onStatus: () => () => {},
+    subscribe: () => () => {},
+    setPresence: () => {},
+    lock: async () => ({ ok: true, holder: null, mine: true }),
+    lastRowChange: () => null,
+    me: () => null,
+  }
+}
+function offlineNotifications(): PlatformApi['notifications'] {
+  const no = () => Promise.reject(new PlatformError('unavailable', 'Notifications are not available.'))
+  return { list: no, markRead: no, remove: no, settings: no, saveSettings: no, send: no, onNotification: () => () => {} }
 }

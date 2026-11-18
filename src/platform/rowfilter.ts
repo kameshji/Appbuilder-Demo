@@ -5,7 +5,8 @@
  * types after coercion are not comparable (eq false, ne true, ordering false).
  */
 import type { FxValue } from '@/contracts'
-import type { RowCondition } from './contracts'
+import type { RowCompare } from './contracts'
+import type { LeafCondition } from './orgsec'
 
 const isBlank = (v: unknown): boolean => v === null || v === undefined || v === ''
 
@@ -39,14 +40,14 @@ function cmp(a: unknown, b: Prim | null | undefined): number | null {
 }
 
 /** resolve '@me' / '@myEmail' tokens */
-export function resolveToken(value: RowCondition['value'], me: { id: string; email: string }): RowCondition['value'] {
+export function resolveToken(value: RowCompare['value'], me: { id: string; email: string }): RowCompare['value'] {
   const one = (v: string | number | boolean) => (v === '@me' ? me.id : v === '@myEmail' ? me.email : v)
   if (Array.isArray(value)) return value.map((v) => one(v) as string | number)
   return value === undefined ? undefined : one(value)
 }
 
 /** does a typed row satisfy one RowCondition for this user? */
-export function matchesCondition(c: RowCondition, row: Record<string, FxValue | undefined>, me: { id: string; email: string }): boolean {
+export function matchesCondition(c: RowCompare, row: Record<string, FxValue | undefined>, me: { id: string; email: string }): boolean {
   const v = row[c.column]
   const value = resolveToken(c.value, me)
   const scalar = (Array.isArray(value) ? undefined : value) as Prim | undefined
@@ -62,6 +63,31 @@ export function matchesCondition(c: RowCondition, row: Record<string, FxValue | 
     case 'in': return Array.isArray(value) && value.some((x) => cmp(v, x) === 0)
     case 'contains': return !isBlank(v) && String(v).toLowerCase().includes(String(scalar ?? '').toLowerCase())
     case 'startsWith': return !isBlank(v) && String(v).toLowerCase().startsWith(String(scalar ?? '').toLowerCase())
+    default: return false
+  }
+}
+
+/**
+ * One leaf of the security Condition AST (src/platform/http.ts) on a typed row: the in-memory twin of the server's
+ * evaluateCondition (server/core/condition.ts) used by demo mode for the predicates of src/platform/orgsec.ts.
+ */
+export function matchesLeaf(c: LeafCondition, row: Record<string, unknown>): boolean {
+  const v = row[c.col]
+  const value = c.value
+  const scalar = (Array.isArray(value) ? undefined : value) as Prim | null | undefined
+  switch (c.op) {
+    case 'isBlank': return isBlank(v)
+    case 'notBlank': return !isBlank(v)
+    case 'eq': return scalar === undefined || scalar === null ? isBlank(v) : cmp(v, scalar) === 0
+    case 'ne': return scalar === undefined || scalar === null ? !isBlank(v) : cmp(v, scalar) !== 0
+    case 'lt': { const r = cmp(v, scalar); return r !== null && r < 0 }
+    case 'le': { const r = cmp(v, scalar); return r !== null && r <= 0 }
+    case 'gt': { const r = cmp(v, scalar); return r !== null && r > 0 }
+    case 'ge': { const r = cmp(v, scalar); return r !== null && r >= 0 }
+    case 'in': return Array.isArray(value) && value.some((x) => x !== null && cmp(v, x) === 0)
+    case 'contains': return !isBlank(v) && String(v).toLowerCase().includes(String(scalar ?? '').toLowerCase())
+    case 'startsWith': return !isBlank(v) && String(v).toLowerCase().startsWith(String(scalar ?? '').toLowerCase())
+    case 'endsWith': return !isBlank(v) && String(v).toLowerCase().endsWith(String(scalar ?? '').toLowerCase())
     default: return false
   }
 }

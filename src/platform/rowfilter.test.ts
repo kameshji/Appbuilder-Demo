@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { matchesCondition } from './rowfilter'
-import type { RowCondition } from './contracts'
+import type { RowCompare as RowCondition } from './contracts'
 
 const me = { id: 'u1', email: 'a@b.c' }
 const m = (op: RowCondition['op'], value: RowCondition['value'], cell: unknown) =>

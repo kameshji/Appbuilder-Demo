@@ -3,6 +3,7 @@
  * value coercion (used for type-change checks), CSV and YAML helpers. Ported from the phase-2 browser
  * implementation (src/platform/values.ts, core.ts) so the server never imports browser modules.
  */
+import { normalizeComputed } from '../../core/table-events.ts'
 import * as yaml from 'js-yaml'
 import Papa from 'papaparse'
 import type { ColumnDef, ColumnType, RoleDef, TableDef } from '../../../src/platform/contracts.ts'
@@ -222,6 +223,12 @@ export function buildColumn(p: Partial<ColumnDef>, o: ColumnBuildOpts): ColumnDe
   if (type === 'autonumber') col.prefix = p.prefix ?? ''
   if (isAttachmentType(type) && col.unique) throw invalid('Attachment columns cannot be unique.', 'unique')
   normalizeAttachmentFields(col, p)
+  // formula and rollup columns (docs/dev/events-and-jobs.md): the shape here, the meaning in kernel.checkColumn
+  const computed = normalizeComputed(p.computed)
+  if (computed) {
+    if (col.required || col.unique || col.default !== undefined) throw invalid(`${displayName} is calculated: it cannot be required, unique or have a default value.`, 'computed')
+    col.computed = computed
+  }
   if (col.default !== undefined && type !== 'lookup') {
     if (isAttachmentType(type)) throw invalid('Attachment columns cannot have a default value.', 'default')
     const d = defaultFor(col, o.now)
@@ -249,6 +256,19 @@ export function sanitizeTableDef(raw: unknown, now: string): TableDef {
     if (type === 'choice') col.choices = Array.isArray(rc.choices) ? rc.choices.map(String) : []
     if (type === 'lookup' && typeof rc.lookupTable === 'string') col.lookupTable = rc.lookupTable
     if (type === 'autonumber') col.prefix = typeof rc.prefix === 'string' ? rc.prefix : ''
+    if (rc.computed !== undefined && rc.computed !== null) {
+      try {
+        const computed = normalizeComputed(rc.computed)
+        if (computed) {
+          col.computed = computed
+          delete col.required
+          delete col.unique
+          delete col.default
+        }
+      } catch {
+        /* a malformed calculated column in a package stays a plain column */
+      }
+    }
     if (isAttachmentType(type)) {
       try {
         normalizeAttachmentFields(col, rc as Partial<ColumnDef>)
@@ -271,6 +291,8 @@ export function sanitizeTableDef(raw: unknown, now: string): TableDef {
     modifiedOn: typeof raw.modifiedOn === 'string' ? raw.modifiedOn : now,
   }
   if (typeof raw.description === 'string' && raw.description) def.description = raw.description
+  if (raw.teamOwnership === true) def.teamOwnership = true
+  if (raw.sharing === true) def.sharing = true
   return def
 }
 

@@ -116,7 +116,16 @@ export const logicFns: FnDef[] = [
     }
     return newGuid()
   }),
-  def('User', 'User()', 'The signed-in user: a record with FullName, Email and Image.', 0, 0, (c) => {
+  def('SharedWith', 'SharedWith(record)', 'The people and teams a row is shared with: a table of Name, Email (blank for teams), Id, Type ("User" or "Team") and Access ("Read" or "Edit"). Empty while loading, for rows of tables without sharing and for rows you cannot read.', 1, 1, (c) => {
+    const rec = c.value(0)
+    if (rec === null) return []
+    if (!isRecord(rec)) return c.fail(0, 'SharedWith needs a row, like SharedWith(Gallery1.Selected)')
+    const id = typeof rec.__id === 'string' ? rec.__id : typeof rec.id === 'string' ? rec.id : ''
+    if (!id) return []
+    const v = hostValue(c, 'SharedWith:' + id)
+    return Array.isArray(v) ? v : []
+  }),
+  def('User', 'User()', 'The signed-in user: a record with FullName, Email, Id, Roles, Department, DepartmentCode, Manager (a record with FullName, Email and Id), JobTitle and Teams (a table of Name, Code and Id).', 0, 0, (c) => {
     const v = hostValue(c, 'User()')
     return v === undefined || v === null ? { FullName: '', Email: '', Image: '' } : v
   }),

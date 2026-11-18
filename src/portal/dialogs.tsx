@@ -209,7 +209,7 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
       }
       const res = kind === 'app'
         ? await platform.apps.importPackage(text)
-        : await platform.solutions.importPackage(text, server ? { filesAs, ...(asCopy ? { asCopy: true } : {}), ...(plan?.mode === 'upgrade' ? { confirm: plan.token } : {}) } : undefined)
+        : await platform.solutions.importPackage(text, server ? { filesAs, ...(asCopy ? { asCopy: true } : {}), ...(plan && (plan.mode === 'upgrade' || plan.systemEvents?.length) ? { confirm: plan.token } : {}) } : undefined)
       const warn = 'warnings' in res && Array.isArray(res.warnings) && res.warnings.length ? ` ${res.warnings.join(' ')}` : ''
       toast(`Imported ${kind} "${'displayName' in res ? res.displayName : res.name}".${warn}`, 'success')
       onOpenChange(false)

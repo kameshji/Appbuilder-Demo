@@ -251,9 +251,10 @@ export class V2Builder {
   where(plan: QueryPlan, rowFilter: Condition | undefined): string {
     const parts: string[] = []
     if (rowFilter && !('const' in rowFilter && rowFilter.const)) {
-      // v1 semantics for row filters, parameters continue in the same list
+      // v1 semantics for row filters, parameters continue in the same list. The parts are ANDed at the top of the WHERE,
+      // where NULL already excludes the row: no COALESCE around it, so the owner, lookup and id indexes stay usable
       const w = buildWhere(this.d, this.def, rowFilter, this.p)
-      parts.push(`COALESCE(${w.sql}, FALSE)`)
+      parts.push(`(${w.sql})`)
     }
     if (plan.filter) parts.push(this.cond(plan.filter))
     if (plan.search && plan.search.text !== '' && plan.search.columns.length) {

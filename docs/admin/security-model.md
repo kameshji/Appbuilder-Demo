@@ -162,6 +162,35 @@ also shows the location only to administrators (others see "Server database").
 - Static files (the web app) are served without the Host check; they contain no data. Requests with `..`, hidden
   (`.`-prefixed), empty or backslash path parts are refused (`server/core/static.ts`).
 
+## Realtime connection (WebSocket)
+
+(`server/core/live/hub.ts`, covered by `server/core/live.integration.test.ts` and `server/core/live/hub.test.ts`; details in
+`docs/dev/live.md`)
+
+- **Same guards as HTTP, plus a required Origin.** The upgrade to `/api/v1/live` passes the same Host and Origin checks as
+  every request, and an `Origin` header is required and must be this origin. This replaces the `X-Appbuilder` header rule
+  (browsers cannot add headers to a WebSocket handshake): a page on another site would send its own Origin, which a script
+  cannot change, so it is refused (cross-site WebSocket hijacking). The session cookie (`SameSite=Strict`, `HttpOnly`) is
+  then checked like on every request; an account that must change its password cannot connect.
+- **Every subscription is checked** against the user's access to the environment it names and to the table, app or scope;
+  the checks run again after every role, user or table change, and subscriptions that are no longer allowed end.
+- **Table messages never carry data**: no values, no hidden column names, and row ids only to people who may read every row
+  of the table; everyone else gets a "table changed" signal and refetches through the normal, secured query.
+- **Ending a session ends its sockets at once**: signing out, changing the password, an administrator disabling or deleting
+  the account or resetting its password close them immediately.
+- **Limits**: 20 sockets per user, 5,000 per server, 200 subscriptions per socket, 16 KB per message, a message-rate limit,
+  a 1 MB outbound buffer (a client that does not read is disconnected), a heartbeat that drops dead connections.
+- **Presence is need-to-know**: avatars go only to people who may run that app (or read that table); "who is online" only to
+  administrators. Anyone can hide their own presence (Settings > Notifications).
+
+## Notifications
+
+- Notifications are per user (`ab.notifications`); the API only ever reads and changes the caller's own.
+- `SendNotification` (and `POST /api/v1/notifications/send`): any signed-in user may notify a person who may enter the same
+  environment, by user id or email; asking for someone outside it answers like an unknown person (no directory probing).
+  Limited to 30 a minute and 300 an hour per sender. Links must be links inside Appbuilder (`#...`), never another site.
+- Disabled accounts receive nothing; a kind a user switched off is not stored for them.
+
 ## Security headers and Content-Security-Policy
 
 All API responses carry `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `X-Frame-Options: SAMEORIGIN`
@@ -238,6 +267,19 @@ with no CSP violation in the console.
   measures) is refused (403), so aggregates cannot leak hidden values or other users' rows. Limits: pages of at most 500 rows, at
   most 5,000 rows without paging, 5,000 groups, a 15 s statement timeout. The v1 query still returns at most **5,000 rows**
   (`DEFAULT_ROW_CAP`); CSV export is capped at 1,000,000 rows. These are performance limits, applied after the user's own filters.
+- **Organisation scopes, relationship rules and shares are part of the same statement** (P0 package F). The sets a
+  scope needs (the user's department members, reporting line, team members, rows shared with them) are worked out on the
+  server for each request from a directory cached for at most 5 seconds and dropped when the organisation or a share
+  changes in this process; they travel as one parameter list. Rules through lookups and related rows become
+  `column IN (SELECT ... FROM <table of the same connection> WHERE ...)` sub-selects inside the query, never SQL text from
+  the rule. The same predicate guards updates and deletes in the database and is checked (WITH CHECK) on the row as it will
+  be written, with the sub-selects answered by the database. Counts, totals, search, CSV export, attachment access and the
+  explainer use it too. On a 1,000,000-row table the first page with an exact count takes 20-400 ms per scope or rule
+  (`docs/dev/security-engine.md`, Performance).
+- **Lookups never reveal rows you cannot read.** Display values of lookups are read by the browser through the normal
+  query, so an unreadable row shows its id only. Writing a lookup value checks that **you can read** the target row; an
+  unreadable row is answered exactly like a missing one ("no row with id ..."), so lookups cannot be used to probe for
+  rows or to link to them (fixed in P0 package F; before, only existence was checked).
 - **CSV exports are neutralised against formula injection** (OWASP): in `GET /tables/:id/csv` and in the download of a
   CSV data file, a text cell starting with `=`, `+`, `-`, `@`, tab or carriage return gets a leading `'`, so a spreadsheet
   shows it as text instead of running it. Plain numbers (`-5`, `+1.5e3`) and number/boolean cells are left as they are
@@ -299,6 +341,9 @@ beyond their role. Web pages the user visits are not trusted.
 | Theft of a database dump | Password hashes, hashed session tokens, encrypted connection secrets (key kept elsewhere) |
 | Uploaded files running script | Sandboxed CSP and `nosniff` on downloads |
 | SQL injection through values and names | Parameters, identifier validation and quoting |
+| A user widening their own access through the organisation (choosing a manager, joining a team, giving rows away) | Departments, managers and organisation fields: install administrators only; teams: administrators; giving a row to a team: only a team of one's own, and the Update rules must still cover the row afterwards |
+| A share opening a table to someone with no access to it | Shares only add rows for users whose role already reads (or updates) the table; never Delete |
+| A rule or token that does not resolve opening rows (no department, a deleted team, a removed column) | Fail closed: an unresolved value never matches; a rule that no longer fits the table makes the role grant nothing |
 
 **Not defended (by design or not yet built):**
 
@@ -321,7 +366,8 @@ beyond their role. Web pages the user visits are not trusted.
 - No TLS by default on localhost, and none at all in the built-in server.
 - No multi-factor sign-in, no single sign-on, no password reset by email (administrators reset passwords; the user must
   then choose a new one).
-- **No rate limiting other than the sign-in throttles and the setup-code limit**: other API calls are not limited; a
+- **No rate limiting other than the sign-in throttles, the setup-code limit, SendNotification and the realtime
+  connection limits**: other API calls are not limited; a
   signed-in user can send as many requests as the PC can handle. The per-email sign-in brake can be triggered by anyone
   who knows an email (see [Sign-in throttle](#sign-in-throttle)).
 - Row filters are checked on writes too: a new row must match the filter of a role that grants Create, and a changed
@@ -338,7 +384,17 @@ beyond their role. Web pages the user visits are not trusted.
 - The Content-Security-Policy allows inline style (not inline script).
 - Anyone who may open an app can read its definition.
 - Rows of linked tables that existed before linking have no owner until an administrator assigns one.
+- The organisation directory and shares are cached per server process for at most 5 seconds: a change made by another
+  server process, or directly in the database, applies within that time (changes through this server apply at once).
+- Any signed-in user can list the names and emails of active users and the teams of the environment (`GET /api/v1/org`,
+  for share pickers), and the names of the people a row they can read is shared with.
+- Rules can only use tables of the same connection; tables on data files and Google Sheets cannot use lookup or
+  related-rows rules (such a role grants nothing).
 - No built-in backup, no integrity check of the workspace.
+- Realtime state (subscriptions, presence, Studio locks) lives in the one server process. The Studio lock is a soft lock:
+  without a live connection it cannot be checked (the Studio then says so and the last save wins). A "table changed"
+  signal reveals to anyone who may read a table that something in it changed and when (not what).
+- In-app notifications cannot be recalled by the sender; there is no email or WhatsApp delivery yet.
 
 ## Evidence
 
@@ -351,6 +407,10 @@ beyond their role. Web pages the user visits are not trusted.
 | Session cookie flags and 7-day expiry | **Run** (curl `Set-Cookie`); `Secure` with `APPBUILDER_SECURE_COOKIE` / trusted proxy: tests `hardening.test.ts`, `hardening.integration.test.ts` |
 | Setup only from loopback, setup code, setup locked after the admin / while the database is unreachable | Tests: `hardening.test.ts` (a LAN client with `Host: localhost` gets 403), `hardening.integration.test.ts` |
 | Anonymous `/status` without database details | Tests: `integration.test.ts`, `hardening.integration.test.ts` |
+| WebSocket upgrade needs this Origin, an allowed Host and a session; forced password change refused | Test: `live.integration.test.ts` ("upgrade: Origin is required ...", "logout, password change and disabling ...") |
+| A restricted user's socket never receives a hidden column name or a foreign row id | Tests: `live/hub.test.ts` (leak rule), `live.integration.test.ts` ("LEAK: ..."); run: `scripts/docs-shots/live.mjs` (three browsers, frames inspected) |
+| Socket limits, rate limit, slow consumer dropped | Test: `live.integration.test.ts` ("limits ...", "inbound rate limit ...", "slow consumer ...") |
+| Stale save answers 409 without revealing hidden columns | Test: `live.integration.test.ts` ("a stale save answers 409 ...") |
 | Forced password change (`password_change_required`) | Tests: `hardening.test.ts` (router), `hardening.integration.test.ts`, `routes/meta/hardening.test.ts`; run in headless Chrome |
 | Per-email login backoff | Test: `hardening.test.ts` |
 | Re-link refused (also through a second connection), linked tables never dropped, columns only unmapped | Tests: `routes/meta/connections.test.ts`, `routes/meta/hardening.test.ts`, `hardening.integration.test.ts` (PostgreSQL) |

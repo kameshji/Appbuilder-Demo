@@ -20,9 +20,12 @@ export interface SubmitPlan {
 
 export class SubmitError extends Error {
   stage: 'write' | 'upload'
-  constructor(stage: 'write' | 'upload', message: string) {
+  /** the column a server refusal names (validation rule, Reject in a table event) */
+  field?: string
+  constructor(stage: 'write' | 'upload', message: string, field?: string) {
     super(message)
     this.stage = stage
+    if (field) this.field = field
   }
 }
 
@@ -33,7 +36,8 @@ export async function finishSubmit(deps: SubmitDeps, plan: SubmitPlan): Promise<
   try {
     await deps.flush()
   } catch (e) {
-    throw new SubmitError('write', msg(e))
+    const field = (e as { field?: unknown } | null)?.field
+    throw new SubmitError('write', msg(e), typeof field === 'string' ? field : undefined)
   }
   let uploaded = 0
   for (const group of plan.files) {

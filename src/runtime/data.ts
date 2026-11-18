@@ -134,8 +134,9 @@ export const tables = {
   insert(name: string, values: FxRecord): Row {
     return platform.tables.insert(name, writableValues(values))
   },
-  update(name: string, id: string, changes: FxRecord): Row {
-    return platform.tables.update(name, id, writableValues(changes))
+  /** ifVersion: the row's modifiedOn the caller started from (a Form): a newer save by someone else answers 409 */
+  update(name: string, id: string, changes: FxRecord, opts?: { ifVersion?: Date | string | null }): Row {
+    return opts?.ifVersion ? platform.tables.update(name, id, writableValues(changes), { ifVersion: opts.ifVersion }) : platform.tables.update(name, id, writableValues(changes))
   },
   delete(name: string, ids: string[]) {
     platform.tables.delete(name, ids)
@@ -229,5 +230,79 @@ export function subscribeQueries(fn: () => void): () => void {
   qListeners.add(fn)
   return () => {
     qListeners.delete(fn)
+  }
+}
+
+/* ------------------------------------------------------------------ record sharing (SharedWith, Share, Unshare) */
+
+const sharedWith = new Map<string, { rows: FxRecord[]; loading: boolean }>()
+
+function bumpQueryDeps(deps: string[]) {
+  qVersion++
+  qLog.push({ v: qVersion, deps })
+  if (qLog.length > 1000) qLog.shift()
+  for (const l of [...qListeners]) l()
+}
+
+/** SharedWith(record): the cached shares of a row; the first call loads them (formulas re-evaluate on arrival) */
+export function sharedWithRows(rowId: string): FxRecord[] {
+  const hit = sharedWith.get(rowId)
+  if (hit) return hit.rows
+  sharedWith.set(rowId, { rows: [], loading: true })
+  void loadShares(rowId)
+  return []
+}
+
+async function loadShares(rowId: string): Promise<void> {
+  let rows: FxRecord[] = []
+  try {
+    const info = await platform.org.shares(rowId)
+    const users = new Map((await platform.org.directory().catch(() => ({ users: [], teams: [] }))).users.map((u) => [u.id, u]))
+    rows = info.shares.map((s) => ({
+      Name: s.principalName ?? s.principalId,
+      Email: s.principalType === 'user' ? (users.get(s.principalId)?.email ?? '') : '',
+      Id: s.principalId,
+      Type: s.principalType === 'team' ? 'Team' : 'User',
+      Access: s.access === 'update' ? 'Edit' : 'Read',
+    }))
+  } catch {
+    rows = []
+  }
+  sharedWith.set(rowId, { rows, loading: false })
+  bumpQueryDeps([`q:sw:${rowId}`])
+}
+
+const shareErrorListeners = new Set<(message: string) => void>()
+/** Share / Unshare failures (they finish after the behaviour formula): the app store shows them */
+export function subscribeShareErrors(fn: (message: string) => void): () => void {
+  shareErrorListeners.add(fn)
+  return () => {
+    shareErrorListeners.delete(fn)
+  }
+}
+
+/** Share / Unshare from formulas: run, then refresh the row's SharedWith; failures go to the listeners */
+export async function changeShare(rowId: string, principal: string, access: 'read' | 'update' | null): Promise<void> {
+  try {
+    if (access) await platform.org.share(rowId, principal, access)
+    else await platform.org.unshare(rowId, principal)
+  } catch (e) {
+    const message = `${access ? 'Share' : 'Unshare'}: ${errorMessage(e)}`
+    for (const l of [...shareErrorListeners]) l(message)
+  }
+  await loadShares(rowId)
+}
+
+/**
+ * SendNotification(user, title, body, link) from formulas (package H): sent through the platform (server: POST
+ * /api/v1/notifications/send, rate-limited, only to people in this environment). It finishes after the behaviour
+ * formula; a failure is shown like a Share failure (the app store's toast).
+ */
+export async function sendNotification(input: { to: string; title: string; body?: string; link?: string; app?: string }): Promise<void> {
+  try {
+    await platform.notifications.send(input)
+  } catch (e) {
+    const message = `SendNotification: ${errorMessage(e)}`
+    for (const l of [...shareErrorListeners]) l(message)
   }
 }

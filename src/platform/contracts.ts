@@ -7,6 +7,8 @@
 import type { AppDef, FxRecord, FxValue } from '../contracts.ts'
 import type { QueryPlan } from './query.ts'
 import type { QueryOptions, QueryState } from './query-cache.ts'
+import type { ComputedColumn } from './events.ts'
+import type { LiveApi, LiveStatus, NotificationsApi } from './live-api.ts'
 
 /* ------------------------------------------------------------------ storage */
 
@@ -69,6 +71,11 @@ export interface ColumnDef {
   accept?: string[]
   /** type 'file' / 'image': per-file limit in MB (server default 25) */
   maxSizeMB?: number
+  /**
+   * server mode: the server computes and stores the value (formula column or rollup; see src/platform/events.ts). Such a
+   * column is read-only for everyone; writes to it are ignored.
+   */
+  computed?: ComputedColumn
 }
 
 export interface TableDef {
@@ -100,6 +107,10 @@ export interface TableDef {
    * have. Such a table is read-only and no query references these columns.
    */
   missingSystem?: string[]
+  /** rows may be owned by a team (the owner column then holds a team id); docs/admin/security-model.md */
+  teamOwnership?: boolean
+  /** record sharing is on: owners (and roles with the share privilege) may share single rows */
+  sharing?: boolean
 }
 
 /**
@@ -124,20 +135,47 @@ export interface AppMeta {
 
 /* ------------------------------------------------------------------ security */
 
-export type AccessScope = 'none' | 'own' | 'all'
+/**
+ * Which rows a privilege covers. none < own < (organisation scopes) < all. Organisation scopes (server and demo mode,
+ * src/platform/orgsec.ts) compare the row's `owner` with sets derived from the organisation model:
+ *  - team: rows owned by the user, by a member of one of the user's teams, or by one of those teams;
+ *  - manager: rows owned by the user or a direct report; managerTree: the user or anyone below them in the reporting line;
+ *  - department: rows owned by a user of the user's department; departmentTree: that department and every one below it.
+ */
+export type AccessScope = 'none' | 'own' | 'team' | 'manager' | 'managerTree' | 'department' | 'departmentTree' | 'all'
+/** the organisation scopes (owner compared with an organisation-derived set) */
+export const ORG_SCOPES = ['team', 'manager', 'managerTree', 'department', 'departmentTree'] as const
 
 /** Column-level security for one column within one role: none = hidden, read = visible but not writable, update = full. */
 export type ColumnAccess = 'none' | 'read' | 'update'
 
 /**
- * Row-level security condition (structured, never SQL text). Value tokens resolved on the server:
- * '@me' = current user id, '@myEmail' = current user's email. All conditions of one privilege are ANDed.
+ * Row-level security rule (structured, never SQL text): a small AST of three node kinds. All entries of a privilege's
+ * `rowFilter` are ANDed. See docs/admin/security-model.md and src/platform/orgsec.ts for the semantics.
+ *
+ *  - compare: `column` is a column of the table, or a path through lookup columns ("Section.Teacher", at most two
+ *    hops: "Enrolment.Section.Teacher" inside an exists). A path condition holds when the referenced row exists and
+ *    matches. `value` may be a literal or a token (resolved per request for the current user):
+ *      @me, @myEmail, @myDepartment (department id), @myDepartmentCode, @myManager (user id),
+ *      @myDepartmentTree, @myTeams, @myReports, @myReportsTree (lists: `eq` means "is one of", `ne` "is none of"),
+ *      @team:<code>, @department:<code> (ids of a named team / department; stable across installs),
+ *      @departmentTree:<code> (list), and inside an exists: @this (the outer row's id), @this.<Column>.
+ *    A comparison with a token the user has no value for (no department, no manager) never matches.
+ *  - exists: some row of `table` matches every condition of `where` (a junction table, e.g. Enrolment where
+ *    Student = @this and Section.Teacher = @me). Exactly one condition must correlate with the outer row (@this...).
+ *  - any: at least one of the conditions holds (OR group).
  */
-export interface RowCondition {
+export type RowCondition = RowCompare | RowExists | RowAny
+export interface RowCompare {
   column: string
   op: 'eq' | 'ne' | 'in' | 'contains' | 'startsWith' | 'lt' | 'le' | 'gt' | 'ge' | 'isBlank' | 'notBlank'
   value?: string | number | boolean | Array<string | number>
 }
+export interface RowExists { exists: { table: string; where: RowCondition[] } }
+export interface RowAny { any: RowCondition[] }
+export const isRowExists = (c: RowCondition): c is RowExists => !!c && typeof c === 'object' && 'exists' in c
+export const isRowAny = (c: RowCondition): c is RowAny => !!c && typeof c === 'object' && 'any' in c
+export const isRowCompare = (c: RowCondition): c is RowCompare => !!c && typeof c === 'object' && 'column' in c
 
 export interface TablePrivilege {
   /** table id */
@@ -150,6 +188,11 @@ export interface TablePrivilege {
   columns?: Record<string, ColumnAccess>
   /** RLS: extra conditions a row must meet for this role's read/update/delete scope to apply. */
   rowFilter?: RowCondition[]
+  /**
+   * Record sharing: which rows this role may share with other users and teams (the row's owner may always share
+   * it when the table has sharing on). Absent = none. The same rowFilter applies.
+   */
+  share?: AccessScope
 }
 export interface RoleDef {
   id: string
@@ -182,6 +225,57 @@ export interface UserDef {
   isInstallAdmin?: boolean
   /** server mode: the environment the user last switched to (remembered on the user record) */
   lastEnvironmentId?: string
+  /** organisation (install-wide, docs/admin/organisation.md): department id */
+  departmentId?: string
+  /** user id of the direct manager */
+  managerId?: string
+  jobTitle?: string
+  phone?: string
+  employeeCode?: string
+  /** resolved organisation facts for User() (computed, read-only; present on the session user) */
+  org?: UserOrgInfo
+}
+
+/** what User() exposes about the organisation (computed from the directory) */
+export interface UserOrgInfo {
+  department?: { id: string; code: string; name: string }
+  manager?: { id: string; name: string; email: string }
+  teams: { id: string; code: string; name: string }[]
+}
+
+/** A department (install-wide tree; schema ab.departments). `code` is stable and used by rules and solutions. */
+export interface DepartmentDef {
+  id: string
+  code: string
+  name: string
+  parentId?: string
+  description?: string
+}
+
+/**
+ * A team (install-wide; schema ab.teams): a named group of users that can own rows and receive shares. A team with an
+ * `environmentId` only counts in that environment; without one it counts in every environment.
+ */
+export interface TeamDef {
+  id: string
+  code: string
+  name: string
+  description?: string
+  environmentId?: string
+  memberIds: string[]
+}
+
+/** One record share (per environment, ab_shares): the row is shared with a user or a team for read or read+update. */
+export interface ShareDef {
+  tableId: string
+  rowId: string
+  principalType: 'user' | 'team'
+  principalId: string
+  access: 'read' | 'update'
+  sharedBy?: string
+  sharedOn?: string
+  /** display name of the principal (filled by list calls) */
+  principalName?: string
 }
 
 /**
@@ -204,6 +298,8 @@ export interface EffectivePrivileges {
     columns: Record<string, ColumnAccess>
     /** true when at least one granting role carries a rowFilter (the client cannot fully mirror RLS) */
     filtered: boolean
+    /** share privilege (absent = none); sharing must also be on for the table */
+    share?: AccessScope
   }>
   apps: string[] | 'all'
 }
@@ -354,6 +450,13 @@ export interface WorkspaceState {
   /** environments the user can open and the selected one (every request carries it, X-Appbuilder-Environment) */
   environments: EnvironmentDef[]
   environmentId: string
+  /** unread in-app notifications of the signed-in user (package H; absent before they are known) */
+  unread?: number
+  /** realtime connection state (package H): 'open' pushes arrive, 'degraded' periodic refetch, 'off' signed out */
+  live?: LiveStatus
+  /** organisation (install-wide): departments and teams. Server mode: full for administrators, names for others */
+  departments: DepartmentDef[]
+  teams: TeamDef[]
 }
 
 export type { QueryOptions, QueryState } from './query-cache.ts'
@@ -402,7 +505,7 @@ export interface PlatformApi {
 
   tables: {
     create(input: { displayName: string; name?: string; description?: string; columns?: Partial<ColumnDef>[]; connectionId?: string }): Promise<TableDef>
-    update(id: string, patch: Partial<Pick<TableDef, 'displayName' | 'description' | 'primaryColumn'>>): Promise<void>
+    update(id: string, patch: Partial<Pick<TableDef, 'displayName' | 'description' | 'primaryColumn' | 'teamOwnership' | 'sharing'>>): Promise<void>
     /** dropSource (server mode, default false): also drop the physical table; only for tables Appbuilder created (`managed`) */
     remove(id: string, opts?: { dropSource?: boolean }): Promise<void>
     addColumn(tableId: string, col: Partial<ColumnDef> & { displayName: string; type: ColumnType }): Promise<ColumnDef>
@@ -424,7 +527,11 @@ export interface PlatformApi {
      * required/unique/type violations. Values are coerced to the column types.
      */
     insert(tableName: string, values: FxRecord, opts?: { secure?: boolean }): Row
-    update(tableName: string, id: string, changes: FxRecord, opts?: { secure?: boolean }): Row
+    /**
+     * opts.ifVersion (server mode; package H): the row's modifiedOn the caller started from. The server refuses a stale
+     * save with 409 (DataErrorEvent error code 'conflict', field 'modifiedOn'): someone else saved the row in between.
+     */
+    update(tableName: string, id: string, changes: FxRecord, opts?: { secure?: boolean; ifVersion?: Date | string | null }): Row
     delete(tableName: string, ids: string[], opts?: { secure?: boolean }): void
     /** re-read the CSV from storage */
     reload(tableName: string): Promise<void>
@@ -511,6 +618,11 @@ export interface PlatformApi {
   /** subscribe to rolled-back writes (server mode). Returns unsubscribe. */
   onDataError(listener: (e: DataErrorEvent) => void): () => void
 
+  /** realtime (package H, docs/dev/live.md): topics, presence, Studio locks. Demo mode: between tabs of this browser. */
+  live: LiveApi
+  /** in-app notifications of the signed-in user (package H) */
+  notifications: NotificationsApi
+
   attachments: {
     /** upload a file for a 'file'/'image' column of a row (the row must exist; uploading needs update access to that column) */
     upload(tableName: string, column: string, rowId: string, file: File): Promise<AttachmentRef>
@@ -548,6 +660,32 @@ export interface PlatformApi {
     removeUser(id: string): Promise<void>
   }
 
+  /**
+   * Organisation (docs/admin/organisation.md) and record sharing. Server mode: /api/v1/org, /departments, /teams,
+   * /users/import, /shares, /security/explain. Demo mode: the same rules over the browser workspace.
+   */
+  org: {
+    /** reload departments and teams into the state */
+    refresh(): Promise<void>
+    createDepartment(input: Omit<DepartmentDef, 'id'>): Promise<DepartmentDef>
+    updateDepartment(id: string, patch: Partial<Omit<DepartmentDef, 'id'>>): Promise<void>
+    removeDepartment(id: string): Promise<void>
+    createTeam(input: Omit<TeamDef, 'id'>): Promise<TeamDef>
+    updateTeam(id: string, patch: Partial<Omit<TeamDef, 'id'>>): Promise<void>
+    removeTeam(id: string): Promise<void>
+    /** people and teams for pickers (any signed-in user) */
+    directory(): Promise<OrgDirectoryInfo>
+    /** CSV of users: preview (commit false) or import all-or-nothing (commit true; new users get one-time passwords) */
+    importUsers(csv: string, commit: boolean): Promise<UserImportResult>
+    /** shares of one row (table optional: found among the tables with sharing on) */
+    shares(rowId: string, table?: string): Promise<SharesInfo>
+    /** principal: a user id or email, or a team id or code; access read (default) or update */
+    share(rowId: string, principal: string, access?: 'read' | 'update', table?: string): Promise<SharesInfo>
+    unshare(rowId: string, principal: string, table?: string): Promise<SharesInfo>
+    /** administrators: who can read, update, delete the row and why */
+    explain(table: string, rowId: string, userId?: string): Promise<ExplainResult>
+  }
+
   connections: {
     /** secret: password (postgres, mysql) or service-account key JSON text (gsheets); stored encrypted on the server */
     create(input: { name: string; connector: ConnectorKind; settings?: Record<string, string>; secret?: string }): Promise<ConnectionRef>
@@ -579,8 +717,45 @@ export interface PlatformApi {
   }
 }
 
+export interface OrgDirectoryInfo {
+  users: { id: string; name: string; email: string }[]
+  teams: { id: string; code: string; name: string }[]
+}
+export interface SharesInfo {
+  table: string
+  row: string
+  sharing: boolean
+  canShare: boolean
+  canShareUpdate: boolean
+  shares: ShareDef[]
+}
+export interface ExplainResult {
+  users: { userId: string; name: string; email: string; read: string[]; update: string[]; delete: string[] }[]
+}
+export interface UserImportRow {
+  line: number
+  action: 'create' | 'update' | 'error'
+  name: string
+  email: string
+  department?: string
+  manager?: string
+  jobTitle?: string
+  roles?: string[]
+  errors: string[]
+}
+export type UserImportResult =
+  | { preview: UserImportRow[]; ok: boolean; unknownColumns: string[] }
+  | { created: { email: string; name: string; temporaryPassword: string }[]; updated: number }
+
 /** Convenience for formulas: User() record. */
 export function userRecord(u: UserDef, roles: RoleDef[]): FxRecord {
   const names: FxValue[] = roles.filter((r) => u.roleIds.includes(r.id)).map((r) => ({ Value: r.name }))
-  return { FullName: u.name, Email: u.email, Id: u.id, Roles: names }
+  const o = u.org
+  const manager: FxValue = o?.manager ? { FullName: o.manager.name, Email: o.manager.email, Id: o.manager.id } : null
+  const teams: FxValue[] = (o?.teams ?? []).map((t) => ({ Name: t.name, Code: t.code, Id: t.id }))
+  return {
+    FullName: u.name, Email: u.email, Id: u.id, Roles: names,
+    Department: o?.department?.name ?? null, DepartmentCode: o?.department?.code ?? null,
+    Manager: manager, JobTitle: u.jobTitle ?? null, Teams: teams,
+  }
 }

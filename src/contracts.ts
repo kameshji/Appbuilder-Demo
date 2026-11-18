@@ -115,6 +115,12 @@ export interface FxHost {
   exit(): void
   /** Refresh(Table): reload a table from storage */
   refresh(source: string): void
+  /** Share(record, userOrTeam, access): share one row (asynchronous; failures are notified) */
+  share?(rowId: string, principal: string, access: 'read' | 'update'): void
+  /** Unshare(record, userOrTeam) */
+  unshare?(rowId: string, principal: string): void
+  /** SendNotification(user, title, body, link): an in-app notification to a person in this environment (asynchronous) */
+  sendNotification?(to: string, title: string, body: string, link: string): void
 }
 
 export interface FxFunctionDoc {

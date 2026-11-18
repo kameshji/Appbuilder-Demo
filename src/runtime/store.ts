@@ -18,7 +18,7 @@ import {
 } from './util'
 import {
   currentUserId, dataVersion, ensureQueryFeed, ensureTablesLoaded, errorMessage, isTable, platformState, queryVersion, subscribePlatform,
-  subscribeDataErrors, subscribeQueries,
+  subscribeDataErrors, subscribeQueries, subscribeShareErrors,
 } from './data'
 
 setAutoFreeze(false)
@@ -70,6 +70,12 @@ export interface StudioState {
   runSurface: boolean
   /** this store's evaluator cache (never shared between stores) */
   evSlot: EvaluatorSlot
+  /**
+   * the Studio shows the app read-only (a locked production environment, or another maker holds the edit lock):
+   * every design edit (and undo/redo) is ignored, so nothing local can drift from what is saved (package H)
+   */
+  readOnly: boolean
+  setReadOnly(on: boolean): void
 
   /** trace / error output of this store (the run window forwards it to the Studio) */
   subscribeLog(fn: (entries: TraceEntry[]) => void): () => void
@@ -201,6 +207,7 @@ export function createAppStore(opts: { run?: boolean } = {}) {
 
     /** apply an edit to `app`, recording one undo step (or coalescing into the previous one with the same key) */
     const mutate = (fn: (app: AppDef, s: StudioState) => void, key?: string) => {
+      if (get().readOnly) return
       set((s) => {
         const before = original(s.app) as AppDef
         fn(s.app, s as StudioState)
@@ -289,7 +296,9 @@ export function createAppStore(opts: { run?: boolean } = {}) {
           const message = errorMessage(e)
           const upload = e instanceof SubmitError && e.stage === 'upload'
           set((s) => {
-            s.runtime.outputs[d.key] = { ...(s.runtime.outputs[d.key] ?? {}), Error: message, __busy: 0 }
+            // a refusal bound to a column (validation rule, Reject in a table event): the form shows it on that field
+            const field = (e as { field?: unknown } | null)?.field
+            s.runtime.outputs[d.key] = { ...(s.runtime.outputs[d.key] ?? {}), Error: message, __errorField: typeof field === 'string' ? field : '', __busy: 0 }
           })
           // a refused write was already reported (toast, error list) through platform.onDataError
           if (upload) {
@@ -343,6 +352,10 @@ export function createAppStore(opts: { run?: boolean } = {}) {
       debugLog: [],
       runSurface: !!opts.run,
       evSlot: new EvaluatorSlot(),
+      readOnly: false,
+      setReadOnly(on) {
+        if (get().readOnly !== on) set({ readOnly: on })
+      },
 
       subscribeLog(fn) {
         logListeners.add(fn)
@@ -505,6 +518,7 @@ export function createAppStore(opts: { run?: boolean } = {}) {
 
       insert(type, opts = {}) {
         const st = get()
+        if (st.readOnly) return null
         const e = ev()
         let def
         try {
@@ -571,6 +585,7 @@ export function createAppStore(opts: { run?: boolean } = {}) {
       },
 
       rename(id, newName) {
+        if (get().readOnly) return 'The app is read-only here'
         const name = newName.trim()
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return 'Use letters, digits and _ (not starting with a digit)'
         const st = get()
@@ -753,6 +768,7 @@ export function createAppStore(opts: { run?: boolean } = {}) {
       },
 
       undo() {
+        if (get().readOnly) return
         set((s) => {
           const prev = s.history.past.pop()
           if (!prev) return
@@ -764,6 +780,7 @@ export function createAppStore(opts: { run?: boolean } = {}) {
       },
 
       redo() {
+        if (get().readOnly) return
         set((s) => {
           const next = s.history.future.pop()
           if (!next) return
@@ -1026,11 +1043,19 @@ export function linkStore(store: AppStore, opts: { scoped?: boolean } = {}): () 
     st.emitLog(entries)
     if (st.mode === 'preview' || st.runSurface) st.notify(e.error.message, 'error')
   })
+  const offShareErrors = subscribeShareErrors((message) => {
+    const st = store.getState()
+    const entries: TraceEntry[] = [{ id: uid(), at: Date.now(), kind: 'error', message, source: 'Data' }]
+    st.log(entries)
+    st.emitLog(entries)
+    if (st.mode === 'preview' || st.runSurface) st.notify(message, 'error')
+  })
   return () => {
     offPlatform()
     offStore()
     offErrors()
     offQueries()
+    offShareErrors()
   }
 }
 

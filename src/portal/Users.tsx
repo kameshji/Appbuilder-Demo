@@ -4,7 +4,7 @@
  * change the password an administrator set, last sign-in). Roles themselves stay under Security roles (#roles).
  */
 import { useEffect, useState } from 'react'
-import { Ban, CircleCheck, Eye, Info, KeyRound, Pencil, Plus, ShieldCheck, Trash2, UserRound, Users as UsersIcon } from 'lucide-react'
+import { Ban, CircleCheck, Eye, Info, KeyRound, Pencil, Plus, ShieldCheck, Trash2, Upload, UserRound, Users as UsersIcon } from 'lucide-react'
 import { platform, usePlatform, type RoleDef, type UserDef } from '@/platform'
 import { go } from '@/router'
 import { Button } from '@/components/ui/button'
@@ -18,8 +18,10 @@ import { ConfirmDialog, Empty, Field, Panel, fmtDate, fmtRelative, useToast } fr
 import { NewPasswordFields, passwordsValid } from './PasswordFields'
 import { TestAsUserDialog } from './Roles'
 import { UserAvatar } from './Profile'
+import { usePresence } from '@/platform/useLive'
 import { matches, useSearch } from './Shell'
 import { useCaps } from './security'
+import { OrgFields, UserImportDialog, orgFieldsOf, orgPatch, type OrgFieldsValue } from './Organisation'
 
 function UserDialog({ open, onOpenChange, user, onCreated }: { open: boolean; onOpenChange(o: boolean): void; user: UserDef | null; onCreated(u: UserDef): void }) {
   const server = usePlatform((s) => s.mode) === 'server'
@@ -33,15 +35,17 @@ function UserDialog({ open, onOpenChange, user, onCreated }: { open: boolean; on
   const [email, setEmail] = useState('')
   const [roleIds, setRoleIds] = useState<string[]>([])
   const [installAdmin, setInstallAdmin] = useState(false)
+  const [org, setOrg] = useState<OrgFieldsValue>(orgFieldsOf(null))
   const [busy, setBusy] = useState(false)
-  useEffect(() => { if (open) { setName(user?.name ?? ''); setEmail(user?.email ?? ''); setRoleIds(user?.roleIds ?? []); setInstallAdmin(!!user?.isInstallAdmin) } }, [open, user])
+  useEffect(() => { if (open) { setName(user?.name ?? ''); setEmail(user?.email ?? ''); setRoleIds(user?.roleIds ?? []); setInstallAdmin(!!user?.isInstallAdmin); setOrg(orgFieldsOf(user)) } }, [open, user])
   const run = async () => {
     setBusy(true)
     try {
       const flag = server && caps.isInstallAdmin && installAdmin !== !!user?.isInstallAdmin ? { isInstallAdmin: installAdmin } : {}
-      if (user) await platform.security.updateUser(user.id, account ? { name: name.trim(), email: email.trim(), roleIds, ...flag } : { roleIds })
+      const orgChange = account ? orgPatch(user, org) : {}
+      if (user) await platform.security.updateUser(user.id, account ? { name: name.trim(), email: email.trim(), roleIds, ...flag, ...orgChange } : { roleIds })
       else {
-        const u = await platform.security.createUser({ name: name.trim(), email: email.trim(), roleIds, ...flag })
+        const u = await platform.security.createUser({ name: name.trim(), email: email.trim(), roleIds, ...flag, ...orgChange } as Parameters<typeof platform.security.createUser>[0])
         toast(`Added ${name.trim()}`, 'success')
         onOpenChange(false)
         onCreated(u)
@@ -57,11 +61,12 @@ function UserDialog({ open, onOpenChange, user, onCreated }: { open: boolean; on
   }
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent data-testid="user-dialog">
+      <DialogContent className="max-h-[90vh] overflow-auto sm:max-w-xl" data-testid="user-dialog">
         <DialogHeader><DialogTitle>{user ? 'Edit user' : 'Add user'}</DialogTitle><DialogDescription>{server ? 'After adding a user you set their first password; they can change it themselves.' : 'Users are people you can run apps as on this machine.'}</DialogDescription></DialogHeader>
         <form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); if (name.trim() && email.trim()) void run() }}>
           <Field label="Name" htmlFor="user-name"><Input id="user-name" autoFocus value={name} disabled={!account} onChange={(e) => setName(e.target.value)} data-testid="user-name" /></Field>
           <Field label="Email" htmlFor="user-email"><Input id="user-email" type="email" value={email} disabled={!account} onChange={(e) => setEmail(e.target.value)} data-testid="user-email" /></Field>
+          <OrgFields value={org} onChange={setOrg} userId={user?.id} disabled={!account} />
           {server && caps.isInstallAdmin && (
             <label className="flex items-start gap-2 text-sm">
               <Checkbox checked={installAdmin} onCheckedChange={(v) => setInstallAdmin(v === true)} data-testid="user-install-admin" className="mt-0.5" />
@@ -149,9 +154,15 @@ export function UsersPanel() {
   const [preview, setPreview] = useState(false)
   const [userDlg, setUserDlg] = useState<{ user: UserDef | null } | null>(null)
   const [delUser, setDelUser] = useState<UserDef | null>(null)
+  const [importing, setImporting] = useState(false)
+  const departments = usePlatform((s) => s.departments)
+  const deptName = (id?: string) => departments.find((d) => d.id === id)?.name
   const ulist = users.filter((u) => matches(q, u.name, u.email))
+  // who is online now (package H; administrators only, people hiding their presence are left out)
+  const onlineMembers = usePresence(server ? 'online' : null, null)
+  const online = new Set(onlineMembers.map((m) => m.id))
   const isMe = (u: UserDef) => (server ? u.id === session?.user.id : u.id === currentUserId)
-  const cols = server ? 6 : 4
+  const cols = server ? 7 : 5
 
   return (
     <div data-testid="admin-users">
@@ -162,6 +173,7 @@ export function UsersPanel() {
         </div>
         <Button size="sm" variant="outline" onClick={() => go({ page: 'roles' })} data-testid="users-roles-link"><ShieldCheck /> Security roles</Button>
         {server && <Button size="sm" variant="outline" onClick={() => setPreview(true)} data-testid="users-test-as"><Eye /> Test as user</Button>}
+        <Button size="sm" variant="outline" onClick={() => setImporting(true)} disabled={!account} title={account ? 'Add or update many users from a CSV file' : 'Only install administrators import accounts'} data-testid="import-users-button"><Upload /> Import CSV</Button>
         <Button size="sm" onClick={() => setUserDlg({ user: null })} disabled={!account} title={account ? undefined : 'Only install administrators add accounts'} data-testid="new-user-button"><Plus /> Add user</Button>
       </div>
       {!server && (
@@ -177,7 +189,7 @@ export function UsersPanel() {
           <table className="w-full text-sm" data-testid="users-table">
             <thead>
               <tr className="whitespace-nowrap border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground">
-                <th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Email</th><th className="px-4 py-2.5">Roles</th>{server && <th className="px-4 py-2.5">Sign-in</th>}{server && <th className="px-4 py-2.5">Last sign-in</th>}<th className="w-40 px-4 py-2.5"><span className="sr-only">Actions</span></th>
+                <th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Email</th><th className="px-4 py-2.5">Department</th><th className="px-4 py-2.5">Roles</th>{server && <th className="px-4 py-2.5">Sign-in</th>}{server && <th className="px-4 py-2.5">Last sign-in</th>}<th className="w-40 px-4 py-2.5"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
@@ -185,13 +197,17 @@ export function UsersPanel() {
                 <tr key={u.id} className="border-b border-border last:border-0 hover:bg-accent/40" data-testid={`user-row-${u.id}`}>
                   <td className="px-4 py-2.5 font-medium">
                     <span className="flex items-center gap-2.5">
-                      <UserAvatar user={u} size={24} />
+                      <span className="relative">
+                        <UserAvatar user={u} size={24} />
+                        {server && (online.has(u.id) || isMe(u)) && <span className="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full bg-emerald-500 ring-2 ring-card" title="Online now" aria-label="Online now" data-testid={`user-online-${u.id}`} />}
+                      </span>
                       <span className="truncate">{u.name}</span>
                       {isMe(u) && <Badge variant="secondary">{server ? 'You' : 'Running as'}</Badge>}
                       {server && u.isInstallAdmin && <Badge variant="outline" className="border-rose-500/40 text-rose-700 dark:text-rose-300" title="Install administrator: environments, accounts; administers every environment" data-testid={`install-admin-${u.id}`}>Install admin</Badge>}
                     </span>
                   </td>
                   <td className="px-4 py-2.5 text-muted-foreground">{u.email}</td>
+                  <td className="px-4 py-2.5 text-xs" data-testid={`user-dept-${u.id}`}>{deptName(u.departmentId) ?? <span className="text-muted-foreground">None</span>}{u.jobTitle && <div className="text-muted-foreground">{u.jobTitle}</div>}</td>
                   <td className="px-4 py-2.5">
                     <div className="flex flex-wrap gap-1">
                       {u.roleIds.map((id) => roles.find((r) => r.id === id)).filter((r): r is RoleDef => !!r).map((r) => <Badge key={r.id} variant="outline">{r.name}</Badge>)}
@@ -223,11 +239,12 @@ export function UsersPanel() {
           </table>
         </Panel>
       )}
-      <p className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground"><UsersIcon className="size-3.5" /> {users.length === 1 ? '1 user' : `${users.length} users`}. Departments, managers and teams arrive with P0 Kernel.</p>
+      <p className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground"><UsersIcon className="size-3.5" /> {users.length === 1 ? '1 user' : `${users.length} users`}. Departments, teams and the org chart have their own pages in this console.</p>
 
       <UserDialog open={!!userDlg} onOpenChange={(o) => !o && setUserDlg(null)} user={userDlg?.user ?? null} onCreated={(u) => { if (server) setPwUser(u) }} />
       <UserPasswordDialog user={pwUser} onOpenChange={(o) => !o && setPwUser(null)} />
       <TestAsUserDialog open={preview} onOpenChange={setPreview} />
+      <UserImportDialog open={importing} onOpenChange={setImporting} />
       <ConfirmDialog
         open={!!delUser}
         onOpenChange={(o) => !o && setDelUser(null)}

@@ -52,7 +52,7 @@ export const CATEGORY_OF: Record<string, CategoryId> = {
   // JSON and regular expressions
   JSON: 'data', ParseJSON: 'data', IsMatch: 'data', Match: 'data', MatchAll: 'data',
   // context
-  Language: 'context', User: 'context', Param: 'context', GUID: 'context',
+  Language: 'context', User: 'context', Param: 'context', GUID: 'context', SharedWith: 'context',
 }
 
 /** One-line notes for enums. The "Used by" line is generated from the control registry. */

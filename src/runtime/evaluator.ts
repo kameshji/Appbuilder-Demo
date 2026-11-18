@@ -2,7 +2,7 @@ import type { AppDef, ControlNode, FxDiagnostic, FxEngine, FxNamedFormula, FxRec
 import { createEngine, splitFormulas } from '@/fx'
 import { controls } from '@/controls'
 import { isRecord, walk } from './util'
-import { currentUserRecord, isTable, queryDepsSince, tableRows } from './data'
+import { currentUserRecord, isTable, queryDepsSince, sharedWithRows, tableRows } from './data'
 import { deriveList, evaluateDelegated, type DelegationInfo, type ListView } from './delegation'
 
 /**
@@ -764,6 +764,11 @@ export class Evaluator {
     if (name === 'User()') {
       this.record('u')
       return currentUserRecord() ?? { FullName: '', Email: '', Id: '', Roles: [] }
+    }
+    if (name.startsWith('SharedWith:')) {
+      const id = name.slice(11)
+      this.record('q:sw:' + id)
+      return sharedWithRows(id)
     }
     if (name.startsWith('Param:')) {
       try {

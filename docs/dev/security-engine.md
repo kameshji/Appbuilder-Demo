@@ -15,7 +15,11 @@ model is in `/home/claude/appbuilder-demo/src/platform/contracts.ts` (`RoleDef`,
 **Every statement on this page must keep matching the code.** If you change `security.ts` or its callers, change this page in the same
 commit (see `/home/claude/appbuilder-demo/CONTRIBUTING.md`).
 
-What is not supported: there is no per-row sharing or ACL, no deny rules (access only ever grows when roles are added), no field-level
+Since P0 package F the engine also knows the **organisation** (departments, managers, teams), **relationship rules**
+(conditions through lookup columns and junction tables) and **record sharing**; see "Organisation scopes, rules and sharing"
+below. The predicate building lives in `/home/claude/appbuilder-demo/src/platform/orgsec.ts`, shared with demo mode.
+
+What is not supported: no deny rules (access only ever grows when roles are added), no field-level
 security on formulas or app definitions (an app definition is readable by anyone allowed to run the app; do not put secrets in it),
 no time-limited grants, and no security on `files`-connector tables beyond the same engine (it applies uniformly).
 
@@ -26,9 +30,10 @@ no time-limited grants, and no security on `files`-connector tables beyond the s
 | Role | A named set of table privileges, an app list and two flags: `isAdmin`, `isMaker`. Built in: `role_admin`, `role_maker`, `role_viewer`. |
 | User | Holds zero or more roles (`roleIds`). The effective rights are the **union** over the user's roles. |
 | Table privilege | Per role and table: `create` (boolean), `read`, `update`, `delete` (each `none`, `own` or `all`), optional `columns` (CLS map), optional `rowFilter` (RLS conditions). |
-| Scope | `none` < `own` < `all`. `own` means rows whose `owner` column equals the user id. |
-| System columns | `id`, `createdOn`, `modifiedOn`, `createdBy`, `owner`. Server-assigned; never writable by clients. |
-| Row filter | A list of `RowCondition { column, op, value? }`, ANDed together. Value tokens: `@me` (the user's id) and `@myEmail` (the user's email). |
+| Scope | `none`, `own`, `team`, `manager`, `managerTree`, `department`, `departmentTree`, `all`. `own` means rows whose `owner` column equals the user id; the organisation scopes compare `owner` with a set (below). The reported maximum uses the order none < own < manager < managerTree < team < department < departmentTree < all. |
+| System columns | `id`, `createdOn`, `modifiedOn`, `createdBy`, `owner`. Server-assigned; never writable by clients (except `owner` on `teamOwnership` tables, below). |
+| Row filter | A list of `RowCondition` (rule AST, below), ANDed together. Tokens: `@me`, `@myEmail`, `@myDepartment`, `@myDepartmentCode`, `@myManager`, lists `@myDepartmentTree`, `@myTeams`, `@myReports`, `@myReportsTree`, by code `@team:<c>`, `@department:<c>`, `@departmentTree:<c>`, and inside `exists` `@this` / `@this.<Column>`. |
+| Share | `TablePrivilege.share` (a scope) and per-row shares (`ab_shares`) on tables with `sharing: true`. |
 
 ## Environments, install administrators
 
@@ -102,6 +107,126 @@ Table `Tickets` with columns `Title`, `Status`, `Internal`.
 | Role A: create only (no read). Columns map `Status: read` | No granting role by read; role A is used for columns: `Status` is `read`, so an insert that sets `Status` is refused (403). |
 | Role A: update `own`. Role B: update `all`, filter `Status = Open` | Update predicate `owner = me OR Status = Open`: rows that are mine **or** Open. The reported scope is `all` (the maximum), which is why `filtered`/the server decide rows, not the scope. |
 
+## Organisation scopes, rules and sharing (P0 package F)
+
+Code: `/home/claude/appbuilder-demo/src/platform/orgsec.ts` (pure, shared by server and demo mode),
+`/home/claude/appbuilder-demo/server/core/security.ts` (engine, caches), `/home/claude/appbuilder-demo/server/core/org-store.ts`
+(storage), `/home/claude/appbuilder-demo/server/routes/meta/org.ts` (API), the SQL in `server/connectors/postgres/sql.ts` and
+`server/connectors/mysql/sql.ts` (`semi` nodes).
+
+### Organisation context
+
+`orgContextFor(directory, userId, environmentId)` computes, per user: department and its subtree (ids), the users of the
+department and of the subtree, manager, direct reports, the reporting line below the user, the user's teams counting in the
+environment (`environmentId` NULL or equal) and their members, and code-to-id maps for teams and departments. Trees and reporting
+lines are walked breadth-first with a `seen` set (a cycle is followed once) and at most `MAX_ORG_DEPTH` = 32 levels. Writes refuse
+cycles (`managerCycle`, `departmentCycle`).
+
+### Scopes compile to an owner list
+
+| Scope | Condition |
+| --- | --- |
+| `own` | `owner = me` (unchanged) |
+| `team` | `owner IN (me, members of my teams, my team ids)` (team-owned rows hold the team id in `owner`) |
+| `manager` | `owner IN (me, direct reports)` |
+| `managerTree` | `owner IN (me, reporting line)` |
+| `department` | `owner IN (users of my department)`; without a department `owner = me` |
+| `departmentTree` | `owner IN (me, users of my department and every department below)` |
+
+These are plain v1 `in` leaves: PostgreSQL `lower(owner) = ANY($n::text[])` (the owner index `ix_<table>_owner` is on
+`lower(owner)`), MySQL `IN (...)`, and the in-memory evaluators. A table without an `owner` column grants nothing to them.
+User ids and team ids are both UUID-like text from disjoint registries (`ab.users`, `ab.teams`), so `owner` needs no type column:
+a team id never equals a user id, and `own` keeps its meaning.
+
+### The rule AST
+
+```ts
+type RowCondition =
+  | { column: string; op; value? }                          // column of the table, or a lookup path "Section.Teacher" (<= 2 hops)
+  | { exists: { table: string; where: RowCondition[] } }     // junction: exactly one `X eq @this` / `@this.Col` correlation
+  | { any: RowCondition[] }                                  // OR group
+```
+
+`filterFor(table, rowFilter, env)` turns it into the v1 `Condition`, adding one server-internal node (`src/platform/http.ts`):
+
+```ts
+{ semi: { col, table: TableDef, key, where: Condition } }   // col IN (SELECT key FROM table WHERE where)
+```
+
+- **Lookup path** `Line.Supervisor = @me` on *Production*: `{ semi: { col: 'Line', table: Lines, key: 'id', where: Supervisor = me } }`.
+  Two hops nest two semis. The path must follow `lookup` columns to tables of the same connection (`sameStore`: same
+  `connectionId` and a SQL connector); the comparison holds when the referenced row exists and matches.
+- **Junction** `exists(Enrolments where Student = @this and Section.Teacher = @me)` on *Students*:
+  `{ semi: { col: 'id', table: Enrolments, key: 'Student', where: <Section.Teacher = me> } }`; `@this.Student` correlates on an
+  outer column instead of `id`.
+- **Tokens** are resolved per request: a list token turns `eq` into `in` and `ne` into `not in`; a token the user has no value for
+  (no department, no manager, an unknown code) becomes `FALSE` (never matches; fail closed). At most 3 nested semis per rule.
+- **Invalid rules** (unknown column, non-lookup path, another connection, more than 2 hops, list token with an ordering operator,
+  `exists` without exactly one correlation) make the role grant nothing (`null` from `filterFor`); `ruleProblems()` gives the
+  messages the API (422) and the rule builder show.
+- Clients can never send a `semi` node: the v1 query validator (`checkCondition` in `data.ts`) only accepts `and/or/not/const`
+  and column leaves, and Query v2 plans have their own AST.
+
+SQL (PostgreSQL, `semiJoin` in `sql.ts`): `(<outer> IN (SELECT <inner> FROM "env_x"."t_target" WHERE <inner> IS NOT NULL AND
+<where>))`, both sides compared as the indexes are built (text kinds `lower(...)`, the managed `id` as stored), so the lookup
+index on the outer side (`ix_<table>_<lookup>` on `lower(col)`) and the target's own indexes serve it; the planner makes it a
+(hashed) semi-join. MySQL wraps the sub-select in a derived table so `UPDATE`/`DELETE` may use it on their own table (error 1093).
+
+### Shares
+
+`ab_shares` rows (per environment) whose principal is the user or one of their teams are loaded once per request
+(cached 5 s per user and environment, dropped by every share change and by `invalidate()`), only when a table has
+`sharing: true`. For a role set with a non-`none` read (update) scope on the table, the predicate ORs
+`id IN (<shared row ids>)` (read: read and update shares; update: update shares). Shares never apply to delete or create.
+`rowPredicate(table, 'share')` = OR over roles with a `share` scope of (scope AND filter), plus `owner = me` for users with any
+read scope; `FALSE` when the table has sharing off (administrators: `TRUE` when on). `POST /api/v1/shares` requires the share
+predicate on the row and, for `update` access, the update predicate.
+
+### Team ownership
+
+On tables with `teamOwnership: true` the DataService accepts `owner` in an insert or an update when it is the user or a team
+of theirs in the environment (administrators: any user or team), then applies the usual update guard and WITH CHECK, so a user
+whose update scope is `own` cannot give a row away (the row would leave their scope).
+
+### Caches and invalidation
+
+`createSecurityEngine` keeps, with the TTL (5 s): roles, tables and the SQL connection ids per environment; the organisation
+directory (install-wide); shares per environment and user. Organisation routes call `invalidateOrg()` and `invalidate('all')`,
+share routes `invalidateShares()`; `invalidate()` also drops shares. A change made by another server process or directly in the
+database applies within 5 s.
+
+### The explainer
+
+`UserContext.reasons(table, op)` returns the terms that make up a predicate (`admin`, one per granting role with its scope and
+whether it has rules, `share`, `owner`). `GET /api/v1/security/explain?table=&row=` builds every active user's context and
+evaluates each term on the row in memory, answering `semi` nodes with one cached lookup query each
+(`evaluateWithSemi`). The security preview (`GET /security/preview`) adds `why` per table from the same reasons.
+
+### Performance
+
+`scripts/bench/orgsec-bench.mjs`: PostgreSQL 16, 1,000,000 rows, 500 users in 50 departments (5 sites x 9), 25 teams, a 4-level
+manager tree; median of 5 runs of the SQL the connectors run (Query v2 first page of 50 with the exact count; v1 page of 50):
+
+| Case | Rows visible | v2 first page + count (ms) | v1 page (ms) |
+| --- | ---: | ---: | ---: |
+| all rows (no predicate) | 1,000,000 | 47.7 | 197.6 |
+| own | 2,000 | 16.9 | 2.9 |
+| team (20 members) | 40,000 | 75.2 | 76.0 |
+| manager (direct reports) | 22,000 | 67.4 | 67.8 |
+| managerTree (site head, ~100 people) | 200,000 | 76.8 | 107.7 |
+| department (10 people) | 20,000 | 67.7 | 69.2 |
+| departmentTree (site, 100 people) | 200,000 | 84.2 | 101.2 |
+| rule `Line.Supervisor = @me` | 30,000 | 66.1 | 82.5 |
+| rule `exists(Assignments: Line = this.Line, Member = @me)` | 10,000 | 409.7 | 355.0 |
+| own + 1,000 shared rows | 3,000 | 23.1 | 8.5 |
+| departmentTree AND a lookup rule | 200,000 | 253.2 | 264.5 |
+
+The row filter is ANDed into the v2 WHERE without `COALESCE` (it was wrapped before P0-F, which hid every index from the planner:
+own scope 285 ms -> 17 ms). The junction rule correlated on a lookup column runs as a hash semi-join over the table (the planner
+does not trust the small estimate); it is the slowest form, still under half a second at a million rows.
+`server/core/orgsec.integration.test.ts` checks with `EXPLAIN` that the owner list uses `ix_<table>_owner` and that rules become
+one statement with sub-selects over the lookup index.
+
 ## Where the engine is enforced (`data.ts`)
 
 All data routes call `DataService`, which receives the `UserContext`.
@@ -129,11 +254,14 @@ All data routes call `DataService`, which receives the `UserContext`.
 1. `canCreate(T)` else 403. The table and connector must be writable (`readOnly` tables and non-`write` connectors: 403).
 2. Each supplied column: system columns are ignored (except a client-supplied UUID `id`); autonumber is server-assigned; any other
    column needs access `update` (hidden: 403, read-only: 403).
-3. `createdBy` = `owner` = the user. **WITH CHECK**: the complete new row (with defaults) must satisfy
-   `rowPredicate(T, 'create')` = OR over the roles granting `create` of that role's row filter (tokens resolved; no owner term,
-   because the creator owns the row; a granting role without a filter allows any row; admins: `TRUE`). Otherwise 403, nothing
-   written. Evaluated in memory with `evaluateCondition` (`server/core/condition.ts`).
-4. Required, unique, lookup and attachment checks, then insert. A row the user may create but not read afterwards is allowed
+3. `createdBy` = `owner` = the user (or a team of theirs on `teamOwnership` tables). **WITH CHECK**: the complete new row (with
+   defaults) must satisfy `rowPredicate(T, 'create')` = OR over the roles granting `create` of that role's row filter (tokens
+   resolved; no owner term, because the creator owns the row; a granting role without a filter allows any row; admins: `TRUE`).
+   Otherwise 403, nothing written. Evaluated in memory with `evaluateWithSemi` (`server/core/condition.ts`): relationship rules
+   (`semi` nodes) are answered by one query each against the rule's table.
+4. Required, unique, lookup and attachment checks, then insert. A lookup value must point at a row the user can **read** (the
+   target's read predicate is ANDed into the existence check); an unreadable row answers 422 "no row with id" exactly like a
+   missing one. A row the user may create but not read afterwards is allowed
    (for example a create filter wider than the read filter).
 
 **Update**
@@ -190,10 +318,10 @@ change is rolled back and `onDataError` fires; see `architecture.md`).
 
 | Place | What it mirrors |
 | --- | --- |
-| `/home/claude/appbuilder-demo/src/platform/remote.ts`: `grantOf`, `rowOk`, `assertWritable` | Pre-validation of insert, update, delete using `Session.privileges`. Checks `create`, scopes and column access. The `own` scope is checked against the row's `owner`; the `all` scope and RLS **filters are not mirrored** (flagged by `filtered`), the server decides. |
+| `/home/claude/appbuilder-demo/src/platform/remote.ts`: `grantOf`, `rowOk`, `assertWritable` | Pre-validation of insert, update, delete using `Session.privileges`. Checks `create`, scopes and column access. The `own` scope is checked against the row's `owner`; `all`, the organisation scopes, rules and shares **are not mirrored** (`filtered` is true for organisation scopes, rules and tables with shares), the server decides. |
 | `/home/claude/appbuilder-demo/src/platform/rowfilter.ts` | `matchesCondition` for `RowCondition` lists, shared by the demo-mode simulation and the remote client. Same rules as `condition.ts` for text, blanks and dates. |
 | `/home/claude/appbuilder-demo/src/portal/security.ts` | `useMyAccess(table)` and `useCaps()` drive the portal: hide or disable create/edit/delete and read-only columns; admin and maker menus. `enforced` is false in demo mode (everything allowed). |
-| `/home/claude/appbuilder-demo/src/platform/core.ts` | Demo mode: a **simulation** of roles for a single person at the keyboard. It is explicitly **not a security boundary** (everything is in the browser's storage). Never rely on it for protection. |
+| `/home/claude/appbuilder-demo/src/platform/core.ts` | Demo mode: builds the same predicates with `src/platform/orgsec.ts` (organisation, rules, shares stored in `workspace.yaml`) and evaluates them in memory (`evaluateSync`, `memorySemi`, `rowfilter.ts matchesLeaf`). A **simulation** of roles for a single person at the keyboard. It is explicitly **not a security boundary** (everything is in the browser's storage). Never rely on it for protection. |
 
 Differences between the mirror and the server to keep in mind: the client treats a missing `owner` on a row as "mine" for `own`
 scope (new optimistic rows); demo mode treats a role named `Maker` as a maker even without the flag, while the server uses the
@@ -202,6 +330,10 @@ comparable" rule.
 
 ## Testing the engine
 
+- `/home/claude/appbuilder-demo/src/platform/orgsec.test.ts` runs the shared corpus `src/platform/testdata/orgsec-corpus.json`
+  (organisation, tables, rows, shares, cases with expected rows) through the demo-mode evaluator and the server's in-memory
+  evaluator; `/home/claude/appbuilder-demo/server/core/orgsec.integration.test.ts` runs the same corpus through the real engine and
+  the PostgreSQL SQL (v1 and v2), plus the education and manufacturing examples over HTTP and the EXPLAIN checks.
 - `/home/claude/appbuilder-demo/server/core/unit.test.ts` and `/home/claude/appbuilder-demo/server/routes/meta/security.test.ts`
   cover the union rules, row predicates, CLS, the 403 versus 404 decisions and the last-admin guard with in-memory fakes.
 - `/home/claude/appbuilder-demo/server/core/integration.test.ts` runs the same flows against a real database when

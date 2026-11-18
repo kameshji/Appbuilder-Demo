@@ -5,7 +5,7 @@
  * the administrator reviewed and confirmed the plan.
  */
 import { useEffect, useState } from 'react'
-import { ArrowRight, Boxes, Cable, CircleAlert, FileSpreadsheet, Info, LayoutGrid, Rocket, ShieldCheck, Table2, TriangleAlert, type LucideIcon } from 'lucide-react'
+import { ArrowRight, Boxes, Cable, CircleAlert, FileSpreadsheet, Info, LayoutGrid, Rocket, ShieldCheck, Table2, TriangleAlert, Zap, type LucideIcon } from 'lucide-react'
 import { ENVIRONMENT_TYPE_LABEL, usePlatform, type SolutionDef } from '@/platform'
 import type { PlanItem, SolutionPlan } from '@/platform/http'
 import { cn } from '@/lib/utils'
@@ -18,8 +18,8 @@ import { TypeBadge } from './EnvironmentPicker'
 import { Field, errMsg, useToast } from './kit'
 import { deploy, planDeploy } from './environmentApi'
 
-const KIND_ICON: Record<PlanItem['kind'], LucideIcon> = { app: LayoutGrid, table: Table2, role: ShieldCheck, connection: Cable, file: FileSpreadsheet }
-const KIND_LABEL: Record<PlanItem['kind'], string> = { app: 'App', table: 'Table', role: 'Role', connection: 'Connection', file: 'Data file' }
+const KIND_ICON: Record<PlanItem['kind'], LucideIcon> = { app: LayoutGrid, table: Table2, role: ShieldCheck, connection: Cable, file: FileSpreadsheet, event: Zap }
+const KIND_LABEL: Record<PlanItem['kind'], string> = { app: 'App', table: 'Table', role: 'Role', connection: 'Connection', file: 'Data file', event: 'Table event' }
 const CHANGE_STYLE: Record<PlanItem['change'], string> = {
   new: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
   changed: 'bg-sky-500/15 text-sky-700 dark:text-sky-300',
@@ -101,16 +101,28 @@ export function PlanView({ plan }: { plan: SolutionPlan }) {
 /** what the admin must tick before confirming a plan that loses data */
 export function useConfirmable(plan: SolutionPlan | null): { ok: boolean; box: React.ReactNode } {
   const [ack, setAck] = useState(false)
-  useEffect(() => setAck(false), [plan?.token])
+  const [sysAck, setSysAck] = useState(false)
+  useEffect(() => { setAck(false); setSysAck(false) }, [plan?.token])
   if (!plan) return { ok: false, box: null }
   const blocked = plan.problems.length > 0
-  const box = plan.destructive && !blocked ? (
-    <label className="flex items-center gap-2 text-sm">
-      <Checkbox checked={ack} onCheckedChange={(v) => setAck(v === true)} data-testid="plan-ack" />
-      I understand that the data in the red items is lost.
-    </label>
+  const system = plan.systemEvents?.length ? plan.systemEvents : null
+  const box = !blocked && (plan.destructive || system) ? (
+    <div className="grid gap-2">
+      {plan.destructive && (
+        <label className="flex items-center gap-2 text-sm">
+          <Checkbox checked={ack} onCheckedChange={(v) => setAck(v === true)} data-testid="plan-ack" />
+          I understand that the data in the red items is lost.
+        </label>
+      )}
+      {system && (
+        <label className="flex items-start gap-2 text-sm">
+          <Checkbox checked={sysAck} onCheckedChange={(v) => setSysAck(v === true)} className="mt-0.5" data-testid="plan-ack-system-events" />
+          <span>These table events run as the system and ignore row and column security: {system.join(', ')}. I allow them (recorded in the audit log).</span>
+        </label>
+      )}
+    </div>
   ) : null
-  return { ok: !blocked && (!plan.destructive || ack), box }
+  return { ok: !blocked && (!plan.destructive || ack) && (!system || sysAck), box }
 }
 
 export function DeployDialog({ open, onOpenChange, solution }: { open: boolean; onOpenChange(o: boolean): void; solution: SolutionDef }) {

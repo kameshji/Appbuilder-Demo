@@ -18,6 +18,9 @@ A short list for a new installation. Details are in the other pages; read the
 - [ ] If users reach Appbuilder through **your own HTTPS reverse proxy**, set `APPBUILDER_SECURE_COOKIE=1` (or
   `APPBUILDER_TRUST_PROXY=1` when the proxy sends `X-Forwarded-Proto: https`) so the session cookie is marked `Secure`,
   and list the proxy's host name in `APPBUILDER_ALLOWED_HOSTS` ([Installation](installation.md#environment-variables)).
+  The proxy must pass WebSocket upgrades on `/api/v1/live` and keep the original `Host` and `Origin` headers
+  ([Installation](installation.md#behind-a-reverse-proxy)); otherwise live updates stop (pages then refresh every 30 seconds
+  and show "Live updates paused").
 - [ ] **Put the workspace outside the source folder** with `APPBUILDER_WORKSPACE`, in a folder only the Windows account
   that runs Appbuilder (and administrators) can open.
 - [ ] **Prefer the setup screen** over `APPBUILDER_DB_PASSWORD`: the screen stores the password encrypted, while an
@@ -36,6 +39,10 @@ A short list for a new installation. Details are in the other pages; read the
 - [ ] **Delete the sample data** (Contacts, Orders, Contacts app) if you do not want it.
 
 ## Accounts and roles
+
+- [ ] When someone leaves, **disable the account**: their open pages lose their session and their live connection at once.
+- [ ] Keep the realtime limits unless you know you need more: `APPBUILDER_LIVE_MAX_PER_USER` (default 20 sockets, one per open
+  tab) and `APPBUILDER_LIVE_MAX_CONNECTIONS` (default 5,000).
 
 - [ ] One account per person; no shared logins (the audit log names users).
 - [ ] Give the **Maker** and **Administrator** roles to as few people as possible. Makers can list and link any table

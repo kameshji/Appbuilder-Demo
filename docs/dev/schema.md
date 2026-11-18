@@ -9,7 +9,7 @@ Decision D14 in `/home/claude/appbuilder-demo/docs/decisions.md` records the mov
    (at most `APPBUILDER_MAX_ENVIRONMENTS`, default 5). Each holds the environment's metadata tables (`ab_roles`, `ab_tables`,
    `ab_apps`, `ab_audit`, ...) **and** the data tables of its default connection (`t_orders`, `t_contacts`, ...).
 
-Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 5`),
+Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 6`),
 `/home/claude/appbuilder-demo/server/core/install-store.ts` (the `ab` registry, access and install audit)
 and, for data tables, `/home/claude/appbuilder-demo/server/connectors/postgres/sql.ts` (`createTableSql`, `sqlType`).
 
@@ -78,6 +78,14 @@ rolled-back or `SET LOCAL` transaction never reaches the next user of the connec
 - Inside a unit of work the new tables are invisible to other connections until `COMMIT`; the security cache is dropped afterwards
   (it may have been filled with rows that were rolled back).
 - Each connector DDL method (`createTable`, `alterColumn`, ...) is itself one transaction (a savepoint inside a unit of work).
+- Concurrency inside one transaction is safe (`server/connectors/postgres/db.ts`): every statement goes through one wire lock
+  per client; each level (the transaction, every savepoint) has a queue, so `Promise.all` branches and sibling `tx()` calls run
+  one after another and never interleave with a sibling's savepoint. When `fn` returns or throws, statements it started but
+  did not await finish first, then the level closes: a statement issued later (an un-awaited query, a branch that outlived
+  the transaction) fails with `TransactionEndedError` and never reaches the client, which may already serve another
+  transaction. Two statements on one client at once would throw `TransactionOverlapError` (an assertion).
+  `server/connectors/postgres/tx.integration.test.ts`.
+- Every DataService write on the default database is a unit of work too (the event and job kernel, `events-and-jobs.md`).
 
 ## Migrations
 
@@ -150,9 +158,36 @@ service layer, as before.
 | `last_login` | `timestamptz` | |
 | `is_install_admin` | `boolean NOT NULL DEFAULT false` | install administrator (version 5): environments, accounts, install audit; administrator of every environment |
 | `last_environment_id` | `text` | the environment the user last switched to (`POST /environments/:id/select`); requests without a header go there |
+| `department_id` | `text` | organisation (P0-F): `ab.departments.id`; index `ab_ix_users_department`; cleared when the department is deleted |
+| `manager_id` | `text` | direct manager (`ab.users.id`); index `ab_ix_users_manager`; cleared when the manager is deleted; no cycles (checked on write) |
+| `job_title`, `phone`, `employee_code` | `text` | organisation fields (shown in the console; `User().JobTitle`) |
 
 Users are install-wide; their **roles are per environment** (`ab_user_roles` in each environment schema). Deleting a user removes
 their role assignments in every registered environment, their access rows and their sessions.
+
+### `ab.departments`, `ab.teams`, `ab.team_members`: the organisation (P0 package F)
+
+Install-wide, written by `/home/claude/appbuilder-demo/server/core/org-store.ts` (`ORG_INSTALL_DDL`, appended to `INSTALL_DDL`).
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `ab.departments` | `id text` PK, `code text NOT NULL`, `name text NOT NULL`, `parent_id text`, `description text`, `created_on timestamptz` | unique `ab_ux_departments_code` on `lower(code)`; index on `parent_id`. A tree: no cycles (checked on write), a department with children cannot be deleted |
+| `ab.teams` | `id text` PK, `code text NOT NULL`, `name text NOT NULL`, `description text`, `environment_id text`, `created_on timestamptz` | unique `ab_ux_teams_code` on `lower(code)`; `environment_id` NULL = counts in every environment |
+| `ab.team_members` | `team_id text`, `user_id text`, PK `(team_id, user_id)` | index `ab_ix_team_members_user`; rows of a deleted user or team are removed |
+
+Codes are the stable references of rules and solutions (`@team:<code>`, `@department:<code>`). The security engine reads the
+whole directory (departments, users' department and manager, teams with members) in three statements and caches it for 5 s
+(`docs/dev/security-engine.md`).
+
+### `ab.notifications`, `ab.user_settings`: in-app notifications (P0 package H)
+
+Install-wide, written by `/home/claude/appbuilder-demo/server/core/notifications.ts` (DDL in `notifications-ddl.ts`, appended to
+`INSTALL_DDL`). See `live.md`.
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `ab.notifications` | `id text` PK (`ntf_...`), `user_id text NOT NULL` FK `ab.users` ON DELETE CASCADE, `environment_id text` (NULL: install-wide), `kind text`, `title text`, `body text`, `link text`, `source text` (`app:<id>`, `user:<id>`, `table:<id>`, `system`), `sender_id text`, `sender_name text`, `created_on timestamptz`, `read_on timestamptz` | indexes `ab_ix_notifications_user (user_id, created_on DESC, id DESC)` (keyset paging) and partial `ab_ix_notifications_unread (user_id) WHERE read_on IS NULL`; the newest 500 per user are kept |
+| `ab.user_settings` | `user_id text` FK `ab.users` ON DELETE CASCADE, `key text`, `value jsonb`, `modified_on timestamptz`, PK `(user_id, key)` | key `notifications`: `{ kinds, desktop, dnd, hidePresence }` |
 
 ### `ab.sessions`
 
@@ -227,9 +262,25 @@ Placeholder for the signed licence file (`docs/plan/master-plan.md` section 9): 
 | --- | --- | --- |
 | `role_id`, `table_id` | `text` | primary key; index `ab_ix_role_tables_table` |
 | `can_create` | `boolean NOT NULL DEFAULT false` | |
-| `read_scope`, `update_scope`, `delete_scope` | `text NOT NULL DEFAULT 'none'` | `none`, `own`, `all` |
+| `read_scope`, `update_scope`, `delete_scope` | `text NOT NULL DEFAULT 'none'` | `none`, `own`, `team`, `manager`, `managerTree`, `department`, `departmentTree`, `all` |
+| `share_scope` | `text` | P0-F: the share privilege (same values; NULL = none); added by `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` |
 | `columns` | `jsonb` | map column name to `none`/`read`/`update` (CLS) |
-| `row_filter` | `jsonb` | array of `RowCondition` (RLS) |
+| `row_filter` | `jsonb` | array of `RowCondition` (RLS): compare (column or lookup path), `exists` (junction), `any` (OR); see `security-engine.md` |
+
+### `ab_shares`: record sharing (P0 package F)
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `table_id`, `row_id` | `text NOT NULL` | the shared row |
+| `principal_type` | `text NOT NULL` | `user` or `team` |
+| `principal_id` | `text NOT NULL` | `ab.users.id` or `ab.teams.id`; index `ab_ix_shares_principal (principal_id, table_id)` |
+| `access` | `text NOT NULL` | `read` or `update` (read and change) |
+| `shared_by` | `text` | user id |
+| `shared_on` | `timestamptz NOT NULL` | |
+
+Primary key `(table_id, row_id, principal_type, principal_id)`. Rows go with the shared row (row delete), the user (user delete,
+every environment) and the team (team delete). Copied with the data of an environment. Turning sharing off for a table keeps them
+(inert).
 
 ### `ab_tables`: table definitions (the catalogue)
 
@@ -306,6 +357,29 @@ statement: `INSERT ... ON CONFLICT (k) DO UPDATE SET v = c.v + 1 RETURNING v`.
 
 The audit log is per environment (sign-ins of install-wide users are written to the environment the request ran in: the user's
 environment for a signed-in request, Default for an anonymous one such as a sign-in). Install-level actions go to `ab.audit`.
+
+### Event and job kernel: `ab_outbox`, `ab_jobs`, `ab_schedules`, `ab_table_events`, `ab_event_runs` (P0 package G)
+
+Created by `kernelDdl()` (`server/core/kernel-ddl.ts`) as part of every environment schema; column lists, indexes and the
+guarantees built on them are in [events-and-jobs.md](events-and-jobs.md#tables-per-environment-schema). In short:
+
+| Table | Purpose |
+| --- | --- |
+| `ab_outbox` | one row per data change, written in the change's transaction; `id` bigint identity in commit order per table; `dispatched_on` set by the dispatcher (partial index on pending rows) |
+| `ab_jobs` | the job queue: `state`, `run_at`, `attempts`/`max_attempts`, `backoff`, `locked_by`/`heartbeat_at`, `idempotency_key` (unique when set), `run_as`, `result`/`error` jsonb |
+| `ab_schedules` | cron or interval schedules with time zone, misfire policy and the built-in maintenance schedules |
+| `ab_table_events` | validation rules and before/after events (`def` jsonb = `TableEventDef`) |
+| `ab_event_runs` | the events run log |
+
+Formula and rollup columns are ordinary physical columns; their definition is `ColumnDef.computed` inside `ab_tables.def`.
+They arrived with schema version 6 (with F's organisation and `ab_shares` and H's notifications): the tables are
+`CREATE ... IF NOT EXISTS` statements of `environmentDdl()` / `INSTALL_DDL`, and the version 6 step checks they all exist
+before the schema is stamped 6, so an older server (version 5) refuses a database that has them (downgrade guard).
+
+**Rule for every package:** a change that adds or alters tables or columns of `ab` or of the environment schemas bumps
+`SCHEMA_VERSION` to the next number and adds an upgrade step (install: phase 1 of `migrate()`; environment:
+`ENVIRONMENT_STEPS`), even when the DDL itself is idempotent. Several packages landing in the same release share one
+number.
 
 ## Data tables (default connection, PostgreSQL)
 

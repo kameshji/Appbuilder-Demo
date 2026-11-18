@@ -10,7 +10,7 @@ import type {
 import type { ColumnDef, TableDef } from '../../src/platform/contracts.ts'
 import type { Condition, Query, QueryValue } from '../../src/platform/http.ts'
 import { DEFAULT_ROW_CAP } from '../../src/platform/http.ts'
-import { and, applyQuery, conditionColumns, evaluateCondition } from './condition.ts'
+import { and, applyQuery, conditionColumns, evaluateWithSemi } from './condition.ts'
 import { attachmentIds, cellOut, coerceIn, csvExportText, defaultIn, isBlank } from './values.ts'
 import { SYSTEM_COLUMN_NAMES } from './security.ts'
 import { errText, isUuid, rowUid } from './util.ts'
@@ -21,7 +21,12 @@ import {
   QUERY_FALLBACK_ROW_CAP, QUERY_MAX_GROUPS, QUERY_MAX_UNPAGED_ROWS, QUERY_TIMEOUT_MS, columnKind,
 } from '../../src/platform/query.ts'
 import { checkPlan } from '../../src/fx/query/validate.ts'
+import { lastWriterOf, noteLocalWrite } from './live/changes.ts'
+import type { TableChangeOp } from './live/changes.ts'
+import { currentEnvironment } from './env-context.ts'
+import { currentWork } from './work-context.ts'
 import { executePlan, PlanError } from '../../src/fx/query/reference.ts'
+import type { WriteHooks } from './kernel.ts'
 import { CursorError } from '../../src/fx/query/cursor.ts'
 
 type JsonRow = Record<string, QueryValue>
@@ -46,6 +51,11 @@ export interface DataDeps {
   connections: ConnectionManager
   attachments: AttachmentStore
   log(level: 'info' | 'warn' | 'error', msg: string): void
+  /**
+   * write-path hooks of the event and job kernel (kernel.ts): units of work, row locks, table events / formula columns /
+   * validation rules, outbox rows, post-commit file deletion. Absent (null) in the metadata test harness.
+   */
+  hooks?: () => WriteHooks | null
 }
 
 /** extra helpers for the attachment routes (same module boundary as the service) */
@@ -181,14 +191,33 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
   }
 
   async function removeAttachments(records: AttachmentRecord[]): Promise<void> {
+    const gone: AttachmentRecord[] = []
     for (const a of records) {
       try {
         await meta().attachments.remove(a.id)
-        await deps.attachments.remove(a.storageKey)
+        gone.push(a)
       } catch (e) {
         deps.log('warn', `attachment cleanup failed for ${a.id}: ${errText(e)}`)
       }
     }
+    if (!gone.length) return
+    // the files go after the unit of work commits (a job): a rolled-back change still finds its files
+    const hooks = deps.hooks?.()
+    if (hooks) {
+      try {
+        if (await hooks.deleteFilesAfterCommit(gone.map((a) => a.storageKey))) return
+      } catch (e) {
+        deps.log('warn', `could not queue the deletion of ${gone.length} attachment file(s): ${errText(e)}`)
+        throw e
+      }
+    }
+    for (const a of gone) await deps.attachments.remove(a.storageKey).catch((e) => deps.log('warn', `attachment file cleanup failed for ${a.id}: ${errText(e)}`))
+  }
+
+  /** the kernel's unit of work around a write (transaction on the default database), or just fn */
+  function unit<T>(table: TableDef, fn: () => Promise<T>): Promise<T> {
+    const h = deps.hooks?.()
+    return h ? h.unit(physical(table), fn) : fn()
   }
 
   async function audit(ctx: UserContext | null, action: string, table: TableDef, rowId?: string, details?: unknown) {
@@ -198,6 +227,15 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
       // never fails the request, but always visible on the console
       deps.log('error', `audit write failed (${action}): ${errText(e)}`)
     }
+  }
+
+  /**
+   * realtime (live/changes.ts): the pushes come from the committed outbox rows; here we only note who wrote which rows
+   * and from which live connection (the request id links them to the outbox row)
+   */
+  function changed(ctx: UserContext | null, def: TableDef, op: TableChangeOp, rowIds: string[], _columns: string[]) {
+    void _columns
+    noteLocalWrite(currentEnvironment().id, def.id, op, rowIds, ctx ? { id: ctx.user.id, name: ctx.user.name } : null, currentWork().requestId)
   }
 
   /** row ids for the audit log: the list (at most AUDIT_ID_CAP) and the total count */
@@ -253,6 +291,32 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     return ignore?.size ? res.rows.some((r) => !ignore.has(String(r.id))) : res.rows.length > 0
   }
 
+  /**
+   * The owner a user may give a row of a team-ownership table: themself or a team of theirs in this environment;
+   * administrators: any user or team. The update guard and WITH CHECK still apply to the row as changed.
+   */
+  async function assignableOwner(ctx: UserContext, v: unknown): Promise<string> {
+    const id = String(v).trim()
+    if (id === ctx.user.id || (ctx.user.org?.teams ?? []).some((t) => t.id === id)) return id
+    if (ctx.privileges.isAdmin) {
+      const env = currentEnvironment().id
+      const teams = (await meta().org?.teams.list()) ?? []
+      if (teams.some((t) => t.id === id && (!t.environmentId || t.environmentId === env))) return id
+      if (await meta().users.get(id)) return id
+      throw new HttpError(422, 'invalid', `There is no user or team with the id "${id.slice(0, 64)}".`, 'owner')
+    }
+    throw new HttpError(403, 'denied', 'You can give a row only to yourself or to a team you belong to.', 'owner')
+  }
+
+  /**
+   * WITH CHECK of a security predicate on a row in memory. Relationship rules (semi nodes, src/platform/orgsec.ts) are
+   * answered by the connector: is there a row of the rule's table with that key that matches the rule?
+   */
+  async function rowMatches(def: TableDef, pred: Condition, row: RawRow): Promise<boolean> {
+    void def
+    return evaluateWithSemi(pred, row, (sj, value) => exists(physical(sj.table), and({ col: sj.key, op: 'eq', value: value instanceof Date ? value.toISOString() : String(value) }, sj.where)))
+  }
+
   async function checkUnique(def: TableDef, col: ColumnDef, v: Cell, exceptId?: string, conn?: Connector, ignore?: Set<string>) {
     if (!col.unique || v === null || v === '') return
     const value: QueryValue = v instanceof Date ? v.toISOString() : v
@@ -264,12 +328,17 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     return new HttpError(409, 'conflict', `${col.displayName || col.name}: "${String(value).slice(0, 60)}" already exists (values must be unique).`, col.name)
   }
 
-  async function checkLookup(def: TableDef, col: ColumnDef, v: Cell, conn?: Connector) {
+  async function checkLookup(def: TableDef, col: ColumnDef, v: Cell, conn?: Connector, ctx?: UserContext | null) {
     if (col.type !== 'lookup' || v === null || v === '') return
     const self = col.lookupTable === def.name || col.lookupTable === def.id
     const target = self ? def : col.lookupTable ? await meta().tables.get(col.lookupTable) : null
     if (!target) throw new HttpError(422, 'invalid', `${col.displayName || col.name}: the lookup table "${col.lookupTable ?? ''}" does not exist.`, col.name)
-    if (!(await exists(physical(target), { col: 'id', op: 'eq', value: String(v) }, self ? conn : undefined))) {
+    // a user may only point at rows they can read (no probing for, or linking to, rows they cannot see): an unreadable
+    // row answers exactly like a missing one
+    const readable = ctx ? ctx.rowPredicate(target, 'read') : undefined
+    if (readable && 'const' in readable && !readable.const) throw new HttpError(422, 'invalid', `${col.displayName || col.name}: no row with id "${String(v).slice(0, 64)}" in "${target.displayName || target.name}".`, col.name)
+    const byId: Condition = { col: 'id', op: 'eq', value: String(v) }
+    if (!(await exists(physical(target), readable && !isConstTrue(readable) ? and(byId, readable) : byId, self ? conn : undefined))) {
       throw new HttpError(422, 'invalid', `${col.displayName || col.name}: no row with id "${String(v).slice(0, 64)}" in "${target.displayName || target.name}".`, col.name)
     }
   }
@@ -325,6 +394,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
         if (opts.preserve && !ctx && !isBlank(v)) raw[col.name] = coerceIn(col, v)
         continue // never writable by clients: ignored
       }
+      if (col.computed) continue // formula and rollup columns: the server calculates them, values sent are ignored
       if (col.type === 'autonumber' && !(opts.preserve && !ctx)) continue // server-assigned
       writableColumn(ctx, def, col)
       raw[col.name] = coerceIn(col, v)
@@ -377,9 +447,15 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     const actor = ctx ? ctx.user.id : opts.actorId
     raw.createdBy = actor ?? ((given.createdBy as string | undefined) ?? (given.owner as string | undefined) ?? null)
     raw.owner = actor ?? ((given.owner as string | undefined) ?? (given.createdBy as string | undefined) ?? null)
+    // team-owned rows (docs/admin/security-model.md): the creator may hand the new row to a team they belong to
+    if (ctx && def.teamOwnership && !isBlank(values.owner as Cell)) raw.owner = await assignableOwner(ctx, values.owner)
     for (const name of def.missingSystem ?? []) if (name !== 'id') delete raw[name]
+    // table events, formula columns and validation rules (kernel.ts): they may set columns or refuse the row; the
+    // permission and value checks below see the row as the events left it
+    const hooks = deps.hooks?.()
+    if (hooks) Object.assign(raw, await hooks.beforeWrite(ctx, def, 'create', raw, null, null))
     // RLS WITH CHECK: the new row must match the row filter of a role that grants create (admins: always)
-    if (ctx && !evaluateCondition(ctx.rowPredicate(def, 'create'), raw)) {
+    if (ctx && !(await rowMatches(def, ctx.rowPredicate(def, 'create'), raw))) {
       throw new HttpError(403, 'denied', `You are not allowed to add this row to "${def.displayName || def.name}": it does not match the rows your role may create.`)
     }
     for (const col of def.columns) {
@@ -402,7 +478,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
         seen.add(uniqueKey(v))
       }
       await checkUnique(def, col, v, undefined, opts.conn, opts.replacing)
-      await checkLookup(def, col, v, opts.conn)
+      await checkLookup(def, col, v, opts.conn, ctx)
       if (ctx) await checkAttachments(def, col, v, id, [])
     }
     return raw
@@ -423,16 +499,31 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     await connector.insert(def, [raw])
     await markFileModified(def)
     await audit(ctx, 'row.insert', def, String(raw.id))
+    changed(ctx, def, 'insert', [String(raw.id)], Object.keys(raw))
+    await deps.hooks?.()?.outbox(ctx, def, { op: 'insert', rowId: String(raw.id), changed: Object.keys(raw), after: raw })
     return rowOut(ctx, def, raw)
   }
 
   /* ---------------------------------------------------------------- update */
 
-  async function update(ctx: UserContext | null, table: TableDef, id: string, changesIn: Record<string, QueryValue>): Promise<JsonRow> {
+  /** 409 for a stale save: the row as the caller may see it now, and who changed it last (when known) */
+  function versionConflict(ctx: UserContext | null, def: TableDef, id: string, now: RawRow): HttpError {
+    const by = lastWriterOf(currentEnvironment().id, def.id, id)
+    const who = by && by.id !== ctx?.user.id ? by.name : null
+    return new HttpError(409, 'conflict', `${who ? `${who} changed` : 'Someone else changed'} this record after you opened it. Reload it, or save again to keep your version.`, 'modifiedOn', {
+      current: rowOut(ctx, def, now),
+      ...(who ? { changedBy: { id: by!.id, name: who } } : {}),
+    })
+  }
+
+  async function update(ctx: UserContext | null, table: TableDef, id: string, changesIn: Record<string, QueryValue>, opts: { ifModifiedOn?: string } = {}): Promise<JsonRow> {
     const def = physical(table)
     checkWritableTable(def)
     const changes = asObject(changesIn, 'changes')
     if (typeof id !== 'string' || !id || id.length > 64) throw new HttpError(404, 'not-found', 'Row not found.')
+    const hooks = deps.hooks?.()
+    // read-modify-write of formula columns and before-events: concurrent saves of one row run one after another
+    if (hooks) await hooks.lockRow(def, id)
     const existing = await findRow(def, id)
     const readable = async () => (ctx ? (await findRow(def, id, ctx.rowPredicate(def, 'read'))) !== null : existing !== null)
     if (!existing) throw new HttpError(404, 'not-found', 'Row not found.')
@@ -445,7 +536,12 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
         if (String(v) !== id) throw new HttpError(422, 'invalid', 'The id of a row cannot be changed.', 'id')
         continue
       }
+      if (col.name === 'owner' && ctx && def.teamOwnership && !isBlank(v)) {
+        raw.owner = await assignableOwner(ctx, v)
+        continue
+      }
       if (isSystem(col)) continue // never writable by clients: ignored
+      if (col.computed) continue // calculated by the server: ignored
       if (col.type === 'autonumber' && ctx) continue
       writableColumn(ctx, def, col)
       raw[col.name] = coerceIn(col, v)
@@ -458,9 +554,14 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     if (ctx && guard && !('const' in guard) && !(await findRow(def, id, guard))) {
       throw (await readable()) ? new HttpError(403, 'denied', 'You are not allowed to change this row.') : new HttpError(404, 'not-found', 'Row not found.')
     }
+    // table events, formula columns and validation rules (kernel.ts): they may set more columns or refuse the change
+    if (hooks) {
+      const set = await hooks.beforeWrite(ctx, def, 'update', { ...existing, ...raw }, existing, new Set(Object.keys(raw)))
+      for (const [k, v] of Object.entries(set)) raw[k] = v
+    }
     // RLS WITH CHECK: the changed row must still match the update predicate (it may leave the read filter: it then
     // simply disappears for this user)
-    if (ctx && guard && !isConstTrue(guard) && !evaluateCondition(guard, { ...existing, ...raw })) {
+    if (ctx && guard && !isConstTrue(guard) && !(await rowMatches(def, guard, { ...existing, ...raw }))) {
       throw new HttpError(403, 'denied', 'You are not allowed to make this change: the row would no longer match the rows your role may change.')
     }
     const removed: string[] = []
@@ -468,7 +569,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
       const col = findColumn(def, name)!
       if (col.required && isBlank(v)) throw new HttpError(422, 'invalid', `${col.displayName || col.name} is required.`, col.name)
       await checkUnique(def, col, v, id)
-      await checkLookup(def, col, v)
+      await checkLookup(def, col, v, undefined, ctx)
       if (col.type === 'file' || col.type === 'image') {
         const before = attachmentIds(existing[col.name])
         if (ctx) await checkAttachments(def, col, v, id, before)
@@ -476,10 +577,27 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
         for (const b of before) if (!after.has(b)) removed.push(b)
       }
     }
+    // optimistic concurrency: the caller saw the row at ifModifiedOn; a newer save by anyone answers 409 (after the
+    // permission checks above, so a 409 never reveals a row the caller may not change)
+    let versionGuard: Condition | undefined
+    if (opts.ifModifiedOn !== undefined && hasSystemColumn(def, 'modifiedOn')) {
+      const want = typeof opts.ifModifiedOn === 'string' ? Date.parse(opts.ifModifiedOn) : NaN
+      if (!Number.isFinite(want)) throw new HttpError(422, 'invalid', 'ifModifiedOn must be an ISO date and time.', 'ifModifiedOn')
+      const have = existing.modifiedOn instanceof Date ? existing.modifiedOn : existing.modifiedOn ? new Date(String(existing.modifiedOn)) : null
+      if (!have || have.getTime() !== want) throw versionConflict(ctx, def, id, existing)
+      // a millisecond window: values the database wrote itself (now()) carry microseconds the wire format drops
+      versionGuard = and({ col: 'modifiedOn', op: 'ge', value: have.toISOString() }, { col: 'modifiedOn', op: 'lt', value: new Date(have.getTime() + 1).toISOString() })
+    }
     if (hasSystemColumn(def, 'modifiedOn')) raw.modifiedOn = new Date()
     const connector = await writableConnector(def)
-    const n = await connector.update(def, id, raw, guard && !('const' in guard) ? guard : undefined)
+    const rowGuard = guard && !('const' in guard) ? guard : undefined
+    const n = await connector.update(def, id, raw, versionGuard ? (rowGuard ? and(rowGuard, versionGuard) : versionGuard) : rowGuard)
     if (n === 0) {
+      // the version check passed a moment ago: someone saved in between
+      if (versionGuard) {
+        const now = await findRow(def, id)
+        if (now) throw versionConflict(ctx, def, id, now)
+      }
       throw (await readable()) ? new HttpError(403, 'denied', 'You are not allowed to change this row.') : new HttpError(404, 'not-found', 'Row not found.')
     }
     if (removed.length) {
@@ -488,6 +606,8 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     }
     await markFileModified(def)
     await audit(ctx, 'row.update', def, id, { columns: Object.keys(raw).filter((k) => k !== 'modifiedOn') })
+    changed(ctx, def, 'update', [id], Object.keys(raw))
+    if (hooks) await hooks.outbox(ctx, def, { op: 'update', rowId: id, changed: Object.keys(raw).filter((k) => k !== 'modifiedOn'), before: existing, after: { ...existing, ...raw } })
     const after = (await findRow(def, id)) ?? { ...existing, ...raw }
     return rowOut(ctx, def, after)
   }
@@ -533,12 +653,31 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     } else {
       targets = await matchingIds(connector, def, ids, undefined)
     }
+    // before-delete events (they may Reject); single deletes keep the whole row for the outbox and the after-events
+    const hooks = deps.hooks?.()
+    const keep: RawRow[] = []
+    if (hooks && targets.length && (targets.length === 1 || (await hooks.hasBefore(def, 'delete')))) {
+      const runEvents = await hooks.hasBefore(def, 'delete')
+      for (let i = 0; i < targets.length; i += ID_CHUNK) {
+        const chunk = (await runSelect(connector, def, { where: { col: 'id', op: 'in', value: targets.slice(i, i + ID_CHUNK) } })).rows
+        for (const row of chunk) {
+          if (runEvents) await hooks.beforeWrite(ctx, def, 'delete', row, row, null)
+          if (targets.length === 1) keep.push(row)
+        }
+      }
+    }
     const total = targets.length ? await connector.delete(def, targets, guard) : 0
     if (targets.length) await removeAttachments(await meta().attachments.forRows(def.id, targets))
+    if (targets.length && def.sharing) await meta().org?.shares.removeForRows(def.id, targets).catch((e) => deps.log('warn', `share cleanup failed: ${errText(e)}`))
     if (total === 0 && ids.length === 1) throw new HttpError(404, 'not-found', 'Row not found.')
     if (total > 0) {
       await markFileModified(def)
       await audit(ctx, 'row.delete', def, ids.length === 1 ? ids[0] : undefined, ids.length > 1 ? { ...auditIds(targets), deleted: total } : undefined)
+      changed(ctx, def, 'delete', targets, [])
+      if (hooks) {
+        if (targets.length === 1) await hooks.outbox(ctx, def, { op: 'delete', rowId: targets[0], before: keep[0] ?? { id: targets[0] }, snapshotColumns: 'all' })
+        else await hooks.outbox(ctx, def, { op: 'bulk', rowIds: targets, rowCount: total, details: { action: 'delete' } })
+      }
     }
     return total
   }
@@ -594,6 +733,19 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
         if (pred && !('const' in pred)) guard = pred
       }
     }
+    const hooks = deps.hooks?.()
+    if (hooks && targets.length && (await hooks.hasBefore(def, 'delete'))) {
+      for (let i = 0; i < targets.length; i += ID_CHUNK) {
+        for (const row of (await runSelect(connector, def, { where: { col: 'id', op: 'in', value: targets.slice(i, i + ID_CHUNK) } })).rows) {
+          try {
+            await hooks.beforeWrite(ctx, def, 'delete', row, row, null)
+          } catch (e) {
+            if (e instanceof HttpError) throw new HttpError(e.status, e.code, `Replacing the rows: ${e.message} (nothing was imported)`, e.field)
+            throw e
+          }
+        }
+      }
+    }
     const replacing = new Set(targets)
     const batch: Batch = { ids: new Set(), unique: new Map() }
     const rows: RawRow[] = []
@@ -620,6 +772,9 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     if (targets.length || rows.length) await markFileModified(def)
     const n = rows.length
     await audit(ctx, 'table.import', def, undefined, { mode, rows: n })
+    if (targets.length || n) changed(ctx, def, 'import', [...targets, ...rows.map((r) => String(r.id))], [...new Set([...mapping.values()].map((c) => c.name))])
+    if (hooks && targets.length) await hooks.outbox(ctx, def, { op: 'bulk', rowIds: targets, rowCount: targets.length, details: { action: 'delete', import: true } })
+    if (hooks && n) await hooks.outbox(ctx, def, { op: 'import', rowIds: rows.map((r) => String(r.id)), rowCount: n, changed: [...new Set([...mapping.values()].map((c) => c.name))], details: { mode } })
     return n
   }
 
@@ -641,12 +796,16 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     if (guard && !isConstTrue(guard)) {
       const before = await findRow(def, rowId, guard, connector)
       if (!before) return 0
-      if (!evaluateCondition(guard, { ...before, ...changes })) {
+      if (!(await rowMatches(def, guard, { ...before, ...changes }))) {
         throw new HttpError(403, 'denied', 'You are not allowed to make this change: the row would no longer match the rows your role may change.')
       }
     }
     const n = await connector.update(def, rowId, hasSystemColumn(def, 'modifiedOn') ? { ...changes, modifiedOn: new Date() } : changes, guard && !('const' in guard) ? guard : undefined)
-    if (n > 0) await markFileModified(def)
+    if (n > 0) {
+      await markFileModified(def)
+      changed(ctx, def, 'update', [rowId], Object.keys(changes))
+      await deps.hooks?.()?.outbox(ctx, def, { op: 'update', rowId, changed: Object.keys(changes), after: { id: rowId, ...changes } })
+    }
     return n
   }
 
@@ -774,11 +933,16 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
   return {
     query: (ctx, table, q) => doQuery(ctx, table, q, DEFAULT_ROW_CAP),
     queryV2,
-    insert: (ctx, table, values) => insertOne(ctx, table, asObject(values, 'values'), { preserve: true }),
-    update,
-    delete: del,
-    importCsv,
+    // writes run as one unit of work each (kernel.ts): the change, its outbox row and the jobs it causes commit together
+    insert: (ctx, table, values) => unit(table, () => insertOne(ctx, table, asObject(values, 'values'), { preserve: true })),
+    update: (ctx, table, id, changes, opts) => unit(table, () => update(ctx, table, id, changes, opts)),
+    delete: (ctx, table, ids) => unit(table, () => del(ctx, table, ids)),
+    importCsv: (ctx, table, csv, mode, opts) => unit(table, () => importCsv(ctx, table, csv, mode, opts)),
     exportCsv,
-    internals: { physical, connectorFor, findRow, rowOut: (ctx, t, r) => rowOut(ctx, physical(t), r), writeCells, removeAttachments, markFileModified },
+    internals: {
+      physical, connectorFor, findRow, rowOut: (ctx, t, r) => rowOut(ctx, physical(t), r),
+      writeCells: (ctx, t, rowId, changes) => unit(t, () => writeCells(ctx, t, rowId, changes)),
+      removeAttachments, markFileModified,
+    },
   }
 }

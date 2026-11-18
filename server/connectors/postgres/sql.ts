@@ -600,9 +600,36 @@ function translate(c: Condition | undefined, cols: Cols, ctx: LeafCtx, negated: 
   if ('and' in c) return c.and.length ? '(' + c.and.map((x) => translate(x, cols, ctx, negated)).join(' AND ') + ')' : T
   if ('or' in c) return c.or.length ? '(' + c.or.map((x) => translate(x, cols, ctx, negated)).join(' OR ') + ')' : F
   if ('not' in c) return `(NOT ${translate(c.not, cols, ctx, true)})`
+  if ('semi' in c) {
+    const sql = semiJoin(c.semi, cols, ctx)
+    return negated ? `COALESCE(${sql}, FALSE)` : sql
+  }
   const sql = leaf(c, cols, ctx)
   // under NOT, NULL would stay NULL (and be filtered out); the in-memory reference treats it as false
   return negated ? `COALESCE(${sql}, FALSE)` : sql
+}
+
+/**
+ * Relationship rule (security engine only): `col IN (SELECT key FROM target WHERE ...)` in the same statement, same
+ * schema (the engine only builds it for tables of the same connection). Both sides are compared the way the indexes
+ * are built: text kinds lowercased (the lookup index is on the folded value), the managed id column as stored.
+ * PostgreSQL plans it as a (hashed) semi-join; the inner WHERE uses the target's own indexes.
+ */
+function semiJoin(s: { col: string; table: TableDef; key: string; where: Condition }, cols: Cols, ctx: LeafCtx): string {
+  const outer = cols.get(s.col)
+  const target = s.table
+  const tcols = new Cols(target)
+  const inner = tcols.get(s.key)
+  const expr = (col: ColumnDef, managed: boolean, q: string, asText: boolean): string => {
+    if (managed && col.name === 'id') return q
+    if (kindOf(col.type) === 'text') return fold(ctx.d, q)
+    return asText ? `lower(CAST(${q} AS text))` : q
+  }
+  const mixed = kindOf(outer.type) !== kindOf(inner.type)
+  const left = expr(outer, ctx.managed, quoteId(outer.name), mixed)
+  const right = expr(inner, target.managed === true, quoteId(inner.name), mixed)
+  const where = translate(s.where, tcols, { d: ctx.d, p: ctx.p, managed: target.managed === true }, false)
+  return `(${left} IN (SELECT ${right} FROM ${tableId(ctx.d, target)} WHERE ${right} IS NOT NULL AND ${where}))`
 }
 
 /** WHERE fragment; parameters continue after `offset` existing ones */

@@ -1,16 +1,22 @@
 import { AtSign, Hash, LayoutGrid, MessageCircle, MessageSquareText, MessagesSquare, Paperclip, Search, SendHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import type { LiveApi } from '@/platform/live-api'
+import { useChatLive } from './live'
 
 /**
  * THE chat module boundary. Everything the dock and the pop-out window show as "chat" is rendered by this component;
  * the dock (ChatDock.tsx), the pop-out window (ChatWindow.tsx) and their coordination (dock.ts, link.ts) do not need
  * to change when the real chat module (P3, on the realtime hub) drops in here.
  *
- * Today: a designed "coming soon" state listing what chat will do.
+ * Today: a designed "coming soon" state listing what chat will do. It already receives the realtime connection
+ * (`live` prop, or the one the shell injected with setChatLive): the chat module subscribes to its topics through it.
  */
-export function ChatPanel({ variant }: { variant: 'dock' | 'window' }) {
+export function ChatPanel({ variant, live: given }: { variant: 'dock' | 'window'; live?: LiveApi | null }) {
+  // the realtime connection (topics, presence) the chat module will run on; injected by the shell (chat/live.ts)
+  const injected = useChatLive()
+  const live = given ?? injected
   return (
-    <div data-testid="chat-panel" data-variant={variant} className="flex min-h-0 flex-1 flex-col">
+    <div data-testid="chat-panel" data-variant={variant} data-live={live ? live.status().state : 'none'} className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-auto px-4 py-5">
         <div className="flex flex-col items-center text-center">
           <span className="relative grid size-14 place-items-center rounded-2xl bg-primary/10 text-primary">

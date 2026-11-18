@@ -117,7 +117,7 @@ Gross(net: Number): Number = net * (1 + TaxRate);
 
 ## Functions
 
-151 built-in functions. A signature in square brackets means the argument is optional; "..." means more of the same may follow. A function marked as behaviour works only in behaviour properties.
+155 built-in functions. A signature in square brackets means the argument is optional; "..." means more of the same may follow. A function marked as behaviour works only in behaviour properties.
 
 - [Logic and errors](#logic-and-errors) (16)
 - [Text](#text) (23)
@@ -125,9 +125,9 @@ Gross(net: Number): Number = net * (1 + TaxRate);
 - [Date and time](#date-and-time) (20)
 - [Table](#table) (25)
 - [Colour](#colour) (3)
-- [Behaviour](#behaviour) (27)
+- [Behaviour](#behaviour) (30)
 - [JSON and regular expressions](#json-and-regular-expressions) (5)
-- [Context and environment](#context-and-environment) (4)
+- [Context and environment](#context-and-environment) (5)
 
 ### Logic and errors
 
@@ -312,10 +312,13 @@ Functions with side effects. They work only in behaviour properties such as OnSe
 | `Reset(control)` | Puts an input control back to its default value. |
 | `ResetForm(Form)` | Puts every field of a form back to its starting value. |
 | `Select(control)` | Runs the OnSelect of a control. |
+| `SendNotification(user, title [, body] [, link])` | Sends an in-app notification (the bell) to a person in this environment: user is an email, a user id or a record such as User(). link is a link inside Appbuilder such as "#u". Unlike Notify, it reaches the other person; it is rate-limited. |
 | `Set(variable, value)` | Sets a global variable. |
 | `SetFocus(control)` | Moves the keyboard focus to a control. |
+| `Share(record, userOrTeam [, access])` | Shares one row with a person (email, or a record such as User()) or a team (its code) for "Read" (default) or "Edit". You must own the row or have the Share privilege; sharing must be on for the table. |
 | `SubmitForm(Form)` | Saves the data entered in a form. |
 | `Trace(message [, data])` | Writes a line to the debug console. |
+| `Unshare(record, userOrTeam)` | Stops sharing one row with a person or a team. |
 | `UpdateContext({ name: value, ... })` | Sets context variables for the current screen. |
 | `UpdateIf(collection, condition, changes)` | Changes every row where the condition is true. |
 | `ViewForm(Form)` | Switches a form to View mode. |
@@ -341,7 +344,8 @@ Facts about the signed-in user, the address the app was opened with, and generat
 | `GUID([text])` | A new random unique id, or the GUID that the text spells. |
 | `Language()` | The language of the user, such as "en-US". |
 | `Param(name)` | A value passed to the app in the address, such as the id in #run-app?id=5. Blank when missing. |
-| `User()` | The signed-in user: a record with FullName, Email and Image. |
+| `SharedWith(record)` | The people and teams a row is shared with: a table of Name, Email (blank for teams), Id, Type ("User" or "Team") and Access ("Read" or "Edit"). Empty while loading, for rows of tables without sharing and for rows you cannot read. |
+| `User()` | The signed-in user: a record with FullName, Email, Id, Roles, Department, DepartmentCode, Manager (a record with FullName, Email and Id), JobTitle and Teams (a table of Name, Code and Id). |
 
 ## Enums
 

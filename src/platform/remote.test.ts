@@ -174,7 +174,8 @@ describe('RemotePlatform: init, auth, 401, CSRF', () => {
     expect(s.ready).toBe(true)
     expect(s.session?.user.name).toBe('Ann')
     expect(s.tables.map((t) => t.name)).toEqual(['Contacts'])
-    expect(srv.log.map((r) => r.path)).toEqual(['/api/v1/status', '/api/v1/workspace'])
+    // administrators also load the organisation (departments, teams) for the admin console
+    expect(srv.log.map((r) => r.path)).toEqual(['/api/v1/status', '/api/v1/workspace', '/api/v1/org'])
     expect(srv.queryCount()).toBe(0) // rows are lazy
     expect(srv.log.every((r) => r.credentials === 'same-origin')).toBe(true)
   })

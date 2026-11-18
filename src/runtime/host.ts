@@ -1,7 +1,7 @@
 import type { AppDef, ControlNode, FxHost, FxRecord, FxValue } from '@/contracts'
 import { Evaluator, ROOT_CTX, enumName, type Env, type NodeCtx, type RuntimeView } from './evaluator'
 import { uid, isRecord } from './util'
-import { currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableRows, tables } from './data'
+import { changeShare, sendNotification, currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableRows, tables } from './data'
 import { pendingFilesOf } from './attachments'
 import { finishSubmit } from './submit'
 import { chainItems, prepareAction } from './delegation'
@@ -247,7 +247,9 @@ function beginRun(input: RunInput): Run {
       const id = mode === 'new' ? null : rowId(isRecord(item) ? item : null)
       if (input.dryData) stored = { ...updates }
       else if (isTableTarget(ds)) {
-        stored = id ? tables.update(ds, id, updates) : tables.insert(ds, updates)
+        // the form's base version (package H): a stale save is refused with 409 and the form offers reload / keep mine
+        const version = outs.__version instanceof Date || (typeof outs.__version === 'string' && outs.__version) ? (outs.__version as Date | string) : null
+        stored = id ? tables.update(ds, id, updates, { ifVersion: version }) : tables.insert(ds, updates)
         fresh()
         deferTable = true
       } else if (Object.prototype.hasOwnProperty.call(view.collections, ds)) {
@@ -415,6 +417,16 @@ function beginRun(input: RunInput): Run {
     },
     refresh(source) {
       if (isTable(source)) tables.reload(source)
+    },
+    share(rowIdValue, principal, access) {
+      void changeShare(rowIdValue, principal, access)
+    },
+    unshare(rowIdValue, principal) {
+      void changeShare(rowIdValue, principal, null)
+    },
+    sendNotification(to, title, body, link) {
+      if (input.dryData) return
+      void sendNotification({ to, title, ...(body ? { body } : {}), ...(link ? { link } : {}) })
     },
   }
 

@@ -11,6 +11,7 @@ import { RunSurface } from './RunSurface'
 import { loadAppDef } from './session'
 import { openChannel, type Channel } from './channel'
 import { errorMessage } from './data'
+import { AppLiveBar } from './presence'
 
 /**
  * `#run-<id>`: the player. Without a Studio it runs the saved app. When the Studio of the same app
@@ -149,6 +150,7 @@ function Player({ appId, embedded, onBack }: { appId: string; embedded: boolean;
         <RunSurface testId="run-screen" padding={embedded ? 12 : 0} />
       )}
       <DataLoading />
+      <AppLiveBar appId={appId} store={store} />
       <Toasts contained={embedded} />
       {connected && !embedded && <DebugBar />}
     </div>
@@ -162,7 +164,7 @@ function DataLoading() {
   const mine = (loading ?? []).filter((t) => (sources ?? []).includes(t))
   if (mine.length === 0) return null
   return (
-    <div data-testid="data-loading" className="pointer-events-none absolute right-3 top-3 z-[350] flex items-center gap-1.5 rounded-full bg-card/90 px-2.5 py-1 text-[11px] text-muted-foreground shadow">
+    <div data-testid="data-loading" className="pointer-events-none absolute left-3 top-3 z-[350] flex items-center gap-1.5 rounded-full bg-card/90 px-2.5 py-1 text-[11px] text-muted-foreground shadow">
       <Loader2 className="size-3 animate-spin" /> Loading data
     </div>
   )

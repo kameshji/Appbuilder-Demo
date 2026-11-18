@@ -193,6 +193,8 @@ All are optional. Set them before starting the server (`npm start` or `node serv
 | `APPBUILDER_ALLOWED_HOSTS` | none | Extra host names (comma-separated) that the `Host` and `Origin` headers may name, besides `localhost`, `127.0.0.1`, `::1` and the `APPBUILDER_HOST` address. Only needed behind a reverse proxy with its own name. These names are **not** proof that a request is local. |
 | `APPBUILDER_SECURE_COOKIE` | off | `1`: the session cookie `ab_session` always carries `Secure` (the browser sends it only over HTTPS). Set it when users reach Appbuilder through an HTTPS reverse proxy. Without HTTPS in front, sign-in then stops working, because browsers drop `Secure` cookies on plain `http://` (except on `localhost` in current Chrome and Firefox). |
 | `APPBUILDER_TRUST_PROXY` | off | `1`: trust the `X-Forwarded-Proto` header from a reverse proxy; when it says `https`, the cookie gets `Secure`. Only set it when a proxy you control is the only way to reach the port (otherwise any client can send the header; harmless for `Secure`, but nothing else is derived from it). |
+| `APPBUILDER_LIVE_MAX_PER_USER` | 20 | Realtime sockets (`/api/v1/live`) one user may hold at once, all tabs and devices together. One per open tab. |
+| `APPBUILDER_LIVE_MAX_CONNECTIONS` | 5000 | Realtime sockets for the whole server. |
 
 Notes:
 
@@ -279,6 +281,48 @@ makes the system less safe:
 
 If you need access from another PC, use Remote Desktop to the server PC, or an SSH/VPN tunnel to the loopback port.
 Do not expose the port.
+
+## Behind a reverse proxy
+
+Appbuilder listens on `127.0.0.1` and has no TLS of its own. To serve other computers over HTTPS, put a reverse proxy on the
+same machine in front of it. The proxy must:
+
+- pass **WebSocket upgrades** on `/api/v1/live` (live data refresh, presence, notifications). Without them Appbuilder still
+  works, but pages refresh every 30 seconds instead of at once and show "Live updates paused";
+- keep the browser's `Host` and `Origin` headers (the server checks both; list the proxy's name in `APPBUILDER_ALLOWED_HOSTS`);
+- not cut idle connections faster than about a minute (the server pings every 25 seconds).
+
+Caddy (automatic HTTPS; Caddy 2 proxies WebSockets and keeps `Host` by default):
+
+```
+appbuilder.example.com {
+	reverse_proxy 127.0.0.1:5174
+}
+```
+
+Start Appbuilder for it with `APPBUILDER_ALLOWED_HOSTS=appbuilder.example.com` and `APPBUILDER_TRUST_PROXY=1` (Caddy sends
+`X-Forwarded-Proto: https`) or `APPBUILDER_SECURE_COOKIE=1`.
+
+nginx needs the upgrade headers spelled out:
+
+```
+location / {
+    proxy_pass http://127.0.0.1:5174;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+location /api/v1/live {
+    proxy_pass http://127.0.0.1:5174;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_read_timeout 120s;
+}
+```
+
+Check it: open Appbuilder through the proxy; the top bar must not show "Live updates paused", and the browser's developer
+tools list a WebSocket `/api/v1/live` with status 101.
 
 ## Not supported yet
 

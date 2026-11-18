@@ -349,6 +349,8 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (PostgreSQL)' : `se
     expect(fs.existsSync(storage)).toBe(true)
     expect((await rep.post('/api/v1/data/Deals/delete', { ids: [rowC] })).data).toEqual({ deleted: 1 })
     expect(await app.services.meta.attachments.forRows(deals.id, [rowC])).toEqual([])
+    // the file goes once the delete has committed (a job; docs/dev/events-and-jobs.md)
+    await app.services.kernel.drain()
     expect(fs.existsSync(storage)).toBe(false)
   }, 60000)
 

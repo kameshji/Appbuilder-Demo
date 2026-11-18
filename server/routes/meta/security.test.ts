@@ -131,7 +131,7 @@ describe('security preview', () => {
     expect(r.status, JSON.stringify(r.body)).toBe(200)
     const e = r.body.tables.find((x: { table: string }) => x.table === t.id)
     expect(e).toMatchObject({ rowCount: 2, hiddenColumns: ['Amount'], readOnlyColumns: ['Region'], filtered: true, read: 'all' })
-    expect(r.body.items.find((x: { tableId: string }) => x.tableId === t.id)).toEqual({ tableId: t.id, visibleRows: 2, hiddenColumns: ['Amount'], readOnlyColumns: ['Region'] })
+    expect(r.body.items.find((x: { tableId: string }) => x.tableId === t.id)).toEqual({ tableId: t.id, visibleRows: 2, hiddenColumns: ['Amount'], readOnlyColumns: ['Region'], why: ['Role "West reps": all rows, limited by its row rules'] })
     // admins see everything
     const adm = (await h.call(A, 'GET', `/api/v1/security/preview?user=${A}`)).body
     expect(adm.isAdmin).toBe(true)

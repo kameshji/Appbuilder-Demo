@@ -13,11 +13,13 @@ The browser-only demo mode has no server, no real security and is not covered (s
 | --- | --- |
 | [Installation](installation.md) | You are setting Appbuilder up for the first time, or moving it to another PC |
 | [Users and roles](users-and-roles.md) | You add people, decide who can build, and control which rows and columns each person sees |
+| [Organisation](organisation.md) | You set up departments, managers and teams, import people from a CSV file, or look at the org chart |
 | [Environments](environments.md) | You want a sandbox next to production, move solutions between them, lock production, or give people access to an environment |
 | [Connections](connections.md) | You change the database, link existing PostgreSQL or MySQL tables, use data files or Google Sheets |
 | [Backup and restore](backup-and-restore.md) | You need to protect the data, or recover it |
 | [Upgrades](upgrades.md) | You are installing a newer version |
 | [Audit log](audit-log.md) | You need to know who did what |
+| [Jobs](jobs.md) | You check background work, retry failed jobs, change retention, or read the events run log |
 | [Security model](security-model.md) | You are evaluating Appbuilder, or need to know exactly what is and is not protected |
 | [Hardening checklist](hardening-checklist.md) | You are about to let real people use it with real data |
 

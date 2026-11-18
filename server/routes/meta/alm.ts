@@ -10,7 +10,7 @@
  */
 import { createHash } from 'node:crypto'
 import type { AppDef } from '../../../src/contracts.ts'
-import type { AppMeta, ColumnDef, ConnectorKind, RoleDef, SolutionDef, TableDef, TablePrivilege } from '../../../src/platform/contracts.ts'
+import type { AccessScope, AppMeta, ColumnDef, ConnectorKind, RoleDef, SolutionDef, TableDef, TablePrivilege } from '../../../src/platform/contracts.ts'
 import type { PlanColumnChange, PlanItem, SolutionImportResult, SolutionPlan } from '../../../src/platform/http.ts'
 import type { ConnectionRecord, Ctx, Services, UserContext } from '../../core/contracts.ts'
 import type { CoreServices } from '../../core/services.ts'
@@ -21,7 +21,8 @@ import {
 } from './util.ts'
 import type { RoleX } from './util.ts'
 import { parsePackage, readPkgApp, readPkgTables } from './packages.ts'
-import type { PkgApp, PkgTable } from './packages.ts'
+import type { PkgApp, PkgEvent, PkgTable } from './packages.ts'
+import type { TableEventDef } from '../../../src/platform/events.ts'
 import { audit, createPhysical, csvToRows, importRowsSystem, pickSource, resolveConnection, unregisterTable } from './tables-core.ts'
 import type { TableRows } from './tables-core.ts'
 import { backfill, checkLookupValues, columnValues, dropColumnFromRoles } from './tables.ts'
@@ -32,6 +33,7 @@ import type { PkgFile } from './solutions.ts'
 
 /* ------------------------------------------------------------------ package */
 
+const PKG_SCOPES: AccessScope[] = ['own', 'team', 'manager', 'managerTree', 'department', 'departmentTree', 'all']
 interface PkgRole { id?: string; name: string; description?: string; privileges: TablePrivilege[]; apps: string[] | 'all'; isMaker?: boolean; isAdmin?: boolean }
 interface PkgConn { id?: string; name: string; connector: ConnectorKind; settings: Record<string, string> }
 export interface SolutionPkg {
@@ -64,8 +66,11 @@ export function readSolutionPkg(text: unknown, s: Services): SolutionPkg | null 
     if (!isObj(r) || typeof r.name !== 'string' || !r.name.trim()) throw invalid('A role in the package is malformed.')
     if (r.id !== undefined && (typeof r.id !== 'string' || !ID.test(r.id))) throw invalid('A role id in the package is malformed.')
     const privileges = (Array.isArray(r.privileges) ? r.privileges : []).filter(isObj).map((p) => {
-      const scope = (v: unknown) => (v === 'own' || v === 'all' ? v : 'none')
+      const scope = (v: unknown): AccessScope => (PKG_SCOPES.includes(v as AccessScope) ? (v as AccessScope) : 'none')
       const out: TablePrivilege = { table: String(p.table ?? ''), create: p.create === true, read: scope(p.read), update: scope(p.update), delete: scope(p.delete) }
+      // organisation scopes, relationship rules and the share privilege travel as they are: rules name tables by
+      // name and departments / teams by code (tokens @department:<code>, @team:<code>), so they survive the move
+      if (scope(p.share) !== 'none') out.share = scope(p.share)
       if (isObj(p.columns)) out.columns = { ...(p.columns as Record<string, 'none' | 'read' | 'update'>) }
       if (Array.isArray(p.rowFilter)) out.rowFilter = clone(p.rowFilter)
       return out
@@ -100,7 +105,10 @@ export function readSolutionPkg(text: unknown, s: Services): SolutionPkg | null 
 
 /* ------------------------------------------------------------------ plan */
 
-const COLUMN_PROPS: (keyof ColumnDef)[] = ['displayName', 'required', 'unique', 'default', 'choices', 'lookupTable', 'prefix', 'multiple', 'accept', 'maxSizeMB']
+const COLUMN_PROPS: (keyof ColumnDef)[] = ['displayName', 'required', 'unique', 'indexed', 'default', 'choices', 'lookupTable', 'prefix', 'multiple', 'accept', 'maxSizeMB', 'computed']
+/** table properties an upgrade carries (F: team ownership, sharing) */
+const TABLE_PROPS = ['displayName', 'description', 'primaryColumn', 'teamOwnership', 'sharing'] as const
+const EVENT_PROPS = ['name', 'kind', 'timing', 'operations', 'order', 'enabled', 'condition', 'actions', 'message', 'field', 'runAs', 'description'] as const
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
 
 function columnChanges(before: TableDef, after: TableDef): PlanColumnChange[] {
@@ -134,6 +142,8 @@ interface Ops {
   connMap: Map<string, string>
   newConns: PkgConn[]
   newFiles: PkgFile[]
+  /** table events per target table: created or replaced, removed */
+  eventOps: { tableId: string; upsert: PkgEvent[]; remove: TableEventDef[] }[]
   existingSolution: SolutionDef | null
   canAdmin: boolean
 }
@@ -160,7 +170,7 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
   const old = existingSolution?.components ?? []
   const ops: Ops = {
     tableMap: new Map(), newTables: [], changedTables: [], removedTables: [], appMap: new Map(), newApps: [], changedApps: [], removedApps: [],
-    newRoles: [], changedRoles: [], removedRoles: [], connMap: new Map(), newConns: [], newFiles: [], existingSolution, canAdmin,
+    newRoles: [], changedRoles: [], removedRoles: [], connMap: new Map(), newConns: [], newFiles: [], eventOps: [], existingSolution, canAdmin,
   }
   let matched = !!existingSolution
 
@@ -172,7 +182,7 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
       matched = true
       ops.tableMap.set(p.def.id, byId.id)
       const columns = columnChanges(byId, p.def)
-      const props = (['displayName', 'description', 'primaryColumn'] as const).filter((k) => !same(byId[k], p.def[k]))
+      const props = TABLE_PROPS.filter((k) => !same(byId[k], p.def[k]))
       const nameChanged = byId.name !== p.def.name
       if (nameChanged) problems.push(`Table "${byId.displayName}" is called ${byId.name} here and ${p.def.name} in the package; renaming tables is not part of an upgrade.`)
       if (!columns.length && !props.length) {
@@ -217,6 +227,44 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
   // lookups must resolve once the upgrade is done
   const finalNames = new Set([...tables.filter((t) => !ops.removedTables.includes(t)).map((t) => t.name.toLowerCase()), ...ops.newTables.map((t) => t.def.name.toLowerCase())])
   for (const p of pkg.tables) for (const c of p.def.columns) if (c.type === 'lookup' && c.lookupTable && !finalNames.has(c.lookupTable.toLowerCase())) problems.push(`${p.def.displayName}.${c.displayName} looks up "${c.lookupTable}", which is neither here nor in the package.`)
+
+  // table events and validation rules of the solution's tables (package G): matched by id within the table
+  const systemEvents: string[] = []
+  for (const p of pkg.tables) {
+    const target = ops.tableMap.get(p.def.id)
+    if (!target) continue
+    const isNew = ops.newTables.some((t) => t.def.id === target)
+    if (!isNew && !(p.def.id && tables.some((t) => t.id === p.def.id))) continue // a table of another identity is used as it is
+    if (p.events === undefined && isNew) continue
+    const existing = isNew || !s.kernel ? [] : await s.kernel.listEvents(target)
+    const op: Ops['eventOps'][number] = { tableId: target, upsert: [], remove: [] }
+    const label = (n: string) => `${p.def.displayName}: ${n}`
+    for (const e of p.events ?? []) {
+      const cur = e.id ? existing.find((x) => x.id === e.id) : undefined
+      const changed = !cur || EVENT_PROPS.some((k) => !same(cur[k], e[k]))
+      const system = e.runAs === 'system'
+      items.push({
+        kind: 'event', id: cur?.id ?? e.id ?? '', name: label(e.name ?? ''), change: !cur ? 'new' : changed ? 'changed' : 'unchanged',
+        ...(system ? { note: 'runs as the system: ignores row and column security' } : {}),
+      })
+      if (!changed) continue
+      op.upsert.push(e)
+      if (system && e.enabled !== false) systemEvents.push(label(e.name ?? ''))
+    }
+    // a package without an events list (older exports) leaves the events here alone
+    if (p.events !== undefined) {
+      for (const x of existing) {
+        if ((p.events ?? []).some((e) => e.id === x.id)) continue
+        op.remove.push(x)
+        items.push({ kind: 'event', id: x.id, name: label(x.name), change: 'removed', note: x.kind === 'validation' ? 'the validation rule is deleted' : 'the event is deleted' })
+      }
+    }
+    if (op.upsert.length || op.remove.length) ops.eventOps.push(op)
+  }
+  if (systemEvents.length) {
+    if (!canAdmin) problems.push(`The table events ${systemEvents.join(', ')} run as the system: only an administrator of this environment can import them.`)
+    else warnings.push(`The table events ${systemEvents.join(', ')} run as the system (they ignore row and column security): confirm them explicitly.`)
+  }
 
   // apps
   const appNames = appList.map((a) => a.name)
@@ -328,6 +376,7 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
       ? (backup?.available() ? { available: true, message: 'A backup of this environment is taken before anything changes.' } : { available: false, message: NO_BACKUP_MESSAGE })
       : { available: !!backup?.available(), message: 'Nothing here is changed: everything in the package is new.' },
     token: '',
+    ...(systemEvents.length ? { systemEvents } : {}),
   }
   // ids generated for new components (package entries without one) differ between two plans: not part of the token
   const fingerprint = items.map((i) => ({ ...i, id: i.change === 'new' ? '' : i.id }))
@@ -405,8 +454,19 @@ async function changeTable(s: Services, existing: TableDef, pkg: TableDef, colum
   if (pkg.description) cur.description = pkg.description
   else delete cur.description
   if (cur.columns.some((c) => c.name === pkg.primaryColumn)) cur.primaryColumn = pkg.primaryColumn
+  for (const k of ['teamOwnership', 'sharing'] as const) {
+    if (pkg[k]) cur[k] = true
+    else delete cur[k]
+  }
   cur.modifiedOn = s.now()
   await s.meta.tables.upsert(cur)
+  // formula columns are recomputed, rollups reconciled by jobs that commit with the upgrade
+  for (const c of columns) {
+    const before = existing.columns.find((x) => x.name === c.name) ?? null
+    const after = cur.columns.find((x) => x.name === c.name) ?? null
+    if (before?.computed || after?.computed) await s.kernel?.columnChanged(cur, before, after)
+    if (after && !!before?.indexed !== !!after.indexed) await s.kernel?.indexInBackground(cur, after)
+  }
   return cur
 }
 
@@ -436,8 +496,24 @@ export async function applySolution(s: Services, ctx: Ctx, pkg: SolutionPkg, res
         await createPhysical(s, record!, connector!, def)
         if (p.csv) rows.push({ def, rows: csvToRows(def, p.csv) })
       }
+      // formula columns of the new tables are computed for their rows (the event rules learn the new tables)
+      s.kernel?.invalidate()
       if (rows.length) await importRowsSystem(s, rows, u.user.id)
+      for (const p of ops.newTables) for (const col of p.def.columns) if (col.computed) await s.kernel?.columnChanged(p.def, null, col)
       for (const c of ops.changedTables) await changeTable(s, c.existing, c.pkg, c.columns)
+      // table events and validation rules (checked against this environment; run-as-system ones were confirmed)
+      if (s.kernel && ops.eventOps.length) {
+        s.kernel.invalidate()
+        for (const eo of ops.eventOps) {
+          const t = await s.meta.tables.get(eo.tableId)
+          if (!t) continue
+          for (const x of eo.remove) await s.kernel.removeEvent(x.id)
+          for (const e of eo.upsert) {
+            const saved = await s.kernel.putEvent(t, e, u.user.id)
+            if (saved.runAs === 'system') await audit(s, ctx, 'event.run_as_system', { event: saved.id, name: saved.name, via: 'solution', solution: pkg.head.id }, t.id)
+          }
+        }
+      }
       for (const t of pkg.tables) components.push({ kind: 'table', id: ops.tableMap.get(t.def.id)! })
       for (const t of ops.removedTables) {
         if (t.connectionId === 'conn_default' && t.managed) {
@@ -576,7 +652,11 @@ function dedupe(list: SolutionDef['components']): SolutionDef['components'] {
 export async function importStable(s: Services, ctx: Ctx, pkg: SolutionPkg, o: { confirm?: unknown; filesAs: 'database' | 'file' }): Promise<SolutionImportResult> {
   const res = await planSolution(s, me(ctx), pkg)
   if (res.plan.problems.length) throw invalid(`The solution cannot be imported here: ${res.plan.problems.join(' ')}`)
-  if (res.plan.mode === 'upgrade' && o.confirm !== res.plan.token) {
+  // an upgrade, and any import with events that run as the system, needs the administrator's explicit confirmation
+  if ((res.plan.mode === 'upgrade' || res.plan.systemEvents?.length) && o.confirm !== res.plan.token) {
+    if (res.plan.mode !== 'upgrade' && o.confirm === undefined) {
+      throw conflict(`"${pkg.head.displayName}" has table events that run as the system (${res.plan.systemEvents!.join(', ')}): review the plan and confirm it.`)
+    }
     throw conflict(o.confirm === undefined
       ? `"${pkg.head.displayName}" already exists in this environment: review the upgrade plan and confirm it.`
       : 'This environment or the package changed since the plan was made. Review the new plan and confirm it again.')

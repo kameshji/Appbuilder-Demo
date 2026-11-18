@@ -72,7 +72,9 @@ export function dataRoutes(router: ApiRouter, services: CoreServices): void {
     const t = await tableParam(services, ctx.params.table)
     ensureTableVisible(ctx.user!, t)
     const b = body(ctx)
-    return { row: await services.data.update(ctx.user!, t, ctx.params.id, (b.changes ?? {}) as never) }
+    // ifModifiedOn: optimistic concurrency (a stale save answers 409 with the current row)
+    const opts = b.ifModifiedOn !== undefined && b.ifModifiedOn !== null ? { ifModifiedOn: b.ifModifiedOn as string } : undefined
+    return { row: await services.data.update(ctx.user!, t, ctx.params.id, (b.changes ?? {}) as never, opts) }
   }, { auth: 'user' })
 
   router.add('POST', '/data/:table/delete', async (ctx) => {

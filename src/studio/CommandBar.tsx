@@ -15,9 +15,13 @@ import {
 import { cn } from '@/lib/utils'
 import { CATEGORIES } from './categories'
 import { ChatButton } from '@/chat/ChatDock'
+import { StudioPeople } from './live'
+import { NotificationBell } from '@/portal/Notifications'
 
 function SaveIndicator() {
-  const locked = usePlatform((st) => !!st.environments.find((e) => e.id === st.environmentId)?.locked)
+  const envLocked = usePlatform((st) => !!st.environments.find((e) => e.id === st.environmentId)?.locked)
+  const readOnly = useStore((st) => st.readOnly)
+  const locked = envLocked || readOnly
   const s = useStore((st) => st.saveState)
   if (locked) return <span data-testid="save-state" data-state="read-only" className="flex items-center gap-1 text-[11px] text-rose-600 dark:text-rose-300">Read-only</span>
   const map = {
@@ -45,8 +49,9 @@ export function runInWindow() {
 
 export function CommandBar() {
   const name = useStore((s) => s.app.name)
-  const canUndo = useStore((s) => s.history.past.length > 0)
-  const canRedo = useStore((s) => s.history.future.length > 0)
+  const readOnly = useStore((s) => s.readOnly)
+  const canUndo = useStore((s) => s.history.past.length > 0) && !readOnly
+  const canRedo = useStore((s) => s.history.future.length > 0) && !readOnly
   const { theme, toggle: toggleTheme } = useTheme()
 
   return (
@@ -64,12 +69,14 @@ export function CommandBar() {
       <span className="h-5 w-px bg-border" />
       <input
         value={name}
+        readOnly={readOnly}
         spellCheck={false}
         data-testid="app-name"
         onChange={(e) => useStore.getState().setAppName(e.target.value)}
         className="h-7 w-44 rounded-md border border-transparent bg-transparent px-2 text-sm font-medium outline-none hover:border-border focus:border-primary focus:bg-background"
       />
       <SaveIndicator />
+      <StudioPeople />
       <span className="h-5 w-px bg-border" />
       <Button variant="ghost" size="icon-sm" title="Undo (Ctrl+Z)" data-testid="undo" disabled={!canUndo} onClick={() => useStore.getState().undo()}>
         <Undo2 />
@@ -108,6 +115,7 @@ export function CommandBar() {
 
       <div className="ml-auto flex items-center gap-1.5">
         <EnvironmentBadge className="mr-1 @max-[1180px]/cmd:hidden" />
+        <NotificationBell />
         <ChatButton />
         <Button variant="ghost" size="icon-sm" title="Toggle Studio theme" data-testid="theme-toggle" onClick={toggleTheme}>
           {theme === 'dark' ? <Sun /> : <Moon />}

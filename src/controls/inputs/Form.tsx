@@ -230,7 +230,8 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
     return safe(() => platform.getState().session?.privileges.tables[table.id]?.columns ?? {}, {} as Record<string, string>)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table, version])
-  const accessOf = (c: ColumnDef): string => (c.system ? 'read' : (colAccess[c.name] ?? 'update'))
+  // system and calculated (formula / rollup) columns are read-only for everyone
+  const accessOf = (c: ColumnDef): string => (c.system || c.computed ? 'read' : (colAccess[c.name] ?? 'update'))
   const cols = useMemo(
     () => (table ? visibleColumns(table, fieldsProp, formMode).filter((c) => (c.system ? 'read' : (colAccess[c.name] ?? 'update')) !== 'none') : []),
     [table, fieldsProp, formMode, colAccess],
@@ -261,8 +262,21 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
 
   /* ---- values (reload on Item / table / mode / reset) ---- */
   const resetToken = toNum(outputs.__reset, 0)
-  const loadKey = [dsName, formMode, iKey, resetToken, colsKey].join('\u0002')
+  /*
+   * Live refresh (package H): an Edit form follows its record by id. When the record changes elsewhere while the form has
+   * no unsaved edits, the values simply reload; with unsaved edits the form keeps them and shows the conflict panel
+   * ("changed by <name>": reload / keep mine) instead of overwriting them. The version the edits started from
+   * (modifiedOn) goes with the save, so a stale save is refused (409) and opens the same panel.
+   */
+  const itemId = item ? toText(item.__id ?? item.id) : ''
+  const followsId = formMode === 'Edit' && itemId !== '' && !!table
+  const [reloadToken, setReloadToken] = useState(0)
+  const [heldKey, setHeldKey] = useState<string | null>(null)
+  const loadKey = [dsName, formMode, followsId ? `id:${itemId}` : iKey, resetToken, colsKey, reloadToken].join('\u0002')
   const [loaded, setLoaded] = useState(loadKey)
+  const [contentKey, setContentKey] = useState(iKey)
+  const [base, setBase] = useState<FxValue>(() => (item ? (item.modifiedOn ?? null) : null))
+  const [conflict, setConflict] = useState<{ by: string | null; version?: string | null } | null>(null)
   const [values, setValues] = useState<FormValues>(() => initialValues(cols, formMode, item))
   const [baseline, setBaseline] = useState(() => serializeValues(values))
   const [touched, setTouched] = useState<Record<string, boolean>>({})
@@ -274,6 +288,10 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
   if (loaded !== loadKey) {
     const v = initialValues(cols, formMode, item)
     setLoaded(loadKey)
+    setContentKey(iKey)
+    setBase(item ? (item.modifiedOn ?? null) : null)
+    setConflict(null)
+    setHeldKey(null)
     setValues(v)
     setPending({})
     setFileBase(fileCells(cols, v))
@@ -326,6 +344,61 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
   const pSig = pendingSig(pending)
   const unsaved = serializeValues(values) !== baseline || pSig !== ''
 
+  // the record changed elsewhere (live refresh or a save from another form)
+  if (followsId && iKey !== contentKey && heldKey !== iKey) {
+    const mine = toNum(outputs.__busy, 0) > 0 || serializeValues(initialValues(cols, formMode, item)) === serializeValues(values)
+    if (mine) {
+      // our own save (or the same values): nothing to reload, nothing to resolve
+      setContentKey(iKey)
+      setBase(item ? (item.modifiedOn ?? null) : null)
+    } else if (!unsaved) {
+      setContentKey(iKey)
+      setReloadToken((n) => n + 1)
+    } else {
+      setHeldKey(iKey)
+      if (!conflict) {
+        const by = safe(() => platform.live.lastRowChange(table!.id, itemId)?.by.name ?? null, null)
+        setConflict({ by, version: item?.modifiedOn instanceof Date ? item.modifiedOn.toISOString() : null })
+      }
+    }
+  }
+
+  // a live message says someone else changed this record (the Item may be a snapshot, such as a table's Selected)
+  const unsavedRef = useRef(unsaved)
+  unsavedRef.current = unsaved
+  useEffect(() => {
+    if (design || !followsId || !table) return
+    return platform.live.subscribe(`table:${table.id}`, (m) => {
+      if (m.t !== 'table' || m.self || m.op === 'insert' || !m.rows?.includes(itemId) || !unsavedRef.current) return
+      setConflict((c) => c ?? { by: m.by?.name ?? null, version: null })
+    })
+  }, [design, followsId, table, itemId])
+
+  // a stale save was refused (409): the same panel
+  useEffect(() => {
+    if (design || !table || !itemId) return
+    return platform.onDataError((e) => {
+      const err = e.error as typeof e.error & { field?: string; changedBy?: { name?: string }; current?: { modifiedOn?: string } }
+      if (e.table !== table.name || !e.rowIds.includes(itemId) || err.code !== 'conflict' || err.field !== 'modifiedOn') return
+      setConflict({ by: err.changedBy?.name ?? safe(() => platform.live.lastRowChange(table.id, itemId)?.by.name ?? null, null), version: err.current?.modifiedOn ?? null })
+    })
+  }, [design, table, itemId])
+
+  const reloadTheirs = () => {
+    setOutput('Error', '')
+    setContentKey(iKey)
+    setReloadToken((n) => n + 1)
+  }
+  const keepMine = () => {
+    // the next save overwrites their version: start from the newest one we know
+    // the version from a 409 when we have it; otherwise no version check: the next save replaces theirs
+    setBase(conflict?.version ?? null)
+    setHeldKey(iKey)
+    setContentKey(iKey)
+    setConflict(null)
+    setOutput('Error', '')
+  }
+
   const updates = useMemo(() => {
     const rec: FxRecord = {}
     for (const c of cols) {
@@ -369,19 +442,22 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
   const lastOut = useRef('')
   useEffect(() => {
     if (design) return
-    const sig = serializeValues(values) + '|' + valid + '|' + unsaved + '|' + colsKey + '|' + pSig + '|' + serializeValues(fileBase as FormValues)
+    const sig = serializeValues(values) + '|' + valid + '|' + unsaved + '|' + colsKey + '|' + pSig + '|' + serializeValues(fileBase as FormValues) + '|' + String(base instanceof Date ? base.getTime() : base) + followsId
     if (sig === lastOut.current) return
     lastOut.current = sig
     setOutput('Updates', updates)
     setOutput('Valid', valid)
     setOutput('Unsaved', unsaved)
+    setOutput('__version', followsId && base instanceof Date ? base.toISOString() : followsId && typeof base === 'string' ? base : '')
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [design, values, valid, unsaved, colsKey, updates, pSig, fileBase])
+  }, [design, values, valid, unsaved, colsKey, updates, pSig, fileBase, base, followsId])
 
   /* ---- render ---- */
   const columnsN = Math.min(6, Math.max(1, Math.round(toNum(props.Columns, 2))))
   const showButtons = toBool(props.ShowButtons, true) && formMode !== 'View'
   const lastError = outputs.Error == null ? '' : toText(outputs.Error)
+  /** the column a server refusal names (validation rules, Reject in table events) */
+  const serverField = outputs.__errorField == null ? '' : toText(outputs.__errorField)
   const busy = toNum(outputs.__busy, 0) > 0
   const editable = !design
 
@@ -400,6 +476,7 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
       return
     }
     setOutput('Error', '')
+    setOutput('__errorField', '')
     fire('__submit')
   }
 
@@ -418,8 +495,9 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
         {cols.map((c) => {
           const id = `${uid}-${c.name}`
           const wide = c.type === 'multiline' || columnsN === 1
-          const msg = errors[c.name]
-          const showMsg = msg && (touched[c.name] || allTouched)
+          const serverMsg = lastError !== '' && serverField !== '' && serverField.toLowerCase() === c.name.toLowerCase() ? lastError : ''
+          const msg = errors[c.name] ?? (serverMsg || undefined)
+          const showMsg = msg && (touched[c.name] || allTouched || !!serverMsg)
           return (
             <div key={c.name} className="min-w-0 space-y-1.5" style={wide ? { gridColumn: '1 / -1' } : undefined}>
               <Label htmlFor={id} className="text-sm font-medium">
@@ -471,6 +549,13 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
   return (
     <Shell design={design} rootRef={root} className="overflow-hidden rounded-lg border border-border bg-card text-card-foreground">
       <div className="flex size-full flex-col">
+        {conflict && !design && (
+          <div role="alertdialog" aria-label="This record was changed" data-testid="form-conflict" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-900 dark:text-amber-100">
+            <span className="min-w-0 flex-1"><b>This record was changed by {conflict.by ?? 'someone else'}</b> while you were editing it. Reload to see their version (your edits are dropped), or keep yours (saving then replaces theirs).</span>
+            <Button type="button" size="sm" variant="outline" className="h-7" onClick={reloadTheirs} data-testid="form-conflict-reload">Reload</Button>
+            <Button type="button" size="sm" className="h-7" onClick={keepMine} data-testid="form-conflict-keep">Keep mine</Button>
+          </div>
+        )}
         <div className="min-h-0 flex-1 overflow-y-auto p-4">{body}</div>
         {showButtons && table && (
           <div className="flex shrink-0 items-center gap-3 border-t border-border px-4 py-3">
@@ -500,6 +585,7 @@ const FORM_OUTPUTS: { name: string; initial: FxValue }[] = [
   { name: 'Mode', initial: '' },
   { name: 'LastSubmit', initial: null },
   { name: 'Error', initial: '' },
+  { name: '__errorField', initial: '' },
   { name: 'Unsaved', initial: false },
   // Internal counters the runtime bumps (see report): reload values, show all validation, mark saved.
   { name: '__reset', initial: 0 },
@@ -508,6 +594,8 @@ const FORM_OUTPUTS: { name: string; initial: FxValue }[] = [
   // 1 while a submit waits for the server / file uploads; { column: token } of files to upload after save
   { name: '__busy', initial: 0 },
   { name: '__files', initial: {} },
+  // the record's modifiedOn the edits started from (sent with the save: optimistic concurrency, package H)
+  { name: '__version', initial: '' },
 ]
 
 export const Form: ControlType = {

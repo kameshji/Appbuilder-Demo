@@ -9,6 +9,59 @@ migration from a MySQL installation: install PostgreSQL, run `scripts/setup-post
 database; carry apps and tables over as solution packages with data.
 
 ### Added
+- **Live updates, presence and in-app notifications** (P0 package H, decision D19). One WebSocket per tab
+  (`/api/v1/live`, docs/dev/live.md): data tables, galleries, charts and labels refresh within a moment when someone else
+  changes a table (from package G's outbox, after the commit), without flicker and keeping the scroll position; forms keep
+  unsaved edits and show "This record was changed by <name>" with Reload / Keep mine; running apps show who else has them open
+  and "Update available" when a maker saves a newer version. Without the connection pages refresh every 30 seconds and say
+  "Live updates paused". Demo mode keeps the tabs of one browser in sync (BroadcastChannel).
+- **Optimistic concurrency on row updates**: `PATCH /api/v1/data/:table/rows/:id` accepts `ifModifiedOn`; a stale save answers 409
+  with the current row and who changed it. Forms send it.
+- **Notifications**: the bell in the top bar and the Studio (unread badge, list, mark read, mark all read, delete, click-through
+  to the deep link), toasts while Appbuilder is in front, desktop notifications in the background; Settings > Notifications is
+  real (per kind, desktop notifications, do-not-disturb hours, hide my presence). API `/api/v1/notifications` (list, unread
+  count, read, read-all, delete, settings, send); server service `services.notifications.notify()` (used by table events'
+  NotifyUser). New formula function `SendNotification(user, title [, body] [, link])` (rate-limited).
+- **Studio soft lock**: the first maker edits an app, others open it read-only and see the saves as they happen; "Take over
+  editing"; avatars of the other makers. Administration > Users shows who is online.
+- New tables `ab.notifications` and `ab.user_settings`; new dependency `ws` (MIT) for the WebSocket server.
+- **Table events, validation rules, formula columns and rollups** (P0 package G, decision D18): new table designer tabs.
+  Validation rules (a formula that must be true, a message, a field) refuse a save from every app, the grid, imports and the
+  API. Before-save events change the record (`SetField`) or refuse it (`Reject`) and can read other tables; after-save events
+  change rows (`Patch`, `Collect`, `Remove`), `NotifyUser`, `EnqueueJob` in the background, retried on failure. Formula columns
+  are calculated on save and stored (recalculated in the background when the formula changes; also in demo mode); rollups
+  count or total related rows and stay correct under concurrent saves. Formula check by the server as you type, **Test run**
+  against a sample row, and a run log of every run, refusal and failure.
+- **Job queue and schedules**: durable background jobs in PostgreSQL with retries, dead letter, crash recovery and a worker
+  inside the server; built-in schedules for outbox / run log / job retention, audit retention (off by default), attachment
+  orphan sweep and rollup reconcile. Admin console > **Jobs** (queue health, failed and dead jobs with retry and cancel,
+  schedules with on/off, retention days and Run now) and **Events run log**. About 800-950 trivial jobs per second.
+- Table logic travels with solutions: validation rules, events, formula columns and rollups (and table sharing settings)
+  are exported with their tables, listed as new / changed / removed in the upgrade plan, and copied with environments.
+  Events that run as the system need an administrator's explicit confirmation on import and are audited.
+- Schema version **6** (organisation, notifications, record sharing, events and jobs): a version 5 server refuses the upgraded
+  database.
+- **Outbox**: every data change is recorded in the same transaction, in commit order per table, for the realtime hub and
+  flows (`services.kernel.outbox.subscribe`).
+- **Organisation** (P0 package F, decision D17): departments (a tree with stable codes), a manager, job title, phone and
+  employee code per user, and teams (members; every environment or one). Admin console > **Departments** (tree editor),
+  **Teams**, **Org chart**, and Users shows and edits the new fields. **Import users from CSV** with department and manager
+  columns: preview with the problems per line, all or nothing, passwords never imported; new users get a one-time temporary
+  password shown once and must change it. `User()` gains `Department`, `DepartmentCode`, `Manager`, `JobTitle` and `Teams`.
+- **New row scopes** for roles: Team (rows of the user's teams and team-owned rows), Direct reports, Reporting line,
+  Department and Department tree, each with a plain-language description in the role editor.
+- **Relationship rules**: row rules can follow lookup columns ("Section > Teacher is the current user") and look at related rows
+  in a junction table ("an Enrolment exists for this student in a section I teach"), with new values such as the current
+  user's department, teams, manager or reports, or a team / department by code. The role editor has a rule builder.
+- **Record sharing**: per table (table designer > Settings) owners and roles with the new **Share** privilege share single
+  rows with people or teams for reading or for reading and changing: the table grid's row menu > *Share...*, and in formulas
+  `Share(record, userOrTeam, access)`, `Unshare(record, userOrTeam)`, `SharedWith(record)`. Tables can also let rows be
+  owned by teams.
+- **Who can see this row?** (Security roles, and the grid's row menu): every user with read, update or delete access to one
+  row and why. **Test as user** now says why each table's rows are visible.
+- All of it runs inside the one SQL statement of every query, count, aggregate, search, export and write check (1,000,000 rows:
+  17-85 ms per scope, under 0.5 s for a junction rule; `scripts/bench/orgsec-bench.mjs`), and identically in demo mode (one shared
+  test corpus for both).
 - **Large tables work** (P0 package D, decision D16): with the local server, formulas over tables run in the database. Filter,
   Search, Sort, LookUp, FirstN/LastN, CountRows/CountIf, Sum/Average/Min/Max, Distinct and GroupBy totals become one query
   (`POST /api/v1/query`, Data API v2) with the user's roles, row filters and column access applied in the same statement: exact
@@ -91,6 +144,13 @@ database; carry apps and tables over as solution packages with data.
 - README links to the documentation, and run instructions that match the current start-up steps (PostgreSQL and the first-run setup screen).
 
 ### Changed
+- Every data write on the default database is one transaction with its outbox row; updates of tables with formula columns
+  or before-events lock the row. Marking a column **Indexed** builds its indexes in the background (no write lock).
+- Forms show a refusal from the server (validation rule, event) under the field it names; calculated columns are read-only in
+  forms and the grid, and rollup totals refresh shortly after a save.
+- Query v2 no longer wraps the row filter in `COALESCE`, so owner, lookup and id indexes serve security predicates (own scope on
+  1,000,000 rows: 285 ms -> 17 ms).
+- `rowFilter` entries may now be rule nodes (`exists`, `any`) besides column conditions; scopes accept the organisation values.
 - **Formulas that can't be turned into a database query are errors on large tables** (more than 2,000 rows you can see), never a
   result computed from part of the rows. The message names the part and suggests a rewrite. Smaller tables are loaded whole and
   evaluated in the browser as before, with a Studio warning. Demo mode is unchanged.
@@ -127,6 +187,16 @@ database; carry apps and tables over as solution packages with data.
 - Build specifications moved to `docs/internal/specs`. They are kept for history and are no longer maintained.
 
 ### Security
+- Realtime connection (package H): the upgrade passes the HTTP Host/Origin checks and requires this Origin (cross-site
+  WebSocket hijacking), then the session cookie; forced-password-change sessions cannot connect. Table messages carry no
+  values, no hidden column names, and row ids only for people who may read every row; sockets close at once on sign-out,
+  password change, disabling or deletion of the account; limits per user, per server, per message and per second; slow
+  clients are disconnected instead of buffered.
+- Table events read and write with the permissions of the person who saved; only administrators can make one run as the
+  system, and that is audited. Formulas of events are checked when saved (no UI functions on the server) and run with a time
+  budget, row and query limits, a loop guard and a depth cap. Threat model in `docs/dev/events-and-jobs.md`.
+- A lookup value can only point at a row the user can read; an unreadable row is refused like a missing one (before, a user
+  could link to, and probe for, rows of tables they could not read).
 - First-run setup accepts only requests from this computer (checked on the connection, not on headers) and needs a one-time setup code printed in the server window; once an administrator exists the setup stays closed, also while the database is unreachable.
 - `GET /status` no longer shows the database host, port and name to anyone but a signed-in administrator.
 - The page's Content-Security-Policy no longer allows inline script (hashes of the app's own inline script instead).
@@ -137,6 +207,10 @@ database; carry apps and tables over as solution packages with data.
 - The audit log records the row ids of bulk deletes, before/after of role and user changes, and schema migrations; failed audit writes are reported as errors.
 
 ### Fixed
+- The Studio in a locked production environment let you make local edits that were never saved: the canvas, properties and
+  formula bar are now truly read-only there (and while another maker holds the edit lock).
+- Deleting a table removed its attachment files before the change was saved; a failed delete lost the files. Files are now
+  deleted by a background job after the change commits (P0 package G).
 - A user-defined function in App.Formulas was reported as "already a built-in function" when another app that defines a function with the same name had been evaluated first in the same page.
 - The consent to add system columns when linking a table is now sent; MySQL tables get the missing columns (including `id`, filled with UUIDs). Without consent such tables link read-only and can be read (before, a table with `id` but without the other system columns failed on every query).
 - The Default database connection can no longer be edited in the portal (edits silently reverted at the next start).

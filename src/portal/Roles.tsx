@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Eye, Info, Plus, ShieldCheck, SlidersHorizontal, Trash2, Users } from 'lucide-react'
+import { Eye, Info, Plus, Search, ShieldCheck, SlidersHorizontal, Trash2, Users } from 'lucide-react'
 import { go } from '@/router'
 import { platform, usePlatform, type AccessScope, type RoleDef, type TablePrivilege } from '@/platform'
 import { cn } from '@/lib/utils'
@@ -11,16 +11,28 @@ import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ConfirmDialog, Empty, Field, Panel, PageHeader, Segmented, useToast } from './kit'
 import { TableRules } from './RoleRules'
-import { emptyPrivilege, isMakerRole, useCaps } from './security'
+import { SCOPE_OPTIONS, emptyPrivilege, isMakerRole, useCaps } from './security'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { WhoCanSeeDialog } from './Explain'
 import { fetchSecurityPreview, type TablePreview } from './serverApi'
 import { Spinner } from '@/components/ui/spinner'
 import { matches, useSearch } from './Shell'
 
-const SCOPES: { value: AccessScope; label: string; title: string }[] = [
-  { value: 'none', label: 'None', title: 'No access' },
-  { value: 'own', label: 'Own', title: 'Only rows owned by the user' },
-  { value: 'all', label: 'All', title: 'All rows' },
-]
+/** a scope picker: eight scopes are too many for a segmented control; each has a plain-language description */
+function ScopeSelect({ value, onChange, label, disabled, testId }: { value: AccessScope; onChange(v: AccessScope): void; label: string; disabled: boolean; testId: string }) {
+  return (
+    <Select value={value} disabled={disabled} onValueChange={(v) => onChange(v as AccessScope)}>
+      <SelectTrigger size="sm" className="w-32" aria-label={label} data-testid={testId} title={SCOPE_OPTIONS.find((o) => o.value === value)?.title}><SelectValue>{SCOPE_OPTIONS.find((o) => o.value === value)?.label}</SelectValue></SelectTrigger>
+      <SelectContent>
+        {SCOPE_OPTIONS.map((o) => (
+          <SelectItem key={o.value} value={o.value}>
+            <span className="grid"><span>{o.label}</span><span className="text-[11px] text-muted-foreground">{o.title}</span></span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
 
 function NewRoleDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange(o: boolean): void; onCreated(r: RoleDef): void }) {
   const { fail, toast } = useToast()
@@ -132,7 +144,7 @@ function RoleEditor({ role }: { role: RoleDef }) {
         {tables.length === 0 ? (
           <p className="text-sm text-muted-foreground">There are no tables yet.</p>
         ) : (
-          <div className={cn('overflow-hidden rounded-lg border border-border')}>
+          <div className={cn('overflow-x-auto rounded-lg border border-border')}>
             <table className="w-full text-sm" data-testid="role-matrix">
               <thead>
                 <tr className="border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground">
@@ -141,6 +153,7 @@ function RoleEditor({ role }: { role: RoleDef }) {
                   <th className="px-3 py-2">Read</th>
                   <th className="px-3 py-2">Update</th>
                   <th className="px-3 py-2">Delete</th>
+                  <th className="px-3 py-2" title="Rows the role may share with other people and teams (tables with sharing on); owners can always share their rows">Share</th>
                   <th className="w-28 px-3 py-2 text-right"><span className="sr-only">Finer rules</span></th>
                 </tr>
               </thead>
@@ -155,9 +168,12 @@ function RoleEditor({ role }: { role: RoleDef }) {
                       </td>
                       {(['read', 'update', 'delete'] as const).map((op) => (
                         <td key={op} className="px-3 py-1.5">
-                          <Segmented size="sm" label={`${op} ${t.displayName}`} disabled={adm} value={p[op]} onChange={(v) => setPriv(t.id, { [op]: v })} options={SCOPES} />
+                          <ScopeSelect label={`${op} ${t.displayName}`} disabled={adm} value={p[op]} onChange={(v) => setPriv(t.id, { [op]: v })} testId={`priv-${t.id}-${op}`} />
                         </td>
                       ))}
+                      <td className="px-3 py-1.5">
+                        {t.sharing ? <ScopeSelect label={`share ${t.displayName}`} disabled={adm} value={p.share ?? 'none'} onChange={(v) => setPriv(t.id, { share: v === 'none' ? undefined : v })} testId={`priv-${t.id}-share`} /> : <span className="text-xs text-muted-foreground" title="Turn sharing on in the table designer">Off</span>}
+                      </td>
                       <td className="px-3 py-1.5 text-right">
                         {(() => {
                           const n = Object.values(p.columns ?? {}).filter((a) => a !== 'update').length + (p.rowFilter?.length ?? 0)
@@ -241,17 +257,18 @@ export function TestAsUserDialog({ open, onOpenChange }: { open: boolean; onOpen
         </Field>
         {busy ? <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground"><Spinner /> Asking the server...</div> : rows && (
           <table className="w-full text-sm" data-testid="preview-table">
-            <thead><tr className="border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground"><th className="px-3 py-2">Table</th><th className="px-3 py-2 text-right">Visible rows</th><th className="px-3 py-2">Hidden columns</th><th className="px-3 py-2">Read-only columns</th></tr></thead>
+            <thead><tr className="border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground"><th className="px-3 py-2">Table</th><th className="px-3 py-2 text-right">Visible rows</th><th className="px-3 py-2">Why</th><th className="px-3 py-2">Hidden columns</th><th className="px-3 py-2">Read-only columns</th></tr></thead>
             <tbody>
               {rows.map((r) => (
                 <tr key={r.tableId} className="border-b border-border last:border-0" data-testid={`preview-${r.tableId}`}>
                   <td className="px-3 py-2 font-medium">{name(r.tableId)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{r.visibleRows}</td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground" data-testid={`preview-why-${r.tableId}`}>{r.why.length ? r.why.map((w, i) => <div key={i}>{w}</div>) : 'No role grants read'}</td>
                   <td className="px-3 py-2 text-muted-foreground">{r.hiddenColumns.map((n) => col(r.tableId, n)).join(', ') || 'None'}</td>
                   <td className="px-3 py-2 text-muted-foreground">{r.readOnlyColumns.map((n) => col(r.tableId, n)).join(', ') || 'None'}</td>
                 </tr>
               ))}
-              {rows.length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">No table access.</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">No table access.</td></tr>}
             </tbody>
           </table>
         )}
@@ -265,6 +282,7 @@ export function Roles() {
   const server = usePlatform((s) => s.mode) === 'server'
   const caps = useCaps()
   const [preview, setPreview] = useState(false)
+  const [who, setWho] = useState(false)
   const roles = usePlatform((s) => s.roles)
   const users = usePlatform((s) => s.users)
   const q = useSearch()
@@ -283,6 +301,7 @@ export function Roles() {
           <>
             {caps.isAdmin && <Button size="sm" variant="outline" onClick={() => go({ page: 'admin', id: 'users' })} data-testid="roles-users-link"><Users /> Users ({users.length})</Button>}
             {server && caps.isAdmin && <Button size="sm" variant="outline" onClick={() => setPreview(true)} data-testid="test-as-user-button"><Eye /> Test as user</Button>}
+            {caps.isAdmin && <Button size="sm" variant="outline" onClick={() => setWho(true)} data-testid="who-can-see-button"><Search /> Who can see a row?</Button>}
             <Button size="sm" onClick={() => setNewRole(true)} data-testid="new-role-button"><Plus /> New role</Button>
           </>
         }
@@ -323,6 +342,7 @@ export function Roles() {
 
       <NewRoleDialog open={newRole} onOpenChange={setNewRole} onCreated={(r) => setSelId(r.id)} />
       <TestAsUserDialog open={preview} onOpenChange={setPreview} />
+      <WhoCanSeeDialog open={who} onOpenChange={setWho} />
     </div>
   )
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Columns3, Link2, Lock, Settings2, ShieldCheck, Table2, Trash2, UserCheck } from 'lucide-react'
+import { ArrowLeft, Calculator, CheckCheck, Columns3, Link2, Lock, Settings2, ShieldCheck, Sigma, Table2, Trash2, UserCheck, Zap } from 'lucide-react'
+import { EventsPanel, FormulaColumnsPanel, RollupsPanel, ValidationRulesPanel } from './TableLogic'
 import { platform, usePlatform } from '@/platform'
 import { go } from '@/router'
 import { Button } from '@/components/ui/button'
@@ -13,6 +14,7 @@ import { TableSecurity } from './TableSecurity'
 import { ConnectionFlags, connectorInfo } from './ConnectionBits'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Switch } from '@/components/ui/switch'
 import { useCaps } from './security'
 import { assignOwnerToUnownedRows } from './serverApi'
 
@@ -120,11 +122,19 @@ export function TableDesigner({ tableId }: { tableId: string }) {
         <TabsList className="h-9 self-start">
           <TabsTrigger value="data" className="flex-none px-4" data-testid="tab-data"><Table2 /> Data</TabsTrigger>
           <TabsTrigger value="columns" className="flex-none px-4" data-testid="tab-columns"><Columns3 /> Columns</TabsTrigger>
+          <TabsTrigger value="validation" className="flex-none px-4" data-testid="tab-validation"><CheckCheck /> Validation rules</TabsTrigger>
+          <TabsTrigger value="formulas" className="flex-none px-4" data-testid="tab-formulas"><Calculator /> Formula columns</TabsTrigger>
+          <TabsTrigger value="rollups" className="flex-none px-4" data-testid="tab-rollups"><Sigma /> Rollups</TabsTrigger>
+          <TabsTrigger value="events" className="flex-none px-4" data-testid="tab-events"><Zap /> Events</TabsTrigger>
           <TabsTrigger value="security" className="flex-none px-4" data-testid="tab-security"><ShieldCheck /> Security</TabsTrigger>
           <TabsTrigger value="settings" className="flex-none px-4" data-testid="tab-settings"><Settings2 /> Settings</TabsTrigger>
         </TabsList>
         <TabsContent value="data" className="mt-2"><DataGrid table={table} /></TabsContent>
         <TabsContent value="columns" className="mt-2"><ColumnsPanel table={table} /></TabsContent>
+        <TabsContent value="validation" className="mt-2"><ValidationRulesPanel table={table} /></TabsContent>
+        <TabsContent value="formulas" className="mt-2"><FormulaColumnsPanel table={table} /></TabsContent>
+        <TabsContent value="rollups" className="mt-2"><RollupsPanel table={table} /></TabsContent>
+        <TabsContent value="events" className="mt-2"><EventsPanel table={table} /></TabsContent>
         <TabsContent value="security" className="mt-2"><TableSecurity table={table} /></TabsContent>
         <TabsContent value="settings" className="mt-2">
           <div className="grid max-w-2xl gap-4" data-testid="settings-tab">
@@ -145,6 +155,17 @@ export function TableDesigner({ tableId }: { tableId: string }) {
                 <Field label="Rows"><Input readOnly value={String(rowCount)} /></Field>
                 <Field label="Created"><Input readOnly value={fmtDate(table.createdOn)} /></Field>
               </div>
+            </Panel>
+            <Panel className="grid gap-3 p-5" data-testid="table-security-options">
+              <h3 className="text-sm font-semibold">Ownership and sharing</h3>
+              <label className="flex items-start justify-between gap-3 text-sm">
+                <span><span className="font-medium">Rows can be owned by teams</span><span className="block text-xs text-muted-foreground">A row can be given to a team (its owner becomes the team). Members of the team see it under the Team scope.</span></span>
+                <Switch checked={!!table.teamOwnership} disabled={!caps.isMaker || !!table.missingSystem?.includes('owner')} onCheckedChange={(v) => { platform.tables.update(table.id, { teamOwnership: v }).then(() => toast(v ? 'Rows can now be owned by teams' : 'Team ownership is off', 'success')).catch(fail) }} aria-label="Rows can be owned by teams" data-testid="team-ownership-switch" />
+              </label>
+              <label className="flex items-start justify-between gap-3 text-sm">
+                <span><span className="font-medium">Record sharing</span><span className="block text-xs text-muted-foreground">Owners (and roles with the Share privilege) can share single rows with people or teams, for reading or for reading and changing. Recipients still need a role that lets them use this table.</span></span>
+                <Switch checked={!!table.sharing} disabled={!caps.isMaker || !!table.missingSystem?.includes('id')} onCheckedChange={(v) => { platform.tables.update(table.id, { sharing: v }).then(() => toast(v ? 'Sharing is on' : 'Sharing is off: existing shares stop applying (they come back if you turn it on again)', 'success')).catch(fail) }} aria-label="Record sharing" data-testid="sharing-switch" />
+              </label>
             </Panel>
             {caps.server && caps.isAdmin && hasOwner && !table.readOnly && (
               <Panel className="flex items-center gap-4 p-5" data-testid="assign-owner-panel">

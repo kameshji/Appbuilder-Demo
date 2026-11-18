@@ -13,6 +13,9 @@ import { mapDbError } from '../connectors/mysql/index.ts'
 import { isPgError, mapPgError } from '../connectors/postgres/db.ts'
 import { DEFAULT_ENVIRONMENT_ID, requestedEnvironment, runInEnvironment } from './env-context.ts'
 import { errText, log } from './util.ts'
+import { runWithRequest } from './work-context.ts'
+import { withLiveOrigin } from './live/changes.ts'
+import { LIVE_CLIENT_HEADER } from '../../src/platform/live-protocol.ts'
 
 /** default JSON body limit; a route's maxBodyMB overrides it (JSON and raw bodies alike) */
 export const JSON_LIMIT_BYTES = 2 * 1024 * 1024
@@ -215,7 +218,7 @@ export function sendError(res: ServerResponse, e: unknown, req?: IncomingMessage
     // unread request bytes are not drained: answer, then drop the connection
     res.on('finish', () => req.destroy())
   }
-  sendJson(res, h.status, { error: { code: h.code, message: h.message, ...(h.field ? { field: h.field } : {}) } }, close ? { Connection: 'close' } : {})
+  sendJson(res, h.status, { ...(h.extra ?? {}), error: { code: h.code, message: h.message, ...(h.field ? { field: h.field } : {}) } }, close ? { Connection: 'close' } : {})
 }
 
 export function cookieValue(req: IncomingMessage, name: string): string | null {
@@ -261,10 +264,23 @@ export function sessionCookie(req: IncomingMessage, token: string | null, expire
   return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/${exp}${secure}`
 }
 
+/** a write request that succeeded (realtime hub: app / environment / security change messages) */
+export interface MutationEvent {
+  method: string
+  /** the route pattern without the /api/v1 prefix, e.g. "/apps/:id" */
+  pattern: string
+  params: Record<string, string>
+  ctx: Ctx
+  /** what the handler returned */
+  result: unknown
+}
+
 export interface ApiRouter extends Router {
   /** answers /api/* requests; resolves false for anything else */
   handle(req: IncomingMessage, res: ServerResponse): Promise<boolean>
   setSessionResolver(r: SessionResolver): void
+  /** listen to successful non-GET requests (after the handler returned; listener errors are ignored) */
+  onMutation(listener: (e: MutationEvent) => void): () => void
 }
 
 export interface RouterOptions extends CookieOptions {
@@ -279,6 +295,7 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
   const cookieOpts: CookieOptions = { secureCookie: opts.secureCookie ?? cfg?.secureCookie, trustProxy: opts.trustProxy ?? cfg?.trustProxy }
   const routes: Route[] = []
   let resolveSession: SessionResolver = async () => null
+  const mutationListeners = new Set<(e: MutationEvent) => void>()
 
   function add(method: Method, pattern: string, handler: Handler, o: RouteOptions) {
     let p = pattern.trim()
@@ -423,7 +440,18 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
         if (ctx.user) ctx.environmentId = ctx.user.environmentId
       }
 
-      const out = await runInEnvironment(ctx.environmentId, () => route.handler(ctx))
+      const liveOrigin = req.headers[LIVE_CLIENT_HEADER.toLowerCase()]
+      const out = await withLiveOrigin(Array.isArray(liveOrigin) ? liveOrigin[0] : liveOrigin, () => runInEnvironment(ctx.environmentId, () => runWithRequest(req, () => route.handler(ctx))))
+      if (method !== 'GET' && method !== 'HEAD' && mutationListeners.size) {
+        const ev: MutationEvent = { method, pattern: '/' + route.segments.join('/'), params, ctx, result: out }
+        for (const l of [...mutationListeners]) {
+          try {
+            l(ev)
+          } catch (e) {
+            log('warn', `mutation listener failed: ${errText(e)}`)
+          }
+        }
+      }
       closeIfUnread()
       if (res.writableEnded) return true
       if (isRaw(out)) {
@@ -461,6 +489,12 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
     handle,
     setSessionResolver(r) {
       resolveSession = r
+    },
+    onMutation(listener) {
+      mutationListeners.add(listener)
+      return () => {
+        mutationListeners.delete(listener)
+      }
     },
   }
 }

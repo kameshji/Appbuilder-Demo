@@ -12,6 +12,8 @@ import type {
 import type { AppDef } from '../../src/contracts.ts'
 import type { Condition, Query, QueryValue } from '../../src/platform/http.ts'
 import type { QueryPlan, QueryV2Response } from '../../src/platform/query.ts'
+import type { TableEventDef, TableEventInput } from '../../src/platform/events.ts'
+import type { NotificationItem, NotificationSettings } from '../../src/platform/live-protocol.ts'
 
 /* ------------------------------------------------------------------ http */
 
@@ -29,11 +31,14 @@ export class HttpError extends Error {
   status: number
   code: ApiErrorCode
   field?: string
-  constructor(status: number, code: ApiErrorCode, message: string, field?: string) {
+  /** extra JSON members of the error body, next to `error` (e.g. `current` on a 409 version conflict) */
+  extra?: Record<string, unknown>
+  constructor(status: number, code: ApiErrorCode, message: string, field?: string, extra?: Record<string, unknown>) {
     super(message)
     this.status = status
     this.code = code
     this.field = field
+    if (extra) this.extra = extra
   }
 }
 
@@ -336,6 +341,8 @@ export interface AttachmentRecord {
  */
 export interface MetaStore {
   db: SqlDb
+  /** organisation (departments, teams, user organisation fields) and record shares; absent in older fakes */
+  org?: import('./org-store.ts').OrgStore
   /**
    * create/upgrade schema `ab` and every registered environment schema; idempotent. Throws SchemaTooNewError when the
    * database was upgraded by a newer server (ab.settings schemaVersion above SCHEMA_VERSION); nothing is changed then.
@@ -465,7 +472,9 @@ export interface UserContext {
    * RLS predicate for op on a table (OR over granting roles of scope AND rowFilter); {const:false} when none.
    * 'create': OR over the roles granting create of their rowFilter (the WITH CHECK a new row must satisfy).
    */
-  rowPredicate(table: TableDef, op: 'read' | 'update' | 'delete' | 'create'): Condition
+  rowPredicate(table: TableDef, op: 'read' | 'update' | 'delete' | 'create' | 'share'): Condition
+  /** the parts of a predicate (per role, shares, ownership) for the "who can see this row?" explainer */
+  reasons?(table: TableDef, op: 'read' | 'update' | 'delete' | 'create' | 'share'): import('../../src/platform/orgsec.ts').PredicateReason[]
   canCreate(table: TableDef): boolean
   /** CLS: effective access for a column (system columns: 'read' unless hidden by a role) */
   columnAccess(table: TableDef, column: string): 'none' | 'read' | 'update'
@@ -480,6 +489,12 @@ export interface SecurityEngine {
   forUser(user: UserDef): Promise<UserContext>
   /** call after any role/user/table change: drops the cache of the current environment (all: every environment; or a named one) */
   invalidate(scope?: 'all' | { environment: string }): void
+  /** organisation changed (departments, teams, managers): drops the cached directory and shares (P0-F) */
+  invalidateOrg?(): void
+  /** a share was added or removed */
+  invalidateShares?(): void
+  /** the cached organisation directory */
+  directory?(): Promise<import('../../src/platform/orgsec.ts').OrgDirectory>
 }
 
 /* ------------------------------------------------------------------ data service */
@@ -490,7 +505,11 @@ export interface DataService {
   /** Query v2 (POST /api/v1/query): RBAC, row filters and column security applied inside the one statement */
   queryV2(ctx: UserContext | null, table: TableDef, plan: unknown): Promise<QueryV2Response>
   insert(ctx: UserContext | null, table: TableDef, values: Record<string, QueryValue>): Promise<Record<string, QueryValue>>
-  update(ctx: UserContext | null, table: TableDef, id: string, changes: Record<string, QueryValue>): Promise<Record<string, QueryValue>>
+  /**
+   * opts.ifModifiedOn (optimistic concurrency): the row's modifiedOn the caller last saw (ISO time); when the row changed
+   * since, 409 conflict (field 'modifiedOn', body member `current` = the row as the caller may see it, `changedBy`).
+   */
+  update(ctx: UserContext | null, table: TableDef, id: string, changes: Record<string, QueryValue>, opts?: { ifModifiedOn?: string }): Promise<Record<string, QueryValue>>
   delete(ctx: UserContext | null, table: TableDef, ids: string[]): Promise<number>
   /** opts.actorId (system context only): imported rows get createdBy = owner = that user */
   importCsv(ctx: UserContext | null, table: TableDef, csv: string, mode: 'append' | 'replace', opts?: { actorId?: string }): Promise<number>
@@ -568,9 +587,42 @@ export interface Services {
    * databases) are not covered; callers keep their compensating undo for those. Security caches are dropped afterwards.
    */
   transaction<T>(fn: () => Promise<T>): Promise<T>
+  /** in-app notifications (notifications.ts; package H). Absent in the metadata test harness. */
+  notifications?: NotificationService
+  /** event and job kernel (server/core/kernel.ts; package G). Absent in the metadata test harness. */
+  kernel?: KernelServices
   /** small helpers */
   uid(prefix?: string): string
   now(): string
+}
+
+/* ------------------------------------------------------------------ event and job kernel */
+
+/**
+ * What the metadata routes need from the event and job kernel (server/core/kernel.ts, docs/dev/events-and-jobs.md).
+ * Everything joins the caller's unit of work: jobs enqueued here exist only if the route's transaction commits.
+ */
+export interface KernelServices {
+  /** refuse a computed column (formula / rollup) that cannot work: 422 with field "computed" */
+  checkColumn(def: TableDef, col: ColumnDef): Promise<void>
+  /** a column was added (before null), changed, or removed (after null): backfills, reconciles as jobs */
+  columnChanged(def: TableDef, before: ColumnDef | null, after: ColumnDef | null): Promise<void>
+  /** build the indexes of an `indexed` change in the background (true = queued: skip the inline DDL) */
+  indexInBackground(def: TableDef, col: ColumnDef): Promise<boolean>
+  /** delete attachment files after the current unit of work commits (false: no queue, delete them yourself) */
+  deleteFilesAfterCommit(storageKeys: string[]): Promise<boolean>
+  /** a table was deleted: its events go */
+  tableRemoved(tableId: string): Promise<void>
+  /** drop cached event rules (tables or events changed) */
+  invalidate(): void
+  /** solutions: the events and validation rules of a table */
+  listEvents(tableId: string): Promise<TableEventDef[]>
+  /**
+   * solutions: create (with the package's id when free) or replace an event of a table; formulas are checked against this
+   * environment (422). The caller decides who may import events that run as the system.
+   */
+  putEvent(table: TableDef, event: TableEventInput & { id?: string }, by: string | null): Promise<TableEventDef>
+  removeEvent(id: string): Promise<void>
 }
 
 /* ------------------------------------------------------------------ environments */
@@ -605,4 +657,45 @@ export interface BackupService {
   available(): boolean
   /** called before an in-place solution upgrade (and other destructive environment operations) */
   snapshot(env: EnvironmentRef, reason: string): Promise<SnapshotResult>
+}
+
+/* ------------------------------------------------------------------ notifications (package H) */
+
+export interface NotifyTarget {
+  userIds?: string[]
+  /** members of these teams (needs the organisation model's team resolver: setTeamResolver) */
+  teamIds?: string[]
+}
+
+export interface NotifyInput {
+  /** short lowercase word: app, system, flow, approval, ... (users switch kinds on and off) */
+  kind: string
+  title: string
+  body?: string
+  /** a deep link inside Appbuilder (#...), never an external address */
+  link?: string | null
+  /** the environment the notification is about (null: install-wide) */
+  environmentId?: string | null
+  /** app:<id>, flow:<id>, user:<id>, system */
+  source: string
+  /** the person who sent it (shown as "from") */
+  from?: { id: string; name: string }
+}
+
+/**
+ * The server-side notification service (server/core/notifications.ts). Flows, approvals and table events (package G)
+ * call notify(); it stores one row per recipient in ab.notifications (skipping disabled accounts and kinds the recipient
+ * switched off) and pushes it over the realtime hub. No permission checks here: callers decide who may notify whom.
+ */
+export interface NotificationService {
+  notify(target: NotifyTarget, input: NotifyInput): Promise<{ delivered: string[]; skipped: string[] }>
+  list(userId: string, o?: { limit?: number; cursor?: string | null; unreadOnly?: boolean }): Promise<{ items: NotificationItem[]; nextCursor: string | null; unread: number }>
+  unreadCount(userId: string): Promise<number>
+  /** returns the new unread count */
+  markRead(userId: string, ids: string[] | 'all'): Promise<number>
+  remove(userId: string, id: string): Promise<number>
+  settings(userId: string): Promise<NotificationSettings>
+  saveSettings(userId: string, value: unknown): Promise<NotificationSettings>
+  /** the organisation model (package F) registers how team ids become user ids in an environment */
+  setTeamResolver(fn: (env: string, teamIds: string[]) => Promise<string[]>): void
 }

@@ -51,6 +51,13 @@ Rules:
 - A **locked** production environment refuses direct changes to apps, tables and roles; deploying (or importing) a solution
   into it is the way to change it. See [Environments](../../admin/environments.md#change-the-type-lock).
 
+### Table logic travels with the tables
+
+A table in a solution brings its **validation rules, events, formula columns and rollups** (and its sharing and team
+ownership settings). The upgrade plan lists each rule and event as new, changed or removed. An event that **runs as the
+system** can only be brought in by an administrator, who must tick a box allowing it (also for a first install); the import
+is recorded in the audit log. Importing as a copy brings such events switched off, for an administrator to review.
+
 ## Export and import
 
 **Export** saves a package (YAML); a toggle includes table data. **Import solution** (on the Solutions page) shows the same plan

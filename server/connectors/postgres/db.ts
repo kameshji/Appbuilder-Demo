@@ -76,7 +76,7 @@ export function isPgError(e: unknown): e is PgError {
 
 /* ------------------------------------------------------------------ transactions */
 
-/** serialises the statements of one transaction on its client */
+/** runs functions one after another (a promise chain) */
 class Lock {
   private tail: Promise<unknown> = Promise.resolve()
   run<T>(fn: () => Promise<T>): Promise<T> {
@@ -84,15 +84,48 @@ class Lock {
     this.tail = r.then(() => undefined, () => undefined)
     return r
   }
+  /** resolves when everything queued so far (and queued while waiting) has settled */
+  async idle(): Promise<void> {
+    let t: Promise<unknown>
+    do {
+      t = this.tail
+      await t
+    } while (t !== this.tail)
+  }
 }
+
+/** a statement was issued on a transaction that has already ended (an un-awaited query, a Promise.all branch that outlived it) */
+export class TransactionEndedError extends Error {
+  code = 'TX_ENDED'
+  constructor(sql: string) {
+    super(`A database statement was issued after its transaction (or savepoint) had ended; it was not run. Await every query inside a unit of work. Statement: ${sql.replace(/\s+/g, ' ').slice(0, 80)}`)
+  }
+}
+
+/** two statements on one transaction client at the same time (must never happen: the wire lock serialises them) */
+export class TransactionOverlapError extends Error {
+  code = 'TX_OVERLAP'
+}
+
+/**
+ * One nesting level of a transaction (the transaction itself, or a savepoint). Ambient statements and nested savepoints of
+ * a level run one after another through its queue, so concurrent branches (Promise.all) cannot interleave with a sibling's
+ * savepoint (a ROLLBACK TO would otherwise undo their work, a RELEASE release their savepoint). Closed when the level ends.
+ */
+interface Level { queue: Lock; open: boolean }
 
 interface TxState {
   pool: Pool
   client: PoolClient
-  lock: Lock
+  /** serialises every statement on the client (the wire) */
+  wire: Lock
   seq: { n: number }
-  /** the SqlDb bound to this transaction (explicit statements, no savepoint) */
+  /** statements in flight on the client (an assertion: never more than one) */
+  flight: { n: number }
+  level: Level
+  /** the SqlDb bound to this level (explicit statements, no savepoint) */
   bound: SqlDb
+  version: () => Promise<string>
 }
 
 const ambient = new AsyncLocalStorage<TxState>()
@@ -101,9 +134,25 @@ function result(r: pg.QueryResult): SqlResult {
   return { affectedRows: r.rowCount ?? 0 }
 }
 
-function boundDb(st: Omit<TxState, 'bound'>, version: () => Promise<string>): SqlDb {
-  const run = (sql: string, params: unknown[]) => st.lock.run(() => st.client.query(sql, params))
-  const self: SqlDb = {
+/** one statement on the client, under the wire lock, with the overlap assertion */
+function onWire(st: TxState, sql: string, params: unknown[] = []): Promise<pg.QueryResult> {
+  return st.wire.run(async () => {
+    if (st.flight.n > 0) throw new TransactionOverlapError(`Two statements ran at once on one transaction client (${sql.slice(0, 60)}).`)
+    st.flight.n++
+    try {
+      return await st.client.query(sql, params)
+    } finally {
+      st.flight.n--
+    }
+  })
+}
+
+function boundDb(st: TxState): SqlDb {
+  const run = (sql: string, params: unknown[]) => {
+    if (!st.level.open) return Promise.reject(new TransactionEndedError(sql))
+    return onWire(st, sql, params)
+  }
+  return {
     dialect: 'postgres',
     async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
       return (await run(sql, params)).rows as T[]
@@ -111,42 +160,73 @@ function boundDb(st: Omit<TxState, 'bound'>, version: () => Promise<string>): Sq
     async exec(sql: string, params: unknown[] = []): Promise<SqlResult> {
       return result(await run(sql, params))
     },
-    tx: <T>(fn: (db: SqlDb) => Promise<T>) => savepoint(full, fn),
-    serverVersion: version,
+    // a nested tx joins the innermost level the caller runs in (never waits on a level it is already inside of)
+    tx: <T>(fn: (db: SqlDb) => Promise<T>) => {
+      const cur = ambient.getStore()
+      return savepoint(cur && cur.client === st.client ? cur : st, fn)
+    },
+    serverVersion: st.version,
     async close() { /* the pool owns the client */ },
   }
-  const full: TxState = { ...st, bound: self }
-  return self
 }
 
-/** nested transaction: a SAVEPOINT on the same client */
-async function savepoint<T>(st: TxState, fn: (db: SqlDb) => Promise<T>): Promise<T> {
-  const name = `ab_sp_${++st.seq.n}`
-  await st.lock.run(() => st.client.query(`SAVEPOINT ${name}`))
-  try {
-    const out = await fn(st.bound)
-    await st.lock.run(() => st.client.query(`RELEASE SAVEPOINT ${name}`))
-    return out
-  } catch (e) {
-    try { await st.lock.run(() => st.client.query(`ROLLBACK TO SAVEPOINT ${name}`)) } catch { /* connection gone: the outer ROLLBACK reports it */ }
-    throw e
-  }
+function childOf(st: TxState): TxState {
+  const child: TxState = { ...st, level: { queue: new Lock(), open: true } }
+  child.bound = boundDb(child)
+  return child
+}
+
+/** nested transaction: a SAVEPOINT on the same client, exclusive on its parent level */
+function savepoint<T>(st: TxState, fn: (db: SqlDb) => Promise<T>): Promise<T> {
+  if (!st.level.open) return Promise.reject(new TransactionEndedError('SAVEPOINT'))
+  return st.level.queue.run(async () => {
+    const name = `ab_sp_${++st.seq.n}`
+    const child = childOf(st)
+    await onWire(st, `SAVEPOINT ${name}`)
+    let out: T | undefined
+    let failure: { e: unknown } | null = null
+    try {
+      out = await ambient.run(child, () => fn(child.bound))
+    } catch (e) {
+      failure = { e }
+    }
+    // statements this level started but did not await still belong to it
+    await child.level.queue.idle()
+    child.level.open = false
+    if (!failure) {
+      try {
+        await onWire(st, `RELEASE SAVEPOINT ${name}`)
+        return out as T
+      } catch (e) {
+        failure = { e }
+      }
+    }
+    try { await onWire(st, `ROLLBACK TO SAVEPOINT ${name}`) } catch { /* connection gone: the outer ROLLBACK reports it */ }
+    throw failure.e
+  })
 }
 
 /** an ambient statement (pool-level call inside a unit of work): savepoint-wrapped so a caught failure is harmless */
-async function ambientStatement(st: TxState, sql: string, params: unknown[]): Promise<pg.QueryResult> {
-  return st.lock.run(async () => {
-    const name = `ab_sp_${++st.seq.n}`
-    await st.client.query(`SAVEPOINT ${name}`)
+function ambientStatement(st: TxState, sql: string, params: unknown[]): Promise<pg.QueryResult> {
+  if (!st.level.open) return Promise.reject(new TransactionEndedError(sql))
+  return st.level.queue.run(() => st.wire.run(async () => {
+    if (st.flight.n > 0) throw new TransactionOverlapError(`Two statements ran at once on one transaction client (${sql.slice(0, 60)}).`)
+    st.flight.n++
     try {
-      const r = await st.client.query(sql, params)
-      await st.client.query(`RELEASE SAVEPOINT ${name}`)
-      return r
-    } catch (e) {
-      try { await st.client.query(`ROLLBACK TO SAVEPOINT ${name}`) } catch { /* reported by the outer transaction */ }
-      throw e
+      const name = `ab_sp_${++st.seq.n}`
+      await st.client.query(`SAVEPOINT ${name}`)
+      try {
+        const r = await st.client.query(sql, params)
+        await st.client.query(`RELEASE SAVEPOINT ${name}`)
+        return r
+      } catch (e) {
+        try { await st.client.query(`ROLLBACK TO SAVEPOINT ${name}`) } catch { /* reported by the outer transaction */ }
+        throw e
+      }
+    } finally {
+      st.flight.n--
     }
-  })
+  }))
 }
 
 /** the transaction the current async context runs in on this pool, if any */
@@ -199,18 +279,29 @@ export function createPgDb(settings: DatabaseSettings, password: string, o: { ma
       if (outer) return savepoint(outer, fn)
       if (closed) throw Object.assign(new Error('The database pool is closed'), { code: 'POOL_CLOSED' })
       const client = await pool.connect()
-      const base = { pool, client, lock: new Lock(), seq: { n: 0 } }
-      const bound = boundDb(base, serverVersion)
-      const st: TxState = { ...base, bound }
+      const st = { pool, client, wire: new Lock(), seq: { n: 0 }, flight: { n: 0 }, level: { queue: new Lock(), open: true }, version: serverVersion } as TxState
+      st.bound = boundDb(st)
       let broken = false
       try {
-        await client.query('BEGIN')
-        const out = await ambient.run(st, () => fn(bound))
-        await st.lock.run(() => client.query('COMMIT'))
-        return out
-      } catch (e) {
+        await onWire(st, 'BEGIN')
+        let out: T | undefined
+        let failure: { e: unknown } | null = null
         try {
-          await st.lock.run(() => client.query('ROLLBACK'))
+          out = await ambient.run(st, () => fn(st.bound))
+        } catch (e) {
+          failure = { e }
+        }
+        // stragglers (un-awaited statements of this unit) finish before COMMIT / ROLLBACK; later ones are refused
+        await st.level.queue.idle()
+        await st.wire.idle()
+        st.level.open = false
+        if (failure) throw failure.e
+        await onWire(st, 'COMMIT')
+        return out as T
+      } catch (e) {
+        st.level.open = false
+        try {
+          await onWire(st, 'ROLLBACK')
         } catch {
           broken = true // connection gone: do not return it to the pool
         }

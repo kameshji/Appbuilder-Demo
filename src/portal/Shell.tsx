@@ -16,6 +16,7 @@ import { useTheme } from './theme'
 import { modulesFor, moduleRoute, type ModuleEntry, type ShellMode } from './modules'
 import { SoonBadge } from './ComingSoon'
 import { AppTabPanes, TabStrip } from './UserMode'
+import { LiveIndicator, NotificationBell } from './Notifications'
 
 /* ------------------------------------------------------------------ search context */
 
@@ -212,7 +213,9 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
           <Button variant="ghost" size="icon-sm" onClick={toggle} data-testid="portal-theme-toggle" aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} title={theme === 'dark' ? 'Light theme' : 'Dark theme'}>
             {theme === 'dark' ? <Sun /> : <Moon />}
           </Button>
-          {/* Power Platform order: chat, environment, account (last) */}
+          <LiveIndicator />
+          {/* Power Platform order: notifications, chat, environment, account (last) */}
+          <NotificationBell />
           <ChatButton />
           <EnvironmentPicker />
           <ProfileAvatar />

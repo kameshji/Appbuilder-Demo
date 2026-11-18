@@ -410,6 +410,29 @@ controls. Demo mode, collections and formulas without table reads take none of t
   searches the text columns on the server (300 ms debounce), shows the exact count, reads lookup labels for the rows on screen by id,
   and exports CSV through `GET /tables/:id/csv`. Demo mode keeps the in-memory grid.
 
+## Live data, presence and notifications
+
+The platform keeps one realtime connection per tab (`platform.live`, `src/platform/live.ts` and `remote-live.ts`; protocol and rules
+in `live.md`). What a UI component author needs to know:
+
+- **Data refreshes by itself.** Anything that reads through `platform.tables.queryState` / `query` or the small-table cache is
+  refreshed when someone else changes the table: the query cache refetches in the background and keeps the previous rows until
+  the new ones arrive. Keep your component mounted and keyed by data, not by version counters, so scroll positions survive.
+- **Do not overwrite what the user is typing.** A UI component that edits a record (the Form is the model) follows the record by id,
+  reloads its values only while there are no unsaved edits, and otherwise shows a conflict panel. Pass the version you started
+  from: `platform.tables.update(table, id, changes, { ifVersion: row.modifiedOn })`; a stale save comes back as a `DataErrorEvent`
+  with code `conflict` and field `modifiedOn` (the error also carries `current` and `changedBy`).
+- **Topics**: `useLiveTopic(topic, handler)` (current environment; `null` env for `user:<me>`), `usePresence(scope, state)` returns
+  the other people in a scope (`app:<id>`, `studio:<id>`, `record:<table>:<row>`), `useLiveStatus()` the connection state.
+  `PresenceAvatars` (`src/runtime/presence.tsx`) draws them.
+- **Notifications**: `platform.notifications` (list, mark read, settings, `send`) and `onNotification`. The bell, its panel, the
+  toasts and the desktop notifications are `src/portal/Notifications.tsx`; formulas use `SendNotification` (host
+  `sendNotification`, asynchronous; failures become a toast through the same listener as Share failures).
+- **Studio read-only**: `StudioState.readOnly` (locked production environment, or another maker holds the soft edit lock) makes
+  every design edit, undo and redo a no-op; the Studio wraps the formula bar, the left rail and the properties panel in a
+  disabled `fieldset`, and the canvas does not start moves or resizes. New edit paths must go through `mutate` (store.ts).
+- **Demo mode** implements the same API between tabs of one browser (`demo-live.ts`, BroadcastChannel).
+
 ## Styling
 
 - Tailwind CSS 4 plus CSS variables defined in `/home/claude/appbuilder-demo/src/index.css`. Use the semantic utilities, not raw colours:

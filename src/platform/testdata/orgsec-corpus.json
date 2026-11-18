@@ -1,0 +1,137 @@
+{
+  "about": "Shared test vectors for organisation scopes, relationship rules and sharing (src/platform/orgsec.ts). Run by src/platform/orgsec.test.ts (demo-mode evaluator and the server's in-memory evaluator) and server/core/orgsec.integration.test.ts (PostgreSQL SQL). Each case gives one role privilege to one user and lists the row ids the user may see for the operation.",
+  "departments": [
+    { "id": "d_plant", "code": "PLANT", "name": "Plant" },
+    { "id": "d_line1", "code": "LINE1", "name": "Line 1", "parentId": "d_plant" },
+    { "id": "d_line2", "code": "LINE2", "name": "Line 2", "parentId": "d_plant" },
+    { "id": "d_pack", "code": "PACK", "name": "Packing", "parentId": "d_line2" },
+    { "id": "d_school", "code": "SCHOOL", "name": "School" }
+  ],
+  "users": [
+    { "id": "u_plant", "name": "Plant Manager", "email": "plant@x.io", "departmentId": "d_plant" },
+    { "id": "u_sup1", "name": "Supervisor One", "email": "sup1@x.io", "departmentId": "d_line1", "managerId": "u_plant" },
+    { "id": "u_sup2", "name": "Supervisor Two", "email": "sup2@x.io", "departmentId": "d_line2", "managerId": "u_plant" },
+    { "id": "u_op1", "name": "Operator One", "email": "op1@x.io", "departmentId": "d_line1", "managerId": "u_sup1" },
+    { "id": "u_op2", "name": "Operator Two", "email": "op2@x.io", "departmentId": "d_line2", "managerId": "u_sup2" },
+    { "id": "u_pack", "name": "Packer", "email": "pack@x.io", "departmentId": "d_pack", "managerId": "u_op2" },
+    { "id": "u_cyc_a", "name": "Cycle A", "email": "a@x.io", "managerId": "u_cyc_b" },
+    { "id": "u_cyc_b", "name": "Cycle B", "email": "b@x.io", "managerId": "u_cyc_a" },
+    { "id": "u_teach1", "name": "Teacher One", "email": "t1@x.io", "departmentId": "d_school" },
+    { "id": "u_teach2", "name": "Teacher Two", "email": "t2@x.io", "departmentId": "d_school" },
+    { "id": "u_parent1", "name": "Parent One", "email": "p1@x.io" },
+    { "id": "u_parent2", "name": "Parent Two", "email": "p2@x.io" }
+  ],
+  "teams": [
+    { "id": "t_qa", "code": "QA", "name": "Quality", "memberIds": ["u_op1", "u_op2"] },
+    { "id": "t_other_env", "code": "ELSEWHERE", "name": "Other environment", "environmentId": "other", "memberIds": ["u_op1", "u_plant"] }
+  ],
+  "tables": [
+    { "id": "tb_lines", "name": "Lines", "displayName": "Lines", "primaryColumn": "Name", "columns": [
+      { "name": "Name", "displayName": "Name", "type": "text" },
+      { "name": "Supervisor", "displayName": "Supervisor", "type": "text" },
+      { "name": "Dept", "displayName": "Department code", "type": "text" },
+      { "name": "DeptId", "displayName": "Department id", "type": "text" } ] },
+    { "id": "tb_prod", "name": "Production", "displayName": "Production", "primaryColumn": "Batch", "sharing": true, "teamOwnership": true, "columns": [
+      { "name": "Batch", "displayName": "Batch", "type": "text" },
+      { "name": "Line", "displayName": "Line", "type": "lookup", "lookupTable": "Lines" },
+      { "name": "Qty", "displayName": "Qty", "type": "number" } ] },
+    { "id": "tb_students", "name": "Students", "displayName": "Students", "primaryColumn": "Name", "columns": [
+      { "name": "Name", "displayName": "Name", "type": "text" } ] },
+    { "id": "tb_sections", "name": "Sections", "displayName": "Sections", "primaryColumn": "Title", "columns": [
+      { "name": "Title", "displayName": "Title", "type": "text" },
+      { "name": "Teacher", "displayName": "Teacher", "type": "text" } ] },
+    { "id": "tb_enrol", "name": "Enrolments", "displayName": "Enrolments", "primaryColumn": "Student", "columns": [
+      { "name": "Student", "displayName": "Student", "type": "lookup", "lookupTable": "Students" },
+      { "name": "Section", "displayName": "Section", "type": "lookup", "lookupTable": "Sections" } ] },
+    { "id": "tb_guard", "name": "Guardians", "displayName": "Guardians", "primaryColumn": "Parent", "columns": [
+      { "name": "Student", "displayName": "Student", "type": "lookup", "lookupTable": "Students" },
+      { "name": "Parent", "displayName": "Parent", "type": "text" } ] },
+    { "id": "tb_att", "name": "Attendance", "displayName": "Attendance", "primaryColumn": "Day", "columns": [
+      { "name": "Student", "displayName": "Student", "type": "lookup", "lookupTable": "Students" },
+      { "name": "Section", "displayName": "Section", "type": "lookup", "lookupTable": "Sections" },
+      { "name": "Day", "displayName": "Day", "type": "date" },
+      { "name": "Present", "displayName": "Present", "type": "boolean" } ] }
+  ],
+  "rows": {
+    "Lines": [
+      { "id": "00000000-0000-7000-8000-00000000a001", "Name": "L1", "Supervisor": "u_sup1", "Dept": "LINE1", "DeptId": "d_line1", "owner": "u_plant" },
+      { "id": "00000000-0000-7000-8000-00000000a002", "Name": "L2", "Supervisor": "u_sup2", "Dept": "LINE2", "DeptId": "d_line2", "owner": "u_plant" }
+    ],
+    "Production": [
+      { "id": "00000000-0000-7000-8000-0000000000p1", "Batch": "P1", "Line": "00000000-0000-7000-8000-00000000a001", "Qty": 10, "owner": "u_op1" },
+      { "id": "00000000-0000-7000-8000-0000000000p2", "Batch": "P2", "Line": "00000000-0000-7000-8000-00000000a002", "Qty": 20, "owner": "u_op2" },
+      { "id": "00000000-0000-7000-8000-0000000000p3", "Batch": "P3", "Line": "00000000-0000-7000-8000-00000000a001", "Qty": 30, "owner": "u_sup1" },
+      { "id": "00000000-0000-7000-8000-0000000000p4", "Batch": "P4", "Line": "00000000-0000-7000-8000-00000000a002", "Qty": 40, "owner": "t_qa" },
+      { "id": "00000000-0000-7000-8000-0000000000p5", "Batch": "P5", "Line": "00000000-0000-7000-8000-00000000a001", "Qty": 50, "owner": "u_plant" },
+      { "id": "00000000-0000-7000-8000-0000000000p6", "Batch": "P6", "Line": null, "Qty": 60, "owner": "u_cyc_a" },
+      { "id": "00000000-0000-7000-8000-0000000000p7", "Batch": "P7", "Line": null, "Qty": 70, "owner": "u_cyc_b" },
+      { "id": "00000000-0000-7000-8000-0000000000p8", "Batch": "P8", "Line": "00000000-0000-7000-8000-00000000a002", "Qty": 80, "owner": "u_pack" },
+      { "id": "00000000-0000-7000-8000-0000000000p9", "Batch": "P9", "Line": null, "Qty": 90, "owner": null }
+    ],
+    "Students": [
+      { "id": "00000000-0000-7000-8000-0000000000s1", "Name": "Sam" },
+      { "id": "00000000-0000-7000-8000-0000000000s2", "Name": "Lia" },
+      { "id": "00000000-0000-7000-8000-0000000000s3", "Name": "Ken" }
+    ],
+    "Sections": [
+      { "id": "00000000-0000-7000-8000-0000000000c1", "Title": "Maths 1", "Teacher": "u_teach1" },
+      { "id": "00000000-0000-7000-8000-0000000000c2", "Title": "Art 2", "Teacher": "u_teach2" }
+    ],
+    "Enrolments": [
+      { "id": "00000000-0000-7000-8000-0000000000e1", "Student": "00000000-0000-7000-8000-0000000000s1", "Section": "00000000-0000-7000-8000-0000000000c1" },
+      { "id": "00000000-0000-7000-8000-0000000000e2", "Student": "00000000-0000-7000-8000-0000000000s2", "Section": "00000000-0000-7000-8000-0000000000c1" },
+      { "id": "00000000-0000-7000-8000-0000000000e3", "Student": "00000000-0000-7000-8000-0000000000s3", "Section": "00000000-0000-7000-8000-0000000000c2" },
+      { "id": "00000000-0000-7000-8000-0000000000e4", "Student": "00000000-0000-7000-8000-0000000000s1", "Section": "00000000-0000-7000-8000-0000000000c2" }
+    ],
+    "Guardians": [
+      { "id": "00000000-0000-7000-8000-0000000000g1", "Student": "00000000-0000-7000-8000-0000000000s1", "Parent": "u_parent1" },
+      { "id": "00000000-0000-7000-8000-0000000000g2", "Student": "00000000-0000-7000-8000-0000000000s3", "Parent": "u_parent2" }
+    ],
+    "Attendance": [
+      { "id": "00000000-0000-7000-8000-0000000000t1", "Student": "00000000-0000-7000-8000-0000000000s1", "Section": "00000000-0000-7000-8000-0000000000c1", "Day": "2026-11-02", "Present": true },
+      { "id": "00000000-0000-7000-8000-0000000000t2", "Student": "00000000-0000-7000-8000-0000000000s2", "Section": "00000000-0000-7000-8000-0000000000c1", "Day": "2026-11-02", "Present": false },
+      { "id": "00000000-0000-7000-8000-0000000000t3", "Student": "00000000-0000-7000-8000-0000000000s3", "Section": "00000000-0000-7000-8000-0000000000c2", "Day": "2026-11-02", "Present": true },
+      { "id": "00000000-0000-7000-8000-0000000000t4", "Student": "00000000-0000-7000-8000-0000000000s1", "Section": "00000000-0000-7000-8000-0000000000c2", "Day": "2026-11-03", "Present": true }
+    ]
+  },
+  "shares": [
+    { "tableId": "tb_prod", "rowId": "00000000-0000-7000-8000-0000000000p2", "principalType": "user", "principalId": "u_parent1", "access": "read" },
+    { "tableId": "tb_prod", "rowId": "00000000-0000-7000-8000-0000000000p5", "principalType": "team", "principalId": "t_qa", "access": "update" },
+    { "tableId": "tb_prod", "rowId": "00000000-0000-7000-8000-0000000000p7", "principalType": "team", "principalId": "t_other_env", "access": "update" }
+  ],
+  "cases": [
+    { "name": "own scope (plus P5, shared with the team QA)", "user": "u_op1", "table": "Production", "op": "read", "privilege": { "read": "own" }, "expect": ["P1", "P5"] },
+    { "name": "team scope: own, teammates and team-owned rows (not teams of another environment)", "user": "u_op1", "table": "Production", "op": "read", "privilege": { "read": "team" }, "expect": ["P1", "P2", "P4", "P5"] },
+    { "name": "team scope without teams = own rows (plus shares)", "user": "u_sup1", "table": "Production", "op": "read", "privilege": { "read": "team" }, "expect": ["P3"] },
+    { "name": "manager scope: direct reports", "user": "u_sup1", "table": "Production", "op": "read", "privilege": { "read": "manager" }, "expect": ["P1", "P3"] },
+    { "name": "managerTree: whole reporting line", "user": "u_plant", "table": "Production", "op": "read", "privilege": { "read": "managerTree" }, "expect": ["P1", "P2", "P3", "P5", "P8"] },
+    { "name": "manager scope of someone without reports = own", "user": "u_pack", "table": "Production", "op": "read", "privilege": { "read": "manager" }, "expect": ["P8"] },
+    { "name": "managerTree with a cycle in the manager chain terminates", "user": "u_cyc_a", "table": "Production", "op": "read", "privilege": { "read": "managerTree" }, "expect": ["P6", "P7"] },
+    { "name": "department scope", "user": "u_sup1", "table": "Production", "op": "read", "privilege": { "read": "department" }, "expect": ["P1", "P3"] },
+    { "name": "departmentTree scope (nested two levels)", "user": "u_plant", "table": "Production", "op": "read", "privilege": { "read": "departmentTree" }, "expect": ["P1", "P2", "P3", "P5", "P8"] },
+    { "name": "departmentTree from the middle of the tree", "user": "u_sup2", "table": "Production", "op": "read", "privilege": { "read": "departmentTree" }, "expect": ["P2", "P8"] },
+    { "name": "department scope for a user without a department = own", "user": "u_parent2", "table": "Production", "op": "read", "privilege": { "read": "department" }, "expect": [] },
+    { "name": "lookup path: Line.Supervisor = @me", "user": "u_sup2", "table": "Production", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "column": "Line.Supervisor", "op": "eq", "value": "@me" }] }, "expect": ["P2", "P4", "P8"] },
+    { "name": "lookup path with department code token", "user": "u_op1", "table": "Production", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "column": "Line.Dept", "op": "eq", "value": "@myDepartmentCode" }] }, "expect": ["P1", "P3", "P5"] },
+    { "name": "lookup path with a list token (department tree ids)", "user": "u_sup2", "table": "Production", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "column": "Line.DeptId", "op": "eq", "value": "@myDepartmentTree" }] }, "expect": ["P2", "P4", "P8"] },
+    { "name": "unresolved token never matches (no department)", "user": "u_parent1", "table": "Production", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "column": "Line.Dept", "op": "eq", "value": "@myDepartmentCode" }] }, "expect": ["P2"] },
+    { "name": "team token by code", "user": "u_sup1", "table": "Production", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "column": "owner", "op": "eq", "value": "@team:QA" }] }, "expect": ["P4"] },
+    { "name": "department-tree token by code", "user": "u_teach1", "table": "Lines", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "column": "DeptId", "op": "eq", "value": "@departmentTree:LINE2" }] }, "expect": ["L2"] },
+    { "name": "not one of my reports", "user": "u_sup1", "table": "Production", "op": "read", "privilege": { "read": "manager", "rowFilter": [{ "column": "owner", "op": "ne", "value": "@myReports" }] }, "expect": ["P3"] },
+    { "name": "any-of group (OR) with a path", "user": "u_sup1", "table": "Production", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "any": [{ "column": "Line.Supervisor", "op": "eq", "value": "@me" }, { "column": "Qty", "op": "ge", "value": 80 }] }] }, "expect": ["P1", "P3", "P5", "P8", "P9"] },
+    { "name": "education: teacher sees students of the sections they teach (junction)", "user": "u_teach1", "table": "Students", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "exists": { "table": "Enrolments", "where": [{ "column": "Student", "op": "eq", "value": "@this" }, { "column": "Section.Teacher", "op": "eq", "value": "@me" }] } }] }, "expect": ["Sam", "Lia"] },
+    { "name": "education: second teacher", "user": "u_teach2", "table": "Students", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "exists": { "table": "Enrolments", "where": [{ "column": "Student", "op": "eq", "value": "@this" }, { "column": "Section.Teacher", "op": "eq", "value": "@me" }] } }] }, "expect": ["Sam", "Ken"] },
+    { "name": "education: parent sees own child through the guardian junction", "user": "u_parent1", "table": "Students", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "exists": { "table": "Guardians", "where": [{ "column": "Student", "op": "eq", "value": "@this" }, { "column": "Parent", "op": "eq", "value": "@me" }] } }] }, "expect": ["Sam"] },
+    { "name": "education: parent sees the child's attendance (correlate on a column)", "user": "u_parent1", "table": "Attendance", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "exists": { "table": "Guardians", "where": [{ "column": "Student", "op": "eq", "value": "@this.Student" }, { "column": "Parent", "op": "eq", "value": "@me" }] } }] }, "expect": ["t1", "t4"] },
+    { "name": "education: teacher sees attendance of own sections (one hop)", "user": "u_teach1", "table": "Attendance", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "column": "Section.Teacher", "op": "eq", "value": "@me" }, { "column": "Present", "op": "eq", "value": true }] }, "expect": ["t1"] },
+    { "name": "education: two hops (Attendance > Student > enrolled?) via exists in exists path", "user": "u_teach2", "table": "Attendance", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "exists": { "table": "Enrolments", "where": [{ "column": "Student", "op": "eq", "value": "@this.Student" }, { "column": "Section.Teacher", "op": "eq", "value": "@me" }] } }] }, "expect": ["t1", "t3", "t4"] },
+    { "name": "shares: read share is added to a user who can read the table", "user": "u_parent1", "table": "Production", "op": "read", "privilege": { "read": "own" }, "expect": ["P2"] },
+    { "name": "shares: no privilege, no shared rows", "user": "u_parent1", "table": "Production", "op": "read", "privilege": { "read": "none" }, "expect": [] },
+    { "name": "shares: team share with update", "user": "u_op2", "table": "Production", "op": "update", "privilege": { "read": "own", "update": "own" }, "expect": ["P2", "P5"] },
+    { "name": "shares: read share does not grant update", "user": "u_parent1", "table": "Production", "op": "update", "privilege": { "read": "own", "update": "own" }, "expect": [] },
+    { "name": "share privilege: owner may share own rows", "user": "u_op1", "table": "Production", "op": "share", "privilege": { "read": "own" }, "expect": ["P1"] },
+    { "name": "share privilege: department scope", "user": "u_sup1", "table": "Production", "op": "share", "privilege": { "read": "own", "share": "department" }, "expect": ["P1", "P3"] },
+    { "name": "rule naming a missing column grants nothing", "user": "u_plant", "table": "Production", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "column": "Line.Nope", "op": "eq", "value": "x" }] }, "expect": [] },
+    { "name": "path through a non-lookup column grants nothing", "user": "u_plant", "table": "Production", "op": "read", "privilege": { "read": "all", "rowFilter": [{ "column": "Batch.Name", "op": "eq", "value": "x" }] }, "expect": [] }
+  ]
+}

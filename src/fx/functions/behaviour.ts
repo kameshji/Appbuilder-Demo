@@ -62,7 +62,45 @@ const KINDS: Record<string, 'info' | 'success' | 'warning' | 'error'> = {
   information: 'info', info: 'info', success: 'success', warning: 'warning', error: 'error',
 }
 
+/** the row id of a record argument (Share / Unshare) */
+function rowIdOf(c: CallCtx, i: number, fn: string): string {
+  const rec = c.value(i)
+  if (!isRecord(rec)) return c.fail(i, `${fn} needs a row as its first argument, like ${fn}(Gallery1.Selected, "asha@example.com")`)
+  const id = typeof rec.__id === 'string' ? rec.__id : typeof rec.id === 'string' ? rec.id : ''
+  if (!id) return c.fail(i, `${fn} needs a saved row (this record has no id)`)
+  return id
+}
+
+/** a user or team argument: email, id or team code as text, or a record with Email / Id / Code */
+function principalOf(c: CallCtx, i: number, fn: string): string {
+  const v = c.value(i)
+  if (typeof v === 'string' && v.trim()) return v.trim()
+  if (isRecord(v)) {
+    for (const k of ['Id', 'Email', 'Code', 'id', 'email']) {
+      const x = v[k]
+      if (typeof x === 'string' && x.trim()) return x.trim()
+    }
+  }
+  return c.fail(i, `${fn} needs a person (email or User() record) or a team (code or team record)`)
+}
+
 export const behaviourFns: FnDef[] = [
+  def('Share', 'Share(record, userOrTeam [, access])', 'Shares one row with a person (email, or a record such as User()) or a team (its code) for "Read" (default) or "Edit". You must own the row or have the Share privilege; sharing must be on for the table.', 2, 3, (c) => {
+    const id = rowIdOf(c, 0, 'Share')
+    const who = principalOf(c, 1, 'Share')
+    const a = c.argc > 2 ? c.text(2).trim().toLowerCase() : 'read'
+    const access = a === 'read' ? 'read' : a === 'edit' || a === 'update' || a === 'readwrite' || a === 'write' ? 'update' : c.fail(2, 'The access must be "Read" or "Edit"')
+    if (!c.host!.share) return c.fail(null, 'Sharing is not available here', true)
+    c.host!.share(id, who, access)
+    return null
+  }, 'behaviour'),
+  def('Unshare', 'Unshare(record, userOrTeam)', 'Stops sharing one row with a person or a team.', 2, 2, (c) => {
+    const id = rowIdOf(c, 0, 'Unshare')
+    const who = principalOf(c, 1, 'Unshare')
+    if (!c.host!.unshare) return c.fail(null, 'Sharing is not available here', true)
+    c.host!.unshare(id, who)
+    return null
+  }, 'behaviour'),
   def('Set', 'Set(variable, value)', 'Sets a global variable.', 2, 2, (c) => {
     const name = c.nameOf(0)
     const value = c.value(1)
@@ -161,6 +199,17 @@ export const behaviourFns: FnDef[] = [
       return out
     },
   },
+  def('SendNotification', 'SendNotification(user, title [, body] [, link])', 'Sends an in-app notification (the bell) to a person in this environment: user is an email, a user id or a record such as User(). link is a link inside Appbuilder such as "#u". Unlike Notify, it reaches the other person; it is rate-limited.', 2, 4, (c) => {
+    const who = principalOf(c, 0, 'SendNotification')
+    const title = c.text(1).trim()
+    if (!title) return c.fail(1, 'The title must not be empty')
+    const body = c.argc > 2 ? c.text(2) : ''
+    const link = c.argc > 3 ? c.text(3).trim() : ''
+    if (link && !link.startsWith('#')) return c.fail(3, 'The link must be a link inside Appbuilder that starts with #, such as "#u"')
+    if (!c.host!.sendNotification) return c.fail(null, 'Notifications are not available here', true)
+    c.host!.sendNotification(who, title, body, link)
+    return null
+  }, 'behaviour'),
   def('Navigate', 'Navigate(Screen)', 'Goes to another screen.', 1, 2, (c) => {
     c.host!.navigate(c.nameOf(0))
     return null

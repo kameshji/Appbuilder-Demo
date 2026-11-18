@@ -6,7 +6,8 @@
  *  - ordering ops (lt/le/gt/ge) on a blank cell are false; Dates compare by time; numbers numerically;
  *  - 'in' takes an array; 'contains' / 'startsWith' / 'endsWith' are text, case-insensitive.
  */
-import type { Condition, QueryValue } from '../../src/platform/http.ts'
+import type { Condition, QueryValue, SemiJoin } from '../../src/platform/http.ts'
+import { evaluateAsync } from '../../src/platform/orgsec.ts'
 import type { RawRow } from './contracts.ts'
 
 type Cell = RawRow[string] | undefined
@@ -46,6 +47,8 @@ export function evaluateCondition(c: Condition | undefined, row: RawRow): boolea
   if ('and' in c) return c.and.every((x) => evaluateCondition(x, row))
   if ('or' in c) return c.or.some((x) => evaluateCondition(x, row))
   if ('not' in c) return !evaluateCondition(c.not, row)
+  // a relationship rule needs the database: in memory it never matches (fail closed); see evaluateWithSemi
+  if ('semi' in c) return false
   const v = row[c.col]
   switch (c.op) {
     case 'isBlank': return isBlank(v)
@@ -70,6 +73,7 @@ export function conditionColumns(c: Condition | undefined, out: Set<string> = ne
   if ('and' in c) c.and.forEach((x) => conditionColumns(x, out))
   else if ('or' in c) c.or.forEach((x) => conditionColumns(x, out))
   else if ('not' in c) conditionColumns(c.not, out)
+  else if ('semi' in c) out.add(c.semi.col)
   else out.add(c.col)
   return out
 }
@@ -104,4 +108,12 @@ export function applyQuery(rows: RawRow[], q: { where?: Condition; orderBy?: { c
     out = out.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => keep.has(k))) as RawRow)
   }
   return { rows: out, total }
+}
+
+/**
+ * evaluateCondition for security predicates with relationship rules: `semi` nodes are answered by `semi(s, value)`
+ * (the DataService asks the connector: does a row of s.table with s.key = value match s.where?).
+ */
+export async function evaluateWithSemi(c: Condition | undefined, row: RawRow, semi: (s: SemiJoin, value: unknown) => Promise<boolean>): Promise<boolean> {
+  return evaluateAsync(c, row as Record<string, unknown>, { leaf: (l, r) => evaluateCondition(l, r as RawRow), semi })
 }

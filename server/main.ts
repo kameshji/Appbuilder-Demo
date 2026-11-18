@@ -26,6 +26,10 @@ const server = http.createServer((req, res) => {
   )
 })
 server.requestTimeout = 10 * 60 * 1000
+// the realtime endpoint /api/v1/live (WebSocket); every other upgrade is refused
+server.on('upgrade', (req, socket, head) => {
+  if (!app.handleUpgrade(req, socket, head)) socket.destroy()
+})
 
 server.on('error', (e: NodeJS.ErrnoException) => {
   log('error', e.code === 'EADDRINUSE' ? `Port ${port} is already in use. Set PORT to another value.` : String(e))

@@ -67,7 +67,7 @@ const NOT_READY: WorkspaceState = {
   ready: false, mode: 'demo', setup: { needsDatabase: false, needsAdmin: false }, session: null,
   storage: { kind: 'browser', location: 'Loading…' },
   apps: [], tables: [], roles: [], users: [], currentUserId: '', connections: [], solutions: [], dataFiles: [],
-  dataVersion: 0, loading: [], truncated: [], environments: [], environmentId: '',
+  dataVersion: 0, loading: [], truncated: [], environments: [], environmentId: '', departments: [], teams: [],
 }
 const NOBODY: UserDef = { id: '', name: '', email: '', roleIds: [] }
 
@@ -184,6 +184,7 @@ export function createPlatformFacade(deps: {
     auth: group('auth', ['login', 'logout', 'changePassword', 'updateProfile', 'setupDatabase', 'setupAdmin'], {}),
     attachments: group('attachments', ['upload', 'resolve', 'remove'], { url: ((id: string) => `/api/v1/attachments/${encodeURIComponent(id)}`) as (...a: never[]) => unknown }),
     files: group('files', ['add', 'replace', 'download', 'remove'], {}),
+    org: group('org', ['refresh', 'createDepartment', 'updateDepartment', 'removeDepartment', 'createTeam', 'updateTeam', 'removeTeam', 'directory', 'importUsers', 'shares', 'share', 'unshare', 'explain'], {}),
     security: group('security', ['createRole', 'updateRole', 'removeRole', 'createUser', 'updateUser', 'removeUser', 'setPassword'], {
       currentUser: () => NOBODY,
       can: () => false,
@@ -191,6 +192,15 @@ export function createPlatformFacade(deps: {
     }),
     connections: group('connections', ['create', 'update', 'remove', 'test', 'setDefault'], {}),
     environments: group('environments', ['list', 'select'], { current: () => null }),
+    live: group('live', ['lock'], {
+      status: () => ({ state: 'off', since: 0 }),
+      onStatus: () => () => {},
+      subscribe: () => () => {},
+      setPresence: () => {},
+      lastRowChange: () => null,
+      me: () => null,
+    }),
+    notifications: group('notifications', ['list', 'markRead', 'remove', 'settings', 'saveSettings', 'send'], { onNotification: () => () => {} }),
     solutions: group('solutions', ['create', 'update', 'remove', 'addComponent', 'removeComponent', 'exportPackage', 'importPackage'], {}),
   }
   return facade

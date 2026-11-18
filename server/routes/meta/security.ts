@@ -2,7 +2,9 @@
  * Roles (with CLS columns and RLS rowFilter), users (password, disable, last-admin guard) and the
  * admin-only security preview. Every change is audited (never with passwords) and invalidates the security cache.
  */
-import type { AccessScope, ColumnAccess, RoleDef, RowCondition, TableDef, TablePrivilege, UserDef } from '../../../src/platform/contracts.ts'
+import type { AccessScope, ColumnAccess, RoleDef, RowCompare, RowCondition, TableDef, TablePrivilege, UserDef } from '../../../src/platform/contracts.ts'
+import { ruleProblems } from '../../../src/platform/orgsec.ts'
+import { DEFAULT_CONNECTION_ID } from '../../core/connections.ts'
 import { HttpError } from '../../core/contracts.ts'
 import type { Ctx, Router, Services, UserContext } from '../../core/contracts.ts'
 import { checkPasswordPolicy, hashPassword } from '../../core/password.ts'
@@ -10,45 +12,59 @@ import type { UserRecord } from '../../core/contracts.ts'
 import { bodyObj, conflict, invalid, isObj, notFound, optString, reqString } from './util.ts'
 import type { RoleX } from './util.ts'
 import { audit, grantDefaults } from './tables-core.ts'
+import { readOrgFields, reasonText, saveOrgFields } from './org.ts'
 
-const SCOPES: AccessScope[] = ['none', 'own', 'all']
+const SCOPES: AccessScope[] = ['none', 'own', 'team', 'manager', 'managerTree', 'department', 'departmentTree', 'all']
 const ACCESS: ColumnAccess[] = ['none', 'read', 'update']
-const FILTER_OPS: RowCondition['op'][] = ['eq', 'ne', 'in', 'contains', 'startsWith', 'lt', 'le', 'gt', 'ge', 'isBlank', 'notBlank']
-const TOKENS = new Set(['@me', '@myEmail'])
+const FILTER_OPS: RowCompare['op'][] = ['eq', 'ne', 'in', 'contains', 'startsWith', 'lt', 'le', 'gt', 'ge', 'isBlank', 'notBlank']
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+/** a rule may have at most this many nodes (all levels) */
+const MAX_RULE_NODES = 200
 
 /* ------------------------------------------------------------------ validation */
 
-function checkRowFilter(table: TableDef, raw: unknown): RowCondition[] {
-  if (!Array.isArray(raw)) throw invalid(`Row filter of "${table.displayName}" must be a list.`, 'rowFilter')
-  return raw.map((c, i) => {
-    const where = `Row filter ${i + 1} of "${table.displayName}"`
-    if (!isObj(c)) throw invalid(`${where} is malformed.`, 'rowFilter')
-    const column = typeof c.column === 'string' ? c.column : ''
-    if (!table.columns.some((x) => x.name === column)) throw invalid(`${where}: the column "${column}" does not exist in "${table.displayName}".`, 'rowFilter')
-    const op = c.op as RowCondition['op']
-    if (!FILTER_OPS.includes(op)) throw invalid(`${where}: unknown operator "${String(c.op)}".`, 'rowFilter')
-    const out: RowCondition = { column, op }
-    if (op === 'isBlank' || op === 'notBlank') return out
-    const v = c.value
-    const scalar = (x: unknown) => typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean'
-    const checkTok = (x: unknown) => {
-      if (typeof x === 'string' && /^@(me|myemail)$/i.test(x) && !TOKENS.has(x)) throw invalid(`${where}: use exactly "@me" or "@myEmail" for the current user.`, 'rowFilter')
-    }
-    if (op === 'in') {
-      if (!Array.isArray(v) || v.length === 0 || !v.every((x) => typeof x === 'string' || typeof x === 'number')) throw invalid(`${where}: "in" needs a non-empty list of values.`, 'rowFilter')
-      v.forEach(checkTok)
-      out.value = v as Array<string | number>
-    } else {
-      if (!scalar(v) || (typeof v === 'string' && v === '' && op !== 'eq' && op !== 'ne')) throw invalid(`${where}: a value is required for "${op}".`, 'rowFilter')
-      checkTok(v)
-      out.value = v as string | number | boolean
-    }
-    return out
-  })
+/** structural copy of one rule node (only known fields); throws 422 on malformed input */
+function sanitizeRule(c: unknown, where: string, counter: { n: number }, depth = 0): RowCondition {
+  if (++counter.n > MAX_RULE_NODES || depth > 6) throw invalid(`${where}: the rule is too large.`, 'rowFilter')
+  if (!isObj(c)) throw invalid(`${where} is malformed.`, 'rowFilter')
+  if ('any' in c) {
+    if (!Array.isArray(c.any) || !c.any.length) throw invalid(`${where}: an "any of" group needs at least one condition.`, 'rowFilter')
+    return { any: c.any.map((x, i) => sanitizeRule(x, `${where}.${i + 1}`, counter, depth + 1)) }
+  }
+  if ('exists' in c) {
+    const e = c.exists
+    if (!isObj(e) || typeof e.table !== 'string' || !e.table || !Array.isArray(e.where) || !e.where.length) throw invalid(`${where}: a related-rows rule needs a table and conditions.`, 'rowFilter')
+    return { exists: { table: e.table, where: e.where.map((x, i) => sanitizeRule(x, `${where}.${i + 1}`, counter, depth + 1)) } }
+  }
+  const column = typeof c.column === 'string' ? c.column : ''
+  if (!column || column.length > 200) throw invalid(`${where} needs a column.`, 'rowFilter')
+  const op = c.op as RowCompare['op']
+  if (!FILTER_OPS.includes(op)) throw invalid(`${where}: unknown operator "${String(c.op)}".`, 'rowFilter')
+  const out: RowCompare = { column, op }
+  if (op === 'isBlank' || op === 'notBlank') return out
+  const v = c.value
+  const scalar = (x: unknown) => typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean'
+  if (op === 'in') {
+    if (!Array.isArray(v) || v.length === 0 || v.length > 1000 || !v.every((x) => typeof x === 'string' || typeof x === 'number')) throw invalid(`${where}: "in" needs a non-empty list of values.`, 'rowFilter')
+    out.value = v as Array<string | number>
+  } else {
+    if (!scalar(v) || (typeof v === 'string' && v === '' && op !== 'eq' && op !== 'ne')) throw invalid(`${where}: a value is required for "${op}".`, 'rowFilter')
+    out.value = v as string | number | boolean
+  }
+  return out
 }
 
-function checkPrivileges(tables: TableDef[], raw: unknown): TablePrivilege[] {
+function checkRowFilter(table: TableDef, raw: unknown, tables: TableDef[], sqlConnections: Set<string>): RowCondition[] {
+  if (!Array.isArray(raw)) throw invalid(`Row filter of "${table.displayName}" must be a list.`, 'rowFilter')
+  const counter = { n: 0 }
+  const list = raw.map((c, i) => sanitizeRule(c, `Row filter ${i + 1} of "${table.displayName}"`, counter))
+  const conn = (t: TableDef) => t.connectionId || DEFAULT_CONNECTION_ID
+  const problems = ruleProblems(table, list, tables, (a, b) => conn(a) === conn(b) && sqlConnections.has(conn(a)))
+  if (problems.length) throw invalid(`Row filter of "${table.displayName}": ${problems[0]}`, 'rowFilter')
+  return list
+}
+
+function checkPrivileges(tables: TableDef[], raw: unknown, sqlConnections: Set<string> = new Set([DEFAULT_CONNECTION_ID])): TablePrivilege[] {
   if (!Array.isArray(raw)) throw invalid('"privileges" must be a list.', 'privileges')
   const byId = new Map(tables.map((t) => [t.id, t]))
   const seen = new Set<string>()
@@ -59,9 +75,11 @@ function checkPrivileges(tables: TableDef[], raw: unknown): TablePrivilege[] {
     if (seen.has(t.id)) throw invalid(`Table "${t.displayName}" appears twice in the privileges.`, 'privileges')
     seen.add(t.id)
     for (const op of ['read', 'update', 'delete'] as const) {
-      if (!SCOPES.includes(p[op] as AccessScope)) throw invalid(`"${op}" on "${t.displayName}" must be none, own or all.`, 'privileges')
+      if (!SCOPES.includes(p[op] as AccessScope)) throw invalid(`"${op}" on "${t.displayName}" must be one of ${SCOPES.join(', ')}.`, 'privileges')
     }
+    if (p.share !== undefined && p.share !== null && !SCOPES.includes(p.share as AccessScope)) throw invalid(`"share" on "${t.displayName}" must be one of ${SCOPES.join(', ')}.`, 'privileges')
     const out: TablePrivilege = { table: t.id, create: p.create === true, read: p.read as AccessScope, update: p.update as AccessScope, delete: p.delete as AccessScope }
+    if (p.share && p.share !== 'none') out.share = p.share as AccessScope
     if (p.columns !== undefined && p.columns !== null) {
       if (!isObj(p.columns)) throw invalid(`Column access of "${t.displayName}" must be an object.`, 'columns')
       const cols: Record<string, ColumnAccess> = {}
@@ -74,11 +92,18 @@ function checkPrivileges(tables: TableDef[], raw: unknown): TablePrivilege[] {
       if (Object.keys(cols).length) out.columns = cols
     }
     if (p.rowFilter !== undefined && p.rowFilter !== null) {
-      const rf = checkRowFilter(t, p.rowFilter)
+      const rf = checkRowFilter(t, p.rowFilter, tables, sqlConnections)
       if (rf.length) out.rowFilter = rf
     }
     return out
   })
+}
+
+/** connections whose tables may be joined by relationship rules (SQL connectors) */
+export async function sqlConnectionIds(s: Services): Promise<Set<string>> {
+  const out = new Set<string>([DEFAULT_CONNECTION_ID])
+  for (const c of await s.meta.connections.list().catch(() => [])) if (c.connector === 'postgres' || c.connector === 'mysql') out.add(c.id)
+  return out
 }
 
 async function checkApps(s: Services, raw: unknown): Promise<string[] | 'all'> {
@@ -168,7 +193,7 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
     if (roles.some((r) => r.name.toLowerCase() === name.toLowerCase())) throw conflict(`A role named "${name}" already exists.`)
     const tables = await s.meta.tables.list()
     const isAdmin = b.isAdmin === true
-    const given = b.privileges === undefined || isAdmin ? [] : checkPrivileges(tables, b.privileges)
+    const given = b.privileges === undefined || isAdmin ? [] : checkPrivileges(tables, b.privileges, await sqlConnectionIds(s))
     const givenIds = new Set(given.map((p) => p.table))
     const privileges = isAdmin ? [] : [
       ...given,
@@ -210,7 +235,7 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
       if (b.isMaker) next.isMaker = true
       else delete next.isMaker
     }
-    if (b.privileges !== undefined) next.privileges = checkPrivileges(await s.meta.tables.list(), b.privileges)
+    if (b.privileges !== undefined) next.privileges = checkPrivileges(await s.meta.tables.list(), b.privileges, await sqlConnectionIds(s))
     if (next.isAdmin) next.privileges = []
     if (b.apps !== undefined) next.apps = await checkApps(s, b.apps)
     const roles = ((await s.meta.roles.list()) as RoleX[]).map((r) => (r.id === role.id ? next : r))
@@ -287,7 +312,10 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
       // a password chosen by an administrator is temporary: the user must replace it at the first sign-in
       rec.mustChangePassword = true
     }
+    const org = await readOrgFields(s, b, null)
+    if (Object.keys(org).length) requireInstallAdmin(ctx, 'change the organisation of users')
     await s.meta.users.insert(rec)
+    await saveOrgFields(s, rec.id, org)
     touched()
     await audit(s, ctx, 'user.create', { id: rec.id, email: rec.email, name: rec.name, roleIds: rec.roleIds, status: rec.status, passwordSet: !!rec.passwordHash })
     await installAuditOf(s, ctx, 'install.user_create', { id: rec.id, email: rec.email, environment: ctx.environmentId, isInstallAdmin: !!rec.isInstallAdmin })
@@ -297,7 +325,10 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
   router.add('PATCH', '/api/v1/users/:id', async (ctx) => {
     const user = await s.meta.users.get(ctx.params.id)
     if (!user) throw notFound('User not found.')
-    const f = await readUserBody(bodyObj(ctx), user)
+    const body = bodyObj(ctx)
+    const f = await readUserBody(body, user)
+    const org = await readOrgFields(s, body, user.id)
+    if (Object.keys(org).length) requireInstallAdmin(ctx, 'change the organisation of users')
     const next: UserRecord = { ...user, ...f }
     const self = ctx.user?.user.id === user.id
     const account = (['name', 'email', 'status', 'isInstallAdmin'] as const).some((k) => f[k] !== undefined && (k === 'isInstallAdmin' ? !!f[k] !== !!user[k] : f[k] !== (k === 'status' ? (user.status ?? 'active') : user[k])))
@@ -309,15 +340,20 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
     assertAdminRemains(users, roles)
     if (s.environments && (user.isInstallAdmin || f.isInstallAdmin)) assertInstallAdminRemains(users)
     await s.meta.users.update(user.id, f)
+    await saveOrgFields(s, user.id, org)
     if (next.status === 'disabled' && user.status !== 'disabled') await s.meta.sessions.removeForUser(user.id)
     touched()
     const changes = userDiff(user, next)
+    for (const [k, v] of Object.entries(org)) {
+      const before = (user as unknown as Record<string, unknown>)[k] ?? null
+      if (before !== v) changes[k] = { before, after: v }
+    }
     await audit(s, ctx, 'user.update', { id: user.id, email: next.email, roleIds: next.roleIds, status: next.status, changes })
     if (changes.status) await audit(s, ctx, next.status === 'disabled' ? 'user.disable' : 'user.enable', { id: user.id, email: next.email })
     if (changes.roleIds) await audit(s, ctx, 'user.roles', { id: user.id, email: next.email, before: changes.roleIds.before, after: changes.roleIds.after })
     if (changes.isInstallAdmin) await installAuditOf(s, ctx, next.isInstallAdmin ? 'install.admin_grant' : 'install.admin_revoke', { id: user.id, email: next.email })
     if (changes.status) await installAuditOf(s, ctx, next.status === 'disabled' ? 'install.user_disable' : 'install.user_enable', { id: user.id, email: next.email })
-    return publicUser(next)
+    return publicUser({ ...next, ...Object.fromEntries(Object.entries(org).map(([k, v]) => [k, v ?? undefined])) })
   }, { auth: 'admin' })
 
   router.add('DELETE', '/api/v1/users/:id', async (ctx) => {
@@ -330,6 +366,9 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
     if (s.environments && user.isInstallAdmin) assertInstallAdminRemains(rest)
     await s.meta.sessions.removeForUser(user.id)
     await s.meta.users.remove(user.id)
+    // reports lose their manager, team memberships and shares to the user go (every environment)
+    await s.meta.org?.userRemoved(user.id)
+    s.security.invalidateOrg?.()
     s.security.invalidate('all')
     s.environments?.invalidate()
     await audit(s, ctx, 'user.delete', { id: user.id, email: user.email, roleIds: user.roleIds, status: user.status ?? 'active' })
@@ -371,6 +410,7 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
         hiddenColumns: t.columns.filter((c) => !visibleNames.has(c.name)).map((c) => c.name),
         readOnlyColumns: visible.columns.filter((c) => !c.system && uc.columnAccess(t, c.name) === 'read').map((c) => c.name),
         rowCount: 0, truncated: false,
+        why: (uc.reasons?.(t, 'read') ?? []).map((r) => reasonText(r, false)),
       }
       if (entry.read !== 'none') {
         try {
@@ -384,7 +424,7 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
       }
       tables.push(entry)
     }
-    const items = tables.map((t) => ({ tableId: t.table, visibleRows: t.rowCount, hiddenColumns: t.hiddenColumns, readOnlyColumns: t.readOnlyColumns }))
+    const items = tables.map((t) => ({ tableId: t.table, visibleRows: t.rowCount, hiddenColumns: t.hiddenColumns, readOnlyColumns: t.readOnlyColumns, why: t.why }))
     return { user, isAdmin: uc.privileges.isAdmin, isMaker: uc.privileges.isMaker, status: user.status ?? 'active', items, tables }
   }, { auth: 'admin' })
 }
@@ -406,6 +446,8 @@ export interface SecurityPreviewTable {
   rowCount: number | null
   truncated: boolean
   error?: string
+  /** why rows are readable: one line per granting role (scope, rule), shares */
+  why: string[]
 }
 
 export { grantDefaults }

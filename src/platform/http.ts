@@ -49,6 +49,14 @@ export type Condition =
   | { col: string; op: CompareOp; value?: QueryValue | QueryValue[] }
   /** constant true / false (used by the security engine: e.g. no granting role => false) */
   | { const: boolean }
+  /**
+   * SERVER-INTERNAL (security engine only, never accepted from clients): the row's `col` is one of the `key` values of
+   * the rows of `table` (same connection) that match `where`. SQL: `col IN (SELECT key FROM table WHERE ...)`.
+   * Relationship rules (lookup paths, junction tables) compile to it; see src/platform/orgsec.ts.
+   */
+  | { semi: SemiJoin }
+
+export interface SemiJoin { col: string; table: TableDef; key: string; where: Condition }
 
 export interface Query {
   select?: string[]
@@ -291,7 +299,8 @@ export interface SourceTableInfo { source: string; columns: { name: string; type
 export type PlanChange = 'new' | 'changed' | 'unchanged' | 'removed'
 export interface PlanColumnChange { name: string; change: 'added' | 'removed' | 'type' | 'changed'; from?: string; to?: string; destructive?: boolean }
 export interface PlanItem {
-  kind: 'app' | 'table' | 'role' | 'connection' | 'file'
+  /** event: a table event or validation rule (package G) */
+  kind: 'app' | 'table' | 'role' | 'connection' | 'file' | 'event'
   id: string
   name: string
   change: PlanChange
@@ -314,5 +323,10 @@ export interface SolutionPlan {
   backup: { available: boolean; message: string }
   /** pass back as `confirm` to apply exactly this plan */
   token: string
+  /**
+   * table events of the package that run as the system (ignoring row security) and are new or changed here: the import
+   * then always needs an administrator's explicit confirmation (`confirm` = token, also for an install), and is audited
+   */
+  systemEvents?: string[]
 }
 export type SolutionImportResult = SolutionDef & { warnings?: string[]; plan?: SolutionPlan; backup?: { taken: boolean; message: string } }

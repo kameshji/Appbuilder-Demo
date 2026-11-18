@@ -355,6 +355,17 @@ function translate(c: Condition | undefined, cols: Cols, p: unknown[], negated: 
   if ('and' in c) return c.and.length ? '(' + c.and.map((x) => translate(x, cols, p, negated)).join(' AND ') + ')' : '(1 = 1)'
   if ('or' in c) return c.or.length ? '(' + c.or.map((x) => translate(x, cols, p, negated)).join(' OR ') + ')' : '(1 = 0)'
   if ('not' in c) return `(NOT ${translate(c.not, cols, p, true)})`
+  if ('semi' in c) {
+    // relationship rule (security engine only): col IN (rows of the target table). The derived table lets UPDATE and
+    // DELETE use it on their own table too (MySQL error 1093 otherwise); comparisons use the _ci collation like `eq`.
+    const s = c.semi
+    const outer = cols.get(s.col)
+    const tcols = new Cols(s.table)
+    const inner = tcols.get(s.key)
+    const where = translate(s.where, tcols, p, false)
+    const sql = `(${quoteId(outer.name)} IN (SELECT k FROM (SELECT ${quoteId(inner.name)} AS k FROM ${tableId(s.table)} WHERE ${quoteId(inner.name)} IS NOT NULL AND ${where}) AS sj))`
+    return negated ? `COALESCE(${sql}, 0)` : sql
+  }
   const sql = leaf(c, cols, p)
   // under NOT, NULL would stay NULL (and be filtered out); the in-memory reference treats it as false
   return negated ? `COALESCE(${sql}, 0)` : sql

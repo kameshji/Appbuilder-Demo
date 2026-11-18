@@ -16,14 +16,20 @@ import type {
 import type { AppDef } from '../../src/contracts.ts'
 import { parseJson, toDate, toIso } from './util.ts'
 import { DEFAULT_ENVIRONMENT_ID, INSTALL_SCHEMA, currentEnvironment, environmentSchema } from './env-context.ts'
+import { ORG_INSTALL_DDL, createOrgStore, orgEnvironmentDdl } from './org-store.ts'
+import { KERNEL_TABLES, kernelDdl } from './kernel-ddl.ts'
+import { NOTIFICATION_INSTALL_DDL, NOTIFICATION_TABLES } from './notifications-ddl.ts'
 
 /**
  * 1-3: the MySQL system store (no longer supported, never upgraded: there is no migration path from MySQL).
  * 4: PostgreSQL layout, schema `ab` plus one schema per environment.
  * 5: real environments: ab.environments (state, schema_version, locked, ...), ab.environment_access, ab.audit (install
  *    level), ab.users.is_install_admin / last_environment_id; every environment schema carries its own schema_version.
+ * 6: P0 wave 3: organisation (ab.departments, ab.teams, ab.team_members; F), in-app notifications (ab.notifications,
+ *    ab.user_settings; H), per environment ab_shares (F) and the event and job kernel (ab_outbox, ab_jobs, ab_schedules,
+ *    ab_table_events, ab_event_runs; G). Rule: a package that adds or changes tables bumps this number and adds a step.
  */
-export const SCHEMA_VERSION = 5
+export const SCHEMA_VERSION = 6
 
 /** the database was upgraded by a newer server: this one must not touch it (downgrade guard) */
 export class SchemaTooNewError extends Error {
@@ -119,6 +125,10 @@ export const INSTALL_DDL: string[] = [
     document jsonb NULL,
     installed_on timestamptz NULL
   )`,
+  // P0-F organisation model (idempotent, runs on every start): departments, teams, user organisation fields
+  ...ORG_INSTALL_DDL,
+  // P0-H in-app notifications and per-user settings (idempotent)
+  ...NOTIFICATION_INSTALL_DDL,
 ]
 
 /** the metadata tables of one environment schema */
@@ -244,16 +254,20 @@ export function environmentDdl(schema: string): string[] {
     )`,
     `CREATE INDEX IF NOT EXISTS ab_ix_audit_at ON ${E('ab_audit')} (at)`,
     `CREATE INDEX IF NOT EXISTS ab_ix_audit_action ON ${E('ab_audit')} (action)`,
+    // event and job kernel: outbox, jobs, schedules, table events, run log (kernel-ddl.ts)
+    ...kernelDdl(schema),
+    // P0-F record sharing (idempotent)
+    ...orgEnvironmentDdl(schema),
   ]
 }
 
 /** names of the metadata tables inside an environment schema (never reachable through a connector: prefix ab_) */
 export const ENVIRONMENT_TABLES = [
   'ab_roles', 'ab_user_roles', 'ab_role_tables', 'ab_tables', 'ab_apps', 'ab_connections', 'ab_solutions', 'ab_data_files',
-  'ab_attachments', 'ab_counters', 'ab_audit',
+  'ab_attachments', 'ab_counters', 'ab_audit', ...KERNEL_TABLES, 'ab_shares',
 ]
 /** names of the tables in schema ab */
-export const INSTALL_TABLES = ['settings', 'users', 'sessions', 'environments', 'environment_access', 'audit', 'licence']
+export const INSTALL_TABLES = ['settings', 'users', 'sessions', 'environments', 'environment_access', 'audit', 'licence', 'departments', 'teams', 'team_members', ...NOTIFICATION_TABLES]
 
 /**
  * Creates (or completes) the metadata tables of an environment schema and registers it (state ready, schema_version
@@ -278,7 +292,20 @@ export async function migrateEnvironment(
  * Upgrade steps of one environment schema, by the version they lead to (run in order, inside the environment's own
  * transaction, after environmentDdl). Version 5 changed nothing inside environment schemas.
  */
-export const ENVIRONMENT_STEPS: { to: number; describe: string; run(db: SqlDb, schema: string): Promise<void> }[] = []
+export const ENVIRONMENT_STEPS: { to: number; describe: string; run(db: SqlDb, schema: string): Promise<void> }[] = [
+  {
+    // P0 wave 3: the tables come from environmentDdl (run just before the steps); the step makes sure they are all there
+    // before the schema is stamped 6, so a server that does not know them (version 5) refuses this schema
+    to: 6,
+    describe: 'record sharing (ab_shares) and the event and job kernel (ab_outbox, ab_jobs, ab_schedules, ab_table_events, ab_event_runs)',
+    async run(db, schema) {
+      for (const t of ['ab_shares', ...KERNEL_TABLES]) {
+        const r = await db.query<Row>('SELECT to_regclass($1) IS NOT NULL AS ok', [`"${schema}"."${t}"`])
+        if (!bool(r[0]?.ok)) throw new Error(`table ${schema}.${t} is missing after the schema update`)
+      }
+    },
+  },
+]
 
 /** the outcome of migrating one environment at boot */
 export interface EnvironmentMigration { id: string; from: number; to: number; ok: boolean; error?: string }
@@ -367,7 +394,8 @@ type Row = Record<string, unknown>
 const str = (v: unknown): string => (v === null || v === undefined ? '' : String(v))
 const optStr = (v: unknown): string | undefined => (v === null || v === undefined || v === '' ? undefined : String(v))
 const bool = (v: unknown): boolean => v === true || v === 1 || v === '1' || v === 't' || v === 'true'
-const scope = (v: unknown): AccessScope => (v === 'own' || v === 'all' ? v : 'none')
+const SCOPE_VALUES: AccessScope[] = ['own', 'team', 'manager', 'managerTree', 'department', 'departmentTree', 'all']
+const scope = (v: unknown): AccessScope => (SCOPE_VALUES.includes(v as AccessScope) ? (v as AccessScope) : 'none')
 /** a jsonb parameter: always JSON text (pg would send a JS array as a PostgreSQL array) */
 const json = (v: unknown): string => JSON.stringify(v ?? null)
 /** a jsonb column value (pg parses it already; text from an older driver path is parsed here) */
@@ -416,11 +444,16 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
       ...(lastLogin ? { lastLogin } : {}),
       ...(bool(r.is_install_admin) ? { isInstallAdmin: true } : {}),
       ...(optStr(r.last_environment_id) ? { lastEnvironmentId: str(r.last_environment_id) } : {}),
+      ...(optStr(r.department_id) ? { departmentId: str(r.department_id) } : {}),
+      ...(optStr(r.manager_id) ? { managerId: str(r.manager_id) } : {}),
+      ...(optStr(r.job_title) ? { jobTitle: str(r.job_title) } : {}),
+      ...(optStr(r.phone) ? { phone: str(r.phone) } : {}),
+      ...(optStr(r.employee_code) ? { employeeCode: str(r.employee_code) } : {}),
       passwordHash: hash,
     }
   }
   async function usersWhere(where: string, params: unknown[]): Promise<UserRecord[]> {
-    const rows = await db.query<Row>(`SELECT id, name, email, password_hash, status, must_change_password, created_on, last_login, is_install_admin, last_environment_id FROM ${A('users')} ${where}`, params)
+    const rows = await db.query<Row>(`SELECT id, name, email, password_hash, status, must_change_password, created_on, last_login, is_install_admin, last_environment_id, department_id, manager_id, job_title, phone, employee_code FROM ${A('users')} ${where}`, params)
     const roles = await userRoles(rows.map((r) => str(r.id)))
     return rows.map((r) => toUser(r, roles))
   }
@@ -458,7 +491,7 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
     if (!rows.length) return []
     const ids = rows.map((r) => str(r.id))
     const privs = await db.query<Row>(
-      `SELECT role_id, table_id, can_create, read_scope, update_scope, delete_scope, columns, row_filter FROM ${E('ab_role_tables')} WHERE role_id IN (${ph(ids.length)}) ORDER BY table_id`,
+      `SELECT role_id, table_id, can_create, read_scope, update_scope, delete_scope, columns, row_filter, share_scope FROM ${E('ab_role_tables')} WHERE role_id IN (${ph(ids.length)}) ORDER BY table_id`,
       ids,
     )
     const byRole = new Map<string, TablePrivilege[]>()
@@ -475,6 +508,7 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
       if (columns && typeof columns === 'object' && !Array.isArray(columns) && Object.keys(columns).length) priv.columns = columns
       const rowFilter = doc<RowCondition[] | null>(p.row_filter, null)
       if (Array.isArray(rowFilter) && rowFilter.length) priv.rowFilter = rowFilter
+      if (scope(p.share_scope) !== 'none') priv.share = scope(p.share_scope)
       list.push(priv)
       byRole.set(str(p.role_id), list)
     }
@@ -577,6 +611,7 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
 
   const store: MetaStore = {
     db,
+    org: createOrgStore(db, () => envOf().schema),
 
     tableName(name) {
       return INSTALL_TABLES.includes(name) ? A(name) : E(name)
@@ -599,6 +634,8 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
         const hasDefault = (await tx.query<Row>(`SELECT 1 FROM ${A('environments')} WHERE id = $1`, [DEFAULT_ENVIRONMENT_ID])).length > 0
         if (!hasDefault) await migrateEnvironment(tx, { id: DEFAULT_ENVIRONMENT_ID, name: 'Default', type: 'production', builtIn: true })
         if (current === 4) steps.push(...(await upgradeInstallTo5(tx)))
+        // 6: organisation (F) and notifications (H) in schema ab; their tables come from INSTALL_DDL above
+        if (current >= 4 && current < 6) steps.push('version 6: organisation (departments, teams, team members) and in-app notifications; environments get record sharing and the event and job kernel')
         // an operation that was running when the server stopped cannot be resumed: the environment is marked failed
         const stuck = await tx.query<Row>(`UPDATE ${A('environments')} SET state = 'failed', last_error = CASE state WHEN 'creating' THEN 'Creating it was interrupted (the server stopped). Delete it and create it again.' ELSE 'Deleting it was interrupted (the server stopped). Delete it again.' END WHERE state IN ('creating', 'deleting') RETURNING id`)
         for (const r of stuck) steps.push(`environment ${str(r.id)}: interrupted operation, marked failed`)
@@ -743,12 +780,13 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
             if (seen.has(p.table)) continue
             seen.add(p.table)
             await tx.exec(
-              `INSERT INTO ${E('ab_role_tables')} (role_id, table_id, can_create, read_scope, update_scope, delete_scope, columns, row_filter)
-               VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
+              `INSERT INTO ${E('ab_role_tables')} (role_id, table_id, can_create, read_scope, update_scope, delete_scope, columns, row_filter, share_scope)
+               VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9)`,
               [
                 r.id, p.table, !!p.create, scope(p.read), scope(p.update), scope(p.delete),
                 p.columns && Object.keys(p.columns).length ? json(p.columns) : null,
                 p.rowFilter && p.rowFilter.length ? json(p.rowFilter) : null,
+                p.share && p.share !== 'none' ? scope(p.share) : null,
               ],
             )
           }

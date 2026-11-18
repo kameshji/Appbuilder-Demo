@@ -21,6 +21,9 @@ import { createDataService } from './data.ts'
 import { createAttachmentStore } from './attachment-store.ts'
 import { envDatabase, readServerJson, writeServerJson } from './config.ts'
 import { errText, log, nowIso, uid } from './util.ts'
+import { createKernel } from './kernel.ts'
+import type { Kernel } from './kernel.ts'
+import { watchSessions } from './live/session-events.ts'
 
 export type SqlDbFactory = (settings: DatabaseSettings, password: string) => SqlDb
 
@@ -103,6 +106,8 @@ export type CoreServices = Services & {
   ensureBuiltinConnections(): Promise<void>
   security: ReturnType<typeof createSecurityEngine>
   data: ReturnType<typeof createDataService>
+  /** event and job kernel: job queue and worker, schedules, outbox, table events (kernel.ts) */
+  kernel: Kernel
   connections: ReturnType<typeof createConnectionManager>
   /** test + connect + migrate the default store; persist=true seals the password into server.json */
   configureDatabase(settings: DatabaseSettings, password: string, opts: { createDatabase?: boolean; persist: boolean }): Promise<void>
@@ -178,10 +183,25 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   security.invalidate = (scope) => {
     invalidateSecurity(scope)
     environments.invalidate()
+    // table definitions feed the event rules (formula columns, rollups)
+    kernelRef?.invalidate()
   }
+  let kernelRef: { invalidate(): void } | null = null
   const connections = createConnectionManager(getMeta, env)
   const attachments = createAttachmentStore(() => environments.dirs(currentEnvironment().id).attachments, () => currentEnvironment().id)
-  const data = createDataService({ meta: getMeta, connections, attachments, log: env.log })
+  const data = createDataService({ meta: getMeta, connections, attachments, log: env.log, hooks: () => (state.db ? kernel.hooks : null) })
+  const kernel = createKernel({
+    db: () => state.db,
+    listenSettings: () => (state.settings ? { settings: state.settings, password: state.password ?? '' } : null),
+    meta: getMeta,
+    data: () => data,
+    forUser: (u) => security.forUser(u),
+    environments: async () => (state.install ? (await environments.list()).filter((e) => e.state === 'ready').map((e) => ({ id: e.id, schema: e.schema })) : []),
+    removeFile: (key) => attachments.remove(key),
+    sweepAttachments: async (graceMs) => (await import('./attachments.ts')).sweepOrphanAttachments(services, graceMs),
+    log: (level, msg) => log(level, msg),
+  })
+  kernelRef = kernel
 
   /** every environment's conn_default points at the system database (its tables live in that environment's schema) */
   async function ensureBuiltinConnections(meta: MetaStore, settings: DatabaseSettings, password: string): Promise<void> {
@@ -246,7 +266,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
       await db.close().catch(() => {})
       throw new HttpError(422, 'invalid', friendlyConnectionError(e, settings, password))
     }
-    const meta = createMetaStore(db, secrets)
+    const meta = watchSessions(createMetaStore(db, secrets))
     const install = createInstallStore(db)
     let migration: MigrationSummary | undefined
     try {
@@ -425,6 +445,8 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   async function close(): Promise<void> {
     closed = true
     stopRetry()
+    // running jobs get a moment to finish; the rest are released for the next start
+    await kernel.stop(Number(procEnv.APPBUILDER_JOBS_STOP_GRACE_MS) || 10_000).catch((e) => log('warn', `job worker stop: ${errText(e)}`))
     if (purgeTimer) clearInterval(purgeTimer)
     purgeTimer = null
     try {
@@ -454,6 +476,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     },
     connections,
     attachments,
+    kernel,
     env,
     environment: currentEnvironment,
     environments,

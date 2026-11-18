@@ -5,66 +5,51 @@
 import type { MetaStore, SecurityEngine, UserContext } from './contracts.ts'
 import { currentEnvironment } from './env-context.ts'
 import type {
-  AccessScope, ColumnAccess, EffectivePrivileges, RoleDef, RowCondition, TableDef, TablePrivilege, UserDef,
+  AccessScope, ColumnAccess, EffectivePrivileges, RoleDef, RowCondition, TableDef, TablePrivilege, UserDef, UserOrgInfo,
 } from '../../src/platform/contracts.ts'
-import type { Condition, QueryValue } from '../../src/platform/http.ts'
+import { ORG_SCOPES } from '../../src/platform/contracts.ts'
+import type { Condition } from '../../src/platform/http.ts'
+import {
+  EMPTY_DIRECTORY, emptyOrgContext, filterFor, orgContextFor, predicateReasons, rowPredicateFor, userOrgInfo,
+} from '../../src/platform/orgsec.ts'
+import type { OrgContext, OrgDirectory, PredicateEnv, SecOp } from '../../src/platform/orgsec.ts'
+import { DEFAULT_CONNECTION_ID } from './connections.ts'
 
 export const SYSTEM_COLUMN_NAMES = new Set(['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner'])
 export const SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000
 
-const SCOPE_RANK: Record<AccessScope, number> = { none: 0, own: 1, all: 2 }
+/** breadth order used for the reported (maximum) scope; the predicate itself is exact per role */
+const SCOPE_RANK: Record<AccessScope, number> = { none: 0, own: 1, manager: 2, managerTree: 3, team: 4, department: 5, departmentTree: 6, all: 7 }
 const ACCESS_RANK: Record<ColumnAccess, number> = { none: 0, read: 1, update: 2 }
 const maxScope = (a: AccessScope, b: AccessScope): AccessScope => (SCOPE_RANK[b] > SCOPE_RANK[a] ? b : a)
 const maxAccess = (a: ColumnAccess, b: ColumnAccess): ColumnAccess => (ACCESS_RANK[b] > ACCESS_RANK[a] ? b : a)
 const isMakerRole = (r: RoleDef): boolean => !!(r as RoleDef & { isMaker?: boolean }).isMaker
+const isOrgScope = (s: AccessScope | undefined): boolean => !!s && (ORG_SCOPES as readonly string[]).includes(s)
 
-const TRUE: Condition = { const: true }
-const FALSE: Condition = { const: false }
-
-function resolveToken(v: unknown, user: UserDef): QueryValue {
-  if (v === '@me') return user.id
-  if (v === '@myEmail') return user.email
-  if (v === undefined) return null
-  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' || v === null) return v
-  return String(v)
+/** organisation, shares and store topology for one user's context (the engine fills it; tests pass what they need) */
+export interface SecurityExtras {
+  org?: OrgContext
+  orgInfo?: UserOrgInfo
+  shares?: PredicateEnv['shares']
+  /** may a rule on `outer` read `inner` in the same statement? default: same connection id */
+  sameStore?: PredicateEnv['sameStore']
 }
 
-/** RowCondition list -> Condition (ANDed); null when it references a column the table does not have */
-export function rowFilterCondition(filter: RowCondition[] | undefined, table: TableDef, user: UserDef): Condition | null {
-  if (!filter || !filter.length) return TRUE
-  const missing = new Set(table.missingSystem ?? [])
-  const names = new Set([...table.columns.map((c) => c.name), ...SYSTEM_COLUMN_NAMES].filter((n) => !missing.has(n)))
-  const parts: Condition[] = []
-  for (const f of filter) {
-    if (!f || typeof f.column !== 'string' || !names.has(f.column)) return null
-    const op = f.op
-    if (op === 'isBlank' || op === 'notBlank') {
-      parts.push({ col: f.column, op })
-      continue
-    }
-    if (op === 'in') {
-      const list = Array.isArray(f.value) ? f.value : f.value === undefined ? [] : [f.value]
-      parts.push({ col: f.column, op: 'in', value: list.map((x) => resolveToken(x, user)) })
-      continue
-    }
-    const allowed = ['eq', 'ne', 'contains', 'startsWith', 'lt', 'le', 'gt', 'ge']
-    if (!allowed.includes(op)) return null
-    parts.push({ col: f.column, op, value: resolveToken(Array.isArray(f.value) ? f.value[0] : f.value, user) })
-  }
-  return parts.length === 1 ? parts[0] : { and: parts }
-}
+const sameConnection = (a: TableDef, b: TableDef): boolean => (a.connectionId || DEFAULT_CONNECTION_ID) === (b.connectionId || DEFAULT_CONNECTION_ID)
 
-function simplifyAnd(a: Condition, b: Condition): Condition {
-  if ('const' in a) return a.const ? b : FALSE
-  if ('const' in b) return b.const ? a : FALSE
-  return { and: [a, b] }
+/**
+ * RowCondition list -> Condition (ANDed); null when it references a column the table does not have. Kept for callers
+ * that have no organisation context (tokens of the organisation then resolve to "no value").
+ */
+export function rowFilterCondition(filter: RowCondition[] | undefined, table: TableDef, user: UserDef, tables: TableDef[] = [table]): Condition | null {
+  return filterFor(table, filter, { user, org: emptyOrgContext(user.id), tables, sameStore: sameConnection })
 }
 
 /**
  * Builds the per-request security context for a user from the roles and tables of one environment. Environment
  * administrator = an administrator role there; an install administrator is one in every environment.
  */
-export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: TableDef[], expiresOn?: Date, environmentId: string = currentEnvironment().id): UserContext {
+export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: TableDef[], expiresOn?: Date, environmentId: string = currentEnvironment().id, extras: SecurityExtras = {}): UserContext {
   const roles = allRoles.filter((r) => user.roleIds.includes(r.id))
   const isInstallAdmin = !!user.isInstallAdmin
   const isAdmin = isInstallAdmin || roles.some((r) => r.isAdmin)
@@ -87,29 +72,22 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
     return roles.some((r) => !!privFor(r, table)?.create)
   }
 
+  const env: PredicateEnv = {
+    user,
+    org: extras.org ?? emptyOrgContext(user.id),
+    tables,
+    sameStore: extras.sameStore ?? sameConnection,
+    shares: extras.shares,
+  }
+
   /**
-   * read/update/delete: OR over granting roles of (scope AND rowFilter).
-   * create (WITH CHECK for new rows): OR over roles with create of their rowFilter; no owner term, because a new row
-   * is always owned by its creator.
+   * read/update/delete: OR over granting roles of (scope AND rowFilter), plus rows shared with the user (read,
+   * update). create (WITH CHECK for new rows): OR over roles with create of their rowFilter; no owner term, because a
+   * new row is always owned by its creator. share: roles with the share privilege, plus the user's own rows.
+   * The rules live in src/platform/orgsec.ts (shared with demo mode).
    */
-  function rowPredicate(table: TableDef, op: 'read' | 'update' | 'delete' | 'create'): Condition {
-    if (isAdmin) return TRUE
-    const terms: Condition[] = []
-    for (const r of roles) {
-      const p = privFor(r, table)
-      const s: AccessScope = op === 'create' ? (p?.create ? 'all' : 'none') : (p?.[op] ?? 'none')
-      if (!p || s === 'none') continue
-      const filter = rowFilterCondition(p.rowFilter, table, user)
-      if (filter === null) continue // filter on a missing column: this role grants nothing
-      if (s === 'own' && (table.missingSystem ?? []).includes('owner')) continue // no owner column: no row is anyone's own
-      const base: Condition = s === 'all' ? TRUE : { col: 'owner', op: 'eq', value: user.id }
-      const term = simplifyAnd(base, filter)
-      if ('const' in term && term.const) return TRUE
-      if ('const' in term) continue
-      terms.push(term)
-    }
-    if (!terms.length) return FALSE
-    return terms.length === 1 ? terms[0] : { or: terms }
+  function rowPredicate(table: TableDef, op: SecOp): Condition {
+    return rowPredicateFor(roles, table, op, env, isAdmin)
   }
 
   /** roles whose read scope on the table is not none (CLS is the union over these) */
@@ -161,10 +139,11 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
       const a = columnAccess(t, c.name)
       if (a !== 'update') columns[c.name] = a
     }
-    const filtered = !isAdmin && roles.some((r) => {
+    // the client cannot mirror row filters, relationship rules, organisation scopes or shares: the server decides
+    const filtered = !isAdmin && (roles.some((r) => {
       const p = privFor(r, t)
-      return !!p && p.read !== 'none' && !!p.rowFilter?.length
-    })
+      return !!p && p.read !== 'none' && (!!p.rowFilter?.length || isOrgScope(p.read) || isOrgScope(p.update) || isOrgScope(p.delete))
+    }) || (!!t.sharing && !!extras.shares?.read[t.id]?.length))
     privileges.tables[t.id] = {
       create: canCreate(t),
       read: scopeOf(t, 'read'),
@@ -173,20 +152,24 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
       columns,
       filtered,
     }
+    const share = isAdmin ? (t.sharing ? 'all' : 'none') : roles.reduce<AccessScope>((acc, r) => maxScope(acc, privFor(r, t)?.share ?? 'none'), 'none')
+    if (share !== 'none') privileges.tables[t.id].share = share
   }
 
   const expires = expiresOn ?? new Date(Date.now() + SESSION_LIFETIME_MS)
+  const sessionUser: UserDef = extras.orgInfo ? { ...user, org: extras.orgInfo } : user
   return {
     environmentId,
-    user,
+    user: sessionUser,
     roles,
     privileges,
     rowPredicate,
+    reasons: (table, op) => predicateReasons(roles, table, op, env, isAdmin),
     canCreate,
     columnAccess,
     visibleDef,
     canRunApp: (appId: string) => appsAllowed === 'all' || appsAllowed.includes(appId),
-    session: () => ({ user, privileges, expiresOn: expires.toISOString(), environmentId }),
+    session: () => ({ user: sessionUser, privileges, expiresOn: expires.toISOString(), environmentId }),
   }
 }
 
@@ -198,14 +181,21 @@ export function hasAnyTableAccess(ctx: UserContext, table: TableDef): boolean {
 }
 
 /**
- * Engine with a short-lived cache of roles and tables. forUser(user, expiresOn?) accepts an optional session
- * expiry (the router passes it so session() reports the real expiry).
+ * Engine with short-lived caches (ttlMs, default 5 s): roles, tables and connection kinds per environment; the
+ * organisation directory (install-wide); the rows shared with each user per environment. forUser(user, expiresOn?)
+ * accepts an optional session expiry (the router passes it so session() reports the real expiry).
+ * invalidate() drops the current environment's roles/tables and its shares; invalidate('all') also the organisation;
+ * invalidateOrg() / invalidateShares() drop just those (organisation and share routes call them).
  */
 export function createSecurityEngine(getMeta: () => MetaStore, ttlMs = 5000): SecurityEngine & {
   forUser(user: UserDef, expiresOn?: Date): Promise<UserContext>
+  invalidateOrg(): void
+  invalidateShares(environment?: string): void
+  directory(): Promise<OrgDirectory>
 } {
+  interface Loaded { roles: RoleDef[]; tables: TableDef[]; sqlConnections: Set<string> }
   /** per environment id (roles and tables are environment objects) */
-  interface Slot { cache: { roles: RoleDef[]; tables: TableDef[]; at: number } | null; loading: Promise<{ roles: RoleDef[]; tables: TableDef[] }> | null; generation: number }
+  interface Slot { cache: (Loaded & { at: number }) | null; loading: Promise<Loaded> | null; generation: number }
   const slots = new Map<string, Slot>()
   const slot = (id: string): Slot => {
     let s = slots.get(id)
@@ -213,16 +203,25 @@ export function createSecurityEngine(getMeta: () => MetaStore, ttlMs = 5000): Se
     return s
   }
 
-  async function load(): Promise<{ roles: RoleDef[]; tables: TableDef[] }> {
+  async function load(): Promise<Loaded> {
     const s = slot(currentEnvironment().id)
     if (s.cache && Date.now() - s.cache.at < ttlMs) return s.cache
     if (s.loading) return s.loading
     const gen = s.generation
     const meta = getMeta()
-    const p = Promise.all([meta.roles.list(), meta.tables.list()])
-      .then(([roles, tables]) => {
-        if (gen === s.generation) s.cache = { roles, tables, at: Date.now() }
-        return { roles, tables }
+    // one statement after the other: inside a unit of work the db may be a single transaction connection
+    const p = (async () => {
+      const roles = await meta.roles.list()
+      const tables = await meta.tables.list()
+      const connections = await Promise.resolve().then(() => meta.connections?.list() ?? []).catch(() => [])
+      return [roles, tables, connections] as const
+    })()
+      .then(([roles, tables, connections]) => {
+        const sqlConnections = new Set<string>([DEFAULT_CONNECTION_ID])
+        for (const c of connections) if (c.connector === 'postgres' || c.connector === 'mysql') sqlConnections.add(c.id)
+        const loaded = { roles, tables, sqlConnections }
+        if (gen === s.generation) s.cache = { ...loaded, at: Date.now() }
+        return loaded
       })
       .finally(() => {
         if (s.loading === p) s.loading = null
@@ -231,15 +230,71 @@ export function createSecurityEngine(getMeta: () => MetaStore, ttlMs = 5000): Se
     return p
   }
 
+  /* organisation directory: install-wide */
+  let org: { dir: OrgDirectory; at: number } | null = null
+  let orgLoading: Promise<OrgDirectory> | null = null
+  let orgGeneration = 0
+  async function directory(): Promise<OrgDirectory> {
+    if (org && Date.now() - org.at < ttlMs) return org.dir
+    if (orgLoading) return orgLoading
+    const store = getMeta().org
+    if (!store) return EMPTY_DIRECTORY
+    const gen = orgGeneration
+    const p = store.directory()
+      .then((dir) => {
+        if (gen === orgGeneration) org = { dir, at: Date.now() }
+        return dir
+      })
+      .finally(() => {
+        if (orgLoading === p) orgLoading = null
+      })
+    orgLoading = p
+    return p
+  }
+
+  /* shares: per environment and user (principals = the user and their teams there) */
+  const shareCache = new Map<string, { value: PredicateEnv['shares']; at: number; generation: number }>()
+  let shareGeneration = 0
+  async function sharesFor(userId: string, teams: string[], tables: TableDef[]): Promise<PredicateEnv['shares']> {
+    if (!tables.some((t) => t.sharing)) return undefined
+    const store = getMeta().org
+    if (!store) return undefined
+    const key = `${currentEnvironment().id}\u0000${userId}`
+    const hit = shareCache.get(key)
+    if (hit && hit.generation === shareGeneration && Date.now() - hit.at < ttlMs) return hit.value
+    const gen = shareGeneration
+    const list = await store.shares.forPrincipals([userId, ...teams])
+    const read: Record<string, string[]> = {}
+    const update: Record<string, string[]> = {}
+    for (const sh of list) {
+      ;(read[sh.tableId] ??= []).push(sh.rowId)
+      if (sh.access === 'update') (update[sh.tableId] ??= []).push(sh.rowId)
+    }
+    const value = { read, update }
+    if (gen === shareGeneration) shareCache.set(key, { value, at: Date.now(), generation: gen })
+    return value
+  }
+
   return {
     async forUser(user: UserDef, expiresOn?: Date) {
-      const { roles, tables } = await load()
-      return buildUserContext(user, roles, tables, expiresOn, currentEnvironment().id)
+      const envId = currentEnvironment().id
+      const { roles, tables, sqlConnections } = await load()
+      const dir = await directory()
+      const orgCtx = orgContextFor(dir, user.id, envId)
+      const shares = await sharesFor(user.id, orgCtx.teams, tables)
+      const sameStore = (a: TableDef, b: TableDef) => sameConnection(a, b) && sqlConnections.has(a.connectionId || DEFAULT_CONNECTION_ID)
+      return buildUserContext(user, roles, tables, expiresOn, envId, { org: orgCtx, orgInfo: userOrgInfo(dir, user.id, envId), shares, sameStore })
     },
     invalidate(scope?: 'all' | { environment: string }) {
+      shareGeneration++
       if (scope && scope !== 'all') {
         slots.delete(scope.environment)
         return
+      }
+      if (scope === 'all') {
+        orgGeneration++
+        org = null
+        orgLoading = null
       }
       const list = scope === 'all' ? [...slots.values()] : [slot(currentEnvironment().id)]
       for (const s of list) {
@@ -248,5 +303,16 @@ export function createSecurityEngine(getMeta: () => MetaStore, ttlMs = 5000): Se
         s.loading = null
       }
     },
+    invalidateOrg() {
+      orgGeneration++
+      org = null
+      orgLoading = null
+      shareGeneration++
+    },
+    invalidateShares() {
+      shareGeneration++
+      shareCache.clear()
+    },
+    directory,
   }
 }

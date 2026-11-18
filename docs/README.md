@@ -23,6 +23,7 @@ filters and column security. ("Appbuilder" is a working name.)
 | [Architecture](dev/architecture.md) | planned |
 | [Data API v1 reference](dev/data-api.md) | planned |
 | [Query v2: formula-to-query translation](dev/query-v2.md) | current (library; the endpoint is P0 package D) |
+| [Realtime: live data refresh, presence, notifications](dev/live.md) | current (P0 package H) |
 | [Database schema](dev/schema.md) | planned |
 | [Writing a connector](dev/connectors.md) | planned |
 | [Testing](dev/testing.md) | planned |

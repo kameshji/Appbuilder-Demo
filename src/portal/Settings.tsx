@@ -28,6 +28,9 @@ import { SoonBadge } from './ComingSoon'
 import { ConfirmDialog, Segmented, downloadText, errMsg, useToast } from './kit'
 import { UserAvatar, settingsReturnRoute, useMe } from './Profile'
 import { useCaps } from './security'
+import { useNotificationSettings } from './Notifications'
+import { NOTIFICATION_KINDS } from '@/platform/live-protocol'
+import type { NotificationSettings } from '@/platform/live-api'
 import { fetchServerInfo } from './serverApi'
 import type { ShellMode } from './modules'
 
@@ -330,13 +333,77 @@ function RegionSection() {
 /* ------------------------------------------------------------------ notifications */
 
 function NotificationsSection() {
-  const soon = 'Arrives with P1 Automation (notifications in the app and by email, with per-user preferences).'
+  const { settings, loaded, load, save } = useNotificationSettings()
+  const { toast, fail } = useToast()
+  const mode = usePlatform((s) => s.mode)
+  const [perm, setPerm] = useState<string>(() => (typeof Notification === 'undefined' ? 'unsupported' : Notification.permission))
+  useEffect(() => {
+    if (!loaded) void load()
+  }, [loaded, load])
+  const put = (patch: Partial<NotificationSettings>) => save(patch).catch(fail)
+  const desktop = async (on: boolean) => {
+    if (on && typeof Notification !== 'undefined' && Notification.permission !== 'granted') {
+      const p = await Notification.requestPermission().catch(() => 'denied' as NotificationPermission)
+      setPerm(p)
+      if (p !== 'granted') {
+        toast('The browser did not allow notifications. Allow them for this site in the browser settings, then switch this on again.', 'error')
+        return
+      }
+    }
+    await put({ desktop: on })
+  }
+  const dndOn = !!settings.dnd
+  const later = 'Arrives with P1 Automation (flows and approvals).'
   return (
-    <Group title="Notifications" testId="settings-notifications">
-      <Row title="In the app" soon={soon} testId="setting-notify-app"><Switch disabled aria-label="Notifications in the app" tabIndex={-1} /></Row>
-      <Row title="By email" soon={soon} testId="setting-notify-email"><Switch disabled aria-label="Notifications by email" tabIndex={-1} /></Row>
-      <Row title="Approvals waiting for me" soon="Approval requests with approve and reject in the notification. Arrives with P1 Automation." testId="setting-notify-approvals"><Switch disabled aria-label="Approvals" tabIndex={-1} /></Row>
-    </Group>
+    <>
+      <Group title="In the app" testId="settings-notifications">
+        {NOTIFICATION_KINDS.map((k) => {
+          const future = k.kind === 'flow' || k.kind === 'approval'
+          return (
+            <Row key={k.kind} title={k.label} description={k.description} soon={future ? later : undefined} testId={`setting-notify-${k.kind}`}>
+              <Switch
+                checked={settings.kinds[k.kind] !== false}
+                disabled={!loaded || future}
+                onCheckedChange={(v) => void put({ kinds: { ...settings.kinds, [k.kind]: v } })}
+                aria-label={`Notifications ${k.label.toLowerCase()}`}
+                data-testid={`notify-kind-${k.kind}`}
+              />
+            </Row>
+          )
+        })}
+        <Row title="By email" soon="Arrives with P1 Automation (notifications by email through the SMTP relay)." testId="setting-notify-email"><Switch disabled aria-label="Notifications by email" tabIndex={-1} /></Row>
+      </Group>
+      <Group title="Delivery" testId="settings-notify-delivery">
+        <Row
+          title="Desktop notifications"
+          description={perm === 'unsupported' ? 'This browser cannot show desktop notifications.' : perm === 'denied' ? 'The browser blocks notifications for this site: allow them in the browser settings first.' : 'Show a system notification when something arrives while Appbuilder is open in the background. While it is in front, a small message appears in the corner instead.'}
+          testId="setting-notify-desktop"
+        >
+          <Switch checked={settings.desktop && perm === 'granted'} disabled={!loaded || perm === 'unsupported'} onCheckedChange={(v) => void desktop(v)} aria-label="Desktop notifications" data-testid="notify-desktop" />
+        </Row>
+        <Row title="Do not disturb" description="No messages in the corner and no desktop notifications in these hours (your local time). Notifications still collect under the bell." testId="setting-notify-dnd">
+          <div className="flex items-center gap-2">
+            {dndOn && (
+              <>
+                <Input type="time" className="h-8 w-28" aria-label="Do not disturb from" value={settings.dnd!.start} onChange={(e) => e.target.value && void put({ dnd: { start: e.target.value, end: settings.dnd!.end } })} data-testid="notify-dnd-start" />
+                <span className="text-xs text-muted-foreground">to</span>
+                <Input type="time" className="h-8 w-28" aria-label="Do not disturb until" value={settings.dnd!.end} onChange={(e) => e.target.value && void put({ dnd: { start: settings.dnd!.start, end: e.target.value } })} data-testid="notify-dnd-end" />
+              </>
+            )}
+            <Switch checked={dndOn} disabled={!loaded} onCheckedChange={(v) => void put({ dnd: v ? { start: '22:00', end: '07:00' } : null })} aria-label="Do not disturb" data-testid="notify-dnd" />
+          </div>
+        </Row>
+      </Group>
+      <Group title="Presence" testId="settings-presence">
+        <Row
+          title="Hide my presence"
+          description={mode === 'server' ? 'Others do not see your avatar on the apps and records you have open, and administrators do not see you online. In the Studio you show as "Another maker".' : 'Demo mode: presence is only shared between tabs of this browser.'}
+          testId="setting-hide-presence"
+        >
+          <Switch checked={settings.hidePresence} disabled={!loaded} onCheckedChange={(v) => void put({ hidePresence: v })} aria-label="Hide my presence" data-testid="hide-presence" />
+        </Row>
+      </Group>
+    </>
   )
 }
 

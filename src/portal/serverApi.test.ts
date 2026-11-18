@@ -4,12 +4,12 @@ import { auditSearch, normalizeSecurityPreview } from './serverApi'
 describe('normalizeSecurityPreview', () => {
   it('maps the compact items list', () => {
     const r = normalizeSecurityPreview({ items: [{ tableId: 't1', visibleRows: 4, hiddenColumns: ['A'], readOnlyColumns: ['B'] }] })
-    expect(r).toEqual([{ tableId: 't1', visibleRows: 4, hiddenColumns: ['A'], readOnlyColumns: ['B'] }])
+    expect(r).toEqual([{ tableId: 't1', visibleRows: 4, hiddenColumns: ['A'], readOnlyColumns: ['B'], why: [] }])
   })
   it('maps the richer tables list ({ table, rowCount })', () => {
     const r = normalizeSecurityPreview({ tables: [{ table: 't2', rowCount: 7, hiddenColumns: [], readOnlyColumns: ['C'] }, { table: 't3', rowCount: null }] })
-    expect(r[0]).toEqual({ tableId: 't2', visibleRows: 7, hiddenColumns: [], readOnlyColumns: ['C'] })
-    expect(r[1]).toEqual({ tableId: 't3', visibleRows: 0, hiddenColumns: [], readOnlyColumns: [] })
+    expect(r[0]).toEqual({ tableId: 't2', visibleRows: 7, hiddenColumns: [], readOnlyColumns: ['C'], why: [] })
+    expect(r[1]).toEqual({ tableId: 't3', visibleRows: 0, hiddenColumns: [], readOnlyColumns: [], why: [] })
   })
   it('prefers items when the server sends both, and never yields empty ids for the real response', () => {
     const r = normalizeSecurityPreview({

@@ -10,7 +10,7 @@ import {
 } from './util.ts'
 import type { RoleX } from './util.ts'
 import {
-  PACKAGE_VERSION, addApp, appEntry, ensurePkgTables, parsePackage, readPkgApp, readPkgTables, rollbackTables, tableEntry,
+  PACKAGE_VERSION, addApp, appEntry, ensurePkgTables, importPkgEventsAsCopies, parsePackage, readPkgApp, readPkgTables, rollbackTables, tableEntry,
 } from './packages.ts'
 import { audit, plainTableDef, resolveConnection } from './tables-core.ts'
 import { canReadWholeTable, deleteDataFile, registerDataFile } from './files.ts'
@@ -296,6 +296,7 @@ export async function importSolutionPackage(s: Services, ctx: Ctx, text: unknown
   try {
     const { map: tableMap, created } = await ensurePkgTables(s, tables, ctx.user?.user.id)
     if (created.length) undo.push(async () => { const { connector } = await resolveConnection(s); await rollbackTables(s, connector, created) })
+    await importPkgEventsAsCopies(s, tables, tableMap, created, ctx.user?.user.id ?? null, warnings)
     const components: SolutionDef['components'] = []
     for (const t of tables) components.push({ kind: 'table', id: tableMap.get(t.def.id)! })
 
@@ -321,6 +322,7 @@ export async function importSolutionPackage(s: Services, ctx: Ctx, text: unknown
             const out: TablePrivilege = { table: tableMap.get(p.table)!, create: p.create === true, read: p.read ?? 'none', update: p.update ?? 'none', delete: p.delete ?? 'none' }
             if (isObj(p.columns)) out.columns = { ...p.columns }
             if (Array.isArray(p.rowFilter)) out.rowFilter = clone(p.rowFilter)
+            if (p.share && p.share !== 'none') out.share = p.share
             return out
           })
         const role: RoleX = {

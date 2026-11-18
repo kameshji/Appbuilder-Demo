@@ -198,32 +198,102 @@ Things a Maker can do that you may not expect. **Treat Maker as a trusted role.*
 
 ## Table privileges
 
-For every table, a role sets (`server/core/security.ts`):
+For every table, a role sets (`server/core/security.ts`, rules shared with demo mode in `src/platform/orgsec.ts`):
 
 | Setting | Values | Meaning |
 | --- | --- | --- |
 | Create | yes / no | May add rows. |
-| Read | None / Own / All | Which rows can be seen. |
-| Update | None / Own / All | Which rows can be changed. |
-| Delete | None / Own / All | Which rows can be deleted. |
+| Read | a scope (below) | Which rows can be seen. |
+| Update | a scope | Which rows can be changed. |
+| Delete | a scope | Which rows can be deleted. |
+| Share | a scope (tables with sharing on) | Which rows the role may share with other people and teams. |
 | Columns | None / Read / Update per column | Hide a column, make it read-only, or editable (default). |
-| Row filter | list of conditions | Further limits the rows, for Read, Update and Delete. |
+| Row rules | list of rules | Further limits the rows, for Read, Update, Delete and Share (and checks what Create writes). |
+
+### Which rows: scopes
+
+| Scope | Rows whose owner is ... |
+| --- | --- |
+| None | no rows |
+| Own | the user |
+| Team | the user, anyone in one of the user's teams, or one of those teams (team-owned rows) |
+| Direct reports | the user or someone whose manager is the user |
+| Reporting line | the user or anyone below the user in the reporting line, however deep (cut at 32 levels; circles are followed once) |
+| Department | anyone in the user's department (a user without a department: the user) |
+| Department tree | anyone in the user's department or any department below it |
+| All | any row |
+
+Departments, managers and teams are set up in [Organisation](organisation.md). Changes apply on the next request.
 
 - **Own** means rows whose `owner` is the user. `owner` is a system column that Appbuilder sets to the person who
-  created the row. Clients cannot change it. Rows imported through Appbuilder (CSV import, a new table from CSV, a
-  solution or app package with data) get the importing user as `owner` and `createdBy`. Rows that existed in a **linked**
-  table before it was linked have no owner, so **Own-scope roles cannot see them**; an administrator can fix that with
-  **Assign to me** (*Tables* > the table > *Settings* > *Assign owner to rows without owner*, or
-  `POST /api/v1/tables/:id/assign-owner`, optional `{ "userId": ... }`). A linked table without an `owner` column grants
-  nothing to Own-scope roles.
-- **Row filter** conditions are all required (AND). Operators: *is*, *is not*, *is one of*, *contains*, *starts with*,
-  *is less than*, *is at most*, *is greater than*, *is at least*, *is empty*, *is not empty*. For
-  *is*, *is not*, *contains* and *starts with* the value can be **Current user** (`@me`, the user's id) or **Current
-  user's email** (`@myEmail`). Text comparisons ignore upper/lower case.
-- A filter on a column that no longer exists makes that role grant **nothing** on the table (it fails closed).
-- A row filter applies together with the scope: Own plus a filter means "my rows that also match the filter".
-- The system columns `id`, `createdOn`, `modifiedOn`, `createdBy`, `owner` can be read but never written by clients.
-  `id` can never be hidden.
+  created the row. Clients cannot change it, except on tables with **Rows can be owned by teams**: there a user may give a
+  row to a team they belong to (administrators: to any user or team), subject to the Update rules. Rows imported through
+  Appbuilder (CSV import, a new table from CSV, a solution or app package with data) get the importing user as `owner`
+  and `createdBy`. Rows that existed in a **linked** table before it was linked have no owner, so **owner-based scopes
+  cannot see them**; an administrator can fix that with **Assign to me** (*Tables* > the table > *Settings* > *Assign
+  owner to rows without owner*, or `POST /api/v1/tables/:id/assign-owner`, optional `{ "userId": ... }`). A linked table
+  without an `owner` column grants nothing to owner-based scopes.
+- The system columns `id`, `createdOn`, `modifiedOn`, `createdBy`, `owner` can be read but never written by clients
+  (owner: see above). `id` can never be hidden.
+
+### Row rules
+
+*Security roles* > a role > *Columns and rows* > *Row rules*. All rules of a role on a table are required (AND), and they
+apply together with the scope ("my department's rows that also match the rules"). A rule is one of:
+
+- **A condition on a column**: column, operator, value. Operators: *is*, *is not*, *is one of*, *contains*, *starts
+  with*, *is less than*, *is at most*, *is greater than*, *is at least*, *is empty*, *is not empty*. Text comparisons
+  ignore upper/lower case.
+- **A condition through lookups**: pick a lookup column, then a column of the row it points to ("Section, its
+  Teacher"), at most two steps. Example: on *Attendance*, `Section > Teacher is the current user`. The condition holds
+  when the looked-up row exists and matches.
+- **Related rows** (a junction table): "a row of *Enrolments* exists whose *Student* is *this row*, and where *Section >
+  Teacher* is the current user". The link can also be to a column of this row ("whose *Student* is *this row's
+  Student*"). Exactly one condition says how the related row belongs to this one.
+- **Any of** groups (one of several conditions; made through the API or a solution, shown in the editor).
+
+![The rule builder: Production rows whose Line's Supervisor is the current user](../images/roles-rule-builder.png)
+
+The value can be a fixed value or one of these, resolved for the signed-in user on every request:
+
+| Value | Means |
+| --- | --- |
+| Current user (`@me`) / Current user's email (`@myEmail`) | the user's id / email |
+| Current user's department (`@myDepartment`) / department code (`@myDepartmentCode`) | |
+| Current user's department or one below it (`@myDepartmentTree`) | a list |
+| One of the current user's teams (`@myTeams`) | a list of team ids |
+| Current user's manager (`@myManager`) | a user id |
+| One of the current user's direct reports (`@myReports`), anyone in their reporting line (`@myReportsTree`) | lists |
+| Team *X* (`@team:CODE`), department *X* (`@department:CODE`), department *X* or below (`@departmentTree:CODE`) | by code, so they survive moving a solution to another install |
+
+A list value works with *is* ("is one of") and *is not* ("is none of"). **A comparison with something the user does not
+have (no department, no manager, an unknown code) never matches**, so a missing value never opens rows.
+
+Rules can only use tables of the same connection as the table they protect (they run inside one SQL statement). The
+editor and the server refuse a rule that names a missing column, a column that is not a lookup, more than two steps,
+a misspelled `@` value, or a related-rows rule without exactly one link to this row. A rule that stops matching the
+table later (a column was removed) makes that role grant **nothing** on the table (it fails closed).
+
+**Who can see this row?** (*Security roles* page, or a row's menu in the table grid, administrators) lists everyone who
+may read, change or delete one row and why: the role and scope, the rule, a share, or administrator.
+
+![Who can see a row: each person and the role, scope or rule that lets them](../images/roles-who-can-see.png)
+
+### Record sharing
+
+Turn **Record sharing** on in the table designer (*Settings* > *Ownership and sharing*). Then the owner of a row, and
+anyone whose role has a **Share** scope covering it, can share that single row with a person or a team, for **Read** or
+**Read and change** (the second only if they may change the row themselves). In the table grid: the row number >
+*Share...*; in apps: `Share(record, userOrTeam, "Read" | "Edit")`, `Unshare(record, userOrTeam)`, `SharedWith(record)`.
+
+![Sharing a row from the table grid](../images/share-dialog.png)
+
+- A share adds that row to what the recipient's role already allows. **The recipient still needs a role with Read on
+  the table** (Update for an edit share), like in Dataverse: sharing never opens a table to someone who has no access to
+  it at all. Shares never grant Delete.
+- Taking a share back (*Share...* > the cross, or `Unshare`) works at once. Anyone may give up a share made to them.
+- Turning sharing off makes all shares of the table stop applying (they come back if you turn it on again). Deleting a
+  row, a user or a team removes their shares. Shares are per environment and are copied with the data of an environment.
 
 ### Known limits of row filters
 
@@ -243,10 +313,11 @@ For every table, a role sets (`server/core/security.ts`):
 
 If a user has several roles, the **broadest** access wins, separately for each part:
 
-- **Scope** (Read/Update/Delete): the highest of None < Own < All across the roles.
+- **Scope** (Read/Update/Delete): reported as the broadest across the roles (None < Own < Direct reports < Reporting line
+  < Team < Department < Department tree < All); the rows themselves are decided per role, as below.
 - **Create**: allowed if *any* role allows it.
-- **Rows**: each role contributes its own condition (its scope plus its row filter); the user gets the rows matching
-  **any** of them (OR). If one role grants all rows with no filter, the user sees all rows.
+- **Rows**: each role contributes its own condition (its scope plus its row rules); the user gets the rows matching
+  **any** of them (OR), plus the rows shared with them. If one role grants all rows with no rule, the user sees all rows.
 - **Columns**: for each column, the best of the roles that can read the table: Update > Read > None. A column is hidden
   only if **every** role that can read the table hides it. A column not mentioned counts as *Update*.
 - **Apps**: all apps of all roles added together; "All apps" on any role means all.
@@ -300,6 +371,29 @@ Role *Status Read-only*: **Read** *All*, **Update** *All*, under **Columns** set
 The user can change Name, Region and the other columns, but changing *Status* is refused with "Status is read-only for
 you." The column is still visible.
 
+### A school: teachers see their students, parents their own child
+
+Tables: *Students*, *Sections* (*Teacher*: the teacher's user id), *Enrolments* (*Student*, *Section*: lookups),
+*Guardians* (*Student*: lookup, *Parent*: the parent's user id), *Attendance* (*Student*, *Section*: lookups).
+
+- Role **Teacher**: *Students* Read All with the related-rows rule "a row of *Enrolments* exists whose *Student* is this
+  row, and where *Section > Teacher* is the current user"; *Attendance* Create, Read All, Update All with the rule
+  "*Section > Teacher* is the current user" (so a teacher can only record attendance for their own sections: a row for
+  another section is refused, and a student they cannot see cannot be picked).
+- Role **Parent**: *Students* Read All with "a row of *Guardians* exists whose *Student* is this row and whose *Parent* is
+  the current user"; *Attendance* Read All with the same rule linked through "*Student* is this row's *Student*".
+
+### A plant: supervisors see their line, the plant manager the whole plant
+
+Departments *PLANT1* with *LINE1* and *LINE2* below; supervisors and operators in the line departments, managers set.
+Table *Production* (*Line*: lookup to *Lines*, which has a *Supervisor*).
+
+- **Operator**: *Production* Create, Read Team, Update Own (their crew's batches; they change only their own).
+- **Supervisor**: *Production* Read All, Update All with the rule "*Line > Supervisor* is the current user".
+- **Plant manager**: *Production* Read Department tree (every batch of everyone in the plant's departments).
+
+Both examples are fixtures of the automated tests (`server/core/orgsec.integration.test.ts`).
+
 ## App access
 
 Each role lists which apps its users may open: **All apps**, or a chosen list. A new role created in the portal starts
@@ -318,7 +412,10 @@ network traffic. Never put secrets in an app.
 Before you tell people it works, check it. **Test as user** (administrators only, on the Security roles page and on
 Admin console > Users) shows, for a
 chosen user and each table: whether they can create, read, update and delete, whether a row filter applies, how many
-rows they can see, which columns are hidden and which are read-only. It is computed by the same engine that enforces
+rows they can see and **why** (one line per role that grants read, with its scope and whether row rules limit it, and
+rows shared with them), which columns are hidden and which are read-only. For one row, use **Who can see a row?**.
+
+![Test as user with the reason per table](../images/roles-test-as-user-why.png) It is computed by the same engine that enforces
 access (`GET /api/v1/security/preview`), not a copy. We confirmed that the preview for the *Staff* example listed
 *Salary* as hidden and the right row count.
 
@@ -328,6 +425,8 @@ with their account, or a test account that has the same roles.
 ## Not supported yet
 
 - Denying access that another role grants (roles only add).
+- Sharing with a whole department or role (share with a team instead), time-limited shares, and an "assign" privilege
+  separate from Update (giving a row to a team needs Update rules that still cover the row afterwards).
 - Sign-in by anything other than email and password: no multi-factor, no single sign-on, no directory (Active
   Directory, Google, Microsoft) integration.
 - Password expiry, complexity rules, account lockout other than the throttles described above.

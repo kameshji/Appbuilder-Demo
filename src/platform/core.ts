@@ -12,15 +12,19 @@ import type {
   EnvironmentDef,
   AccessScope, AppMeta, AttachmentRef, ColumnAccess, ColumnDef, ColumnType, ConnectionRef, ConnectorKind, DataFileDef, DataOp,
   EffectivePrivileges, PlatformApi, RoleDef, Row, Session, SolutionComponentKind, SolutionDef, StorageAdapter, TableDef,
-  TablePrivilege, UserDef, WorkspaceState,
+  TablePrivilege, UserDef, WorkspaceState, DepartmentDef, TeamDef, ShareDef, SharesInfo, ExplainResult, UserImportRow,
 } from './contracts'
 import Papa from 'papaparse'
-import { matchesCondition } from './rowfilter'
+import { matchesLeaf } from './rowfilter'
+import { EMPTY_DIRECTORY, departmentCycle, evaluateSync, managerCycle, memorySemi, orgContextFor, predicateReasons, rowPredicateFor, userOrgInfo } from './orgsec'
+import type { OrgDirectory, PredicateEnv, SecOp } from './orgsec'
 import type { QueryPlan } from './query'
 import { planKey, type QueryState } from './query-cache'
 import { localQueryState } from './query-local'
 import { csvToRows, parseCsvText, rowsToCsv } from './csv'
 import { Persister } from './persister'
+import { createDemoLive } from './demo-live'
+import { applyFormulaColumns } from './demo-formulas'
 import { DEFAULT_ENVIRONMENT_ID, pickEnvironment, readSelectedEnvironment, selectEnvironment } from './environments'
 import { MemoryStorage } from './storage'
 import {
@@ -41,6 +45,11 @@ export interface PlatformOptions {
   maxWaitMs?: number
   /** called when a background write fails (default: console.warn) */
   onStorageError?: (e: unknown) => void
+  /**
+   * keep tabs of this browser in sync over a BroadcastChannel (package H, demo-live.ts). Default: in a browser page only
+   * (unit tests under Node create many platforms in one process and must not talk to each other); a factory for tests.
+   */
+  liveChannel?: boolean | (() => { postMessage(m: unknown): void; close(): void; onmessage: ((ev: { data: unknown }) => void) | null } | null)
 }
 
 const COLUMN_TYPES: ColumnType[] = [
@@ -57,7 +66,7 @@ const fail = (code: PlatformError['code'], message: string): never => {
 }
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const clone = <T>(v: T): T => structuredClone(v)
-const rank: Record<AccessScope, number> = { none: 0, own: 1, all: 2 }
+const rank: Record<AccessScope, number> = { none: 0, own: 1, manager: 2, managerTree: 3, team: 4, department: 5, departmentTree: 6, all: 7 }
 
 interface TableRt {
   def: TableDef
@@ -86,8 +95,10 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     session: null,
     storage: { kind: storage?.kind ?? 'browser', location: storage?.location ?? 'Loading…' },
     apps: [], tables: [], roles: [], users: [], currentUserId: '', connections: [], solutions: [], dataFiles: [],
-    dataVersion: 0, loading: [], truncated: [], environments: [], environmentId: '',
+    dataVersion: 0, loading: [], truncated: [], environments: [], environmentId: '', departments: [], teams: [],
   }
+  /** demo mode: record shares (persisted in workspace.yaml) */
+  let shares: ShareDef[] = []
   /** attachments (demo mode): metadata + data URL, mirrored in storage under attachments/<id>.json */
   const attachmentStore = new Map<string, AttachmentRef & { dataUrl: string }>()
   const listeners = new Set<() => void>()
@@ -109,7 +120,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
   const setState = (patch: Partial<WorkspaceState>, bumpData = false) => {
     state = { ...state, ...patch, dataVersion: bumpData ? state.dataVersion + 1 : state.dataVersion }
     // the run-as user, roles or tables changed: recompute what that user sees (CLS) and their effective privileges
-    if (patch.users || patch.roles || patch.tables || patch.currentUserId !== undefined) {
+    if (patch.users || patch.roles || patch.tables || patch.currentUserId !== undefined || patch.departments || patch.teams) {
       if (!patch.tables) state = { ...state, tables: visibleTables() }
       state = { ...state, session: computeSession() }
     }
@@ -138,6 +149,9 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
         connections: state.connections,
         solutions: state.solutions,
         dataFiles: state.dataFiles,
+        departments: state.departments,
+        teams: state.teams,
+        shares,
       }),
     )
   }
@@ -163,6 +177,8 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     if (t) {
       await st().writeText(`tables/${name}.schema.yaml`, toYaml(t.def))
       await st().writeText(`tables/${name}.csv`, rowsToCsv(t.def.columns, t.rows))
+      // other tabs of this browser re-read the table (package H, demo-live.ts)
+      demoLive.tableSaved(t.def.id)
     } else {
       await st().remove(`tables/${name}.schema.yaml`)
       await st().remove(`tables/${name}.csv`)
@@ -175,10 +191,55 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
   const appWriter = (id: string): (() => Promise<void>) => async () => {
     const meta = state.apps.find((a) => a.id === id)
     const def = appDefs.get(id)
-    if (meta && def) await st().writeText(`apps/${id}.app.yaml`, toYaml({ formatVersion: 1, meta, definition: def }))
-    else await st().remove(`apps/${id}.app.yaml`)
+    if (meta && def) {
+      await st().writeText(`apps/${id}.app.yaml`, toYaml({ formatVersion: 1, meta, definition: def }))
+      demoLive.appSaved(id, meta.modifiedOn)
+    } else await st().remove(`apps/${id}.app.yaml`)
   }
   const saveApp = (id: string) => persister.now(appKey(id), appWriter(id))
+
+  /* ------------------------------------------------------------------ realtime between tabs (package H) */
+
+  /** another tab saved this app: read it again from browser storage */
+  async function reloadAppFromStorage(id: string) {
+    try {
+      const text = await st().readText(`apps/${id}.app.yaml`)
+      if (text === null) return
+      const doc = fromYaml(text)
+      if (!isObj(doc) || !isObj(doc.meta)) return
+      const def = validateDef(doc.definition)
+      const m = doc.meta as Record<string, unknown>
+      appDefs.set(id, def)
+      const prev = state.apps.find((a) => a.id === id)
+      if (prev) {
+        const next = { ...prev, ...(typeof m.name === 'string' && m.name ? { name: m.name } : {}), ...(typeof m.modifiedOn === 'string' ? { modifiedOn: m.modifiedOn } : {}) }
+        setState({ apps: sortApps(state.apps.map((a) => (a.id === id ? next : a))) })
+      }
+    } catch (e) {
+      console.warn('[platform] could not re-read an app saved in another tab', e)
+    }
+  }
+
+  const demoLive = createDemoLive({
+    me: () => {
+      const u = state.users.find((x) => x.id === state.currentUserId)
+      return { id: u?.id ?? '', name: u?.name ?? '' }
+    },
+    users: () => state.users.map((u) => ({ id: u.id, name: u.name, email: u.email })),
+    readText: (p) => st().readText(p),
+    writeText: (p, t) => st().writeText(p, t),
+    reloadTable: (tableId) => {
+      const rt = tablesRt.get(tableId)
+      if (rt) tablesApi.reload(rt.def.name).catch(() => {})
+    },
+    reloadApp: (appId) => {
+      void reloadAppFromStorage(appId)
+    },
+    setUnread: (n) => {
+      if (state.unread !== n) setState({ unread: n })
+    },
+    channel: typeof options.liveChannel === 'function' ? options.liveChannel : (options.liveChannel ?? typeof window !== 'undefined') ? undefined : () => null,
+  })
 
   /* ------------------------------------------------------------------ lookups */
 
@@ -225,7 +286,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       for (const op of ['read', 'update', 'delete'] as const) if (rank[p[op]] > rank[out[op]]) out[op] = p[op]
       if (p.read !== 'none') {
         readers.push(p)
-        if (p.rowFilter && p.rowFilter.length) out.filtered = true
+        if ((p.rowFilter && p.rowFilter.length) || !['own', 'all'].includes(p.read)) out.filtered = true
       }
     }
     if (readers.length) {
@@ -246,30 +307,39 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     return !!u && rolesOf(u).some((r) => r.isAdmin)
   }
 
+  /* organisation, relationship rules and sharing: the same code as the server (src/platform/orgsec.ts) */
+  const directoryNow = (): OrgDirectory => ({
+    departments: state.departments ?? [],
+    teams: state.teams ?? [],
+    users: state.users.map((u) => ({ id: u.id, name: u.name, email: u.email, departmentId: u.departmentId, managerId: u.managerId, status: u.status })),
+  })
+  function predicateEnv(u: UserDef): PredicateEnv {
+    const dir = state.departments?.length || state.teams?.length || state.users.some((x) => x.managerId || x.departmentId) ? directoryNow() : EMPTY_DIRECTORY
+    const org = orgContextFor(dir, u.id, DEFAULT_ENVIRONMENT_ID)
+    const principals = new Set([u.id, ...org.teams])
+    const read: Record<string, string[]> = {}
+    const update: Record<string, string[]> = {}
+    for (const sh of shares) {
+      if (!principals.has(sh.principalId)) continue
+      ;(read[sh.tableId] ??= []).push(sh.rowId)
+      if (sh.access === 'update') (update[sh.tableId] ??= []).push(sh.rowId)
+    }
+    return { user: { id: u.id, email: u.email }, org, tables: [...tablesRt.values()].map((t) => t.def), sameStore: () => true, shares: { read, update } }
+  }
+  const leafOf = (c: Parameters<typeof matchesLeaf>[0], row: Record<string, unknown>) => matchesLeaf(c, row)
+  const demoEval = { leaf: leafOf, semi: memorySemi((t) => (tablesRt.get(t.id)?.rows ?? []) as Record<string, unknown>[], leafOf) }
+
   /**
-   * Row-level check for the current user: OR over roles that grant `op` of
-   * (scope all ? true : owner == me) AND every rowFilter condition. A filter on a column the table no
-   * longer has makes that role grant nothing (server semantics). op 'create' is the WITH CHECK for new rows.
+   * Row-level check for a user (default: the run-as user): the predicate of src/platform/orgsec.ts (OR over roles of
+   * scope AND rowFilter, organisation scopes, relationship rules, shares) evaluated in memory, exactly like the server
+   * builds it. op 'create' is the WITH CHECK for new rows; 'share' who may share a row.
    */
-  function rowTester(def: TableDef, op: 'read' | 'update' | 'delete' | 'create'): (row: Row) => boolean {
-    const u = currentUser()
+  function rowTester(def: TableDef, op: SecOp, who?: UserDef): (row: Row) => boolean {
+    const u = who ?? currentUser()
     if (!u) return () => false
     const rs = rolesOf(u)
-    if (rs.some((r) => r.isAdmin)) return () => true
-    const me = { id: u.id, email: u.email }
-    const colNames = new Set(def.columns.map((c) => c.name))
-    const grants: { scope: AccessScope; filter: NonNullable<TablePrivilege['rowFilter']> }[] = []
-    for (const r of rs) {
-      const p = r.privileges.find((x) => x.table === def.id)
-      // create (WITH CHECK for new rows): any role with create, no owner term (a new row is owned by its creator)
-      const scope: AccessScope = op === 'create' ? (p?.create ? 'all' : 'none') : (p?.[op] ?? 'none')
-      if (!p || scope === 'none') continue
-      const filter = p.rowFilter ?? []
-      if (filter.some((c) => !colNames.has(c.column))) continue
-      grants.push({ scope, filter })
-    }
-    return (row) =>
-      grants.some((g) => (g.scope === 'all' || row.owner === me.id) && g.filter.every((c) => matchesCondition(c, row, me)))
+    const pred = rowPredicateFor(rs, def, op, predicateEnv(u), rs.some((r) => r.isAdmin))
+    return (row) => evaluateSync(pred, row as Record<string, unknown>, demoEval)
   }
 
   function can(tableName: string, op: DataOp, row?: Row): boolean {
@@ -338,7 +408,8 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       // isMaker comes from the role flag only, like the server
       isAdmin, isMaker: isAdmin || rs.some((r) => r.isMaker === true), tables, apps,
     }
-    return { user, privileges, expiresOn: new Date(nowFn().getTime() + 365 * 86_400_000).toISOString() }
+    const withOrg: UserDef = { ...user, org: userOrgInfo(directoryNow(), user.id, DEFAULT_ENVIRONMENT_ID) }
+    return { user: withOrg, privileges, expiresOn: new Date(nowFn().getTime() + 365 * 86_400_000).toISOString() }
   }
 
   /** after a role/user change there must still be a user with an admin role */
@@ -446,14 +517,24 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
         } else row[col.name] = nextAutonumber(def, col, rows, counters)
         continue
       }
+      if (col.computed) {
+        row[col.name] = null // calculated below (formula columns); values sent are ignored
+        continue
+      }
       const v = given.has(col.name) ? coerceValue(col, given.get(col.name)) : defaultValue(col, c.now)
       if (col.required && isBlankValue(v)) fail('invalid', `${col.displayName} is required.`)
       checkUnique(col, v, rows)
       if (opts.checkLookups !== false) checkLookup(def, col, v, rows)
       row[col.name] = v
     }
+    applyFormulaColumns(def, row, null, demoRows, currentUser() ?? undefined)
     row.__id = row.id
     return row
+  }
+
+  /** rows of a demo table by name (formula columns read other tables) */
+  function demoRows(name: string): FxRecord[] | undefined {
+    return findTable(name)?.rows
   }
 
   function applyChanges(def: TableDef, rows: Row[], existing: Row, changes: FxRecord, c: Ctx): Row {
@@ -462,7 +543,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     let changed = false
     for (const [name, raw] of given) {
       const col = findColumn(def, name)!
-      if (col.system || col.type === 'autonumber') continue // read-only: ignored silently
+      if (col.system || col.type === 'autonumber' || col.computed) continue // read-only: ignored silently
       const v = coerceValue(col, raw)
       if (col.required && isBlankValue(v)) fail('invalid', `${col.displayName} is required.`)
       checkUnique(col, v, rows, existing.id as string)
@@ -474,6 +555,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       next[name] = v
     }
     if (!changed) return existing
+    applyFormulaColumns(def, next, new Set([...given.keys()].map((k) => findColumn(def, k)?.name ?? k)), demoRows, currentUser() ?? undefined)
     next.modifiedOn = c.now
     return next
   }
@@ -498,6 +580,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       if (type === 'choice') col.choices = Array.isArray(rc.choices) ? rc.choices.map(String) : []
       if (type === 'lookup' && typeof rc.lookupTable === 'string') col.lookupTable = rc.lookupTable
       if (type === 'autonumber') col.prefix = typeof rc.prefix === 'string' ? rc.prefix : ''
+      if (isObj(rc.computed) && (rc.computed.kind === 'formula' || rc.computed.kind === 'rollup')) col.computed = rc.computed as unknown as NonNullable<ColumnDef['computed']>
       if (type === 'file' || type === 'image') {
         if (rc.multiple === true) col.multiple = true
         if (Array.isArray(rc.accept)) col.accept = rc.accept.map(String)
@@ -546,6 +629,13 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       col.lookupTable = target
     }
     if (type === 'autonumber') col.prefix = p.prefix ?? ''
+    if (p.computed) {
+      if (p.computed.kind !== 'formula') fail('invalid', 'Rollup columns need the server (they are kept up to date by its job queue).')
+      const formula = (p.computed as { formula?: unknown }).formula
+      if (typeof formula !== 'string' || !formula.trim()) fail('invalid', 'A formula column needs a formula.')
+      if (col.required || col.unique || col.default !== undefined) fail('invalid', `${displayName} is calculated: it cannot be required, unique or have a default value.`)
+      col.computed = { kind: 'formula', formula: (formula as string).trim() }
+    }
     if (type === 'file' || type === 'image') {
       if (p.multiple) col.multiple = true
       if (p.accept && p.accept.length) col.accept = [...p.accept]
@@ -807,7 +897,10 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       solutions: arr<SolutionDef>(ws.solutions),
       dataFiles: arr<DataFileDef>(ws.dataFiles).map((f) => ({ ...f, tableIds: Array.isArray(f.tableIds) ? f.tableIds.map(String) : [] })),
       apps: sortApps(metas),
+      departments: arr<DepartmentDef>(ws.departments),
+      teams: arr<TeamDef>(ws.teams).map((t) => ({ ...t, memberIds: Array.isArray(t.memberIds) ? t.memberIds.map(String) : [] })),
     }
+    shares = arr<ShareDef>(ws.shares)
     syncTables(false)
     if (repaired || wsText === null) await saveWorkspace()
   }
@@ -815,7 +908,8 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
   async function loadAll() {
     tablesRt.clear()
     appDefs.clear()
-    state = { ...state, apps: [], tables: [], roles: [], users: [], connections: [], solutions: [], dataFiles: [], currentUserId: '' }
+    state = { ...state, apps: [], tables: [], roles: [], users: [], connections: [], solutions: [], dataFiles: [], currentUserId: '', departments: [], teams: [] }
+    shares = []
     attachmentStore.clear()
     const wsText = await st().readText('workspace.yaml')
     const tableFiles = (await st().list('tables')).filter((f) => f.endsWith('.schema.yaml'))
@@ -1054,7 +1148,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     return addTable(def, rows)
   }
 
-  async function updateTableDef(id: string, patch: Partial<Pick<TableDef, 'displayName' | 'description' | 'primaryColumn'>>): Promise<void> {
+  async function updateTableDef(id: string, patch: Partial<Pick<TableDef, 'displayName' | 'description' | 'primaryColumn' | 'teamOwnership' | 'sharing'>>): Promise<void> {
     const rt = needTable(id)
     const def = { ...rt.def }
     if (patch.displayName !== undefined) {
@@ -1068,6 +1162,11 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     if (patch.primaryColumn !== undefined) {
       if (!def.columns.some((c) => c.name === patch.primaryColumn)) fail('invalid', `Column "${patch.primaryColumn}" does not exist.`)
       def.primaryColumn = patch.primaryColumn
+    }
+    for (const k of ['teamOwnership', 'sharing'] as const) {
+      if (patch[k] === undefined) continue
+      if (patch[k]) def[k] = true
+      else delete def[k]
     }
     def.modifiedOn = iso()
     rt.def = def
@@ -1174,8 +1273,9 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
         })
         counters.set(built.name, rows.length)
       }
-      rt.rows = rows
       rt.def = { ...rt.def, columns: [...rt.def.columns, built], modifiedOn: iso() }
+      if (built.computed) for (const r of rows) applyFormulaColumns(rt.def, r, null, demoRows, currentUser() ?? undefined)
+      rt.rows = rows
       syncTables()
       await saveTable(rt.def.name)
       return built
@@ -1264,10 +1364,26 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
         })
         if (merged.type === 'autonumber') rt.counters.set(merged.name, Math.max(rt.counters.get(merged.name) ?? 0, counters.get(merged.name) ?? 0))
       }
+      if ('computed' in p) {
+        if (!p.computed) delete merged.computed
+        else {
+          const formula = p.computed.kind === 'formula' ? p.computed.formula?.trim() : ''
+          if (!formula) fail('invalid', 'Demo mode supports formula columns with a formula (rollups need the server).')
+          merged.computed = { kind: 'formula', formula: formula as string }
+        }
+      }
       const columns = [...rt.def.columns]
       columns[idx] = merged
-      rt.rows = rows
       rt.def = { ...rt.def, columns, modifiedOn: iso() }
+      // a changed formula is recomputed on every row (the server does this with a backfill job)
+      if (merged.computed?.kind === 'formula' && JSON.stringify(merged.computed) !== JSON.stringify(old.computed)) {
+        rows = rows.map((r) => {
+          const next = { ...r }
+          applyFormulaColumns(rt.def, next, null, demoRows, currentUser() ?? undefined)
+          return next
+        })
+      }
+      rt.rows = rows
       syncTables()
       await saveTable(rt.def.name)
     },
@@ -1508,6 +1624,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       if (!state.users.some((u) => u.id === userId)) fail('not-found', `User "${userId}" was not found.`)
       setState({ currentUserId: userId }, true) // row visibility depends on the user
       saveWorkspaceLater()
+      demoLive.userChanged()
     },
     async setPassword() {
       return fail('unavailable', 'Passwords need the local server.')
@@ -1574,6 +1691,11 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     async updateUser(id, patch) {
       const user = state.users.find((u) => u.id === id) ?? fail('not-found', `User "${id}" was not found.`)
       const next: UserDef = { ...user!, ...patch, id }
+      delete next.org
+      for (const k of ['departmentId', 'managerId', 'jobTitle', 'phone', 'employeeCode'] as const) if (!next[k]) delete next[k]
+      if (next.departmentId && !state.departments.some((d) => d.id === next.departmentId)) fail('not-found', 'The department was not found.')
+      if (next.managerId && !state.users.some((u) => u.id === next.managerId)) fail('not-found', 'The manager was not found.')
+      if (managerCycle(directoryNow(), id, next.managerId)) fail('invalid', 'That manager reports (directly or indirectly) to this user: the reporting line would go round in a circle.')
       if (typeof next.name !== 'string' || !next.name.trim()) fail('invalid', 'A user needs a name.')
       next.name = next.name.trim()
       next.email = (next.email ?? '').trim()
@@ -1587,8 +1709,10 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     },
     async removeUser(id) {
       if (!state.users.some((u) => u.id === id)) fail('not-found', `User "${id}" was not found.`)
-      const users = state.users.filter((u) => u.id !== id)
+      const users = state.users.filter((u) => u.id !== id).map((u) => (u.managerId === id ? { ...u, managerId: undefined } : u))
       assertAdminRemains(users, state.roles)
+      shares = shares.filter((x) => !(x.principalType === 'user' && x.principalId === id))
+      if (state.teams.some((t) => t.memberIds.includes(id))) state = { ...state, teams: state.teams.map((t) => ({ ...t, memberIds: t.memberIds.filter((m) => m !== id) })) }
       let currentUserId = state.currentUserId
       if (currentUserId === id) {
         const adminRoles = new Set(state.roles.filter((r) => r.isAdmin).map((r) => r.id))
@@ -1596,6 +1720,206 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       }
       setState({ users, currentUserId }, currentUserId !== state.currentUserId)
       await saveWorkspace()
+    },
+  }
+
+  /* ------------------------------------------------------------------ organisation and sharing (demo) */
+
+  const CODE_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/
+  const checkCode = (code: string | undefined, what: string): string => {
+    const c = (code ?? '').trim()
+    if (!CODE_RE.test(c)) fail('invalid', `The ${what} code may use letters, digits, ".", "_" and "-" (at most 64, starting with a letter or digit).`)
+    return c
+  }
+  /** the row (any table with sharing on, or the named one) the current user can read */
+  function sharedRowOf(rowId: string, table?: string): { rt: TableRt; row: Row } {
+    const list = table ? [needTable(table)] : [...tablesRt.values()].filter((t) => t.def.sharing)
+    for (const rt of list) {
+      const row = rt.rows.find((r) => r.id === rowId || r.__id === rowId)
+      if (row && rowTester(rt.def, 'read')(row)) return { rt, row }
+    }
+    return fail('not-found', 'Row not found.')
+  }
+  function sharesInfo(rt: TableRt, row: Row): SharesInfo {
+    const id = String(row.id ?? row.__id)
+    const canShare = !!rt.def.sharing && rowTester(rt.def, 'share')(row)
+    return {
+      table: rt.def.id, row: id, sharing: !!rt.def.sharing, canShare, canShareUpdate: canShare && rowTester(rt.def, 'update')(row),
+      shares: shares.filter((x) => x.tableId === rt.def.id && x.rowId === id).map((x) => ({
+        ...x, principalName: x.principalType === 'user' ? (state.users.find((u) => u.id === x.principalId)?.name ?? x.principalId) : (state.teams.find((t) => t.id === x.principalId)?.name ?? x.principalId),
+      })),
+    }
+  }
+  function principalOf(key: string): { type: 'user' | 'team'; id: string } {
+    const k = key.trim().toLowerCase()
+    const u = state.users.find((x) => x.id === key || x.email.toLowerCase() === k)
+    if (u) return { type: 'user', id: u.id }
+    const t = state.teams.find((x) => x.id === key || x.code.toLowerCase() === k || x.name.toLowerCase() === k)
+    if (t) return { type: 'team', id: t.id }
+    return fail('not-found', `There is no user or team "${key}" here.`)
+  }
+  const reasonText = (r: ReturnType<typeof predicateReasons>[number]): string => {
+    if (r.kind === 'admin') return 'Administrator'
+    if (r.kind === 'share') return 'The row is shared with them (or one of their teams)'
+    if (r.kind === 'owner') return 'They own the row'
+    const words: Record<string, string> = { own: 'own rows', team: "their team's rows", manager: 'rows of their direct reports', managerTree: 'rows of their reporting line', department: 'rows of their department', departmentTree: 'rows of their department and the ones below it', all: 'all rows' }
+    return `Role "${r.roleName}": ${words[r.scope ?? 'all'] ?? r.scope}${r.filtered ? ', and its row rule matches' : ''}`
+  }
+
+  const orgApi: PlatformApi['org'] = {
+    async refresh() {},
+    async createDepartment(input) {
+      const code = checkCode(input.code, 'department')
+      if (state.departments.some((d) => d.code.toLowerCase() === code.toLowerCase())) fail('conflict', `A department with the code "${code}" already exists.`)
+      if (!input.name?.trim()) fail('invalid', 'The department name is required.')
+      if (input.parentId && !state.departments.some((d) => d.id === input.parentId)) fail('not-found', 'The parent department was not found.')
+      const d: DepartmentDef = { id: shortId('dept'), code, name: input.name.trim(), ...(input.parentId ? { parentId: input.parentId } : {}), ...(input.description ? { description: input.description } : {}) }
+      setState({ departments: [...state.departments, d] })
+      await saveWorkspace()
+      return d
+    },
+    async updateDepartment(id, patch) {
+      const d = state.departments.find((x) => x.id === id) ?? fail('not-found', 'Department not found.')
+      const next: DepartmentDef = { ...d!, ...patch, id }
+      if (patch.code !== undefined) next.code = checkCode(patch.code, 'department')
+      if (state.departments.some((x) => x.id !== id && x.code.toLowerCase() === next.code.toLowerCase())) fail('conflict', `A department with the code "${next.code}" already exists.`)
+      if (!next.parentId) delete next.parentId
+      if (departmentCycle(directoryNow(), id, next.parentId)) fail('invalid', 'A department cannot be moved below itself or one of its own sub-departments.')
+      setState({ departments: state.departments.map((x) => (x.id === id ? next : x)) })
+      await saveWorkspace()
+    },
+    async removeDepartment(id) {
+      const d = state.departments.find((x) => x.id === id) ?? fail('not-found', 'Department not found.')
+      if (state.departments.some((x) => x.parentId === id)) fail('conflict', `"${d!.name}" has sub-departments. Move or delete them first.`)
+      setState({ departments: state.departments.filter((x) => x.id !== id), users: state.users.map((u) => (u.departmentId === id ? { ...u, departmentId: undefined } : u)) })
+      await saveWorkspace()
+    },
+    async createTeam(input) {
+      const code = checkCode(input.code, 'team')
+      if (state.teams.some((t) => t.code.toLowerCase() === code.toLowerCase())) fail('conflict', `A team with the code "${code}" already exists.`)
+      if (!input.name?.trim()) fail('invalid', 'The team name is required.')
+      const t: TeamDef = { id: shortId('team'), code, name: input.name.trim(), memberIds: [...new Set(input.memberIds ?? [])], ...(input.description ? { description: input.description } : {}) }
+      setState({ teams: [...state.teams, t] })
+      await saveWorkspace()
+      return t
+    },
+    async updateTeam(id, patch) {
+      const t = state.teams.find((x) => x.id === id) ?? fail('not-found', 'Team not found.')
+      const next: TeamDef = { ...t!, ...patch, id, memberIds: [...new Set(patch.memberIds ?? t!.memberIds)] }
+      if (patch.code !== undefined) next.code = checkCode(patch.code, 'team')
+      if (state.teams.some((x) => x.id !== id && x.code.toLowerCase() === next.code.toLowerCase())) fail('conflict', `A team with the code "${next.code}" already exists.`)
+      setState({ teams: state.teams.map((x) => (x.id === id ? next : x)) })
+      await saveWorkspace()
+    },
+    async removeTeam(id) {
+      if (!state.teams.some((x) => x.id === id)) fail('not-found', 'Team not found.')
+      shares = shares.filter((x) => !(x.principalType === 'team' && x.principalId === id))
+      setState({ teams: state.teams.filter((x) => x.id !== id) })
+      await saveWorkspace()
+    },
+    async directory() {
+      return {
+        users: state.users.filter((u) => u.status !== 'disabled').map((u) => ({ id: u.id, name: u.name, email: u.email })),
+        teams: state.teams.map((t) => ({ id: t.id, code: t.code, name: t.name })),
+      }
+    },
+    async importUsers(csv, commit) {
+      const parsed = Papa.parse<Record<string, string>>(csv.replace(/^\uFEFF/, ''), { header: true, skipEmptyLines: 'greedy' })
+      const key = (h: string) => h.trim().toLowerCase().replace(/[\s_-]+/g, '')
+      const get = (rec: Record<string, string>, ...names: string[]) => {
+        for (const [h, v] of Object.entries(rec)) if (names.includes(key(h))) return String(v ?? '').trim()
+        return ''
+      }
+      const seen = new Set<string>()
+      const rows: UserImportRow[] = parsed.data.map((rec, i) => {
+        const r: UserImportRow = { line: i + 2, action: 'create', name: get(rec, 'name', 'fullname'), email: get(rec, 'email', 'mail').toLowerCase(), errors: [] }
+        const dept = get(rec, 'department', 'dept', 'departmentcode')
+        const mgr = get(rec, 'manager', 'manageremail').toLowerCase()
+        const title = get(rec, 'jobtitle', 'title')
+        if (dept) r.department = dept
+        if (mgr) r.manager = mgr
+        if (title) r.jobTitle = title
+        if (!r.name) r.errors.push('name is missing')
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r.email)) r.errors.push(`"${r.email}" is not a valid email address`)
+        if (seen.has(r.email)) r.errors.push('this email appears twice in the file')
+        seen.add(r.email)
+        if (state.users.some((u) => u.email.toLowerCase() === r.email)) r.action = 'update'
+        if (dept && !state.departments.some((d) => d.code.toLowerCase() === dept.toLowerCase() || d.name.toLowerCase() === dept.toLowerCase())) r.errors.push(`department "${dept}" does not exist (use its code)`)
+        return r
+      })
+      for (const r of rows) {
+        if (r.manager && !seen.has(r.manager) && !state.users.some((u) => u.email.toLowerCase() === r.manager)) r.errors.push(`manager "${r.manager}" is neither a user nor in this file`)
+        if (r.manager === r.email) r.errors.push('a user cannot be their own manager')
+        if (r.errors.length) r.action = 'error'
+      }
+      const ok = rows.length > 0 && rows.every((r) => !r.errors.length)
+      if (!commit) return { preview: rows, ok, unknownColumns: (parsed.meta.fields ?? []).filter((f) => /password/i.test(f)).map((f) => `${f} (passwords are never imported)`) }
+      if (!ok) fail('invalid', 'The file has errors; nothing was imported.')
+      let users = [...state.users]
+      const created: { email: string; name: string; temporaryPassword: string }[] = []
+      let updated = 0
+      for (const r of rows) {
+        const existing = users.find((u) => u.email.toLowerCase() === r.email)
+        if (existing) { users = users.map((u) => (u === existing ? { ...u, name: r.name } : u)); updated++ }
+        else { users.push({ id: shortId('user'), name: r.name, email: r.email, roleIds: [] }); created.push({ email: r.email, name: r.name, temporaryPassword: '' }) }
+      }
+      for (const r of rows) {
+        const dept = r.department ? state.departments.find((d) => d.code.toLowerCase() === r.department!.toLowerCase() || d.name.toLowerCase() === r.department!.toLowerCase()) : undefined
+        const mgr = r.manager ? users.find((u) => u.email.toLowerCase() === r.manager) : undefined
+        users = users.map((u) => (u.email.toLowerCase() === r.email ? { ...u, ...(dept ? { departmentId: dept.id } : {}), ...(mgr ? { managerId: mgr.id } : {}), ...(r.jobTitle ? { jobTitle: r.jobTitle } : {}) } : u))
+      }
+      const dir = { ...directoryNow(), users: users.map((u) => ({ id: u.id, name: u.name, email: u.email, managerId: u.managerId })) }
+      for (const u of users) if (u.managerId && managerCycle(dir, u.id, u.managerId)) fail('invalid', 'The reporting line in the file goes round in a circle; nothing was imported.')
+      setState({ users })
+      await saveWorkspace()
+      return { created, updated }
+    },
+    async shares(rowId, table) {
+      const { rt, row } = sharedRowOf(rowId, table)
+      return sharesInfo(rt, row)
+    },
+    async share(rowId, principal, access, table) {
+      const { rt, row } = sharedRowOf(rowId, table)
+      const info = sharesInfo(rt, row)
+      if (!rt.def.sharing) fail('denied', `Sharing is off for "${rt.def.displayName}".`)
+      if (!info.canShare) fail('denied', 'You are not allowed to share this row.')
+      if (access === 'update' && !info.canShareUpdate) fail('denied', 'You can only share for reading: you may not change this row yourself.')
+      const p = principalOf(principal)
+      if (p.type === 'user' && p.id === state.currentUserId) fail('invalid', 'You already have access to this row.')
+      shares = [...shares.filter((x) => !(x.tableId === rt.def.id && x.rowId === info.row && x.principalType === p.type && x.principalId === p.id)),
+        { tableId: rt.def.id, rowId: info.row, principalType: p.type, principalId: p.id, access: access ?? 'read', sharedBy: state.currentUserId, sharedOn: iso() }]
+      setState({}, true)
+      await saveWorkspace()
+      return sharesInfo(rt, row)
+    },
+    async unshare(rowId, principal, table) {
+      const { rt, row } = sharedRowOf(rowId, table)
+      const info = sharesInfo(rt, row)
+      const p = principalOf(principal)
+      if (!(p.type === 'user' && p.id === state.currentUserId) && !info.canShare) fail('denied', 'You are not allowed to change the sharing of this row.')
+      shares = shares.filter((x) => !(x.tableId === rt.def.id && x.rowId === info.row && x.principalType === p.type && x.principalId === p.id))
+      setState({}, true)
+      await saveWorkspace()
+      return sharesInfo(rt, row)
+    },
+    async explain(table, rowId, userId) {
+      const rt = needTable(table)
+      const row = rt.rows.find((r) => r.id === rowId || r.__id === rowId) ?? fail('not-found', 'Row not found.')
+      const users: ExplainResult['users'] = []
+      for (const u of state.users) {
+        if (userId && u.id !== userId) continue
+        if (u.status === 'disabled') continue
+        const rs = rolesOf(u)
+        const env = predicateEnv(u)
+        const entry = { userId: u.id, name: u.name, email: u.email, read: [] as string[], update: [] as string[], delete: [] as string[] }
+        for (const op of ['read', 'update', 'delete'] as const) {
+          for (const r of predicateReasons(rs, rt.def, op, env, rs.some((x) => x.isAdmin))) {
+            if (evaluateSync(r.term, row as Record<string, unknown>, demoEval)) entry[op].push(reasonText(r))
+          }
+        }
+        if (entry.read.length || entry.update.length || entry.delete.length || userId) users.push(entry)
+      }
+      return { users }
     },
   }
 
@@ -2054,6 +2378,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     apps: appsApi,
     tables: tablesApi,
     security: securityApi,
+    org: orgApi,
     connections: connectionsApi,
     solutions: solutionsApi,
     auth: authApi,
@@ -2061,6 +2386,8 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     files: filesApi,
     environments: environmentsApi,
     onDataError: () => () => {},
+    live: demoLive.live,
+    notifications: demoLive.notifications,
   }
 }
 

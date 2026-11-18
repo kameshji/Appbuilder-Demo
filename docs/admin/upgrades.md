@@ -47,13 +47,14 @@ On every start the server runs its schema step (`migrate()` in `server/core/meta
    (`ERROR ENVIRONMENT <id> NOT AVAILABLE` on the console, `environment.migrate_failed` in the install audit log); the
    others, and the server, keep working. The next start tries it again. See [Environments](environments.md#when-an-environment-is-not-available).
 
-Current version: **5**.
+Current version: **6**.
 
 | Version | Step |
 | --- | --- |
 | 1 to 3 | The MySQL/MariaDB system store of versions 0.1 to 0.4. **There is no upgrade from MySQL** (decision D14): a PostgreSQL database never has these versions, and a 0.5 server pointed at an old MySQL database cannot connect to it at all. |
 | 4 | The PostgreSQL layout: schema `ab` (settings, users, sessions, environments, licence) and the environment schema `env_default` (see [schema](../dev/schema.md)). |
 | 5 | Real environments: `ab.environments` gets state, schema version, lock, description, creator; new tables `ab.environment_access` (who may enter which environment) and `ab.audit` (install-level audit); `ab.users` gets `is_install_admin` and `last_environment_id`. Data: every user who held an Administrator role becomes an **install administrator**; every user keeps access to Default (environment administrators: the Administrator role holders). Files: `workspace/attachments/` and `workspace/files/` move into `workspace/env/default/` (only what is not there yet; nothing is overwritten or deleted). |
+| 6 | P0 wave 3: organisation (`ab.departments`, `ab.teams`, `ab.team_members`, new user fields), in-app notifications (`ab.notifications`, `ab.user_settings`); in every environment record sharing (`ab_shares`) and the event and job kernel (`ab_outbox`, `ab_jobs`, `ab_schedules`, `ab_table_events`, `ab_event_runs`). Only new tables and columns: nothing existing changes. After the upgrade the built-in maintenance schedules appear on the Jobs page of each environment. A version 5 server refuses a version 6 database. |
 
 - **Moving from 0.4 (MySQL) to 0.5 (PostgreSQL).** Since there are no customer installations yet, there is no conversion. Install
   PostgreSQL ([Installation](installation.md#prepare-the-database)), point the new version at an empty database and start fresh.
@@ -61,7 +62,7 @@ Current version: **5**.
   into the new one ([Solutions](../guide/maker/solutions.md)); users and roles have to be created again.
 - **The migration summary** (from which version to which, and what each step did) is printed to the server console at
   start and written to the audit log of Default and the install-level audit log as `schema.migrate` (details:
-  `{ from, to, steps, environments }`). An up-to-date database prints "system schema version 5 (up to date)" and writes nothing.
+  `{ from, to, steps, environments }`). An up-to-date database prints "system schema version 6 (up to date)" and writes nothing.
 - The data tables (`t_...` in each `env_<id>`) are yours and are not touched by upgrades. (Linked tables are touched only when a
   maker agrees to add system columns while linking, see [Connections](connections.md).)
 - The schema step needs the Appbuilder role to own the database (or have `CREATE` on it), as set up by

@@ -16,7 +16,7 @@ import { createApp } from './app.ts'
 import type { AppServer } from './app.ts'
 import { createPgDb } from '../connectors/postgres/db.ts'
 import type { DatabaseSettings, SqlDb } from './contracts.ts'
-import { SCHEMA_VERSION } from './meta-store.ts'
+import { INSTALL_TABLES, SCHEMA_VERSION } from './meta-store.ts'
 import { setQuiet } from './util.ts'
 
 setQuiet(true)
@@ -212,7 +212,7 @@ describe.skipIf(!URL_ENV)('hardening (PostgreSQL)', () => {
     const schemas = (await raw.query<{ s: string }>("SELECT nspname AS s FROM pg_namespace WHERE nspname IN ('ab', 'env_default', 'public') ORDER BY 1")).map((r) => r.s)
     expect(schemas).toEqual(['ab', 'env_default', 'public'])
     const inAb = (await raw.query<{ t: string }>("SELECT table_name AS t FROM information_schema.tables WHERE table_schema = 'ab' ORDER BY 1")).map((r) => r.t)
-    expect(inAb).toEqual(['audit', 'environment_access', 'environments', 'licence', 'sessions', 'settings', 'users'])
+    expect(inAb).toEqual([...INSTALL_TABLES].sort())
     expect(await raw.query("SELECT id, schema_name, built_in FROM ab.environments")).toEqual([{ id: 'default', schema_name: 'env_default', built_in: true }])
     // nothing in public
     expect((await raw.query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")).length).toBe(0)

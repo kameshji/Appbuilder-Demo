@@ -51,6 +51,27 @@ For editing screens, the **Form** control is usually better than Patch: it valid
 
 `Navigate(DetailScreen)` goes to another screen, `Back()` returns. `Notify("Saved", NotificationType.Success)` shows a toast. Types: Information, Success, Warning, Error.
 
+## SendNotification: notify another person
+
+`Notify` shows a message to the person using the app. `SendNotification(user, title [, body] [, link])` reaches **someone else**:
+the notification appears under the bell in their top bar (and as a desktop notification if they switched those on), right away if
+they have Appbuilder open, otherwise the next time they do.
+
+- `user`: an email address, a user id, or a record such as `User()` or a person column's value. It must be someone who may open this
+  environment; anyone else is an error ("There is no user ...").
+- `link` (optional): a link inside Appbuilder, starting with `#`, copied from the address bar after the site name, for example
+  `"#u-app_0193..."` to open an app. Clicking the notification opens it (switching environment first if needed).
+- It is sent after the rest of the formula has run; if it fails (wrong user, too many), a message tells you. Each person can send
+  at most 30 a minute and 300 an hour.
+
+```
+// OnSuccess of an approval form
+SendNotification(ThisItem.RequestedBy, "Your request was approved", "Order " & ThisItem.OrderNo & " is approved.", "#u")
+```
+
+People choose which notifications they get in **Settings > Notifications** (from apps, from table events, desktop notifications,
+do-not-disturb hours).
+
 ## Named formulas and your own functions
 
 In **Settings > App.Formulas** write one per line:
