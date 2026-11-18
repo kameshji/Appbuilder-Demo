@@ -137,3 +137,27 @@ ERPNext for masters and accounting, and own the shop floor, approvals and collab
 4. Office editing: optional add-on (recommended) or mandatory part of the install?
 5. Which "Odysseus" project was meant (research found the AGPL `odysseus-dev/odysseus`; usable as design reference only)?
 6. Product name and licence model (one licence per install with modules is the proposal).
+
+## 9. Owner decisions, 18 Nov 2026 (supersede the sections above where they differ)
+
+Decided:
+- Auto apps are in: generate a working app from table metadata (list, detail form, related lists, dashboard),
+  then convertible into a normal editable canvas app. Goes in P2.
+- We build our own CRM, ERP and other templates. Other systems are data sources only (import/connect).
+- Data model designer is in: visual schema canvas with relationships and schema patterns. Goes in P0/P2.
+- Documents, slides and sheets: our own simple editors (preview plus rich-text-level edits), not an embedded
+  office suite. The office add-on is dropped from the plan.
+- Agents stay at P4, after users know the product by hand.
+- Identity and security (MFA, single sign-on, sessions) come before the agent runtime.
+- Email module and per-user licence passes are wanted; design options are under discussion.
+
+Open (proposals in the conversation, awaiting the owner):
+- System database: PostgreSQL (proposed) vs staying on MySQL/MariaDB vs SQL Server.
+- Email: mail client on the customer's existing mailboxes plus a sending relay (proposed) vs hosting a mail server.
+- Licence model: signed offline licence file with 2-3 pass types (proposed).
+
+Revised phase order: P0 Kernel (incl. database decision, data model designer core, identity basics: reset,
+TOTP, sessions) -> P1 Automation -> P2 Reach (phone, PDF, dashboards, auto apps) -> P3 Collaboration and
+templates (chat, Tasks, Notes, manufacturing pack, CRM/ERP-lite templates, licence passes) = PILOT ->
+P3.5 Identity advanced (single sign-on in and out, passkeys, enforced MFA policies) -> P4 Agents ->
+P5 Documents, slides, sheets, mail client -> P6 Sites.
