@@ -55,13 +55,14 @@ describe.skipIf(!PG_URL)('units of work (PostgreSQL)', () => {
   let A: Client
   const q = <T = Record<string, unknown>>(sql: string, params: unknown[] = []) => pgQuery<T>(dbName, sql, params)
   /** what is in the environment: metadata rows and physical tables */
+  // sorted in JS: the database's ORDER BY depends on its collation, and physical names are compared by code point
   const snapshot = async () => ({
-    tables: (await q<{ name: string }>('SELECT name FROM env_default.ab_tables ORDER BY name')).map((r) => r.name),
-    physical: (await q<{ t: string }>("SELECT table_name AS t FROM information_schema.tables WHERE table_schema = 'env_default' AND table_name NOT LIKE 'ab\\_%' ORDER BY 1")).map((r) => r.t),
-    apps: (await q<{ name: string }>('SELECT name FROM env_default.ab_apps ORDER BY name')).map((r) => r.name),
-    roles: (await q<{ name: string }>('SELECT name FROM env_default.ab_roles ORDER BY name')).map((r) => r.name),
+    tables: (await q<{ name: string }>('SELECT name FROM env_default.ab_tables ORDER BY name')).map((r) => r.name).sort(),
+    physical: (await q<{ t: string }>("SELECT table_name AS t FROM information_schema.tables WHERE table_schema = 'env_default' AND table_name NOT LIKE 'ab\\_%' ORDER BY 1")).map((r) => r.t).sort(),
+    apps: (await q<{ name: string }>('SELECT name FROM env_default.ab_apps ORDER BY name')).map((r) => r.name).sort(),
+    roles: (await q<{ name: string }>('SELECT name FROM env_default.ab_roles ORDER BY name')).map((r) => r.name).sort(),
     privileges: Number((await q<{ n: number }>('SELECT count(*)::int AS n FROM env_default.ab_role_tables'))[0].n),
-    solutions: (await q<{ name: string }>('SELECT name FROM env_default.ab_solutions ORDER BY name')).map((r) => r.name),
+    solutions: (await q<{ name: string }>('SELECT name FROM env_default.ab_solutions ORDER BY name')).map((r) => r.name).sort(),
     counters: Number((await q<{ n: number }>('SELECT count(*)::int AS n FROM env_default.ab_counters'))[0].n),
   })
   let connector: Connector
