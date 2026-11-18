@@ -17,11 +17,13 @@ function Fail([string]$Message) {
 # 1. Check the tools.
 Write-Host '[1/5] Checking Node.js and git ...'
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-  Fail 'Node.js was not found. Install Node.js 20 or newer from https://nodejs.org and run this script again.'
+  Fail 'Node.js was not found. Install Node.js 22.18 or newer (LTS) from https://nodejs.org and run this script again.'
 }
 $nodeVersion = (node --version)
-$nodeMajor = [int](($nodeVersion -replace '^v', '').Split('.')[0])
-if ($nodeMajor -lt 20) { Fail "Node.js $nodeVersion is too old. Install Node.js 20 or newer." }
+$nodeParts = ($nodeVersion -replace '^v', '').Split('.')
+$nodeMajor = [int]$nodeParts[0]; $nodeMinor = [int]$nodeParts[1]
+# The server is TypeScript run directly by Node (type stripping), available from Node 22.18.
+if ($nodeMajor -lt 22 -or ($nodeMajor -eq 22 -and $nodeMinor -lt 18)) { Fail "Node.js $nodeVersion is too old. Install Node.js 22.18 or newer." }
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
   Fail 'git was not found. Install Git for Windows from https://git-scm.com and run this script again.'
 }

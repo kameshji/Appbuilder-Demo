@@ -9,5 +9,5 @@ import appbuilderFs from './server/vite-plugin.mjs'
 export default defineConfig({
   plugins: [react(), tailwindcss(), viteSingleFile(), appbuilderFs()],
   resolve: { alias: { '@': path.resolve(__dirname, 'src') } },
-  test: { environment: 'node', include: ['src/**/*.test.ts', 'server/**/*.test.ts'] },
+  test: { environment: 'node', include: ['src/**/*.test.ts', 'server/**/*.test.ts', 'scripts/**/*.test.ts'] },
 })

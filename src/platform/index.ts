@@ -16,7 +16,7 @@ import type { PlatformApi, StorageAdapter, UserDef, WorkspaceState } from './con
 export * from './contracts'
 export { createPlatform } from './core'
 export { createRemotePlatform } from './remote'
-export { LocalFolderStorage, BrowserStorage, MemoryStorage, selectStorage } from './storage'
+export { BrowserStorage, MemoryStorage } from './storage'
 
 /* ------------------------------------------------------------------ mode probe */
 

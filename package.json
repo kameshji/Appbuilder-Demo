@@ -1,12 +1,13 @@
 {
   "name": "appbuilder-demo",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "notices": "node scripts/gen-notices.mjs",
     "preview": "vite preview",
     "start": "node server/main.ts",
     "test": "vitest run",
@@ -67,5 +68,11 @@
     "vite": "^8.3.6",
     "vite-plugin-singlefile": "^2.3.4",
     "vitest": "^5.1.0"
+  },
+  "overrides": {
+    "unzipper": "0.12.5"
+  },
+  "engines": {
+    "node": ">=22.18"
   }
 }
