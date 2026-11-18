@@ -9,7 +9,8 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ChatButton } from '@/chat/ChatDock'
 import { useChatDock } from '@/chat/dock'
-import { UserMenu } from './Auth'
+import { ProfileAvatar, SettingsEntry } from './Profile'
+import { EnvironmentPicker } from './EnvironmentPicker'
 import { useCaps } from './security'
 import { useTheme } from './theme'
 import { modulesFor, moduleRoute, type ModuleEntry, type ShellMode } from './modules'
@@ -54,18 +55,19 @@ function activeNav(route: PortalRoute): string {
   if (route.page === 'solution') return 'solutions'
   if (route.page === 'soon') return `soon-${route.id}`
   if (route.page === 'u') return 'u'
+  if (route.page === 'admin') return 'admin'
   return route.page
 }
 
 /** may the signed-in user open this page? (UX only; the server enforces) */
 export function pageAllowed(page: PortalRoute['page'], caps: { isAdmin: boolean; isMaker: boolean }): boolean {
-  if (page === 'roles') return caps.isAdmin
+  if (page === 'roles' || page === 'admin') return caps.isAdmin
   if (['tables', 'table', 'datafiles', 'solutions', 'solution', 'connections'].includes(page)) return caps.isMaker
   return true
 }
 
 /** pages that belong to Dev mode (the maker portal) */
-export const DEV_PAGES: ReadonlySet<PortalRoute['page']> = new Set(['home', 'apps', 'tables', 'table', 'datafiles', 'roles', 'solutions', 'solution', 'connections', 'studio'])
+export const DEV_PAGES: ReadonlySet<PortalRoute['page']> = new Set(['home', 'apps', 'tables', 'table', 'datafiles', 'roles', 'solutions', 'solution', 'connections', 'studio', 'admin'])
 
 const allowedEntry = (m: ModuleEntry, caps: { isAdmin: boolean; isMaker: boolean }) => !m.need || (m.need === 'admin' ? caps.isAdmin : caps.isMaker)
 
@@ -91,11 +93,16 @@ function NavButton({ active, onClick, icon: Icon, label, testId, soon, dense }: 
 
 function ModuleNav({ mode, active, caps }: { mode: ShellMode; active: string; caps: { isAdmin: boolean; isMaker: boolean } }) {
   const entries = modulesFor(mode).filter((m) => allowedEntry(m, caps))
-  if (!entries.length) return null
+  // live modules sit with the other pages; planned ones under "Coming soon"
+  const live = entries.filter((m) => m.status === 'live')
+  const soon = entries.filter((m) => m.status !== 'live')
   return (
     <>
-      {mode === 'dev' && <div className="mb-0.5 mt-3 px-2.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/80">Coming soon</div>}
-      {entries.map((m) => (
+      {live.map((m) => (
+        <NavButton key={m.key} testId={`nav-${m.key}`} active={active === m.key} icon={m.icon} label={m.label} onClick={() => go(moduleRoute(m))} />
+      ))}
+      {mode === 'dev' && soon.length > 0 && <div className="mb-0.5 mt-3 px-2.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/80">Coming soon</div>}
+      {soon.map((m) => (
         <NavButton
           key={m.key}
           dense={mode === 'dev'}
@@ -158,7 +165,7 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
   const active = activeNav(route)
   const user = mode === 'user'
   const appTab = user && activeTab !== null
-  const searchable = !appTab && ['apps', 'tables', 'roles', 'solutions', 'connections', 'home', 'datafiles', 'u'].includes(route.page)
+  const searchable = !appTab && !hidden && ['apps', 'tables', 'roles', 'solutions', 'connections', 'home', 'datafiles', 'u', 'admin'].includes(route.page)
 
   useEffect(() => { setQ('') }, [route.page, setQ])
 
@@ -202,11 +209,13 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
               </TooltipContent>
             </Tooltip>
           )}
-          <ChatButton />
-          <UserMenu />
-          <Button variant="ghost" size="icon-sm" onClick={toggle} data-testid="portal-theme-toggle" aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}>
+          <Button variant="ghost" size="icon-sm" onClick={toggle} data-testid="portal-theme-toggle" aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} title={theme === 'dark' ? 'Light theme' : 'Dark theme'}>
             {theme === 'dark' ? <Sun /> : <Moon />}
           </Button>
+          {/* Power Platform order: chat, environment, account (last) */}
+          <ChatButton />
+          <EnvironmentPicker />
+          <ProfileAvatar />
         </div>
       </header>
       {user && <TabStrip activeId={activeTab} />}
@@ -226,11 +235,14 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
                 <ModuleNav mode="dev" active={active} caps={caps} />
               </>
             )}
-            {!user && (
-              <div className="mt-auto shrink-0 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                {caps.server ? 'Your data lives in the default database. Data files and device-only connections stay on this machine.' : 'Everything lives in your workspace in this browser. Export a package to share it.'}
-              </div>
-            )}
+            <div className="mt-auto flex min-w-0 shrink-0 flex-col gap-2 pt-3">
+              {!user && (
+                <div className="rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                  {caps.server ? 'Your data lives in the default database. Data files and device-only connections stay on this machine.' : 'Everything lives in your workspace in this browser. Export a package to share it.'}
+                </div>
+              )}
+              <div className="border-t border-border pt-2"><SettingsEntry /></div>
+            </div>
           </nav>
         )}
         <main className="relative min-w-0 flex-1 bg-canvas">

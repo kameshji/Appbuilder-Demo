@@ -18,6 +18,10 @@ import { Connections } from './Connections'
 import { DataFiles } from './DataFiles'
 import { SolutionDetail, Solutions } from './Solutions'
 import { ComingSoon } from './ComingSoon'
+import { AdminConsole } from './Admin'
+import { SettingsPage } from './Settings'
+import { usePrefs } from '@/platform/preferences'
+import { useChatDock } from '@/chat/dock'
 import { MyApps, useTabSync } from './UserMode'
 import { moduleByKey, type ShellMode } from './modules'
 import { useCaps } from './security'
@@ -37,6 +41,7 @@ function DevPage({ route }: { route: PortalRoute }) {
     case 'solution': return <SolutionDetail solutionId={route.id} />
     case 'connections': return <Connections />
     case 'datafiles': return <DataFiles />
+    case 'admin': return <AdminConsole section={'id' in route ? route.id : undefined} />
     default: return <Home />
   }
 }
@@ -68,6 +73,7 @@ const replaceRoute = (r: Route) => {
  */
 export function modeOfRoute(route: Route, current: ShellMode): ShellMode {
   if (route.page === 'u') return 'user'
+  if (route.page === 'settings') return current
   if (route.page === 'soon') {
     const m = moduleByKey(route.id)
     return !m || m.modes.includes(current) ? current : m.modes[0]
@@ -83,13 +89,28 @@ function Frame({ route }: { route: Route }) {
   const caps = useCaps()
   const canDev = caps.isAdmin || caps.isMaker
   const user = useUserKey()
-  const [mode, setMode] = useState<ShellMode>(() => (canDev ? (readMode(user) ?? 'dev') : 'user'))
+  // the user's preferences first: the start mode below depends on them (first render; later user changes in an effect)
+  useState(() => usePrefs.getState().load(user))
+  useEffect(() => usePrefs.getState().load(user), [user])
+  const startMode = (): ShellMode => {
+    const pref = usePrefs.getState().startMode
+    return pref === 'last' ? (readMode(user) ?? 'dev') : pref
+  }
+  const [mode, setMode] = useState<ShellMode>(() => (canDev ? startMode() : 'user'))
+  const chatSide = usePrefs((s) => s.chatSide)
+  const chatChecked = useRef(false)
+  useEffect(() => {
+    // Settings > Chat > "Reopen chat at start" off: the dock starts closed
+    if (chatChecked.current || !user) return
+    chatChecked.current = true
+    if (!usePrefs.getState().chatRestore && useChatDock.getState().open) useChatDock.getState().hide()
+  }, [user])
   const lastRoute = useRef<Record<ShellMode, Route | null>>({ dev: null, user: null })
   const first = useRef(true)
 
   useEffect(() => {
     useWorkspace.getState().load(user)
-    if (canDev) setMode(readMode(user) ?? 'dev')
+    if (canDev) setMode(startMode())
   }, [user, canDev])
 
   // redirects: end users only have User mode; a maker opening the bare address returns to the last mode
@@ -108,7 +129,7 @@ function Frame({ route }: { route: Route }) {
   useEffect(() => {
     if (routed !== mode) setMode(routed)
     if (canDev && user) writeMode(user, routed)
-    lastRoute.current[routed] = route
+    if (route.page !== 'settings') lastRoute.current[routed] = route
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routed, route, user, canDev])
 
@@ -122,21 +143,24 @@ function Frame({ route }: { route: Route }) {
   }
 
   const studio = route.page === 'studio' ? route.id : null
+  const settings = route.page === 'settings'
   let page = null
-  if (studio) page = null
+  if (studio || settings) page = null
   else if (route.page === 'soon') page = <ComingSoon moduleKey={route.id} mode={routed} />
   else if (routed === 'user') page = <MyApps />
   else page = <DevPage route={route} />
 
   return (
-    <div className="flex h-full overflow-hidden" data-testid="app-frame">
+    <div className="flex h-full overflow-hidden" data-testid="app-frame" data-chat-side={chatSide}>
+      {chatSide === 'left' && <ChatDock side="left" />}
       <div className="relative h-full min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
         {studio && <Studio key={studio} appId={studio} />}
-        <Shell route={route} mode={routed} canSwitch={canDev} onModeChange={switchMode} activeTab={activeTab} hidden={!!studio}>
+        {settings && <SettingsPage section={'id' in route ? route.id : undefined} mode={routed} />}
+        <Shell route={route} mode={routed} canSwitch={canDev} onModeChange={switchMode} activeTab={activeTab} hidden={!!studio || settings}>
           {page}
         </Shell>
       </div>
-      <ChatDock />
+      {chatSide === 'right' && <ChatDock side="right" />}
     </div>
   )
 }

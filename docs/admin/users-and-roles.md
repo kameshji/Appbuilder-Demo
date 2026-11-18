@@ -7,8 +7,18 @@ Access in Appbuilder has three layers, all enforced by the server:
 3. **What you may do with each table**: table privileges (create/read/update/delete), column access and row filters,
    given through **roles**. A user can have several roles.
 
-Manage users and roles on the **Security roles** page (administrators only). It has a *Roles* section and a *Users*
-section.
+Users live in the **Admin console** (Dev mode menu, administrators only) under **Users**: add people, set or reset
+their password, enable or disable them and assign their roles. The roles themselves are edited on the **Security roles**
+page. Each page links to the other (*Security roles* button on the Users page, *Users* button and a note on the
+Security roles page).
+
+The Users table shows, per person: their roles, whether they can sign in (*Active* or *Disabled*), *No password* (an
+administrator has not set one yet), *Must change password* (an administrator set the password; the person chooses their
+own at the next sign-in) and the last sign-in. In demo mode the same page lists the people you can run apps as; switch
+between them from the avatar menu at the right end of the top bar.
+
+People change their own **display name** themselves (Settings > Profile; the server allows only the name, see
+`PATCH /api/v1/auth/profile` in `docs/dev/data-api.md`). Email, roles and status stay with an administrator.
 
 ## Built-in roles
 
@@ -46,7 +56,7 @@ Read-only tables (for example linked read-only) never grant write access by defa
 
 ## Create a user
 
-1. **Security roles** > *Users* > **Add user**. Enter name, email and the role(s).
+1. **Admin console** > **Users** > **Add user**. Enter name, email and the role(s).
 2. After adding, use the key button on the user's row to **Set password**. Give the password to the person. It is
    temporary: at their first sign-in Appbuilder shows only *Choose a new password* (no way around it except signing
    out) until they have set their own.
@@ -274,7 +284,8 @@ network traffic. Never put secrets in an app.
 
 ## Test as user
 
-Before you tell people it works, check it. **Security roles** > **Test as user** (administrators only) shows, for a
+Before you tell people it works, check it. **Test as user** (administrators only, on the Security roles page and on
+Admin console > Users) shows, for a
 chosen user and each table: whether they can create, read, update and delete, whether a row filter applies, how many
 rows they can see, which columns are hidden and which are read-only. It is computed by the same engine that enforces
 access (`GET /api/v1/security/preview`), not a copy. We confirmed that the preview for the *Staff* example listed

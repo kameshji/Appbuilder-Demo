@@ -1,16 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Ban, CircleCheck, Eye, Info, KeyRound, Pencil, Plus, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Users } from 'lucide-react'
-import { platform, usePlatform, type AccessScope, type RoleDef, type TablePrivilege, type UserDef } from '@/platform'
+import { Eye, Info, Plus, ShieldCheck, SlidersHorizontal, Trash2, Users } from 'lucide-react'
+import { go } from '@/router'
+import { platform, usePlatform, type AccessScope, type RoleDef, type TablePrivilege } from '@/platform'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { ConfirmDialog, Empty, Field, Panel, PageHeader, Segmented, fmtRelative, useToast } from './kit'
-import { NewPasswordFields, passwordsValid } from './PasswordFields'
+import { ConfirmDialog, Empty, Field, Panel, PageHeader, Segmented, useToast } from './kit'
 import { TableRules } from './RoleRules'
 import { emptyPrivilege, isMakerRole, useCaps } from './security'
 import { fetchSecurityPreview, type TablePreview } from './serverApi'
@@ -209,106 +208,7 @@ function RoleEditor({ role }: { role: RoleDef }) {
   )
 }
 
-function UserDialog({ open, onOpenChange, user, onCreated }: { open: boolean; onOpenChange(o: boolean): void; user: UserDef | null; onCreated(u: UserDef): void }) {
-  const server = usePlatform((s) => s.mode) === 'server'
-  const roles = usePlatform((s) => s.roles)
-  const { fail, toast } = useToast()
-  const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
-  const [roleIds, setRoleIds] = useState<string[]>([])
-  const [busy, setBusy] = useState(false)
-  useEffect(() => { if (open) { setName(user?.name ?? ''); setEmail(user?.email ?? ''); setRoleIds(user?.roleIds ?? []) } }, [open, user])
-  const run = async () => {
-    setBusy(true)
-    try {
-      if (user) await platform.security.updateUser(user.id, { name: name.trim(), email: email.trim(), roleIds })
-      else {
-        const u = await platform.security.createUser({ name: name.trim(), email: email.trim(), roleIds })
-        toast(`Added ${name.trim()}`, 'success')
-        onOpenChange(false)
-        onCreated(u)
-        return
-      }
-      toast('User updated', 'success')
-      onOpenChange(false)
-    } catch (e) {
-      fail(e)
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent data-testid="user-dialog">
-        <DialogHeader><DialogTitle>{user ? 'Edit user' : 'Add user'}</DialogTitle><DialogDescription>{server ? 'After adding a user you set their first password; they can change it themselves.' : 'Users are people you can run apps as on this machine.'}</DialogDescription></DialogHeader>
-        <form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); if (name.trim() && email.trim()) void run() }}>
-          <Field label="Name" htmlFor="user-name"><Input id="user-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} data-testid="user-name" /></Field>
-          <Field label="Email" htmlFor="user-email"><Input id="user-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="user-email" /></Field>
-          <div className="grid gap-2">
-            <Label className="text-xs font-medium">Roles</Label>
-            {roles.length === 0 && <p className="text-sm text-muted-foreground">No roles exist yet.</p>}
-            {roles.map((r) => (
-              <label key={r.id} className="flex items-center gap-2 text-sm">
-                <Checkbox checked={roleIds.includes(r.id)} onCheckedChange={(v) => setRoleIds(v === true ? [...roleIds, r.id] : roleIds.filter((x) => x !== r.id))} />
-                {r.name}{r.isAdmin && <Badge variant="secondary">Admin</Badge>}
-              </label>
-            ))}
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={busy || !name.trim() || !email.trim()} data-testid="user-save">{user ? 'Save' : 'Add user'}</Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function UserPasswordDialog({ user, onOpenChange }: { user: UserDef | null; onOpenChange(o: boolean): void }) {
-  const { fail, toast } = useToast()
-  const [pw, setPw] = useState('')
-  const [confirm, setConfirm] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  useEffect(() => { setPw(''); setConfirm(''); setError('') }, [user?.id])
-  const valid = passwordsValid(pw, confirm, user?.email)
-  const submit = async () => {
-    if (!user || !valid) return
-    setBusy(true)
-    setError('')
-    try {
-      await platform.security.setPassword(user.id, pw)
-      toast(`Password set for ${user.name}. Share it with them securely; it is not shown again.`, 'success')
-      setPw(''); setConfirm('')
-      onOpenChange(false)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      fail(e)
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <Dialog open={!!user} onOpenChange={onOpenChange}>
-      <DialogContent data-testid="user-password-dialog">
-        <DialogHeader>
-          <DialogTitle>{user?.hasPassword ? 'Reset password' : 'Set password'} for {user?.name}</DialogTitle>
-          <DialogDescription>You choose the password and tell the user. It is stored hashed, never shown again, and any open sessions of this user end.</DialogDescription>
-        </DialogHeader>
-        <form className="grid gap-4" autoComplete="off" onSubmit={(e) => { e.preventDefault(); void submit() }}>
-          <NewPasswordFields password={pw} confirm={confirm} onPassword={setPw} onConfirm={setConfirm} email={user?.email} idPrefix="up" labelNew="Password" autoFocus />
-          {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={busy || !valid} data-testid="user-password-save">{busy && <Spinner />} Set password</Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function TestAsUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange(o: boolean): void }) {
+export function TestAsUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange(o: boolean): void }) {
   const users = usePlatform((s) => s.users)
   const tables = usePlatform((s) => s.tables)
   const { fail } = useToast()
@@ -364,22 +264,14 @@ function TestAsUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange(
 export function Roles() {
   const server = usePlatform((s) => s.mode) === 'server'
   const caps = useCaps()
-  const [pwUser, setPwUser] = useState<UserDef | null>(null)
   const [preview, setPreview] = useState(false)
-  const session = usePlatform((s) => s.session)
   const roles = usePlatform((s) => s.roles)
   const users = usePlatform((s) => s.users)
-  const currentUserId = usePlatform((s) => s.currentUserId)
   const q = useSearch()
-  const { toast, fail } = useToast()
-  const [view, setView] = useState<'roles' | 'users'>('roles')
   const [selId, setSelId] = useState<string>('')
   const [newRole, setNewRole] = useState(false)
-  const [userDlg, setUserDlg] = useState<{ user: UserDef | null } | null>(null)
-  const [delUser, setDelUser] = useState<UserDef | null>(null)
   const list = roles.filter((r) => matches(q, r.name, r.description))
   const selected = roles.find((r) => r.id === selId) ?? list[0]
-  const ulist = users.filter((u) => matches(q, u.name, u.email))
 
   return (
     <div data-testid="page-roles">
@@ -389,104 +281,48 @@ export function Roles() {
         subtitle="Decide who can see and change which tables, and which apps they can run."
         actions={
           <>
-            <Segmented label="Section" value={view} onChange={setView} options={[{ value: 'roles', label: <><ShieldCheck className="size-3.5" /> Roles ({roles.length})</> }, { value: 'users', label: <><Users className="size-3.5" /> Users ({users.length})</> }]} />
+            {caps.isAdmin && <Button size="sm" variant="outline" onClick={() => go({ page: 'admin', id: 'users' })} data-testid="roles-users-link"><Users /> Users ({users.length})</Button>}
             {server && caps.isAdmin && <Button size="sm" variant="outline" onClick={() => setPreview(true)} data-testid="test-as-user-button"><Eye /> Test as user</Button>}
-            {view === 'roles' ? (
-              <Button size="sm" onClick={() => setNewRole(true)} data-testid="new-role-button"><Plus /> New role</Button>
-            ) : (
-              <Button size="sm" onClick={() => setUserDlg({ user: null })} data-testid="new-user-button"><Plus /> Add user</Button>
-            )}
+            <Button size="sm" onClick={() => setNewRole(true)} data-testid="new-role-button"><Plus /> New role</Button>
           </>
         }
       />
       <div className="mb-4 flex items-start gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-xs text-muted-foreground" data-testid="roles-note">
         <Info className="mt-px size-3.5 shrink-0 text-primary" />
-        {server ? 'The server enforces roles on every request: table access, hidden and read-only columns, and row filters.' : 'Demo mode: roles are simulated in this browser and are not a security boundary. Connect the local server for real enforcement.'}
+        <span>
+          {server ? 'The server enforces roles on every request: table access, hidden and read-only columns, and row filters.' : 'Demo mode: roles are simulated in this browser and are not a security boundary. Connect the local server for real enforcement.'}
+          {' '}People and their roles are managed in <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => go({ page: 'admin', id: 'users' })}>Admin console &gt; Users</button>.
+        </span>
       </div>
 
-      {view === 'roles' ? (
-        roles.length === 0 ? (
-          <Empty icon={ShieldCheck} title="No roles yet" description="Create a role to control access to tables and apps." action={<Button onClick={() => setNewRole(true)}><Plus /> New role</Button>} />
-        ) : (
-          <div className="grid grid-cols-[260px_minmax(0,1fr)] items-start gap-4">
-            <Panel className="overflow-hidden" data-testid="role-list">
-              {list.length === 0 && <div className="p-4 text-sm text-muted-foreground">No roles match "{q}".</div>}
-              <ul role="list">
-                {list.map((r) => (
-                  <li key={r.id} className="border-b border-border last:border-0">
-                    <button type="button" data-testid={`role-item-${r.id}`} aria-current={selected?.id === r.id} onClick={() => setSelId(r.id)} className={cn('flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left outline-none focus-visible:bg-accent/70', selected?.id === r.id ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/40')}>
-                      <ShieldCheck className="size-4 shrink-0 text-primary" />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">{r.name}</span>
-                        <span className="block truncate text-xs text-muted-foreground">{users.filter((u) => u.roleIds.includes(r.id)).length === 1 ? '1 user' : `${users.filter((u) => u.roleIds.includes(r.id)).length} users`}{r.description ? ` · ${r.description}` : ''}</span>
-                      </span>
-                      {r.isAdmin && <Badge variant="secondary">Admin</Badge>}
-                      {!r.isAdmin && isMakerRole(r) && <Badge variant="outline">Maker</Badge>}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </Panel>
-            {selected && <RoleEditor key={selected.id} role={selected} />}
-          </div>
-        )
-      ) : users.length === 0 ? (
-        <Empty icon={UserRound} title="No users yet" description="Add a user to run apps as them." action={<Button onClick={() => setUserDlg({ user: null })}><Plus /> Add user</Button>} />
+      {roles.length === 0 ? (
+        <Empty icon={ShieldCheck} title="No roles yet" description="Create a role to control access to tables and apps." action={<Button onClick={() => setNewRole(true)}><Plus /> New role</Button>} />
       ) : (
-        <Panel className="overflow-hidden">
-          <table className="w-full text-sm" data-testid="users-table">
-            <thead>
-              <tr className="border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground">
-                <th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Email</th><th className="px-4 py-2.5">Roles</th>{server && <th className="px-4 py-2.5">Status</th>}{server && <th className="px-4 py-2.5">Last sign-in</th>}<th className="w-40 px-4 py-2.5"><span className="sr-only">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              {ulist.map((u) => (
-                <tr key={u.id} className="border-b border-border last:border-0 hover:bg-accent/40" data-testid={`user-row-${u.id}`}>
-                  <td className="px-4 py-2.5 font-medium">{u.name}{(server ? u.id === session?.user.id : u.id === currentUserId) && <Badge variant="secondary" className="ml-2">{server ? 'You' : 'Running as'}</Badge>}</td>
-                  <td className="px-4 py-2.5 text-muted-foreground">{u.email}</td>
-                  <td className="px-4 py-2.5">
-                    <div className="flex flex-wrap gap-1">
-                      {u.roleIds.map((id) => roles.find((r) => r.id === id)).filter((r): r is RoleDef => !!r).map((r) => <Badge key={r.id} variant="outline">{r.name}</Badge>)}
-                      {u.roleIds.length === 0 && <span className="text-xs text-muted-foreground">No roles</span>}
-                    </div>
-                  </td>
-                  {server && (
-                    <td className="px-4 py-2.5">
-                      <div className="flex flex-wrap gap-1">
-                        {u.status === 'disabled' ? <Badge variant="destructive">Disabled</Badge> : <Badge className="border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">Active</Badge>}
-                        {!u.hasPassword && <Badge variant="outline" title="Cannot sign in until an administrator sets a password">No password</Badge>}
-                      </div>
-                    </td>
-                  )}
-                  {server && <td className="px-4 py-2.5 text-xs text-muted-foreground" data-testid={`last-login-${u.id}`}>{u.lastLogin ? fmtRelative(u.lastLogin) : 'Never'}</td>}
-                  <td className="px-4 py-1.5">
-                    <div className="flex justify-end gap-1">
-                      {server && <Button variant="ghost" size="icon-sm" aria-label={`${u.hasPassword ? 'Reset' : 'Set'} password for ${u.name}`} title={u.hasPassword ? 'Reset password' : 'Set password'} onClick={() => setPwUser(u)} data-testid={`password-${u.id}`}><KeyRound /></Button>}
-                      {server && <Button variant="ghost" size="icon-sm" aria-label={u.status === 'disabled' ? `Enable ${u.name}` : `Disable ${u.name}`} title={u.id === session?.user.id ? 'You cannot disable yourself' : u.status === 'disabled' ? 'Enable user' : 'Disable user'} disabled={u.id === session?.user.id} data-testid={`toggle-status-${u.id}`} onClick={() => { platform.security.updateUser(u.id, { status: u.status === 'disabled' ? 'active' : 'disabled' }).then(() => toast(u.status === 'disabled' ? `${u.name} can sign in again` : `${u.name} is disabled and signed out`, 'success')).catch(fail) }}>{u.status === 'disabled' ? <CircleCheck /> : <Ban />}</Button>}
-                      <Button variant="ghost" size="icon-sm" aria-label={`Edit ${u.name}`} onClick={() => setUserDlg({ user: u })}><Pencil /></Button>
-                      <Button variant="ghost" size="icon-sm" aria-label={`Delete ${u.name}`} onClick={() => setDelUser(u)}><Trash2 /></Button>
-                    </div>
-                  </td>
-                </tr>
+        <div className="grid grid-cols-[260px_minmax(0,1fr)] items-start gap-4">
+          <Panel className="overflow-hidden" data-testid="role-list">
+            {list.length === 0 && <div className="p-4 text-sm text-muted-foreground">No roles match "{q}".</div>}
+            <ul role="list">
+              {list.map((r) => (
+                <li key={r.id} className="border-b border-border last:border-0">
+                  <button type="button" data-testid={`role-item-${r.id}`} aria-current={selected?.id === r.id} onClick={() => setSelId(r.id)} className={cn('flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left outline-none focus-visible:bg-accent/70', selected?.id === r.id ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/40')}>
+                    <ShieldCheck className="size-4 shrink-0 text-primary" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium">{r.name}</span>
+                      <span className="block truncate text-xs text-muted-foreground">{users.filter((u) => u.roleIds.includes(r.id)).length === 1 ? '1 user' : `${users.filter((u) => u.roleIds.includes(r.id)).length} users`}{r.description ? ` · ${r.description}` : ''}</span>
+                    </span>
+                    {r.isAdmin && <Badge variant="secondary">Admin</Badge>}
+                    {!r.isAdmin && isMakerRole(r) && <Badge variant="outline">Maker</Badge>}
+                  </button>
+                </li>
               ))}
-              {ulist.length === 0 && <tr><td colSpan={server ? 6 : 4} className="px-4 py-6 text-center text-sm text-muted-foreground">No users match "{q}".</td></tr>}
-            </tbody>
-          </table>
-        </Panel>
+            </ul>
+          </Panel>
+          {selected && <RoleEditor key={selected.id} role={selected} />}
+        </div>
       )}
 
-      <NewRoleDialog open={newRole} onOpenChange={setNewRole} onCreated={(r) => { setView('roles'); setSelId(r.id) }} />
-      <UserDialog open={!!userDlg} onOpenChange={(o) => !o && setUserDlg(null)} user={userDlg?.user ?? null} onCreated={(u) => { if (server) setPwUser(u) }} />
-      <UserPasswordDialog user={pwUser} onOpenChange={(o) => !o && setPwUser(null)} />
+      <NewRoleDialog open={newRole} onOpenChange={setNewRole} onCreated={(r) => setSelId(r.id)} />
       <TestAsUserDialog open={preview} onOpenChange={setPreview} />
-      <ConfirmDialog
-        open={!!delUser}
-        onOpenChange={(o) => !o && setDelUser(null)}
-        title={`Delete user "${delUser?.name ?? ''}"?`}
-        description="The user is removed from this workspace. Rows they own stay in the tables."
-        onConfirm={async () => { if (delUser) { await platform.security.removeUser(delUser.id); toast('User deleted', 'success') } }}
-      />
     </div>
   )
 }

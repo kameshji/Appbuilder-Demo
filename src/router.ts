@@ -6,17 +6,19 @@
  *   #u                User mode: the app launcher ("My apps")
  *   #u-<appId>        User mode with that app open as a tab
  *   #soon-<key>       placeholder page of a planned module (src/portal/modules.ts), in the current mode
+ *   #settings         the user's Settings page (full window, in the current mode); #settings-<section> opens a section
+ *   #admin            the Admin console (Dev mode, administrators); #admin-<section> opens a section
  *   #chat             the chat panel in its own window (pop-out)
  * Every other page is Dev mode (the maker portal).
  */
 import { useSyncExternalStore } from 'react'
 
 export type Route =
-  | { page: 'home' | 'apps' | 'tables' | 'roles' | 'solutions' | 'connections' | 'datafiles' | 'u' | 'chat' }
-  | { page: 'table' | 'solution' | 'studio' | 'run' | 'u' | 'soon'; id: string }
+  | { page: 'home' | 'apps' | 'tables' | 'roles' | 'solutions' | 'connections' | 'datafiles' | 'u' | 'chat' | 'settings' | 'admin' }
+  | { page: 'table' | 'solution' | 'studio' | 'run' | 'u' | 'soon' | 'settings' | 'admin'; id: string }
 
-const SIMPLE = ['home', 'apps', 'tables', 'roles', 'solutions', 'connections', 'datafiles', 'u', 'chat'] as const
-const WITH_ID = ['table', 'solution', 'studio', 'run', 'u', 'soon'] as const
+const SIMPLE = ['home', 'apps', 'tables', 'roles', 'solutions', 'connections', 'datafiles', 'u', 'chat', 'settings', 'admin'] as const
+const WITH_ID = ['table', 'solution', 'studio', 'run', 'u', 'soon', 'settings', 'admin'] as const
 
 export function parseRoute(hash: string): Route {
   const h = hash.replace(/^#/, '')

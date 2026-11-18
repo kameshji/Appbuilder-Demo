@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeSecurityPreview } from './serverApi'
+import { auditSearch, normalizeSecurityPreview } from './serverApi'
 
 describe('normalizeSecurityPreview', () => {
   it('maps the compact items list', () => {
@@ -23,5 +23,14 @@ describe('normalizeSecurityPreview', () => {
   it('returns [] for unknown bodies', () => {
     expect(normalizeSecurityPreview({})).toEqual([])
     expect(normalizeSecurityPreview(null)).toEqual([])
+  })
+})
+
+describe('auditSearch', () => {
+  it('leaves out empty values and page 1; the "to" date includes that whole day', () => {
+    expect(auditSearch({})).toBe('')
+    expect(auditSearch({ page: 1, pageSize: 50 })).toBe('?pageSize=50')
+    expect(auditSearch({ action: 'auth.', user: 'u_1', from: '2026-11-01', to: '2026-11-18', page: 3 })).toBe('?action=auth.&user=u_1&from=2026-11-01&to=2026-11-19&page=3')
+    expect(auditSearch({ to: 'garbage' })).toBe('')
   })
 })

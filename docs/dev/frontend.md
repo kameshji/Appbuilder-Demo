@@ -194,6 +194,8 @@ Routing (`/home/claude/appbuilder-demo/src/router.ts`, hash routes) decides the 
 | --- | --- | --- |
 | `#run-<appId>` | `RunApp` (standalone) | the player in its own window; debug bar when the Studio of the app is open |
 | `#chat` | `src/chat/ChatWindow.tsx` | chat popped out into its own window |
+| `#settings`, `#settings-<section>` | `SettingsPage` (`src/portal/Settings.tsx`) inside `Portal` | full window in front of the shell, in the current mode |
+| `#admin`, `#admin-<section>` | `AdminConsole` (`src/portal/Admin.tsx`) as a Dev mode page | administrators only |
 | everything else | `Portal` (`/home/claude/appbuilder-demo/src/portal/Portal.tsx`) | the shell: Dev mode, User mode, the Studio, the chat dock |
 
 `Portal` renders a `Frame`: the shell (`Shell.tsx`) plus, for `#studio-<appId>`, the Studio in front of it, and the chat dock
@@ -201,10 +203,10 @@ Routing (`/home/claude/appbuilder-demo/src/router.ts`, hash routes) decides the 
 their state while you build.
 
 - **Modes.** `modeOfRoute` maps the route to a mode: `#u` and `#u-<appId>` are User mode; the maker pages (`home`, `apps`,
-  `tables`, `table-*`, `datafiles`, `roles`, `solutions`, `solution-*`, `connections`, `studio-*`) are Dev mode; `#soon-<key>` stays
-  in the current mode when the module is listed there. Makers and admins (`useCaps()`) get the mode switch; everyone else is
+  `tables`, `table-*`, `datafiles`, `roles`, `solutions`, `solution-*`, `connections`, `studio-*`, `admin`) are Dev mode;
+  `#settings` and `#soon-<key>` (when the module is listed there) stay in the current mode. Makers and admins (`useCaps()`) get the mode switch; everyone else is
   redirected to `#u` from Dev routes. The last mode is stored per user (`appbuilder-mode:<userId>`) and used when the address has
-  no hash. The switch returns to the last route of the other mode.
+  no hash, unless Settings > Appearance > Mode at start says Dev or User. The switch returns to the last route of the other mode.
 - **User mode state** is in `/home/claude/appbuilder-demo/src/portal/workspace.ts` (`useWorkspace`): open tab ids in order and recently opened apps, per user
   in `localStorage` (`appbuilder-tabs:<userId>`, `appbuilder-recent-apps:<userId>`), every access in try/catch. Helpers:
   `openAppTab(id)` (adds the tab and routes to `#u-<id>`), `openAppWindow(id)` (the `#run-<id>` pop-up, false when blocked),
@@ -215,9 +217,11 @@ their state while you build.
 - **Planned modules** come from ONE registry, `/home/claude/appbuilder-demo/src/portal/modules.ts` (`MODULES`): key, label, icon, modes, phase (from
   `docs/plan/master-plan.md`), tagline and 2-3 detail lines, optional `need` (maker/admin) and `action: 'chat'`. The shell's
   navigation renders the entries with a `SoonBadge`; `#soon-<key>` renders `ComingSoon` (`ComingSoon.tsx`) for the entry. To ship
-  a module, set `status: 'live'` and `route`: the menu entry then goes to the route and loses the badge. `modules.test.ts`
-  checks the registry.
-- **Chat dock** (`/home/claude/appbuilder-demo/src/chat/`): `dock.ts` holds the dock state (`useChatDock`: open, width, popped out; open and width in
+  a module, set `status: 'live'` and `route`: the menu entry then goes to the route, loses the badge and moves up with the
+  other pages (out of "Coming soon"). `inMenu: false` marks a planned part of a live module that has no menu entry of its own
+  (Admin console > Backups, Server logs, Usage). `modules.test.ts` checks the registry.
+- **Chat dock** (`/home/claude/appbuilder-demo/src/chat/`): `ChatDock side` is `usePrefs().chatSide` (Frame renders it left or
+  right of the shell and the Studio); with `chatRestore` off, Frame closes the dock once at start. `dock.ts` holds the dock state (`useChatDock`: open, width, popped out; open and width in
   `localStorage` `appbuilder-chat-dock`), `link.ts` the coordination with the pop-out window (BroadcastChannel `appbuilder-chat`,
   falling back to `storage` events, plus a heartbeat key the pop-out refreshes every 3 s so a main window can tell whether it is
   still open), `ChatDock.tsx` the panel and `ChatButton`, `ChatWindow.tsx` the `#chat` page. **`ChatPanel.tsx` is the only
@@ -227,7 +231,49 @@ their state while you build.
   `src/runtime/layout.ts` keeps a portrait design at its size (scaled to fit, centred) in a landscape area and fills a portrait
   one. The Start with data generator (`addDataScreenContent` in `src/portal/actions.ts`) has a desktop, a portrait and a phone
   (list screen + form screen) layout.
-- The theme of the shell, the Studio and the chat window is one value, `useUi().theme` (`src/portal/theme.ts` wraps it).
+- **Top bar** (`Shell.tsx`), right end, in this order (as in Power Platform): theme toggle and, in Dev mode, the storage badge;
+  then `ChatButton`, `EnvironmentPicker` (`src/portal/EnvironmentPicker.tsx`) and `ProfileAvatar` (`src/portal/Profile.tsx`) last.
+  The Studio command bar ends with the same `ProfileAvatar`.
+  - `EnvironmentPicker` shows `platform.environments.current()` as "Default · Production" (`TypeBadge`); the menu lists
+    `usePlatform((s) => s.environments)`, gets a search box from 7 entries (`SEARCH_FROM`) and, for administrators,
+    **Manage environments** (`#admin-environments`). Selecting calls `platform.environments.select(id)`.
+  - `ProfileAvatar`: `UserAvatar` (initials; colour from `avatarColorOf(userId, choice)`: the user's own choice for their
+    avatar, otherwise derived from the id), a tooltip with name and email, and a menu: header, Profile settings, Settings,
+    Change password (server), the demo switch-user list (`platform.security.setCurrentUser`, demo only, plus Manage users for
+    admins) and Sign out (server). `useMe()` returns the signed-in (server) or run-as (demo) user. The old `UserMenu` is gone.
+- **Environments API** (`platform.environments`, both backends; contract in `src/platform/contracts.ts`): `list()`,
+  `current()`, `select(id)`, state `environments` / `environmentId`. Today both backends return one built-in environment
+  `{ id: 'default', name: 'Default', type: 'production', builtIn: true }`: the server from `server/core/environments.ts`
+  (`GET /api/v1/environments`, also in `GET /workspace`; administrators get `details: { database, schemaVersion }`), the demo
+  core in `core.ts`. The selected id is remembered per user (`appbuilder-environment:<userId>`, `src/platform/environments.ts`).
+  Creating environments arrives with P0; the UI needs no change when the list grows.
+- **Settings** (`src/portal/Settings.tsx`): opened from `SettingsEntry` at the bottom of the sidebar (both modes) or the avatar
+  menu, through `openSettings(section?)` (`Profile.tsx`), which remembers the route to return to; `settingsReturnRoute()` is what
+  Back, the x and Esc go to. `Frame` renders it in front of the shell like the Studio (the shell stays mounted and hidden, so app
+  tabs keep their state). Sections: profile, appearance, region, notifications, chat, studio (makers), data, admin (admins),
+  about; `settingsSections(caps)` decides which a user sees. **Rule:** a control is real only when its backing exists; otherwise
+  render it with `Row soon="..."` (disabled, `SoonBadge`, one line naming what arrives and the phase). Never a working-looking
+  control that does nothing.
+- **Preferences store** (`src/platform/preferences.ts`, `usePrefs`): the ONE place for per-user client preferences (theme,
+  reduce motion, start mode, avatar colour, chat dock side and restore, Studio default size, snap and grid). JSON in
+  `localStorage` under `appbuilder-prefs:<userId>` with a version, every access in try/catch, validated field by field by
+  `parsePrefs` (so it can move to a server endpoint later without changing callers). `Frame` calls `usePrefs.getState().load(user)`.
+  The theme is also written to `appbuilder-theme` because the sign-in screens are drawn before a user is known.
+  `startPreferenceEffects()` (`src/portal/theme.ts`, called once in `App.tsx`) applies theme and motion and follows the
+  operating system (`prefers-color-scheme`, `prefers-reduced-motion`). Reduced motion sets `html.reduce-motion` (CSS in
+  `index.css` turns transitions and animations off, spinners excepted) and `useReducedMotion()` stops animated icons
+  (`AppIcon`). `exportPreferences()` and `clearLocalData()` (every `appbuilder*` key) back Settings > Data and privacy.
+  Add a new preference there: a field in `Preferences`, a default, a line in `parsePrefs`, then use `usePrefs((s) => s.x)`.
+- **Admin console** (`src/portal/Admin.tsx`, module `admin` in `modules.ts` is `status: 'live'`, route `#admin`): its own
+  sub-navigation (`ADMIN_SECTIONS`): Environments (table + details, disabled New environment), Users (`UsersPanel` in
+  `src/portal/Users.tsx`, the primary place for user management; Security roles links to it and back), Licences (current
+  state and the planned passes, counts derived from roles and labelled preview; nothing enforced), Audit log (server mode:
+  `fetchAuditPage` in `serverApi.ts` over `GET /api/v1/audit`, 50 per page, filters action, user, dates), and Backups, Server
+  logs, Usage rendered by `ComingSoon` with `embedded` from registry entries that have `inMenu: false`.
+- The theme of the shell, the Studio and the chat window is one value, `useUi().theme`; the user's choice (light, dark,
+  system) is `usePrefs().theme`, and `useTheme().toggle` (`src/portal/theme.ts`) sets an explicit light or dark.
+- Build-time constants (`vite.config.ts` `define`, declared in `src/build-info.d.ts`): `__APP_VERSION__` (package.json) and
+  `__THIRD_PARTY__` (the summary table of `THIRD-PARTY-NOTICES.md`), shown in Settings > About.
 
 ## The Studio state store
 

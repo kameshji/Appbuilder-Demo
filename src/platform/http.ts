@@ -15,7 +15,7 @@
  *  - Row objects always include `id`; the client adds `__id` itself.
  */
 import type {
-  AppMeta, AttachmentRef, ColumnDef, ColumnType, ConnectionRef, ConnectorKind, DataFileDef, RoleDef,
+  AppMeta, AttachmentRef, ColumnDef, ColumnType, ConnectionRef, ConnectorKind, DataFileDef, EnvironmentDef, RoleDef,
   Session, SolutionDef, TableDef, UserDef,
 } from './contracts.ts'
 import type { AppDef } from '../contracts.ts'
@@ -76,7 +76,19 @@ export interface StatusResponse {
   storage?: { kind: 'mysql'; location: string } | null
   /** admins only */
   databaseError?: string
+  /** admins only: versions for the About page and the environment details */
+  server?: StatusServerInfo
   session: Session | null
+}
+export interface StatusServerInfo {
+  /** Appbuilder version (package.json of the running server) */
+  version: string
+  /** Node.js version, e.g. "v22.18.0" */
+  node: string
+  /** database product and version, e.g. "11.8.2-MariaDB"; absent while the database is not reachable */
+  database?: string
+  /** system schema version this server runs (the database is at it, or the server refuses to start it) */
+  schemaVersion: number
 }
 
 /**
@@ -93,6 +105,36 @@ export interface SetupAdminRequest { name: string; email: string; password: stri
 export interface LoginRequest { email: string; password: string }
 /** POST /api/v1/auth/password */
 export interface ChangePasswordRequest { current: string; next: string }
+/**
+ * PATCH /api/v1/auth/profile -> UserDef. Self-service, any signed-in user: only the display name of the caller's own
+ * account. Any other field is refused (email, roles and status stay with an administrator).
+ */
+export interface ProfileRequest { name: string }
+
+/**
+ * GET /api/v1/environments (any signed-in user) -> { items }. Today one built-in "Default" environment (type
+ * production); `details` (database, schema version) for administrators only. More environments arrive with P0.
+ */
+export interface EnvironmentsResponse { items: EnvironmentDef[] }
+
+/**
+ * GET /api/v1/audit (administrators) -> one page of the audit log, newest first.
+ * Query: action (exact, or a prefix ending in "."), user (user id), from / to (ISO date or timestamp; from inclusive,
+ * to exclusive), page (1-based, default 1), pageSize (1-200, default 50). `actions`: every action name in the log.
+ */
+export interface AuditEntry {
+  id: number
+  at: string
+  userId: string | null
+  /** name and email of the acting user when the account still exists */
+  userName?: string
+  userEmail?: string
+  action: string
+  tableId: string | null
+  rowId: string | null
+  details: unknown
+}
+export interface AuditPageResponse { items: AuditEntry[]; total: number; page: number; pageSize: number; actions: string[] }
 
 /**
  * GET /api/v1/workspace -> everything the signed-in user may see.
@@ -109,6 +151,8 @@ export interface WorkspaceResponse {
   dataFiles: DataFileDef[]
   session: Session
   storage: { kind: 'mysql'; location: string }
+  /** the environments (same as GET /api/v1/environments); absent from servers older than 0.5 */
+  environments?: EnvironmentDef[]
 }
 
 /* apps (makers write; any user with app access reads)

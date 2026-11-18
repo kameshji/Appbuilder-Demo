@@ -9,6 +9,7 @@
 import type { AppDef, FxRecord, FxValue } from '@/contracts'
 import { PlatformError } from './contracts'
 import type {
+  EnvironmentDef,
   AccessScope, AppMeta, AttachmentRef, ColumnAccess, ColumnDef, ColumnType, ConnectionRef, ConnectorKind, DataFileDef, DataOp,
   EffectivePrivileges, PlatformApi, RoleDef, Row, Session, SolutionComponentKind, SolutionDef, StorageAdapter, TableDef,
   TablePrivilege, UserDef, WorkspaceState,
@@ -17,6 +18,7 @@ import Papa from 'papaparse'
 import { matchesCondition } from './rowfilter'
 import { csvToRows, parseCsvText, rowsToCsv } from './csv'
 import { Persister } from './persister'
+import { DEFAULT_ENVIRONMENT_ID, pickEnvironment, readSelectedEnvironment, selectEnvironment } from './environments'
 import { MemoryStorage } from './storage'
 import {
   CONTACT_STATUSES, ORDER_STATUSES, SEED_CONTACTS, SEED_ORDERS, blankApp, contactsSampleApp,
@@ -81,7 +83,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     session: null,
     storage: { kind: storage?.kind ?? 'browser', location: storage?.location ?? 'Loading…' },
     apps: [], tables: [], roles: [], users: [], currentUserId: '', connections: [], solutions: [], dataFiles: [],
-    dataVersion: 0, loading: [], truncated: [],
+    dataVersion: 0, loading: [], truncated: [], environments: [], environmentId: '',
   }
   /** attachments (demo mode): metadata + data URL, mirrored in storage under attachments/<id>.json */
   const attachmentStore = new Map<string, AttachmentRef & { dataUrl: string }>()
@@ -846,7 +848,11 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
           storage = new MemoryStorage('browser', 'Browser storage (temporary: the workspace could not be read)')
           await loadAll()
         }
-        setState({ ready: true, storage: { kind: storage.kind, location: storage.location } }, true)
+        const environments = demoEnvironments(storage.location)
+        setState({
+          ready: true, storage: { kind: storage.kind, location: storage.location },
+          environments, environmentId: pickEnvironment(environments, readSelectedEnvironment(state.currentUserId))?.id ?? '',
+        }, true)
       })()
     }
     return initPromise
@@ -1744,7 +1750,28 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     },
   }
 
+  /** demo mode has the same single built-in environment as the server, kept in this browser */
+  function demoEnvironments(location: string): EnvironmentDef[] {
+    return [{ id: DEFAULT_ENVIRONMENT_ID, name: 'Default', type: 'production', builtIn: true, details: { database: location } }]
+  }
+  const environmentsApi: PlatformApi['environments'] = {
+    async list() {
+      return state.environments
+    },
+    current: () => state.environments.find((e) => e.id === state.environmentId) ?? null,
+    async select(id) {
+      const env = selectEnvironment(state.environments, id, state.currentUserId)
+      setState({ environmentId: env.id })
+      return env
+    },
+  }
+
   const authApi: PlatformApi['auth'] = {
+    async updateProfile(input) {
+      const id = state.currentUserId
+      await securityApi.updateUser(id, { name: input.name })
+      return state.users.find((u) => u.id === id) ?? fail('not-found', 'The current user was not found.')
+    },
     async login() {
       return state.session ?? fail('unavailable', 'Sign-in needs the local server.')
     },
@@ -1988,6 +2015,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     auth: authApi,
     attachments: attachmentsApi,
     files: filesApi,
+    environments: environmentsApi,
     onDataError: () => () => {},
   }
 }

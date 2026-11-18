@@ -75,3 +75,14 @@
   html, body, #root { height: 100%; }
   body { background: var(--background); color: var(--foreground); font-family: var(--font-sans); font-size: 13px; -webkit-font-smoothing: antialiased; overflow: hidden; }
 }
+
+/* Settings > Appearance > Reduce motion (or the operating system): no transitions or animations in the product UI.
+   Loading spinners keep turning so progress stays visible. Animated icons stop themselves (src/controls/icon/AppIcon.tsx). */
+html.reduce-motion *:not(.animate-spin),
+html.reduce-motion *::before,
+html.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}

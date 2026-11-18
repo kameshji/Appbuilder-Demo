@@ -119,7 +119,7 @@ platform       -> contracts, fx values where needed. Never imports studio, porta
 controls       -> contracts, components/ui, platform types and a few calls (data table, Form, attachment controls), runtime attachment helpers
 components/ui  -> third-party UI libraries, lib/utils. Nothing from the app.
 runtime        -> fx, controls (registry), platform (through runtime/data.ts), contracts
-studio         -> runtime, controls, fx, platform, components/ui, portal (UserMenu, SizePicker), chat (ChatButton)
+studio         -> runtime, controls, fx, platform, components/ui, portal (ProfileAvatar, theme, SizePicker), chat (ChatButton)
 portal         -> platform, components/ui, router, chat, runtime public pieces (RunApp, sizes, sample/store for Start with data),
                   studio (the shell mounts Studio). Not runtime or studio internals.
 chat           -> components/ui, lib, portal/theme. Nothing else (the chat module will add platform).
@@ -145,7 +145,8 @@ Specific rules:
 
 Known exceptions to keep in mind: a few controls import runtime helpers (`@/runtime/attachments`, `@/runtime/AttachmentCell`) for
 attachment cells, the player (`src/runtime/RunApp.tsx`) imports the Studio's `Toasts`, the Studio command bar imports
-`UserMenu` from the portal, and `src/platform/samples.ts` imports the sample app from `src/runtime/sample.ts` for seeding. These
+`ProfileAvatar` and `useTheme` from the portal, the animated icon (`AppIcon`) and the Studio's snapping (`studio/geo.ts`) read
+the user's preferences from `src/platform/preferences.ts` (reduce motion, snap and grid), and `src/platform/samples.ts` imports the sample app from `src/runtime/sample.ts` for seeding. These
 are the places where the dependency graph is not a clean layering.
 
 ## The app definition format

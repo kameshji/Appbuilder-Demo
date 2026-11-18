@@ -7,10 +7,13 @@ import { linkPlatform } from '@/runtime/store'
 import { errorMessage } from '@/runtime/data'
 import { RunApp } from '@/runtime/RunApp'
 import { ChatWindow } from '@/chat/ChatWindow'
+import { startPreferenceEffects } from '@/portal/theme'
 
 export default function App() {
   const [state, setState] = useState<{ phase: 'loading' | 'ready' | 'error'; error?: string }>({ phase: 'loading' })
   const route = useRoute()
+
+  useEffect(() => startPreferenceEffects(), [])
 
   useEffect(() => {
     let alive = true

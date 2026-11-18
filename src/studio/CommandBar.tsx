@@ -1,7 +1,8 @@
 import { ArrowLeft, Check, CloudOff, EllipsisVertical, ExternalLink, FilePlus2, Loader2, Moon, Play, Plus, Redo2, Settings, Shapes, Sun, Undo2, Upload, Download } from 'lucide-react'
 import { controls } from '@/controls'
 import { go } from '@/router'
-import { UserMenu } from '@/portal'
+import { ProfileAvatar } from '@/portal/Profile'
+import { useTheme } from '@/portal/theme'
 import { useStore } from '@/runtime/store'
 import { useUi } from '@/runtime/ui'
 import { openRunWindow } from '@/runtime/session'
@@ -42,7 +43,7 @@ export function CommandBar() {
   const name = useStore((s) => s.app.name)
   const canUndo = useStore((s) => s.history.past.length > 0)
   const canRedo = useStore((s) => s.history.future.length > 0)
-  const theme = useUi((s) => s.theme)
+  const { theme, toggle: toggleTheme } = useTheme()
 
   return (
     // a container: with the chat dock open the bar can be narrower than the window, so labels collapse on its own width
@@ -103,8 +104,7 @@ export function CommandBar() {
 
       <div className="ml-auto flex items-center gap-1.5">
         <ChatButton />
-        <UserMenu />
-        <Button variant="ghost" size="icon-sm" title="Toggle Studio theme" data-testid="theme-toggle" onClick={() => useUi.getState().toggleTheme()}>
+        <Button variant="ghost" size="icon-sm" title="Toggle Studio theme" data-testid="theme-toggle" onClick={toggleTheme}>
           {theme === 'dark' ? <Sun /> : <Moon />}
         </Button>
         <Button variant="ghost" size="xs" data-testid="app-settings-button" onClick={() => useUi.setState({ settingsOpen: true })}>
@@ -143,6 +143,7 @@ export function CommandBar() {
             <ExternalLink />
           </Button>
         </div>
+        <ProfileAvatar />
       </div>
     </header>
   )

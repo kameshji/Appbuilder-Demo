@@ -766,6 +766,61 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
         [new Date(), entry.userId ?? null, entry.action.slice(0, 64), entry.tableId ?? null, entry.rowId ? String(entry.rowId).slice(0, 64) : null, details],
       )
     },
+
+    async auditPage(f) {
+      const where: string[] = []
+      const params: unknown[] = []
+      if (f.action) {
+        if (f.action.endsWith('.')) {
+          where.push('action LIKE ?')
+          params.push(`${f.action.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)
+        } else {
+          where.push('action = ?')
+          params.push(f.action)
+        }
+      }
+      if (f.userId) {
+        where.push('user_id = ?')
+        params.push(f.userId)
+      }
+      const from = toDate(f.from)
+      if (from) {
+        where.push('at >= ?')
+        params.push(from)
+      }
+      const to = toDate(f.to)
+      if (to) {
+        where.push('at < ?')
+        params.push(to)
+      }
+      const w = where.length ? `WHERE ${where.join(' AND ')}` : ''
+      const total = Number((await db.query<Row>(`SELECT COUNT(*) AS n FROM ab_audit ${w}`, params))[0]?.n) || 0
+      const limit = Math.max(1, Math.min(500, Math.floor(f.limit)))
+      const offset = Math.max(0, Math.floor(f.offset))
+      // LIMIT/OFFSET are validated integers (placeholders there are not portable across MySQL versions)
+      const rows = await db.query<Row>(`SELECT id, at, user_id, action, table_id, row_id, details FROM ab_audit ${w} ORDER BY id DESC LIMIT ${limit} OFFSET ${offset}`, params)
+      return {
+        total,
+        items: rows.map((r) => ({
+          id: Number(r.id),
+          at: toIso(r.at),
+          userId: optStr(r.user_id) ?? null,
+          action: str(r.action),
+          tableId: optStr(r.table_id) ?? null,
+          rowId: optStr(r.row_id) ?? null,
+          details: r.details === null || r.details === undefined ? null : parseJson<unknown>(r.details, str(r.details)),
+        })),
+      }
+    },
+
+    async auditActions() {
+      return (await db.query<Row>('SELECT DISTINCT action FROM ab_audit ORDER BY action')).map((r) => str(r.action))
+    },
+
+    async info() {
+      const rows = await db.query<Row>('SELECT MIN(created_on) AS c FROM ab_users')
+      return { createdOn: rows[0]?.c ? toIso(rows[0].c) : null }
+    },
   }
   return store
 }

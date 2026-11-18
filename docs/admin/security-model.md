@@ -268,7 +268,7 @@ queries are on the [Audit log](audit-log.md) page.
 ## Demo mode is not secure
 
 The browser-only demo (no server, data in the browser's IndexedDB) simulates roles so people can try the product.
-There is no sign-in, "Run as user" lets the person pick any user, and rules are applied by the same browser code the
+There is no sign-in, the switch-user list in the avatar menu lets the person pick any user, and rules are applied by the same browser code the
 person controls. Anyone can change them or read all the data in the browser's storage. Never use demo mode for real
 data.
 

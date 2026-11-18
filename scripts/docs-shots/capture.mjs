@@ -25,6 +25,7 @@
  *   WIZARD_BASE  wizard server URL          (default http://localhost:5296)
  *   DB_*         sandbox database values typed into the wizard (defaults match the commands above)
  *   ONLY         comma list of step names to run (default: all, in order)
+ *   SETUP_CODE   the setup code the main server printed (needed when its database comes from APPBUILDER_DB_*)
  *   OUT          output folder              (default docs/images next to this repository's docs/)
  *
  * Only fake data is used: the test email admin@example.test and an obviously fake password.
@@ -115,6 +116,8 @@ async function openMain(hash = '#home') {
   const page = await newPage(BASE + '/' + hash)
   await page.waitForSelector(`${tid('setup-admin-form')}, ${tid('login-form')}, ${tid('portal-root')}, ${tid('studio-root')}, ${tid('run-root')}`, { visible: true })
   if (await page.$(tid('setup-admin-form'))) {
+    // the database came from APPBUILDER_DB_*: the administrator step asks for the setup code the server printed
+    if (await page.$(tid('setup-code'))) await type(page, tid('setup-code'), process.env.SETUP_CODE || '')
     await type(page, tid('setup-admin-name'), ADMIN.name)
     await type(page, tid('setup-admin-email'), ADMIN.email)
     await type(page, tid('admin-pw-new'), ADMIN.password)
@@ -399,6 +402,55 @@ step('preview', async () => {
   await shot(page, 'preview-checked-out', { wait: 100 })
   await click(page, tid('preview-back'))
   await sleep(300)
+  await page.close()
+})
+
+/* ------------------------------------------------------------------ shell: top bar, Settings, Admin console */
+
+step('shell-account', async () => {
+  const page = await openMain('#home')
+  await clearToasts(page)
+  await click(page, tid('avatar-menu'))
+  await page.waitForSelector(tid('avatar-menu-content'), { visible: true })
+  await shot(page, 'shell-avatar-menu')
+  await page.keyboard.press('Escape')
+  await sleep(200)
+  await click(page, tid('env-picker'))
+  await page.waitForSelector(tid('env-menu'), { visible: true })
+  await shot(page, 'shell-environment-picker')
+  await page.keyboard.press('Escape')
+  await page.close()
+})
+
+step('settings', async () => {
+  const page = await openMain('#apps')
+  await click(page, tid('settings-entry'))
+  await page.waitForSelector(tid('settings-page'), { visible: true })
+  await click(page, tid('settings-nav-appearance'))
+  await shot(page, 'settings-appearance')
+  await click(page, tid('settings-nav-profile'))
+  await shot(page, 'settings-profile')
+  await click(page, tid('settings-close'))
+  await page.close()
+})
+
+step('admin-users', async () => {
+  const page = await openMain('#admin-users')
+  // a second person with a temporary password, so the page shows "Must change password" (fake data)
+  await page.evaluate(async () => {
+    const h = { 'Content-Type': 'application/json', 'X-Appbuilder': '1' }
+    const users = await (await fetch('/api/v1/workspace', { headers: h })).json()
+    if (!users.users.some((u) => u.email === 'operator@example.test')) {
+      await fetch('/api/v1/users', { method: 'POST', headers: h, body: JSON.stringify({ name: 'Olu Operator', email: 'operator@example.test', roleIds: ['role_viewer'], password: 'Example-Temp-Pass-2026' }) })
+    }
+  })
+  await page.reload({ waitUntil: 'networkidle0' })
+  await page.waitForSelector(tid('users-table'), { visible: true })
+  await clearToasts(page)
+  await shot(page, 'admin-users')
+  await click(page, tid('admin-nav-audit'))
+  await page.waitForSelector('[data-testid^="audit-row-"]', { visible: true })
+  await shot(page, 'admin-audit')
   await page.close()
 })
 

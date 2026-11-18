@@ -4,6 +4,7 @@
  *   POST /auth/login        POST /auth/logout         GET  /auth/session      POST /auth/password
  */
 import { createHash, randomBytes } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { HttpError } from './contracts.ts'
 import type { Ctx, UserContext, UserRecord } from './contracts.ts'
 import type { RoleDef, Session, TablePrivilege, UserDef } from '../../src/platform/contracts.ts'
@@ -18,6 +19,21 @@ import type { CoreServices } from './services.ts'
 import { SESSION_LIFETIME_MS } from './security.ts'
 import { checkPasswordPolicy, hashPassword, verifyDummy, verifyPassword } from './password.ts'
 import { errText, log } from './util.ts'
+import { SCHEMA_VERSION } from './meta-store.ts'
+
+/** version of the running server (package.json next to server/); read once */
+let appVersion: string | null = null
+export function serverVersion(): string {
+  if (appVersion === null) {
+    try {
+      const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version?: unknown }
+      appVersion = typeof pkg.version === 'string' ? pkg.version : 'unknown'
+    } catch {
+      appVersion = 'unknown'
+    }
+  }
+  return appVersion
+}
 
 const TOUCH_INTERVAL_MS = 10 * 60 * 1000
 const THROTTLE_LIMIT = 8
@@ -250,6 +266,15 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     if (ctx.user?.privileges.isAdmin && !ctx.user.user.mustChangePassword) {
       out.storage = services.state.location ? { kind: 'mysql', location: services.state.location } : null
       if (databaseError) out.databaseError = databaseError
+      let database: string | undefined
+      if (reachable && services.state.db) {
+        try {
+          database = await services.state.db.serverVersion()
+        } catch {
+          database = undefined
+        }
+      }
+      out.server = { version: serverVersion(), node: process.version, schemaVersion: SCHEMA_VERSION, ...(database ? { database } : {}) }
     }
     return out
   }, { auth: 'none' })
@@ -319,7 +344,7 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
       if ((await services.meta.users.count()) > 0) throw new HttpError(409, 'conflict', 'Setup is already complete. Please sign in.')
       await ensureBuiltinRoles(services)
       const id = services.uid('user')
-      await services.meta.users.insert({ id, name, email, roleIds: [ROLE_ADMIN], status: 'active', passwordHash: hash })
+      await services.meta.users.insert({ id, name, email, roleIds: [ROLE_ADMIN], status: 'active', passwordHash: hash, lastLogin: new Date().toISOString() }) // setup signs the administrator in
       services.security.invalidate()
       return id
     })

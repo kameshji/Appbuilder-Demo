@@ -24,8 +24,9 @@ export function ChatButton({ className, size = 'icon-sm' }: { className?: string
   )
 }
 
-/** the right-side chat dock (resizable; open/closed and width are remembered) */
-export function ChatDock() {
+/** the chat dock, right (default) or left of the shell (Settings > Chat); resizable; open/closed and width are remembered */
+export function ChatDock({ side = 'right' }: { side?: 'left' | 'right' }) {
+  const left = side === 'left'
   const open = useChatDock((s) => s.open)
   const width = useChatDock((s) => s.width)
   const poppedOut = useChatDock((s) => s.poppedOut)
@@ -36,9 +37,10 @@ export function ChatDock() {
   return (
     <aside
       data-testid="chat-dock"
+      data-side={side}
       aria-label="Chat"
       style={{ width }}
-      className="relative z-40 flex h-full shrink-0 flex-col border-l border-border bg-card text-card-foreground"
+      className={cn('relative z-40 flex h-full shrink-0 flex-col border-border bg-card text-card-foreground', left ? 'border-r' : 'border-l')}
     >
       <div
         role="separator"
@@ -47,21 +49,21 @@ export function ChatDock() {
         aria-valuenow={width}
         tabIndex={0}
         data-testid="chat-dock-resize"
-        className="absolute inset-y-0 -left-1 z-10 w-2 cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-[3px] after:w-0.5 after:bg-primary after:opacity-0 after:transition-opacity hover:after:opacity-60 focus-visible:after:opacity-80"
+        className={cn('absolute inset-y-0 z-10 w-2 cursor-col-resize', left ? '-right-1' : '-left-1', ' outline-none after:absolute after:inset-y-0 after:left-[3px] after:w-0.5 after:bg-primary after:opacity-0 after:transition-opacity hover:after:opacity-60 focus-visible:after:opacity-80')}
         onPointerDown={(e) => {
           e.preventDefault()
           drag.current = { x: e.clientX, w: width }
           ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
         }}
         onPointerMove={(e) => {
-          if (drag.current) useChatDock.getState().setWidth(drag.current.w - (e.clientX - drag.current.x))
+          if (drag.current) useChatDock.getState().setWidth(drag.current.w + (left ? 1 : -1) * (e.clientX - drag.current.x))
         }}
         onPointerUp={() => {
           drag.current = null
         }}
         onKeyDown={(e) => {
-          if (e.key === 'ArrowLeft') useChatDock.getState().setWidth(width + 24)
-          else if (e.key === 'ArrowRight') useChatDock.getState().setWidth(width - 24)
+          if (e.key === 'ArrowLeft') useChatDock.getState().setWidth(width + (left ? -24 : 24))
+          else if (e.key === 'ArrowRight') useChatDock.getState().setWidth(width + (left ? 24 : -24))
         }}
       />
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">

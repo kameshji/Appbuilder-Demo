@@ -12,6 +12,7 @@ import type { CoreServices } from './services.ts'
 import { hasAnyTableAccess } from './security.ts'
 import { toConnectionRef } from './connections.ts'
 import { toUserDef } from './auth.ts'
+import { listEnvironments } from './environments.ts'
 
 export async function tableParam(services: CoreServices, idOrName: string): Promise<TableDef> {
   const t = idOrName ? await services.meta.tables.get(idOrName) : null
@@ -94,7 +95,7 @@ export function dataRoutes(router: ApiRouter, services: CoreServices): void {
     const user = ctx.user!
     const meta = services.meta
     const { isAdmin, isMaker } = user.privileges
-    const [apps, tables, roles, users, conns, solutions, files] = await Promise.all([
+    const [apps, tables, roles, users, conns, solutions, files, environments] = await Promise.all([
       meta.apps.list(),
       meta.tables.list(),
       isAdmin ? meta.roles.list() : Promise.resolve(user.roles),
@@ -102,6 +103,7 @@ export function dataRoutes(router: ApiRouter, services: CoreServices): void {
       isMaker ? meta.connections.list() : Promise.resolve([]),
       isMaker ? meta.solutions.list() : Promise.resolve([]),
       isMaker ? meta.files.list() : Promise.resolve([]),
+      listEnvironments(services, user),
     ])
     const dataFiles: DataFileDef[] = files.map((f) => ({
       id: f.id, connectionId: f.connectionId, fileName: f.fileName, kind: f.kind, sizeBytes: f.sizeBytes,
@@ -118,6 +120,7 @@ export function dataRoutes(router: ApiRouter, services: CoreServices): void {
       session: user.session(),
       // host, port and database name: administrators only (like GET /status)
       storage: { kind: 'mysql', location: isAdmin ? (services.state.location ?? '') : 'Server database' },
+      environments,
     }
   }, { auth: 'user' })
 }

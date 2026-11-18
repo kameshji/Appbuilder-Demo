@@ -191,6 +191,23 @@ export interface EffectivePrivileges {
   apps: string[] | 'all'
 }
 
+/**
+ * An environment: one workspace (tables, apps, roles) on this install. Today every install has exactly one built-in
+ * environment, "Default" (type production); more environments (Sandbox/Test, Developer) arrive with P0.
+ */
+export type EnvironmentType = 'production' | 'sandbox' | 'developer'
+export interface EnvironmentDef {
+  id: string
+  name: string
+  type: EnvironmentType
+  /** the install's own environment; cannot be deleted */
+  builtIn: boolean
+  /** when it was set up (server mode: the first account was created); absent when unknown */
+  createdOn?: string
+  /** administrators only */
+  details?: { database: string; schemaVersion?: number }
+}
+
 export interface Session {
   user: UserDef
   privileges: EffectivePrivileges
@@ -296,6 +313,9 @@ export interface WorkspaceState {
   loading: string[]
   /** tables whose query hit the row cap (names); the UI warns that data is truncated */
   truncated: string[]
+  /** environments the user can open (today one: the built-in Default) and the selected one */
+  environments: EnvironmentDef[]
+  environmentId: string
 }
 
 export class PlatformError extends Error {
@@ -400,11 +420,26 @@ export interface PlatformApi {
     login(email: string, password: string): Promise<Session>
     logout(): Promise<void>
     changePassword(current: string, next: string): Promise<void>
+    /** self-service: change the signed-in user's own display name (nothing else). Demo mode: the run-as user. */
+    updateProfile(input: { name: string }): Promise<UserDef>
     /** first-run: the database connection for the default store (server tests it, creates the system tables) */
     /** setupCode: the one-time code the server prints to its console (first run) */
     setupDatabase(input: { host: string; port: number; database: string; user: string; password: string; createDatabase?: boolean; setupCode?: string }): Promise<void>
     /** first-run: create the first administrator and sign in */
     setupAdmin(input: { name: string; email: string; password: string; setupCode?: string }): Promise<Session>
+  }
+
+  /**
+   * Environments (both backends): a real API with, today, one built-in "Default" environment (type production).
+   * The selected id is remembered per user in this browser (localStorage). Creating environments arrives with P0.
+   */
+  environments: {
+    /** fetch the list again (server: GET /api/v1/environments) */
+    list(): Promise<EnvironmentDef[]>
+    /** the selected environment (null before init or while signed out) */
+    current(): EnvironmentDef | null
+    /** select an environment by id; PlatformError('not-found') for an unknown id */
+    select(id: string): Promise<EnvironmentDef>
   }
 
   /** subscribe to rolled-back writes (server mode). Returns unsubscribe. */

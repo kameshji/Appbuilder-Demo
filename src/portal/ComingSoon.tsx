@@ -16,8 +16,11 @@ export function SoonBadge({ className }: { className?: string }) {
   )
 }
 
-/** `#soon-<key>`: placeholder page of a planned module, driven by src/portal/modules.ts */
-export function ComingSoon({ moduleKey, mode }: { moduleKey: string; mode: ShellMode }) {
+/**
+ * `#soon-<key>`: placeholder page of a planned module, driven by src/portal/modules.ts. `embedded`: inside another
+ * page (an Admin console section), without the page's top margin.
+ */
+export function ComingSoon({ moduleKey, mode, embedded = false }: { moduleKey: string; mode: ShellMode; embedded?: boolean }) {
   const m = moduleByKey(moduleKey)
   if (!m) {
     return (
@@ -31,7 +34,7 @@ export function ComingSoon({ moduleKey, mode }: { moduleKey: string; mode: Shell
   }
   const Icon = m.icon
   return (
-    <div data-testid={`page-soon-${m.key}`} className="mx-auto max-w-2xl pt-10">
+    <div data-testid={`page-soon-${m.key}`} className={embedded ? 'max-w-2xl' : 'mx-auto max-w-2xl pt-10'}>
       <div className="rounded-2xl border border-border bg-card p-8 shadow-xs">
         <div className="flex items-start gap-4">
           <span className="grid size-14 shrink-0 place-items-center rounded-2xl bg-primary/10 text-primary">

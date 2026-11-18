@@ -17,6 +17,7 @@ export * from './contracts'
 export { createPlatform } from './core'
 export { createRemotePlatform } from './remote'
 export { BrowserStorage, MemoryStorage } from './storage'
+export { DEFAULT_ENVIRONMENT_ID, ENVIRONMENT_TYPE_LABEL } from './environments'
 
 /* ------------------------------------------------------------------ mode probe */
 
@@ -65,7 +66,7 @@ const NOT_READY: WorkspaceState = {
   ready: false, mode: 'demo', setup: { needsDatabase: false, needsAdmin: false }, session: null,
   storage: { kind: 'browser', location: 'Loading…' },
   apps: [], tables: [], roles: [], users: [], currentUserId: '', connections: [], solutions: [], dataFiles: [],
-  dataVersion: 0, loading: [], truncated: [],
+  dataVersion: 0, loading: [], truncated: [], environments: [], environmentId: '',
 }
 const NOBODY: UserDef = { id: '', name: '', email: '', roleIds: [] }
 
@@ -174,7 +175,7 @@ export function createPlatformFacade(deps: {
       rows: () => [],
       exportCsv: () => '',
     }),
-    auth: group('auth', ['login', 'logout', 'changePassword', 'setupDatabase', 'setupAdmin'], {}),
+    auth: group('auth', ['login', 'logout', 'changePassword', 'updateProfile', 'setupDatabase', 'setupAdmin'], {}),
     attachments: group('attachments', ['upload', 'resolve', 'remove'], { url: ((id: string) => `/api/v1/attachments/${encodeURIComponent(id)}`) as (...a: never[]) => unknown }),
     files: group('files', ['add', 'replace', 'download', 'remove'], {}),
     security: group('security', ['createRole', 'updateRole', 'removeRole', 'createUser', 'updateUser', 'removeUser', 'setPassword'], {
@@ -183,6 +184,7 @@ export function createPlatformFacade(deps: {
       canRunApp: () => false,
     }),
     connections: group('connections', ['create', 'update', 'remove', 'test', 'setDefault'], {}),
+    environments: group('environments', ['list', 'select'], { current: () => null }),
     solutions: group('solutions', ['create', 'update', 'remove', 'addComponent', 'removeComponent', 'exportPackage', 'importPackage'], {}),
   }
   return facade

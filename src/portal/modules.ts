@@ -7,8 +7,8 @@
  * Phases are the build phases of docs/plan/master-plan.md (section 5).
  */
 import {
-  Bot, CheckSquare, ClipboardCheck, FileText, Folder, Globe, Layers, LayoutDashboard, LayoutTemplate, Mail, MessagesSquare, Network,
-  ShieldHalf, StickyNote, Workflow, type LucideIcon,
+  Activity, Archive, Bot, CheckSquare, ClipboardCheck, FileText, Folder, Globe, LayoutDashboard, LayoutTemplate, Mail, MessagesSquare, Network,
+  ScrollText, ShieldHalf, StickyNote, Workflow, type LucideIcon,
 } from 'lucide-react'
 import type { Route } from '@/router'
 
@@ -45,6 +45,8 @@ export interface ModuleEntry {
   details: string[]
   /** Dev mode entries for admins only */
   need?: 'maker' | 'admin'
+  /** false: not a menu entry of its own (a planned part of a live module, e.g. Admin console > Backups) */
+  inMenu?: false
 }
 
 export const MODULES: readonly ModuleEntry[] = [
@@ -98,19 +100,11 @@ export const MODULES: readonly ModuleEntry[] = [
     ],
   },
   {
-    key: 'environments', label: 'Environments', icon: Layers, modes: ['dev'], status: 'soon', phase: 'P0', need: 'admin',
-    tagline: 'Separate Dev, Test and Prod workspaces on one install.',
+    key: 'admin', label: 'Admin console', icon: ShieldHalf, modes: ['dev'], status: 'live', route: { page: 'admin' }, phase: 'P0', need: 'admin',
+    tagline: 'Environments, users, licences and the audit log in one place.',
     details: [
-      'Move solutions from Dev to Test to Prod with a previewed upgrade plan and an automatic backup first.',
-      'Prod is locked against direct edits.',
-    ],
-  },
-  {
-    key: 'admin', label: 'Admin console', icon: ShieldHalf, modes: ['dev'], status: 'soon', phase: 'P0', need: 'admin',
-    tagline: 'Users, audit, backups and licences in one place.',
-    details: [
-      'Manage users, departments and teams; browse the audit log and server logs.',
-      'Nightly downloadable backups with restore in place, usage, AI budget and licence status.',
+      'Environments (today the built-in Default), users with their roles and sign-in state, the planned licence passes and the audit log.',
+      'Backups, server logs and usage arrive with P0 Kernel.',
     ],
   },
   {
@@ -119,6 +113,32 @@ export const MODULES: readonly ModuleEntry[] = [
     details: [
       'Tasks, Notes, CRM and the manufacturing pack (production log with OEE, quality inspection with NCR, maintenance).',
       'ERP templates (inventory, purchase, sales, ledgers and GST) built on the platform; data import from other systems, with an optional Tally exchange.',
+    ],
+  },
+
+  /* ---------------------------------------------------------------- parts of the Admin console (no menu entry) */
+  {
+    key: 'backups', label: 'Backups', icon: Archive, modes: ['dev'], status: 'soon', phase: 'P0', need: 'admin', inMenu: false,
+    tagline: 'Nightly backups you can download, and restore in place.',
+    details: [
+      'A scheduled backup of the system database and the workspace folder, kept for a number of days you choose.',
+      'Download any backup, or restore it in place after an automatic safety backup; a restore drill is part of the P0 exit check.',
+    ],
+  },
+  {
+    key: 'logs', label: 'Server logs', icon: ScrollText, modes: ['dev'], status: 'soon', phase: 'P0', need: 'admin', inMenu: false,
+    tagline: 'The server console, readable from the browser.',
+    details: [
+      'Warnings and errors of the server (database reconnects, failed audit writes, connector errors) with search and a time filter.',
+      'A diagnostics bundle (logs, versions, settings without secrets) to send to support.',
+    ],
+  },
+  {
+    key: 'usage', label: 'Usage', icon: Activity, modes: ['dev'], status: 'soon', phase: 'P0', need: 'admin', inMenu: false,
+    tagline: 'Who uses which apps, and how big the data is.',
+    details: [
+      'Active users, app opens and table sizes over time.',
+      'Later also flow runs and the AI budget (P1 and P4).',
     ],
   },
 
@@ -174,6 +194,6 @@ export const MODULES: readonly ModuleEntry[] = [
 ]
 
 export const moduleByKey = (key: string): ModuleEntry | undefined => MODULES.find((m) => m.key === key)
-export const modulesFor = (mode: ShellMode): ModuleEntry[] => MODULES.filter((m) => m.modes.includes(mode))
+export const modulesFor = (mode: ShellMode): ModuleEntry[] => MODULES.filter((m) => m.modes.includes(mode) && m.inMenu !== false)
 /** the route a menu entry opens (live module: its route; planned: its placeholder page) */
 export const moduleRoute = (m: ModuleEntry): Route => (m.status === 'live' && m.route ? m.route : { page: 'soon', id: m.key })

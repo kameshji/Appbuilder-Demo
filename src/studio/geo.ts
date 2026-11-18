@@ -1,11 +1,19 @@
 import type { Geom } from '@/runtime/evaluator'
 import type { Guide, Rect } from '@/runtime/ui'
+import { usePrefs } from '@/platform/preferences'
 
+/** default grid; the maker's choice is Settings > Studio (src/platform/preferences.ts: studioGrid, studioSnap) */
 export const GRID = 8
 export const MIN_SIZE = 8
 export type Handle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
-export const snapGrid = (v: number) => Math.round(v / GRID) * GRID
+const snapOn = () => usePrefs.getState().studioSnap
+/** to the grid of Settings > Studio; unchanged when snapping is turned off there */
+export const snapGrid = (v: number) => {
+  if (!snapOn()) return v
+  const g = usePrefs.getState().studioGrid || GRID
+  return Math.round(v / g) * g
+}
 
 /* ------------------------------------------------------------------ DOM helpers */
 
@@ -181,7 +189,7 @@ export interface SnapOpts { targets: Targets; thr: number; free: boolean; origin
 
 /** Snap a box being moved. Returns the adjusted box and the guides to draw (frame coordinates). */
 export function snapMove(box: Rect, o: SnapOpts): { box: Rect; guides: Guide[] } {
-  if (o.free) return { box, guides: [] }
+  if (o.free || !snapOn()) return { box, guides: [] }
   const cx = [box.x, box.x + box.w / 2, box.x + box.w]
   const cy = [box.y, box.y + box.h / 2, box.y + box.h]
   const sx = bestDelta(cx, o.targets.xs, o.thr)
@@ -205,7 +213,8 @@ export function snapResize(start: Rect, handle: Handle, dx: number, dy: number, 
   if (handle.includes('s')) bottom += dy
   if (handle.includes('n')) top += dy
   const guides: Guide[] = []
-  if (!o.free) {
+  const free = o.free || !snapOn()
+  if (!free) {
     const snapEdge = (v: number, targets: Target[]): number => {
       const d = bestDelta([v], targets, o.thr)
       return d !== null ? v + d : snapGrid(v)
@@ -235,7 +244,7 @@ export function snapResize(start: Rect, handle: Handle, dx: number, dy: number, 
     else bottom = top + h
   }
   const box = { x: left, y: top, w: right - left, h: bottom - top }
-  if (!o.free) {
+  if (!free) {
     const edgesX: number[] = []
     const edgesY: number[] = []
     if (handle.includes('e')) edgesX.push(right)

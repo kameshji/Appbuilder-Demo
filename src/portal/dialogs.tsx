@@ -11,19 +11,26 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { CodeDialog, Empty, Field, Segmented, slugName, useToast } from './kit'
 import { createAppWithData } from './actions'
 import { SizePicker } from './SizePicker'
-import { sizeError } from '@/runtime/sizes'
+import { DEFAULT_DESKTOP, presetById, sizeError } from '@/runtime/sizes'
+import { usePrefs } from '@/platform/preferences'
+
+/** the size preset chosen in Settings > Studio (Full HD unless changed) */
+const defaultAppSize = () => {
+  const p = presetById(usePrefs.getState().studioDefaultSize) ?? presetById(DEFAULT_DESKTOP)!
+  return { w: p.w, h: p.h }
+}
 
 /* ------------------------------------------------------------------ new app */
 
 export function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange(o: boolean): void }) {
   const { fail, toast } = useToast()
   const [name, setName] = useState('')
-  const [size, setSize] = useState({ w: 1920, h: 1080 })
+  const [size, setSize] = useState(defaultAppSize)
   const [scale, setScale] = useState<'responsive' | 'fit'>('responsive')
   const [busy, setBusy] = useState(false)
   const [epoch, setEpoch] = useState(0)
   useEffect(() => {
-    if (open) { setName(''); setScale('responsive'); setSize({ w: 1920, h: 1080 }); setEpoch((e) => e + 1) }
+    if (open) { setName(''); setScale('responsive'); setSize(defaultAppSize()); setEpoch((e) => e + 1) }
   }, [open])
 
   const { w, h } = size
@@ -84,13 +91,13 @@ export function StartWithDataDialog({ open, onOpenChange }: { open: boolean; onO
   const [mode, setMode] = useState<'existing' | 'new'>('existing')
   const [tableId, setTableId] = useState('')
   const [newName, setNewName] = useState('')
-  const [size, setSize] = useState({ w: 1920, h: 1080 })
+  const [size, setSize] = useState(defaultAppSize)
   const [epoch, setEpoch] = useState(0)
   const [busy, setBusy] = useState(false)
   useEffect(() => {
     if (!open) return
     setNewName('')
-    setSize({ w: 1920, h: 1080 })
+    setSize(defaultAppSize())
     setEpoch((e) => e + 1)
     setMode(tables.length ? 'existing' : 'new')
     setTableId(tables[0]?.id ?? '')

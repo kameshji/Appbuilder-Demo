@@ -77,13 +77,15 @@ Every later example uses `-b $JAR` (and `-c $JAR` where the cookie changes).
 
 | Method and path | Auth | Request body | Response |
 | --- | --- | --- | --- |
-| `GET /status` | none | none | `StatusResponse`: `{ app: 'appbuilder', apiVersion: 1, backend, setup: { needsDatabase, needsAdmin, unavailable?, incompatible? }, ok, session: Session \| null }`; plus `storage: { kind: 'mysql', location } \| null` and `databaseError?` **for a signed-in administrator only** |
+| `GET /status` | none | none | `StatusResponse`: `{ app: 'appbuilder', apiVersion: 1, backend, setup: { needsDatabase, needsAdmin, unavailable?, incompatible? }, ok, session: Session \| null }`; plus `storage: { kind: 'mysql', location } \| null`, `databaseError?` and `server: { version, node, database?, schemaVersion }` **for a signed-in administrator only** |
 | `POST /setup/database` | none + loopback + setup code, or an admin from loopback; see below | `{ host, port, database, user, password, createDatabase?, ssl?, setupCode? }` | `{ ok: true }` |
 | `POST /setup/admin` | none + loopback + setup code, only while there are no users | `{ name, email, password, setupCode? }` | `Session` and sets the cookie |
 | `POST /auth/login` | none | `{ email, password }` | `Session` and sets the cookie |
 | `POST /auth/logout` | none | none | `{ ok: true }` and clears the cookie |
 | `GET /auth/session` | user | none | `Session` |
 | `POST /auth/password` | user | `{ current, next }` | `Session` (a new cookie; every other session of that user is removed) |
+| `PATCH /auth/profile` | user | `{ name }` | `UserDef`. Self-service: only the caller's own display name (1-100 characters, trimmed); any other field is refused with 422. Audited as `user.profile` when the name changed |
+| `GET /environments` | user | none | `{ items: EnvironmentDef[] }`: today one built-in environment `{ id: 'default', name: 'Default', type: 'production', builtIn: true, createdOn? }`; administrators also get `details: { database, schemaVersion }`. `GET /workspace` carries the same list as `environments` |
 
 `Session` is `{ user: UserDef, privileges: EffectivePrivileges, expiresOn }`.
 `EffectivePrivileges` is `{ isAdmin, isMaker, tables: { [tableId]: { create, read, update, delete, columns, filtered } }, apps: string[] | 'all' }` where
@@ -378,6 +380,7 @@ curl -sS -b $JAR -H "$H" -X POST $BASE/connections/conn_abc/test
 | `DELETE /users/:id` | none | `{ ok: true }` |
 | `POST /users/:id/password` | `{ password }` | `{ ok: true }` |
 | `GET /security/preview?user=<userId>` | none | `{ user, isAdmin, isMaker, status, items, tables }` |
+| `GET /audit?action=&user=&from=&to=&page=&pageSize=` | none | `{ items, total, page, pageSize, actions }`, newest first |
 
 - `privileges` is a list of `TablePrivilege` (`table` id, `create`, `read`, `update`, `delete` scopes `none|own|all`, optional `columns`
   access map and `rowFilter` conditions). Validation: table ids must exist, scopes and column access must be valid, the `id` column
@@ -386,6 +389,10 @@ curl -sS -b $JAR -H "$H" -X POST $BASE/connections/conn_abc/test
 - Guard (`assertAdminRemains`): after any change at least one active user must still hold an admin role (409 otherwise); a user
   cannot disable or delete themselves. Role and user names/emails are unique (409).
 - A password set by an admin removes all sessions of that user (unless it is the admin's own).
+- `audit`: `action` is an exact action name or a prefix ending in `.` (`auth.`); `user` a user id; `from` (inclusive) and
+  `to` (exclusive) a date (`2026-11-18`) or an ISO timestamp; `page` from 1; `pageSize` 1-200 (default 50). Bad values
+  give 422. Each item is `{ id, at, userId, userName?, userEmail?, action, tableId, rowId, details }` (details parsed
+  from JSON); `actions` lists every action name in the log, for a filter.
 - `security/preview` runs the real security engine for the chosen user and counts visible rows per table. `items` is the compact
   form (`tableId`, `visibleRows`, `hiddenColumns`, `readOnlyColumns`); `tables` is the detailed form (`table`, `name`, `displayName`,
   `create`, `read`, `update`, `delete`, `filtered`, `hiddenColumns`, `readOnlyColumns`, `rowCount`, `truncated`, `error?`).

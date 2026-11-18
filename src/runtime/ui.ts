@@ -8,10 +8,12 @@ const THEME_KEY = 'appbuilder-theme'
 export const MIN_ZOOM = 0.1
 export const MAX_ZOOM = 2
 
+/** the effective theme at start: the stored choice ('system' follows the operating system); see src/platform/preferences.ts */
 export function initialTheme(): 'light' | 'dark' {
   try {
     const t = localStorage.getItem(THEME_KEY)
     if (t === 'dark' || t === 'light') return t
+    if (t === 'system') return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   } catch {
     /* ignore */
   }

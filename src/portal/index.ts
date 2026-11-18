@@ -1,2 +1,3 @@
 export { Portal } from './Portal'
-export { AuthGate, UserMenu } from './Auth'
+export { AuthGate } from './Auth'
+export { ProfileAvatar } from './Profile'

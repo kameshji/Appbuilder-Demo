@@ -1,5 +1,6 @@
-/** Metadata API: apps, tables, columns, connections, roles, users, security preview, solutions, packages, files. */
+/** Metadata API: apps, tables, columns, connections, roles, users, security preview, solutions, packages, files, own profile, environments, audit log. */
 import type { RouteModule } from '../../core/contracts.ts'
+import { registerAdminRoutes } from './admin.ts'
 import { registerAppRoutes } from './apps.ts'
 import { registerConnectionRoutes } from './connections.ts'
 import { registerFileRoutes } from './files.ts'
@@ -14,6 +15,7 @@ export const metaRoutes: RouteModule = (router, services) => {
   registerSecurityRoutes(router, services)
   registerSolutionRoutes(router, services)
   registerFileRoutes(router, services)
+  registerAdminRoutes(router, services)
 }
 
 export { migrateLegacyWorkspace } from './migrate.ts'

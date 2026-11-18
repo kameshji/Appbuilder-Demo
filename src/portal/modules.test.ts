@@ -14,8 +14,15 @@ describe('module registry', () => {
     }
   })
   it('lists the planned Dev and User mode modules', () => {
-    expect(modulesFor('dev').map((m) => m.key)).toEqual(['datamodel', 'flows', 'approvals', 'dashboards', 'agents', 'sites', 'environments', 'admin', 'templates'])
+    expect(modulesFor('dev').map((m) => m.key)).toEqual(['datamodel', 'flows', 'approvals', 'dashboards', 'agents', 'sites', 'admin', 'templates'])
     expect(modulesFor('user').map((m) => m.key)).toEqual(['approvals', 'dashboards', 'tasks', 'notes', 'chat', 'files', 'documents', 'mail'])
+  })
+  it('the Admin console is live; its planned parts have no menu entry of their own', () => {
+    expect(moduleRoute(moduleByKey('admin')!)).toEqual({ page: 'admin' })
+    expect(moduleByKey('environments')).toBeUndefined()
+    for (const k of ['backups', 'logs', 'usage']) {
+      expect(moduleByKey(k), k).toMatchObject({ status: 'soon', phase: 'P0', inMenu: false })
+    }
   })
   it('planned modules route to their placeholder; live ones to their route', () => {
     expect(moduleRoute(moduleByKey('flows')!)).toEqual({ page: 'soon', id: 'flows' })

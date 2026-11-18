@@ -1,17 +1,15 @@
 /**
- * Server-mode startup gates (setup wizard, login), the user menu and the change-password dialog.
- * Exported for reuse: AuthGate, UserMenu (see index.ts).
+ * Server-mode startup gates (setup wizard, login) and the change-password dialog.
+ * The account menu is the avatar menu in Profile.tsx. Exported for reuse: AuthGate (see index.ts), ChangePasswordDialog.
  */
 import { useState, type FormEvent, type ReactNode } from 'react'
-import { ArrowRight, Check, ChevronDown, CircleAlert, Database, KeyRound, LogOut, Moon, ShieldCheck, Shapes, Sun, UserRound } from 'lucide-react'
+import { ArrowRight, Check, CircleAlert, Database, KeyRound, LogOut, Moon, ShieldCheck, Shapes, Sun } from 'lucide-react'
 import { PlatformError, platform, usePlatform } from '@/platform'
 import { CODE_MESSAGES } from '@/platform/errorMessages'
-import { go } from '@/router'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { Field, ToastProvider, errMsg, useToast } from './kit'
@@ -376,84 +374,3 @@ export function ChangePasswordDialog({ open, onOpenChange, forced = false }: { o
     </Dialog>
   )
 }
-
-/* ------------------------------------------------------------------ user menu */
-
-const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join('') || '?'
-
-/** Account menu: who is signed in, change password, sign out. The run-as switcher appears in demo mode only. */
-export function UserMenu({ showTheme = false }: { showTheme?: boolean }) {
-  const mode = usePlatform((s) => s.mode)
-  const session = usePlatform((s) => s.session)
-  const users = usePlatform((s) => s.users)
-  const roles = usePlatform((s) => s.roles)
-  const currentUserId = usePlatform((s) => s.currentUserId)
-  const { fail, toast } = useToast()
-  const { theme, toggle } = useTheme()
-  const [pw, setPw] = useState(false)
-  const demo = mode !== 'server'
-  const user = demo ? users.find((u) => u.id === currentUserId) : session?.user
-  const roleNames = user ? roles.filter((r) => user.roleIds.includes(r.id)).map((r) => r.name) : []
-
-  const signOut = async () => {
-    try {
-      await platform.auth.logout()
-    } catch (e) {
-      fail(e)
-    }
-  }
-
-  return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="xs" className="h-7 gap-1.5" data-testid={demo ? 'user-switcher' : 'user-menu'} aria-label={demo ? 'Run as user' : 'Account menu'}>
-            <span className="grid size-4 place-items-center rounded-full bg-primary text-[9px] font-semibold text-primary-foreground" aria-hidden>{user ? initials(user.name) : <UserRound className="size-3" />}</span>
-            <span className="max-w-32 truncate">{user?.name ?? 'No user'}</span>
-            <ChevronDown className="opacity-60" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-64">
-          {demo ? (
-            <>
-              <DropdownMenuLabel>Run as user</DropdownMenuLabel>
-              {users.map((u) => (
-                <DropdownMenuItem
-                  key={u.id}
-                  data-testid={`run-as-${u.id}`}
-                  onSelect={() => {
-                    try { platform.security.setCurrentUser(u.id) } catch (e) { fail(e) }
-                  }}
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm">{u.name}</div>
-                    <div className="truncate text-xs text-muted-foreground">{u.email}</div>
-                  </div>
-                  {u.id === currentUserId && <Check className="text-primary" />}
-                </DropdownMenuItem>
-              ))}
-              {users.length === 0 && <div className="px-2 py-3 text-xs text-muted-foreground">No users. Add one under Security roles.</div>}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => go({ page: 'roles' })}>Manage users...</DropdownMenuItem>
-              <div className="px-2 pb-1.5 pt-1 text-[11px] leading-snug text-muted-foreground">Demo mode simulates security in this browser. Sign-in needs the local server.</div>
-            </>
-          ) : (
-            <>
-              <div className="px-2 py-2">
-                <div className="truncate text-sm font-medium">{user?.name}</div>
-                <div className="truncate text-xs text-muted-foreground">{user?.email}</div>
-                {roleNames.length > 0 && <div className="mt-1 truncate text-xs text-muted-foreground">{roleNames.join(', ')}</div>}
-              </div>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => setPw(true)} data-testid="menu-change-password"><KeyRound /> Change password</DropdownMenuItem>
-              {showTheme && <DropdownMenuItem onSelect={toggle}>{theme === 'dark' ? <Sun /> : <Moon />} {theme === 'dark' ? 'Light theme' : 'Dark theme'}</DropdownMenuItem>}
-              <DropdownMenuItem onSelect={() => { void signOut().then(() => toast('Signed out', 'info')) }} data-testid="menu-sign-out"><LogOut /> Sign out</DropdownMenuItem>
-            </>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-      {!demo && <ChangePasswordDialog open={pw} onOpenChange={setPw} />}
-    </>
-  )
-}
-

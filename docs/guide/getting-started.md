@@ -65,8 +65,29 @@ Appbuilder has two modes, switched in the top bar. **Dev mode** is where you bui
 Studio. **User mode** is where people use apps: a **My apps** launcher with search and recently opened apps, and every
 app you open becomes a tab under the top bar, like a browser tab (see [Apps](maker/apps.md#user-mode-and-app-tabs)).
 Makers and administrators get the switch and return to the mode they used last; everyone else sees only User mode.
-The chat button in the top bar opens a chat panel on the right (chat itself is coming soon). Menu entries with a
-**Soon** badge are planned modules; they open a short page about what they will do and in which phase.
+The chat button in the top bar opens a chat panel (chat itself is coming soon). Menu entries with a **Soon** badge are
+planned modules; they open a short page about what they will do and in which phase.
+
+The right end of the top bar, in this order:
+
+- **Chat**: opens and closes the chat panel.
+- **Environment**: shows the environment you work in, for example *Default · Production*. Today every installation has
+  one, the built-in *Default*; separate Dev, Test and Prod environments are planned (P0). Administrators find
+  **Manage environments** at the bottom of this menu.
+- **Your avatar** (the circle with your initials, last): hover for your name and email; click for **Profile settings**,
+  **Settings**, **Change password** and **Sign out**. In demo mode this menu lists the people you can switch to instead.
+
+![Avatar menu](../images/shell-avatar-menu.png)
+![Environment picker](../images/shell-environment-picker.png)
+
+**Settings** is at the bottom of the left menu (your name and a gear), in both modes; the avatar menu opens it too,
+also from the Studio. It fills the window, has its own list of sections (Profile, Appearance, Language and region,
+Notifications, Chat, Studio for makers, Data and privacy, Administration for administrators, About) and the **Back** or
+**x** button (or Esc) returns you to where you were. Your choices (theme, chat side, Studio defaults and so on) are kept
+in this browser, per person. Settings that are not built yet are shown greyed out with a **Soon** badge and a line on
+when they arrive.
+
+![Settings](../images/settings-appearance.png)
 
 In Dev mode the left menu has:
 
@@ -77,10 +98,14 @@ In Dev mode the left menu has:
 - **Connections**: where data lives, such as MySQL or Google Sheets (Maker role).
 - **Solutions**: bundles you move between machines (Maker role).
 - **Security roles**: who can see and change what (Administrator only).
+- **Admin console**: environments, users, licences and the audit log (Administrator only). Backups, server logs and
+  usage are planned (P0).
 
 If a page says "Not available for your role", ask an administrator to give you the Maker role.
 
 ![User mode with two app tabs](../images/user-mode-tabs.png)
+
+![Admin console, Users](../images/admin-users.png)
 
 ![Home](../images/portal-home.png)
 ![Apps](../images/portal-apps.png)

@@ -17,10 +17,11 @@ import type {
 } from './contracts'
 import { API_BASE, CSRF_HEADER, DEFAULT_ROW_CAP } from './http'
 import type {
-  ApiError, AppGetResponse, AttachmentResolveResponse, QueryResponse, QueryValue, RowResponse, SourceTableInfo, StatusResponse,
+  ApiError, AppGetResponse, AttachmentResolveResponse, EnvironmentsResponse, QueryResponse, QueryValue, RowResponse, SourceTableInfo, StatusResponse,
   WorkspaceResponse,
 } from './http'
 import { rowsToCsv } from './csv'
+import { pickEnvironment, readSelectedEnvironment, selectEnvironment } from './environments'
 import { coerceValue, defaultValue, formatDate, isBlankValue, uniqueKey, uuid } from './values'
 
 export interface RemotePlatformOptions {
@@ -146,7 +147,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     ready: false, mode: 'server', setup: { needsDatabase: false, needsAdmin: false }, session: null,
     storage: { kind: 'mysql', location: '' },
     apps: [], tables: [], roles: [], users: [], currentUserId: '', connections: [], solutions: [], dataFiles: [],
-    dataVersion: 0, loading: [], truncated: [],
+    dataVersion: 0, loading: [], truncated: [], environments: [], environmentId: '',
   }
   const listeners = new Set<() => void>()
   const errorListeners = new Set<(e: DataErrorEvent) => void>()
@@ -411,7 +412,9 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     }
     entries = next
     const names = new Set(ws.tables.map((t) => t.name))
+    const environments = ws.environments ?? []
     setState({
+      environments, environmentId: pickEnvironment(environments, readSelectedEnvironment(ws.session.user.id))?.id ?? '',
       session: ws.session, currentUserId: ws.session.user.id, apps: sortApps(ws.apps), tables: sortTables(ws.tables), roles: ws.roles,
       users: ws.users, connections: ws.connections, solutions: ws.solutions, dataFiles: ws.dataFiles ?? [], storage: ws.storage,
       setup: { needsDatabase: false, needsAdmin: false },
@@ -425,7 +428,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     entries = new Map()
     setState({
       session, currentUserId: session.user.id, apps: [], tables: [], roles: [], users: [], connections: [], solutions: [], dataFiles: [],
-      setup: { needsDatabase: false, needsAdmin: false }, loading: [], truncated: [],
+      setup: { needsDatabase: false, needsAdmin: false }, loading: [], truncated: [], environments: [], environmentId: '',
     }, true)
   }
 
@@ -448,7 +451,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     entries = new Map()
     setState({
       session: null, apps: [], tables: [], roles: [], users: [], connections: [], solutions: [], dataFiles: [], currentUserId: '',
-      loading: [], truncated: [],
+      loading: [], truncated: [], environments: [], environmentId: '',
     }, true)
   }
 
@@ -822,6 +825,11 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       // a forced change is done: now the workspace may load
       if (state.session?.user.mustChangePassword) await loadWorkspace(true)
     },
+    async updateProfile(input) {
+      const user = await call<UserDef>('PATCH', '/auth/profile', { json: { name: input.name } })
+      await refresh()
+      return user
+    },
     async setupDatabase(input) {
       await call('POST', '/setup/database', { json: input })
       await refreshStatus()
@@ -949,6 +957,21 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     },
   }
 
+  const environmentsApi: PlatformApi['environments'] = {
+    async list() {
+      const res = await call<EnvironmentsResponse>('GET', '/environments')
+      const id = pickEnvironment(res.items, state.environmentId || readSelectedEnvironment(state.currentUserId))?.id ?? ''
+      setState({ environments: res.items, environmentId: id })
+      return res.items
+    },
+    current: () => state.environments.find((e) => e.id === state.environmentId) ?? null,
+    async select(id) {
+      const env = selectEnvironment(state.environments, id, state.currentUserId)
+      setState({ environmentId: env.id })
+      return env
+    },
+  }
+
   const connectionsApi: PlatformApi['connections'] = {
     async create(input) {
       const conn = await call<ConnectionRef>('POST', '/connections', { json: input })
@@ -1030,5 +1053,6 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     security: securityApi,
     connections: connectionsApi,
     solutions: solutionsApi,
+    environments: environmentsApi,
   }
 }

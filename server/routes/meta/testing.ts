@@ -11,7 +11,7 @@ import type { AppDef } from '../../../src/contracts.ts'
 import type { Condition, Query } from '../../../src/platform/http.ts'
 import { HttpError } from '../../core/contracts.ts'
 import type {
-  AttachmentRecord, Connector, ConnectionRecord, ConnectorEnv, ConnectorFactory, Ctx, Handler, MetaStore, RawRow, RouteOptions, Router, Services,
+  AttachmentRecord, AuditFilter, AuditRecord, Connector, ConnectionRecord, ConnectorEnv, ConnectorFactory, Ctx, Handler, MetaStore, RawRow, RouteOptions, Router, Services,
   SourceColumn, SqlDb, UserRecord,
 } from '../../core/contracts.ts'
 import { applyQuery, evaluateCondition } from '../../core/condition.ts'
@@ -122,7 +122,26 @@ export class FakeMetaStore implements MetaStore {
     this.counters.set(key, n)
     return n
   }
-  async audit(e: { userId: string | null; action: string; tableId?: string; rowId?: string; details?: unknown }) { this.auditLog.push(e) }
+  /** when each auditLog entry was written (parallel array; the entries keep the shape the routes wrote) */
+  auditAt: string[] = []
+  async audit(e: { userId: string | null; action: string; tableId?: string; rowId?: string; details?: unknown }) {
+    this.auditLog.push(e)
+    this.auditAt.push(new Date().toISOString())
+  }
+  async auditPage(f: AuditFilter): Promise<{ items: AuditRecord[]; total: number }> {
+    const all = this.auditLog.map((e, i): AuditRecord => ({
+      id: i + 1, at: this.auditAt[i], userId: e.userId, action: e.action, tableId: e.tableId ?? null, rowId: e.rowId ?? null,
+      details: e.details === undefined ? null : clone(e.details),
+    }))
+    const hit = all.filter((r) =>
+      (!f.action || (f.action.endsWith('.') ? r.action.startsWith(f.action) : r.action === f.action))
+      && (!f.userId || r.userId === f.userId)
+      && (!f.from || r.at >= new Date(f.from).toISOString())
+      && (!f.to || r.at < new Date(f.to).toISOString())).reverse()
+    return { total: hit.length, items: hit.slice(f.offset, f.offset + f.limit) }
+  }
+  async auditActions() { return [...new Set(this.auditLog.map((e) => e.action))].sort() }
+  async info() { return { createdOn: null } }
 }
 
 /* ------------------------------------------------------------------ in-memory connector ("mysql" stand-in) */

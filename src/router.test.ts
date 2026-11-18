@@ -12,6 +12,10 @@ describe('router', () => {
       ['#studio-app_1', { page: 'studio', id: 'app_1' }],
       ['#apps', { page: 'apps' }],
       ['#datafiles', { page: 'datafiles' }],
+      ['#settings', { page: 'settings' }],
+      ['#settings-appearance', { page: 'settings', id: 'appearance' }],
+      ['#admin', { page: 'admin' }],
+      ['#admin-audit', { page: 'admin', id: 'audit' }],
     ]
     for (const [hash, route] of cases) {
       expect(parseRoute(hash)).toEqual(route)

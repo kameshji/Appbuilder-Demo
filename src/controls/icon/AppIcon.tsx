@@ -4,6 +4,7 @@ import UseAnimations, { type Interaction } from 'react-useanimations'
 import { cn } from '@/lib/utils'
 import { parseAnimatedName } from './catalog'
 import { useAnimation } from './loader'
+import { useReducedMotion } from '@/platform/preferences'
 
 type IconComp = ComponentType<{ className?: string; style?: CSSProperties; strokeWidth?: number }>
 
@@ -51,6 +52,9 @@ const BOX: CSSProperties = { display: 'inline-block', flexShrink: 0, lineHeight:
 
 function Animated({ id, ...p }: Omit<AppIconProps, 'name' | 'fallback'> & { id: string }) {
   const anim = useAnimation(id)
+  // Settings > Appearance > Reduce motion: never loop or autoplay; hover and click effects jump to their end state.
+  // (The library already does this by itself when the operating system asks for reduced motion.)
+  const still = useReducedMotion()
   const sized = p.size !== undefined || (p.style && p.style.width !== undefined) || !!p.className
   const dim = p.size !== undefined ? { width: p.size, height: p.size } : sized ? {} : { width: 24, height: 24 }
   const box: CSSProperties = { ...BOX, ...dim, ...p.style }
@@ -68,8 +72,9 @@ function Animated({ id, ...p }: Omit<AppIconProps, 'name' | 'fallback'> & { id: 
         fillColor={p.fillColor || undefined}
         interaction={p.interaction}
         active={p.active}
-        speed={p.speed}
-        autoplay={p.autoplay}
+        speed={still ? 50 : p.speed}
+        autoplay={still ? false : p.autoplay}
+        loop={still ? false : undefined}
         onClick={p.onClick}
         aria-label={p['aria-label']}
       />

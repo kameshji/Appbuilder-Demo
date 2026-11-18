@@ -1,8 +1,11 @@
 # Audit log
 
-Appbuilder records security-relevant and data-changing actions in the database table **`ab_audit`**. **There is no
-screen and no API to read it yet.** You read it with SQL, using a database client (the `mysql` command, MySQL Workbench,
-HeidiSQL and so on) and an account that can `SELECT` from the Appbuilder database.
+Appbuilder records security-relevant and data-changing actions in the database table **`ab_audit`**. Administrators read
+it in **Admin console > Audit log**: newest first, 50 entries per page, filtered by action (one action, or a whole group
+such as `auth.*`), by user and by date (shown in your browser's time zone). Click a details cell to see all of it. The
+same data comes from `GET /api/v1/audit` (administrators only; see `docs/dev/data-api.md`). Reading the log is not itself
+recorded. For anything the viewer cannot do (joins, counts, exports), use SQL with a database client (the `mysql`
+command, MySQL Workbench, HeidiSQL and so on) and an account that can `SELECT` from the Appbuilder database.
 
 ## The table
 
@@ -22,7 +25,7 @@ HeidiSQL and so on) and an account that can `SELECT` from the Appbuilder databas
 | --- | --- |
 | Sign-in | `auth.login` (details `mustChangePassword: true` when the user must change an admin-set password), `auth.login_failed` (details: the email entered), `auth.login_throttled` (email; `perEmail: true, waitSeconds` for the per-account brake), `auth.logout`, `auth.password_changed` (`forced: true` when it was a required change), `auth.password_failed` (wrong current password during a change) |
 | First-run and upgrades | `setup.database`, `setup.admin`, `setup.code_rejected` (a wrong or missing setup code), `schema.migrate` (details `{ from, to, steps }`, written when the schema step changed something) |
-| Users | `user.create` (details: id, email, name, roleIds, status, `passwordSet`), `user.update` (details include `changes`: before/after of name, email, status and roleIds), `user.disable` / `user.enable`, `user.roles` (before/after role ids), `user.delete` (with the roles and status the user had), `user.password` (an administrator set a password: `reset: true` and `mustChangePassword: true` when it was someone else's) |
+| Users | `user.profile` (a person changed their own display name: id, email, `changes.name` before/after), `user.create` (details: id, email, name, roleIds, status, `passwordSet`), `user.update` (details include `changes`: before/after of name, email, status and roleIds), `user.disable` / `user.enable`, `user.roles` (before/after role ids), `user.delete` (with the roles and status the user had), `user.password` (an administrator set a password: `reset: true` and `mustChangePassword: true` when it was someone else's) |
 | Roles | `role.create`, `role.update`, `role.delete`; each with `changes`: before/after of name, description, isAdmin, isMaker, apps, and per table `privileges.<tableId>` (the whole privilege before and after, `null` when there was none) |
 | Rows | `row.insert`, `row.update`, `row.delete` (several rows: details `{ count, deleted, ids }`, the ids of at most 1,000 rows, then `idsTruncated: true`; also for the rows a *replace* import deleted, with `import: true`) |
 | Tables and columns | `table.create`, `table.update`, `table.delete`, `table.import`, `table.link` (with `missingSystem` or `addedSystemColumns` when it applies), `table.move`, `table.assign_owner` (owner, rows), `column.add`, `column.update`, `column.remove` (`unmappedOnly: true` on linked tables) |

@@ -272,6 +272,34 @@ export interface MetaStore {
   /** next autonumber value for a column (transactional counter in ab_counters) */
   nextCounter(key: string): Promise<number>
   audit(entry: { userId: string | null; action: string; tableId?: string; rowId?: string; details?: unknown }): Promise<void>
+  /** admin audit viewer: newest first, filtered; total counts every matching entry */
+  auditPage(filter: AuditFilter): Promise<{ items: AuditRecord[]; total: number }>
+  /** distinct action names present in the audit table (for the viewer's filter), sorted */
+  auditActions(): Promise<string[]>
+  /** facts about this installation's system database: when the first user was created (= set up), null when unknown */
+  info(): Promise<{ createdOn: string | null }>
+}
+
+export interface AuditFilter {
+  /** exact action, or a prefix ending in "." (e.g. "auth.") */
+  action?: string
+  userId?: string
+  /** ISO timestamps, inclusive from, exclusive to */
+  from?: string
+  to?: string
+  /** 0-based offset and page size (callers cap it) */
+  offset: number
+  limit: number
+}
+export interface AuditRecord {
+  id: number
+  at: string
+  userId: string | null
+  action: string
+  tableId: string | null
+  rowId: string | null
+  /** parsed JSON details, null when none */
+  details: unknown
 }
 
 /* ------------------------------------------------------------------ security */
