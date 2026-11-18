@@ -45,7 +45,10 @@ export interface Query {
   select?: string[]
   where?: Condition
   orderBy?: { col: string; dir: 'asc' | 'desc' }[]
-  /** default and maximum: DEFAULT_ROW_CAP */
+  /**
+   * Absent or above DEFAULT_ROW_CAP (5000): at most 5000 rows come back, with `truncated: true` when more exist.
+   * 1..5000: exactly that many rows (at most), and `truncated` is false.
+   */
   top?: number
   skip?: number
   count?: boolean
@@ -66,7 +69,7 @@ export interface StatusResponse {
 }
 
 /** POST /api/v1/setup/database  (allowed while setup.needsAdmin is true, or for an admin) */
-export interface SetupDatabaseRequest { host: string; port: number; database: string; user: string; password: string; createDatabase?: boolean }
+export interface SetupDatabaseRequest { host: string; port: number; database: string; user: string; password: string; createDatabase?: boolean; ssl?: boolean | 'true' }
 /** POST /api/v1/setup/admin  (only while there are no users) -> sets the session cookie */
 export interface SetupAdminRequest { name: string; email: string; password: string }
 
@@ -124,7 +127,7 @@ export interface TableCreateRequest { displayName: string; name?: string; descri
  *   PATCH  /api/v1/data/:table/rows/:id           { changes } -> { row }
  *   POST   /api/v1/data/:table/delete             { ids } -> { deleted: number }
  *   POST   /api/v1/data/:table/import             { csv, mode: 'append'|'replace' } -> { imported: number }
- *   POST   /api/v1/data/:table/from-csv           (on /api/v1/tables/from-csv) { displayName, csv } -> TableDef
+ *   POST   /api/v1/tables/from-csv                { displayName, csv } -> TableDef
  */
 export interface QueryResponse { rows: Record<string, QueryValue>[]; total?: number; truncated: boolean }
 export interface InsertRequest { values: Record<string, QueryValue> }
@@ -147,7 +150,7 @@ export interface AttachmentResolveResponse { items: AttachmentRef[] }
  *   DELETE /api/v1/files/:id?dropTables=1           -> { ok: true }
  */
 
-/* connections (admins; makers may read)
+/* connections (admins manage them; makers may only test, list source tables and link; there is no GET /connections: they arrive in the workspace payload)
  *   POST   /api/v1/connections                       { name, connector, settings?, secret? } -> ConnectionRef
  *   PATCH  /api/v1/connections/:id                   { name?, settings?, secret?, status? } -> ConnectionRef
  *   DELETE /api/v1/connections/:id                   -> { ok: true }    (refused while tables use it, or for the default)
@@ -168,5 +171,5 @@ export interface SourceTableInfo { source: string; columns: { name: string; type
  *   POST/PATCH/DELETE /api/v1/solutions[/:id]
  *   POST   /api/v1/solutions/:id/components            { kind, id } ; DELETE /api/v1/solutions/:id/components/:kind/:cid
  *   GET    /api/v1/solutions/:id/package?data=1        -> { yaml }   (file components embed their file, base64)
- *   POST   /api/v1/solutions/import                    { yaml } -> SolutionDef
+ *   POST   /api/v1/solutions/import                    { yaml, filesAs?: 'database' | 'file' (default 'database') } -> SolutionDef
  */

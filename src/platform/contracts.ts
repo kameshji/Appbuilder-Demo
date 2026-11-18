@@ -1,5 +1,5 @@
 /**
- * PLATFORM CONTRACT. Workspace = everything the maker owns on this machine: apps, tables (CSV),
+ * PLATFORM CONTRACT. Workspace = everything the maker owns: apps, tables,
  * security roles, users, connection references, solutions. Implemented in src/platform,
  * consumed by src/portal (home/maker portal UI), src/studio + src/runtime, and a few controls.
  * Binding. Do not change without the architect.
@@ -9,10 +9,9 @@ import type { AppDef, FxRecord, FxValue } from '../contracts.ts'
 /* ------------------------------------------------------------------ storage */
 
 /**
- * Where the workspace lives. Paths are forward-slash, relative to the workspace root.
- *  - 'local-folder': the Node server in /server reads/writes real files in ./workspace
- *     (tables are real .csv files a human can open in Excel). Used with `npm run dev` / `npm start`.
- *  - 'browser': IndexedDB (fallback when the local server is not reachable, e.g. the hosted demo).
+ * Where the demo-mode workspace lives (server mode does not use this: the server owns all data). Paths are
+ * forward-slash, relative to the workspace root. In practice the demo uses the 'browser' adapter (IndexedDB);
+ * the 'local-folder' kind is only a label kept for tests and in-memory adapters.
  * Workspace layout:
  *   workspace.yaml                 users, roles, connections, solutions, current user
  *   apps/<appId>.app.yaml          AppMeta + AppDef
@@ -333,12 +332,14 @@ export interface PlatformApi {
     get(nameOrId: string): TableDef | undefined
 
     /**
-     * Synchronous reads from the in-memory cache (all tables are loaded at init).
+     * Synchronous reads from the in-memory cache (demo mode loads every table at init; server mode loads each
+     * table lazily on first use and returns [] until it has arrived).
      * `secure: true` (default) applies the current user's read scope; false = raw (portal admin grid).
+     * Server mode ignores `secure`: the server always enforces the user's privileges.
      */
     rows(tableName: string, opts?: { secure?: boolean }): Row[]
     /**
-     * Synchronous writes to the cache + async persist to CSV. Throw PlatformError('denied') when the
+     * Synchronous writes to the cache + async persist (demo: workspace storage; server: the API). Throw PlatformError('denied') when the
      * current user's role does not allow it (unless secure:false), PlatformError('invalid') on
      * required/unique/type violations. Values are coerced to the column types.
      */
@@ -443,7 +444,11 @@ export interface PlatformApi {
     /** YAML package with every component (apps, table schemas [+ rows], roles, connection refs) */
     exportPackage(id: string, opts?: { includeData?: boolean }): Promise<string>
     /** creates new instances of everything inside and a new solution; returns it */
-    importPackage(yamlText: string): Promise<SolutionDef>
+    /**
+     * `filesAs` (server mode only; demo mode has no data files): what file components become, 'database' tables
+     * (default) or 'file' data files.
+     */
+    importPackage(yamlText: string, opts?: { filesAs?: 'database' | 'file' }): Promise<SolutionDef>
   }
 }
 

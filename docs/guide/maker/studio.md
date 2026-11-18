@@ -55,7 +55,7 @@ The Insert pane has a search box and recent items. Click or drag to insert. Dial
 
 ## The formula bar
 
-The bar shows the leading `=` for you. Do not type one; it causes a syntax error. Autocomplete appears as you type. `Up`/`Down` and `Tab` or `Enter` accept; `Esc` closes. `Enter` finishes, `Shift+Enter` adds a new line. A call tip shows the function signature with the current argument in bold. A chip shows the result type and value, or the error message.
+The bar shows the leading `=` for you. Typing one is optional; a single leading `=` is ignored, so `=Filter(...)` and `Filter(...)` behave the same. Autocomplete appears as you type. `Up`/`Down` and `Tab` or `Enter` accept; `Esc` closes. `Enter` finishes, `Shift+Enter` adds a new line. A call tip shows the function signature with the current argument in bold. A chip shows the result type and value, or the error message.
 
 ## Viewports and anchors
 

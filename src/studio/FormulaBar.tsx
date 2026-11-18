@@ -33,6 +33,11 @@ function columnsOf(name: string, ev: Evaluator): Suggestion[] {
   return []
 }
 
+/** the bar already shows a leading "=", so one typed (or pasted) "=" after optional whitespace is dropped: "=Filter(...)" and "Filter(...)" are the same formula */
+export function stripLeadingEquals(text: string): string {
+  return text.replace(/^\s*=/, '')
+}
+
 /** innermost unclosed call before the caret: function name, first argument text, argument index */
 export function callContext(text: string): { fn: string; first: string; arg: number } | null {
   let depth = 0
@@ -236,7 +241,8 @@ function FormulaEditor({ node, prop, ev, multi }: { node: ControlNode; prop: str
     el.style.height = Math.min(el.scrollHeight, 6 * 18 + 8) + 'px'
   }, [draft, focused])
 
-  const commit = (text: string) => {
+  const commit = (raw: string) => {
+    const text = stripLeadingEquals(raw)
     setDraft(text)
     const f = '=' + text
     const d = fx.check(f)
@@ -318,8 +324,9 @@ function FormulaEditor({ node, prop, ev, multi }: { node: ControlNode; prop: str
             }
           }}
           onChange={(e) => {
-            commit(e.target.value)
-            refreshSuggestions(e.target.value, e.target.selectionStart)
+            const text = stripLeadingEquals(e.target.value)
+            commit(text)
+            refreshSuggestions(text, Math.max(0, e.target.selectionStart - (e.target.value.length - text.length)))
           }}
           onClick={(e) => refreshSuggestions(draft, e.currentTarget.selectionStart)}
           onKeyDown={(e) => {

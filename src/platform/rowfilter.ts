@@ -1,7 +1,8 @@
 /**
  * Row-level security helpers shared by the demo-mode simulation (core.ts) and the remote client's
  * mirrored privilege checks. Semantics follow server/core/condition.ts: text is case-insensitive,
- * blank = null / undefined / '', ordering on a blank cell is false, Dates compare by time.
+ * blank = null / undefined / '', ordering on a blank cell is false, Dates compare by time, values of different
+ * types after coercion are not comparable (eq false, ne true, ordering false).
  */
 import type { FxValue } from '@/contracts'
 import type { RowCondition } from './contracts'
@@ -30,6 +31,8 @@ function cmp(a: unknown, b: Prim | null | undefined): number | null {
   if (typeof x === 'string' && typeof y === 'number' && x.trim() !== '' && !Number.isNaN(Number(x))) x = Number(x)
   if (x === null || y === null) return null
   if (typeof x === 'boolean' || typeof y === 'boolean') return x === y ? 0 : x ? 1 : -1
+  // a number against non-numeric text is not comparable: eq false, ne true, ordering false (same as the server)
+  if (typeof x !== typeof y) return null
   if (x < y) return -1
   if (x > y) return 1
   return 0

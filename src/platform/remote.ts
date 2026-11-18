@@ -973,8 +973,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       const res = await call<{ yaml: string }>('GET', `/solutions/${enc(id)}/package`, { query: { data: opts?.includeData ? '1' : undefined } })
       return res.yaml
     },
-    async importPackage(yamlText) {
-      const sol = await call<SolutionDef>('POST', '/solutions/import', { json: { yaml: yamlText } })
+    async importPackage(yamlText, opts) {
+      const sol = await call<SolutionDef>('POST', '/solutions/import', { json: { yaml: yamlText, ...(opts?.filesAs ? { filesAs: opts.filesAs } : {}) } })
       await refresh()
       return state.solutions.find((s) => s.id === sol.id) ?? sol
     },

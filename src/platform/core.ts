@@ -326,14 +326,10 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       const g = grantFor(user, rt.def)
       tables[rt.def.id] = { create: g.create, read: g.read, update: g.update, delete: g.delete, columns: g.columns, filtered: g.filtered }
     }
-    const allTables = [...tablesRt.values()]
-    const fullEverywhere = allTables.length > 0 && allTables.every((rt) => {
-      const g = tables[rt.def.id]
-      return g.create && g.read === 'all' && g.update === 'all' && g.delete === 'all'
-    })
     const apps: EffectivePrivileges['apps'] = isAdmin || rs.some((r) => r.apps === 'all') ? 'all' : [...new Set(rs.flatMap((r) => (Array.isArray(r.apps) ? r.apps : [])))]
     const privileges: EffectivePrivileges = {
-      isAdmin, isMaker: isAdmin || rs.some((r) => r.isMaker === true || r.name.toLowerCase() === 'maker') || fullEverywhere, tables, apps,
+      // isMaker comes from the role flag only, like the server
+      isAdmin, isMaker: isAdmin || rs.some((r) => r.isMaker === true), tables, apps,
     }
     return { user, privileges, expiresOn: new Date(nowFn().getTime() + 365 * 86_400_000).toISOString() }
   }

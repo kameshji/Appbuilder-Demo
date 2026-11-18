@@ -16,7 +16,7 @@ const node = (type: string, name: string, props: Record<string, string>, childre
   children,
 })
 
-/** An app with one empty screen. */
+/** An app with one empty screen. Mirrors the server's blank app (server/routes/meta/packages.ts) and sampleApp's conventions. */
 export function blankApp(name: string, width: number, height: number): AppDef {
   return {
     formatVersion: 2,
@@ -26,8 +26,8 @@ export function blankApp(name: string, width: number, height: number): AppDef {
     scaleMode: 'responsive',
     theme: { mode: 'light' },
     dataSources: [],
-    appProps: {},
-    screens: [node('Screen', 'Screen1', {})],
+    appProps: { OnStart: '=false' },
+    screens: [node('Screen', 'Screen1', { Fill: '=Color.White' })],
   }
 }
 

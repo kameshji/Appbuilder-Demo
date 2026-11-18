@@ -25,7 +25,9 @@ function isHidden(key: string): boolean {
   return key.startsWith('__')
 }
 
-function resolveColumns(items: FxRecord[], spec: string): Col[] {
+/** `table`: the TableDef the items come from, when known; with an empty spec its system columns (ColumnDef.system) are left out */
+export function resolveColumns(items: FxRecord[], spec: string, table?: TableDef): Col[] {
+  const system = new Set((table?.columns ?? []).filter((c) => c.system).map((c) => c.name))
   let defs: { field: string; header: string }[]
   if (spec.trim()) {
     defs = spec
@@ -41,7 +43,7 @@ function resolveColumns(items: FxRecord[], spec: string): Col[] {
     const seen = new Set<string>()
     for (const r of items.slice(0, 50)) {
       for (const k of Object.keys(r)) {
-        if (isHidden(k) || seen.has(k)) continue
+        if (isHidden(k) || seen.has(k) || system.has(k)) continue
         if (k === 'id' && typeof r.__id === 'string' && r.__id === r.id) continue
         seen.add(k)
         keys.push(k)
@@ -129,7 +131,7 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
     const kept = colSpecRaw.split(',').map((s) => s.trim()).filter(Boolean).filter((s) => have.has((s.includes(':') ? s.slice(0, s.indexOf(':')) : s).trim().toLowerCase()))
     return kept.join(',')
   }, [colSpecRaw, items])
-  const cols = useMemo(() => resolveColumns(items, colSpec), [items, colSpec])
+  const cols = useMemo(() => resolveColumns(items, colSpec, sourceTable(items)), [items, colSpec])
   const striped = toBool(props.Striped, false)
   const dense = toBool(props.Dense, false)
   const sortable = toBool(props.Sortable, true)

@@ -5,7 +5,7 @@ import { platform } from '@/platform'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { AuthGate } from './Auth'
 import { Empty, ToastProvider, errMsg, useToast } from './kit'
-import { DATAFILES_HASH, SearchProvider, Shell, pageAllowed, type PortalRoute } from './Shell'
+import { SearchProvider, Shell, pageAllowed, type PortalRoute } from './Shell'
 import { Home } from './Home'
 import { Apps } from './Apps'
 import { Tables } from './Tables'
@@ -49,8 +49,7 @@ function DataErrorToasts() {
 
 /** The maker portal: auth gate + shell + the page for `route`. Expects platform.init() to have completed. */
 export function Portal({ route }: { route: Route }) {
-  // #datafiles is a portal-only page that the shared router does not know yet
-  const effective: PortalRoute = location.hash === DATAFILES_HASH ? { page: 'datafiles' } : route
+  const effective: PortalRoute = route
   return (
     <TooltipProvider delayDuration={300}>
       <AuthGate>

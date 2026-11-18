@@ -275,7 +275,7 @@ export function DataGrid({ table }: { table: TableDef }) {
 
       {truncated && (
         <div role="status" className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300" data-testid="truncated-warning">
-          <TriangleAlert className="size-3.5 shrink-0" /> Only the first {DEFAULT_ROW_CAP.toLocaleString()} rows are loaded. Filter or sort on the server, or split the table, to work with the rest.
+          <TriangleAlert className="size-3.5 shrink-0" /> Only the first {DEFAULT_ROW_CAP.toLocaleString()} rows are loaded; this table has more than that. Narrow the data at its source (for a linked table, use a view or a smaller source table) or split it into several tables.
         </div>
       )}
       {access.enforced && !access.isAdmin && (access.readOnlyTable || access.update === 'none' || access.readOnlyColumns.size > 0) && (

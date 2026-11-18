@@ -2,7 +2,7 @@
 
 Formulas are short expressions, like in a spreadsheet, that you type into the formula bar. This page is a tutorial. For every function and operator see the [formula reference](../../reference/formulas.md).
 
-Do not type a leading `=` in the formula bar; it is shown for you.
+The formula bar shows a leading `=` for you. Typing one yourself is optional: `=Filter(...)` and `Filter(...)` are the same formula.
 
 ## Data properties and action properties
 

@@ -118,6 +118,7 @@ function makeServer(opts: { signedIn?: boolean; session?: Session; rowCount?: nu
         return json(200, { deleted: ids.length })
       }
     }
+    if (p === '/solutions/import' && method === 'POST') return json(200, { id: 'sol_1', name: 'S', displayName: 'S', components: [], createdOn: '', modifiedOn: '' })
     if (p === '/attachments' && method === 'POST') return json(200, { id: 'att_1', fileName: url.searchParams.get('name'), mime: headers['Content-Type'], sizeBytes: 3, url: '/api/v1/attachments/att_1' })
     if (p === '/attachments/resolve') return json(200, { items: [{ id: 'att_1', fileName: 'a.png', mime: 'image/png', sizeBytes: 3, url: '/api/v1/attachments/att_1' }] })
     if (p === '/files' && method === 'POST') return json(200, { id: 'file_1', connectionId: 'conn_files', fileName: url.searchParams.get('name'), kind: 'csv', sizeBytes: 1, checksum: 'x', importedOn: '', tableIds: [], modifiedSinceImport: false })
@@ -461,6 +462,15 @@ describe('platform facade', () => {
       expect(f.tables.rows('x')).toEqual([{ tag: server ? 'server' : 'demo' }])
       expect(heard).toContain(true)
     }
+  })
+
+  it('solutions.importPackage sends filesAs only when asked for', async () => {
+    const { p, srv } = await boot()
+    await p.solutions.importPackage('kind: x')
+    await p.solutions.importPackage('kind: x', { filesAs: 'file' })
+    const posts = srv.log.filter((r) => r.path === '/api/v1/solutions/import').map((r) => r.body)
+    expect(posts[0]).toEqual({ yaml: 'kind: x' })
+    expect(posts[1]).toEqual({ yaml: 'kind: x', filesAs: 'file' })
   })
 
   it('probeServer: true only for an appbuilder status, false for html or errors', async () => {

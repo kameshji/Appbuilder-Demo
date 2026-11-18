@@ -183,8 +183,10 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
   const [text, setText] = useState('')
   const [fileName, setFileName] = useState('')
   const [busy, setBusy] = useState(false)
+  const [filesAs, setFilesAs] = useState<'database' | 'file'>('database')
+  const server = usePlatform((s) => s.mode) === 'server'
   const fileRef = useRef<HTMLInputElement>(null)
-  useEffect(() => { if (open) { setText(''); setFileName('') } }, [open])
+  useEffect(() => { if (open) { setText(''); setFileName(''); setFilesAs('database') } }, [open])
 
   const pick = async (f: File | undefined) => {
     if (!f) return
@@ -198,7 +200,7 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
   const run = async () => {
     setBusy(true)
     try {
-      const res = kind === 'app' ? await platform.apps.importPackage(text) : await platform.solutions.importPackage(text)
+      const res = kind === 'app' ? await platform.apps.importPackage(text) : await platform.solutions.importPackage(text, server ? { filesAs } : undefined)
       toast(`Imported ${kind} "${'displayName' in res ? res.displayName : res.name}"`, 'success')
       onOpenChange(false)
       onDone?.(res)
@@ -230,6 +232,14 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
             <Button type="button" variant="outline" size="sm" onClick={() => fileRef.current?.click()}><FileUp /> Choose file</Button>
             {fileName && <span className="truncate text-xs text-muted-foreground">{fileName}</span>}
           </div>
+          {kind === 'solution' && server && (
+            <Field label="Data files in the package" hint="Only applies to solutions that contain data files. Database tables are the default.">
+              <select value={filesAs} onChange={(e) => setFilesAs(e.target.value as 'database' | 'file')} data-testid="import-files-as" className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm">
+                <option value="database">Import as database tables</option>
+                <option value="file">Keep as data files</option>
+              </select>
+            </Field>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>

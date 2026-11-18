@@ -29,12 +29,21 @@ export async function fetchSecurityPreview(userId: string): Promise<TablePreview
     throw new PlatformError('unavailable', 'The server cannot be reached.')
   }
   if (!res.ok) throw await toError(res)
-  const body = (await res.json()) as unknown
-  const list = Array.isArray(body) ? body : (body as { tables?: unknown; items?: unknown })?.tables ?? (body as { items?: unknown })?.items
+  return normalizeSecurityPreview(await res.json())
+}
+
+/**
+ * The server answers with two lists: `items` ({ tableId, visibleRows, ... }, the compact shape) and `tables`
+ * ({ table, rowCount, ... }, the richer one; rowCount is null when counting failed). Accept either, in any
+ * entry-level mix, and map to TablePreview.
+ */
+export function normalizeSecurityPreview(body: unknown): TablePreview[] {
+  const b = body as { items?: unknown; tables?: unknown } | null
+  const list = Array.isArray(body) ? body : Array.isArray(b?.items) ? b.items : b?.tables
   if (!Array.isArray(list)) return []
-  return (list as Partial<TablePreview>[]).map((p) => ({
-    tableId: String(p.tableId ?? ''),
-    visibleRows: Number(p.visibleRows ?? 0),
+  return (list as Record<string, unknown>[]).map((p) => ({
+    tableId: String(p.tableId ?? p.table ?? ''),
+    visibleRows: Number(p.visibleRows ?? p.rowCount ?? 0),
     hiddenColumns: Array.isArray(p.hiddenColumns) ? p.hiddenColumns.map(String) : [],
     readOnlyColumns: Array.isArray(p.readOnlyColumns) ? p.readOnlyColumns.map(String) : [],
   }))

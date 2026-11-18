@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: ci-root-only-not-a-secret
+          MARIADB_DATABASE: appbuilder_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+    env:
+      # throwaway credentials for the service container above; it only lives for this job
+      CI_DB_USER: abci
+      CI_DB_PASSWORD: ci-user-only-not-a-secret
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18'   # package.json engines: >=22.18 (native TypeScript type stripping)
+          cache: npm
+
+      # The integration tests create a fresh database per run (appbuilder_test_s1_<hex>, appbuilder_test_s2_<hex>)
+      # and drop it afterwards, so the CI user needs all privileges on every database named appbuilder_test*.
+      - name: Create the CI database user
+        run: |
+          mysql --protocol=TCP -h127.0.0.1 -P3306 -uroot -p"ci-root-only-not-a-secret" <<SQL
+          CREATE USER '${CI_DB_USER}'@'%' IDENTIFIED BY '${CI_DB_PASSWORD}';
+          GRANT ALL PRIVILEGES ON \`appbuilder\_test%\`.* TO '${CI_DB_USER}'@'%';
+          FLUSH PRIVILEGES;
+          SQL
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - name: Tests (unit, docs staleness and MariaDB integration)
+        env:
+          APPBUILDER_TEST_DB: mysql://abci:ci-user-only-not-a-secret@127.0.0.1:3306/appbuilder_test
+        run: npm test
+
+      - run: npm run build
