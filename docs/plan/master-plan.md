@@ -168,3 +168,19 @@ TOTP, sessions) -> P1 Automation -> P2 Reach (phone, PDF, dashboards, auto apps)
 templates (chat, Tasks, Notes, manufacturing pack, CRM/ERP-lite templates, licence passes) = PILOT ->
 P3.5 Identity advanced (single sign-on in and out, passkeys, enforced MFA policies) -> P4 Agents ->
 P5 Documents, slides, sheets, mail client -> P6 Sites.
+
+## 10. Owner decisions, 18 Nov 2026 (later)
+
+- ERP templates carry their own ledgers and GST. Before building them: a verified GST calculation spec
+  (CGST/SGST/IGST by place of supply, HSN/SAC rates, rounding, reverse charge, credit notes, e-invoice and
+  e-way bill thresholds) checked against official sources and reviewed by a practising accountant.
+  Tally exchange is an optional connector, built when a customer asks.
+- "Appbuilder" is a working name only; a coined name is needed (trademark and domain check before use).
+- Agent layer: deferred; to be planned in a separate discussion. Odysseus dropped as a reference.
+- Phone and tablet app sizes are in (presets below).
+- Shell has two modes: Dev mode (build) and User mode (use). In User mode an app opens as a tab inside the
+  shell, like a browser tab, or in a separate window. Chat is a dock panel in the shell and the Studio and
+  can pop out into its own window. All planned modules appear in the menus as "coming soon".
+
+App size presets (logical pixels, scale to fit): Desktop 1920x1080, 2560x1440; Phone 360x800 (default),
+390x844, 412x915; Tablet 800x1280 portrait, 1280x800 landscape.
