@@ -20,6 +20,8 @@ for (const f of ALL) {
 
 bindBuiltinCheck((name) => BY_NAME.has(name))
 
+/** Is `name` a built-in function (never a user-defined one)? */
+export function isBuiltinFunction(name: string): boolean { return BY_NAME.has(name) }
 /** Built-in functions first, then user-defined ones. */
 export function lookupFunction(name: string): FnDef | undefined { return BY_NAME.get(name) ?? userFunction(name) }
 /** Case-insensitive match, for "Did you mean ...?" */

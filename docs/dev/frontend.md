@@ -186,10 +186,69 @@ laziness. Keep results deterministic (no `Now()` without injection).
 The formula language itself (lexer, parser, evaluator) is in `src/fx/{lexer,parser,ast,evaluate,values,errors}.ts`; named formulas in
 `named.ts`; `signature.ts` supports the signature help.
 
+## The application shell
+
+Routing (`/home/claude/appbuilder-demo/src/router.ts`, hash routes) decides the top level in `/home/claude/appbuilder-demo/src/App.tsx`:
+
+| Route | Rendered by | Notes |
+| --- | --- | --- |
+| `#run-<appId>` | `RunApp` (standalone) | the player in its own window; debug bar when the Studio of the app is open |
+| `#chat` | `src/chat/ChatWindow.tsx` | chat popped out into its own window |
+| everything else | `Portal` (`/home/claude/appbuilder-demo/src/portal/Portal.tsx`) | the shell: Dev mode, User mode, the Studio, the chat dock |
+
+`Portal` renders a `Frame`: the shell (`Shell.tsx`) plus, for `#studio-<appId>`, the Studio in front of it, and the chat dock
+(`ChatDock`) on the right of both. The shell is **not unmounted** while the Studio is open (it is hidden), so app tabs keep
+their state while you build.
+
+- **Modes.** `modeOfRoute` maps the route to a mode: `#u` and `#u-<appId>` are User mode; the maker pages (`home`, `apps`,
+  `tables`, `table-*`, `datafiles`, `roles`, `solutions`, `solution-*`, `connections`, `studio-*`) are Dev mode; `#soon-<key>` stays
+  in the current mode when the module is listed there. Makers and admins (`useCaps()`) get the mode switch; everyone else is
+  redirected to `#u` from Dev routes. The last mode is stored per user (`appbuilder-mode:<userId>`) and used when the address has
+  no hash. The switch returns to the last route of the other mode.
+- **User mode state** is in `/home/claude/appbuilder-demo/src/portal/workspace.ts` (`useWorkspace`): open tab ids in order and recently opened apps, per user
+  in `localStorage` (`appbuilder-tabs:<userId>`, `appbuilder-recent-apps:<userId>`), every access in try/catch. Helpers:
+  `openAppTab(id)` (adds the tab and routes to `#u-<id>`), `openAppWindow(id)` (the `#run-<id>` pop-up, false when blocked),
+  `closeAppTab`, `canRun(id)` (role app access through `platform.security.canRunApp`).
+- **Tabs** (`/home/claude/appbuilder-demo/src/portal/UserMode.tsx`): `TabStrip` (launcher tab first, middle-click closes), `AppTabPanes` (one
+  `<RunApp embedded>` per open tab, inactive ones `display: none`, never unmounted), `MyApps` (launcher), `RunChoice` (the Dev mode
+  Run menu). `useTabSync` opens the routed app's tab and drops tabs of deleted apps.
+- **Planned modules** come from ONE registry, `/home/claude/appbuilder-demo/src/portal/modules.ts` (`MODULES`): key, label, icon, modes, phase (from
+  `docs/plan/master-plan.md`), tagline and 2-3 detail lines, optional `need` (maker/admin) and `action: 'chat'`. The shell's
+  navigation renders the entries with a `SoonBadge`; `#soon-<key>` renders `ComingSoon` (`ComingSoon.tsx`) for the entry. To ship
+  a module, set `status: 'live'` and `route`: the menu entry then goes to the route and loses the badge. `modules.test.ts`
+  checks the registry.
+- **Chat dock** (`/home/claude/appbuilder-demo/src/chat/`): `dock.ts` holds the dock state (`useChatDock`: open, width, popped out; open and width in
+  `localStorage` `appbuilder-chat-dock`), `link.ts` the coordination with the pop-out window (BroadcastChannel `appbuilder-chat`,
+  falling back to `storage` events, plus a heartbeat key the pop-out refreshes every 3 s so a main window can tell whether it is
+  still open), `ChatDock.tsx` the panel and `ChatButton`, `ChatWindow.tsx` the `#chat` page. **`ChatPanel.tsx` is the only
+  component the chat module replaces**; today it renders the "coming soon" state. `startChatDockSync()` runs once in `Portal`.
+- **Design sizes**: presets and the size rule are in `/home/claude/appbuilder-demo/src/runtime/sizes.ts` (`SIZE_PRESETS`, `sizeError`, `deviceOf`),
+  the picker is `/home/claude/appbuilder-demo/src/portal/SizePicker.tsx` (New app, Start with data, App settings). `surfaceSize` in
+  `src/runtime/layout.ts` keeps a portrait design at its size (scaled to fit, centred) in a landscape area and fills a portrait
+  one. The Start with data generator (`addDataScreenContent` in `src/portal/actions.ts`) has a desktop, a portrait and a phone
+  (list screen + form screen) layout.
+- The theme of the shell, the Studio and the chat window is one value, `useUi().theme` (`src/portal/theme.ts` wraps it).
+
 ## The Studio state store
 
-The Studio and the player share one zustand store with immer, `useStore`, in `/home/claude/appbuilder-demo/src/runtime/store.ts`.
-It holds both the **definition being edited** and the **runtime state**.
+App state lives in zustand stores with immer, created by `createAppStore()` in `/home/claude/appbuilder-demo/src/runtime/store.ts`. Each store holds
+both the **definition** and the **runtime state** of one app.
+
+- **The shared store**, `appStore` with its hook `useStore`, is used by the Studio, its Preview and the standalone player
+  (`#run-<id>`). Studio code keeps using `useStore` / `useStore.getState()`.
+- **Every app tab has its own store**: `RunApp embedded` calls `createAppStore({ run: true })`, links it to the platform with
+  `linkStore(store, { scoped: true })` (data key, current user, its tables; refused writes are reported only for its own data
+  sources) and provides it through `AppStoreContext` (`/home/claude/appbuilder-demo/src/runtime/context.ts`). So two open apps never share variables,
+  collections, outputs, navigation, toasts or the debug log.
+- Runtime components (`ScreenView`, `RenderNode`, `RunSurface`, `Toasts`) read **the surrounding store** with `useAppStore(selector)`
+  and `useAppStoreApi()`; outside a provider that is the shared store. New runtime components must do the same: never import
+  `useStore` in code that can run inside an app tab.
+- Each store has its own evaluator cache (`evSlot`, an `EvaluatorSlot`), its own log and exit listeners (`subscribeLog`,
+  `subscribeExit`; `onLog`/`onExit` are the shared store's) and a `runSurface` flag (events fire although `mode` is `design`).
+- User-defined functions: the formula engine holds one active set. Every `Evaluator` re-registers its app's set right before it
+  evaluates (`useUdfs()`, a reference comparison when nothing changed), so apps with different (or same-named) functions can be
+  mounted together. `parseNamedFormulas` checks names against built-ins only.
+- `src/runtime/instances.test.ts` proves the isolation (two stores: variables, collections, navigation, UDFs, log listeners).
 
 - Definition and editor state (`StudioState`): `app` (the `AppDef`), `appId`, `loadState`, `saveState` (`saved|saving|unsaved|error`),
   `selection`, `currentScreenId`, `mode` (`design|preview`), `env` (actual size of the rendering surface), `history`
@@ -207,9 +266,11 @@ It holds both the **definition being edited** and the **runtime state**.
 - UI-only state (panes, zoom, pan, theme) is a separate store, `useUi` in `src/runtime/ui.ts`. Per-app UI prefs and the control
   clipboard use `localStorage` (`src/runtime/persist.ts`).
 - Read from components with a selector: `useStore((s) => s.selection)`. Do not select the whole store (re-renders on every change).
-- `window.__ab` (store, ui, evaluator, `sampleApp`) is exposed for browser checks and debugging.
+- `window.__ab` (store, ui, evaluator, `sampleApp`, and `tabs`: a map from app id to the store of each mounted app tab) is exposed
+  for browser checks and debugging.
 
-Formula evaluation reads the store through `evaluatorOf()` / `getEvaluator`; see `architecture.md` for scopes and dependency tracking.
+Formula evaluation reads a store through `evaluatorOf(state)` (the state's own `evSlot`); `getEvaluator` remains for callers
+without a store. See `architecture.md` for scopes and dependency tracking.
 
 ## Platform facade usage
 

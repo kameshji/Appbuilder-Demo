@@ -29,7 +29,6 @@ export function checkSize(width: unknown, height: unknown): void {
   if (typeof width !== 'number' || typeof height !== 'number' || !Number.isFinite(width) || !Number.isFinite(height) || width < 200 || height < 200 || width > 16000 || height > 16000) {
     throw invalid('Width and height must be numbers between 200 and 16000.')
   }
-  if (width < height) throw invalid('Apps are landscape only: width must be at least the height.')
 }
 
 export async function addApp(s: Services, actor: string, def: AppDef, name: string, description?: string): Promise<AppMeta> {

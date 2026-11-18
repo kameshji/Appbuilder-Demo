@@ -94,9 +94,10 @@ A PHP gateway for shared hosting (D12) replaces the whole Server box and keeps t
 | `src/controls/` | Control registry (`index.ts`), control components, `sets/` (Insert-pane order), `icon/` (lucide and animated icons). |
 | `src/components/ui/` | shadcn-style wrappers over Radix and other libraries. |
 | `src/platform/` | The platform facade (`index.ts`), `remote.ts` (server mode), `core.ts` (demo mode), `contracts.ts` (platform types), `http.ts` (Data API types, shared with the server), `rowfilter.ts`, `storage.ts`. |
-| `src/runtime/` | Zustand store (definition and runtime state), evaluator, Fx host, player (`RunApp`, `RenderNode`), autosave session. |
+| `src/runtime/` | App stores (`createAppStore`: definition and runtime state; the shared `useStore` plus one per app tab), store context, evaluator, Fx host, player (`RunApp`, `RenderNode`), design sizes, autosave session. |
 | `src/studio/` | The editor: canvas, formula bar, properties panel, left rail, command bar. |
-| `src/portal/` | The portal: home, apps, tables, data grid, roles, solutions, connections, data files, sign-in. |
+| `src/portal/` | The application shell (`Portal.tsx`, `Shell.tsx`: Dev mode and User mode, app tabs in `UserMode.tsx`, `workspace.ts`), the planned-module registry (`modules.ts`) and the maker pages: home, apps, tables, data grid, roles, solutions, connections, data files, sign-in. |
+| `src/chat/` | Chat dock, pop-out window and their coordination; `ChatPanel.tsx` is the boundary the chat module will fill. |
 | `src/router.ts`, `src/App.tsx`, `src/main.tsx` | Hash router, top-level composition, entry. |
 | `server/main.ts` | Process entry: creates the app, HTTP server, static files, graceful shutdown. |
 | `server/core/` | Router, auth, security engine, DataService, values, conditions, services wiring, meta store, connection manager, attachments. |
@@ -118,8 +119,10 @@ platform       -> contracts, fx values where needed. Never imports studio, porta
 controls       -> contracts, components/ui, platform types and a few calls (data table, Form, attachment controls), runtime attachment helpers
 components/ui  -> third-party UI libraries, lib/utils. Nothing from the app.
 runtime        -> fx, controls (registry), platform (through runtime/data.ts), contracts
-studio         -> runtime, controls, fx, platform, components/ui, portal (UserMenu only)
-portal         -> platform, components/ui, router. Not runtime or studio internals.
+studio         -> runtime, controls, fx, platform, components/ui, portal (UserMenu, SizePicker), chat (ChatButton)
+portal         -> platform, components/ui, router, chat, runtime public pieces (RunApp, sizes, sample/store for Start with data),
+                  studio (the shell mounts Studio). Not runtime or studio internals.
+chat           -> components/ui, lib, portal/theme. Nothing else (the chat module will add platform).
 server/**      -> server/** with relative `.ts` imports, plus `import type` from src/platform/{contracts,http}.ts and src/contracts.ts
 ```
 
@@ -154,7 +157,7 @@ mode it is a YAML file in browser storage; packages (`GET /apps/:id/package`) wr
 {
   "formatVersion": 2,                 // 1 = legacy 960x600 fixed size; migrated to 2 ("fit") on load by migrateApp()
   "name": "Help desk",
-  "width": 1920, "height": 1080,      // design size of every screen; landscape only
+  "width": 1920, "height": 1080,      // design size of every screen; landscape or portrait (phone 360x800, ...)
   "scaleMode": "responsive",          // or "fit": scale uniformly and letterbox
   "theme": { "mode": "light", "primary": "...", "radius": 8, "font": "..." },
   "dataSources": ["Tickets"],         // names of platform tables the app uses; their rows are loaded when the app opens

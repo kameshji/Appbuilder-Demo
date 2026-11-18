@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ScreenView } from './RenderNode'
-import { useStore } from './store'
+import { useAppStore, useAppStoreApi } from './context'
 import { surfaceSize } from './layout'
 
 /**
@@ -8,8 +8,9 @@ import { surfaceSize } from './layout'
  * design aspect) or fit (design size scaled). Publishes the actual size as App.Width / App.Height.
  */
 export function RunSurface({ testId = 'run-screen', padding = 0 }: { testId?: string; padding?: number }) {
-  const app = useStore((s) => s.app)
-  const navStack = useStore((s) => s.runtime.navStack)
+  const store = useAppStoreApi()
+  const app = useAppStore((s) => s.app)
+  const navStack = useAppStore((s) => s.runtime.navStack)
   const screenId = navStack[navStack.length - 1] ?? app.screens[0].id
   const screen = app.screens.find((s) => s.id === screenId) ?? app.screens[0]
   const areaRef = useRef<HTMLDivElement>(null)
@@ -20,6 +21,8 @@ export function RunSurface({ testId = 'run-screen', padding = 0 }: { testId?: st
     if (!el) return
     const update = () => {
       const r = el.getBoundingClientRect()
+      // a hidden surface (inactive app tab, display: none) measures 0 x 0: keep the last size so the screen stays mounted
+      if (r.width === 0 && r.height === 0) return
       setArea({ w: Math.max(0, r.width - padding * 2), h: Math.max(0, r.height - padding * 2) })
     }
     update()
@@ -30,8 +33,8 @@ export function RunSurface({ testId = 'run-screen', padding = 0 }: { testId?: st
 
   const size = surfaceSize(app, area)
   useEffect(() => {
-    if (area.w > 0) useStore.getState().setEnv(size.w, size.h)
-  }, [area.w, size.w, size.h])
+    if (area.w > 0) store.getState().setEnv(size.w, size.h)
+  }, [store, area.w, size.w, size.h])
 
   return (
     <div ref={areaRef} className="relative flex size-full items-center justify-center overflow-hidden">

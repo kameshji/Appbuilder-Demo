@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
 import { CATEGORIES } from './categories'
+import { ChatButton } from '@/chat/ChatDock'
 
 function SaveIndicator() {
   const s = useStore((st) => st.saveState)
@@ -44,7 +45,8 @@ export function CommandBar() {
   const theme = useUi((s) => s.theme)
 
   return (
-    <header className="relative z-30 flex h-11 shrink-0 items-center gap-2 border-b border-border bg-card px-3">
+    // a container: with the chat dock open the bar can be narrower than the window, so labels collapse on its own width
+    <header className="@container/cmd relative z-30 flex h-11 shrink-0 items-center gap-2 border-b border-border bg-card px-3">
       <Button variant="ghost" size="icon-sm" title="Back to apps" data-testid="studio-back" onClick={() => go({ page: 'apps' })}>
         <ArrowLeft />
       </Button>
@@ -52,7 +54,7 @@ export function CommandBar() {
         <div className="grid size-6 place-items-center rounded-md bg-primary text-primary-foreground">
           <Shapes className="size-3.5" />
         </div>
-        <span className="text-sm font-semibold tracking-tight">Appbuilder</span>
+        <span className="text-sm font-semibold tracking-tight @max-[1180px]/cmd:hidden">Appbuilder</span>
       </div>
       <span className="h-5 w-px bg-border" />
       <input
@@ -96,16 +98,17 @@ export function CommandBar() {
         </DropdownMenuContent>
       </DropdownMenu>
       <Button variant="ghost" size="xs" onClick={() => useStore.getState().addScreen()}>
-        <FilePlus2 /> New screen
+        <FilePlus2 /> <span className="@max-[1180px]/cmd:hidden">New screen</span>
       </Button>
 
       <div className="ml-auto flex items-center gap-1.5">
+        <ChatButton />
         <UserMenu />
         <Button variant="ghost" size="icon-sm" title="Toggle Studio theme" data-testid="theme-toggle" onClick={() => useUi.getState().toggleTheme()}>
           {theme === 'dark' ? <Sun /> : <Moon />}
         </Button>
         <Button variant="ghost" size="xs" data-testid="app-settings-button" onClick={() => useUi.setState({ settingsOpen: true })}>
-          <Settings /> Settings
+          <Settings /> <span className="@max-[1180px]/cmd:hidden">Settings</span>
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

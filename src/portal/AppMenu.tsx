@@ -1,25 +1,18 @@
 import { useState } from 'react'
-import { Boxes, Copy, EllipsisVertical, Pencil, Play, SquarePen, Trash2, Upload } from 'lucide-react'
+import { Boxes, Copy, EllipsisVertical, ExternalLink, PanelTop, Pencil, SquarePen, Trash2, Upload } from 'lucide-react'
 import { platform, type AppMeta } from '@/platform'
 import { go } from '@/router'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { ConfirmDialog, TextDialog, useToast } from './kit'
 import { AddToSolutionDialog, ExportDialog } from './dialogs'
-
-export function runApp(id: string) {
-  let w: Window | null = null
-  try {
-    w = window.open(`${location.pathname}#run-${id}`, `appbuilder-run-${id}`, 'popup,width=1600,height=900')
-  } catch {
-    w = null
-  }
-  if (!w) go({ page: 'run', id })
-}
+import { openAppTab } from './workspace'
+import { useOpenInWindow } from './UserMode'
 
 /** Row/card action menu for an app. Owns its dialogs. */
 export function AppMenu({ app, className }: { app: AppMeta; className?: string }) {
   const { fail, toast } = useToast()
+  const inWindow = useOpenInWindow()
   const [dlg, setDlg] = useState<'rename' | 'export' | 'solution' | 'delete' | null>(null)
   const close = (o: boolean) => { if (!o) setDlg(null) }
   return (
@@ -32,7 +25,8 @@ export function AppMenu({ app, className }: { app: AppMeta; className?: string }
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-52" onClick={(e) => e.stopPropagation()}>
           <DropdownMenuItem onSelect={() => go({ page: 'studio', id: app.id })}><SquarePen /> Edit</DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => runApp(app.id)}><Play /> Run</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => openAppTab(app.id)}><PanelTop /> Run in a tab</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => inWindow(app.id)}><ExternalLink /> Run in new window</DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => setDlg('rename')}><Pencil /> Rename</DropdownMenuItem>
           <DropdownMenuItem

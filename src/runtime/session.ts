@@ -1,21 +1,21 @@
 import type { AppDef } from '@/contracts'
 import { platform } from '@/platform'
-import { useStore } from './store'
+import { useStore, type AppStore } from './store'
 import { openChannel, type Channel } from './channel'
 import { errorMessage } from './data'
 
 /** load an app definition from the platform into the store */
-export async function loadAppDef(appId: string): Promise<AppDef | null> {
-  useStore.getState().setLoadState('loading')
+export async function loadAppDef(appId: string, store: AppStore = useStore): Promise<AppDef | null> {
+  store.getState().setLoadState('loading')
   try {
     const def = await platform.apps.load(appId)
     if (!def) {
-      useStore.getState().setLoadState('missing')
+      store.getState().setLoadState('missing')
       return null
     }
     return def
   } catch (e) {
-    useStore.getState().setLoadState('error', errorMessage(e))
+    store.getState().setLoadState('error', errorMessage(e))
     return null
   }
 }

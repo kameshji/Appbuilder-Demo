@@ -190,7 +190,7 @@ export function Studio({ appId }: { appId: string }) {
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div data-testid="studio-root" className="flex h-full min-w-[1100px] flex-col overflow-hidden bg-background text-foreground">
+      <div data-testid="studio-root" className="flex h-full min-w-[900px] flex-col overflow-hidden bg-background text-foreground">
         <CommandBar />
         <FormulaBar />
         <div className="flex min-h-0 flex-1">

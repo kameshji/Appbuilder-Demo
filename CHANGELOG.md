@@ -5,11 +5,19 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 ## [Unreleased]
 
 ### Added
+- Application shell with two modes, switched in the top bar: **Dev mode** (the maker portal and the Studio) and **User mode** (a "My apps" launcher with search and recently opened apps). People without the Maker or Administrator role see only User mode; makers return to the mode they used last (remembered per user in the browser). New routes: `#u`, `#u-<app id>`, `#soon-<key>`, `#chat`.
+- App tabs in User mode: apps open as tabs under the top bar (the launcher is the fixed first tab), several at once; each keeps its state while you switch tabs or modes; close with the x, middle-click or Delete; open tabs come back after a reload. Every tile and tab has **Open in new window**; in Dev mode **Run** offers "Open in a tab" and "Open in new window".
+- Chat dock: a chat button in the top bar and the Studio opens a resizable panel on the right (open state and width remembered) that can pop out into its own window and be brought back (BroadcastChannel, with a storage-event fallback). Chat itself is not built yet; the panel shows what it will do.
+- Planned modules as menu entries with a **Soon** badge and a placeholder page each (module, what it will do, planned phase): Data model, Flows, Approvals, Dashboards, Agents, Sites, Environments, Admin console and Templates in Dev mode; Tasks, Notes, Chat, Files, Documents / Slides / Sheets, Mail, Approvals and Dashboards in User mode. One registry, `src/portal/modules.ts`.
+- Phone and tablet app sizes: Desktop 1920x1080 and 2560x1440, Phone 360x800 (default), 390x844 and 412x915, Tablet 800x1280 and 1280x800, and a custom size that can now be portrait, in the New app dialog, Start with data and App settings. Start with data lays a phone app out as a list screen and a form screen. Portrait apps run at their design size, centred, in landscape windows and app tabs; the Studio viewport menu has the phone and tablet sizes.
 - Documentation index in `docs/README.md`, and a decision log in `docs/decisions.md` that explains why the main choices were made.
 - Third-party notices in `THIRD-PARTY-NOTICES.md`, listing every production package with its license, and `npm run notices` to regenerate it.
 - README links to the documentation, and run instructions that match the current start-up steps (MySQL and the first-run setup screen).
 
 ### Changed
+- Apps may be portrait: the server (`POST /api/v1/apps`, package import) and the demo platform no longer refuse a width smaller than the height (sizes stay 200 to 16000 px per side); the client asks for at least 320 px per side. Loading an app no longer swaps a portrait size into landscape.
+- Each app tab has its own runtime store (`createAppStore`), evaluator cache and user-defined functions; the Studio, Preview and the standalone player use the shared store as before.
+- The Studio and the portal need less width (900 px) so they fit next to the chat panel.
 - Build specifications moved to `docs/internal/specs`. They are kept for history and are no longer maintained.
 
 ### Security
@@ -23,6 +31,7 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 - The audit log records the row ids of bulk deletes, before/after of role and user changes, and schema migrations; failed audit writes are reported as errors.
 
 ### Fixed
+- A user-defined function in App.Formulas was reported as "already a built-in function" when another app that defines a function with the same name had been evaluated first in the same page.
 - The consent to add system columns when linking a table is now sent; MySQL tables get the missing columns (including `id`, filled with UUIDs). Without consent such tables link read-only and can be read (before, a table with `id` but without the other system columns failed on every query).
 - The Default database connection can no longer be edited in the portal (edits silently reverted at the next start).
 - Imported rows (CSV, new table from CSV, packages with data) belong to the importing user; administrators can give rows without owner an owner.

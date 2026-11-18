@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Bug, ChevronDown, ChevronUp, CircleAlert, Loader2, Lock, MonitorPlay, Power, RotateCcw, ScrollText, X } from 'lucide-react'
 import { platform, usePlatform } from '@/platform'
 import { go } from '@/router'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { Toasts } from '@/studio/Toasts'
-import { onLog, setRunSurface, useStore } from './store'
+import { appStore, createAppStore, linkStore, tabStores, type AppStore } from './store'
+import { AppStoreContext, useAppStore, useAppStoreApi } from './context'
 import { RunSurface } from './RunSurface'
 import { loadAppDef } from './session'
 import { openChannel, type Channel } from './channel'
@@ -15,19 +16,42 @@ import { errorMessage } from './data'
  * `#run-<id>`: the player. Without a Studio it runs the saved app. When the Studio of the same app
  * is open (BroadcastChannel), it hot-reloads every definition change while keeping runtime state,
  * shows a debug bar and sends Trace output and errors back.
+ *
+ * `embedded`: an app tab inside the User mode shell. The tab gets its own app store (createAppStore), so every
+ * open app keeps its own variables, collections, outputs and navigation; no debug channel, the shell's theme is
+ * left alone, and toasts stay inside the tab.
  */
-export function RunApp({ appId }: { appId: string }) {
-  const loadState = useStore((s) => s.loadState)
-  const loadError = useStore((s) => s.loadError)
-  const loadedId = useStore((s) => s.appId)
-  const exited = useStore((s) => s.runtime.exited)
+export function RunApp({ appId, embedded = false, onBack }: { appId: string; embedded?: boolean; onBack?: () => void }) {
+  const [store] = useState<AppStore>(() => (embedded ? createAppStore({ run: true }) : appStore))
+  useEffect(() => {
+    if (!embedded) return
+    const off = linkStore(store, { scoped: true })
+    tabStores.set(appId, store)
+    return () => {
+      off()
+      if (tabStores.get(appId) === store) tabStores.delete(appId)
+    }
+  }, [embedded, store, appId])
+  return (
+    <AppStoreContext.Provider value={store}>
+      <Player appId={appId} embedded={embedded} onBack={onBack ?? (() => go({ page: 'apps' }))} />
+    </AppStoreContext.Provider>
+  )
+}
+
+function Player({ appId, embedded, onBack }: { appId: string; embedded: boolean; onBack: () => void }) {
+  const store = useAppStoreApi()
+  const loadState = useAppStore((s) => s.loadState)
+  const loadError = useAppStore((s) => s.loadError)
+  const loadedId = useAppStore((s) => s.appId)
+  const exited = useAppStore((s) => s.runtime.exited)
   const [connected, setConnected] = useState(false)
   const [denied, setDenied] = useState(false)
   const channel = useRef<Channel | null>(null)
 
   useEffect(() => {
-    setRunSurface(true)
-    document.documentElement.classList.remove('dark')
+    store.getState().setRunSurface(true)
+    if (!embedded) document.documentElement.classList.remove('dark')
     let alive = true
     let allowed = true
     try {
@@ -39,22 +63,27 @@ export function RunApp({ appId }: { appId: string }) {
       setDenied(true)
       return
     }
-    void loadAppDef(appId).then((def) => {
+    void loadAppDef(appId, store).then((def) => {
       if (!alive || !def) return
-      const st = useStore.getState()
+      const st = store.getState()
       st.loadApp(appId, def, { runOnStart: false })
       st.restartRuntime()
       channel.current?.post({ t: 'hello' })
     })
+    if (embedded) {
+      return () => {
+        alive = false
+      }
+    }
     const ch = openChannel(appId, (msg) => {
       if (msg.t === 'def') {
         setConnected(true)
-        if (useStore.getState().appId === appId) useStore.getState().replaceDefinition(msg.app)
+        if (store.getState().appId === appId) store.getState().replaceDefinition(msg.app)
       } else if (msg.t === 'studio-closed') setConnected(false)
     })
     channel.current = ch
     ch.post({ t: 'hello' })
-    const offLog = onLog((entries) => ch.post({ t: 'log', entries }))
+    const offLog = store.getState().subscribeLog((entries) => ch.post({ t: 'log', entries }))
     const bye = () => ch.post({ t: 'run-closed' })
     window.addEventListener('beforeunload', bye)
     return () => {
@@ -63,9 +92,9 @@ export function RunApp({ appId }: { appId: string }) {
       bye()
       ch.close()
       window.removeEventListener('beforeunload', bye)
-      setRunSurface(false)
+      store.getState().setRunSurface(false)
     }
-  }, [appId])
+  }, [appId, store, embedded])
 
   if (denied) {
     return (
@@ -73,7 +102,7 @@ export function RunApp({ appId }: { appId: string }) {
         <Lock className="size-6 text-muted-foreground" />
         <p className="text-sm font-medium">You don't have access to this app</p>
         <p className="text-xs text-muted-foreground">Ask an admin to add the app to one of your security roles.</p>
-        <Button size="sm" variant="outline" onClick={() => go({ page: 'apps' })}>Back to apps</Button>
+        <Button size="sm" variant="outline" onClick={onBack}>Back to apps</Button>
       </Center>
     )
   }
@@ -82,7 +111,7 @@ export function RunApp({ appId }: { appId: string }) {
       <Center>
         <CircleAlert className="size-6 text-muted-foreground" />
         <p className="text-sm font-medium">App not found</p>
-        <Button size="sm" variant="outline" onClick={() => go({ page: 'apps' })}>Back to apps</Button>
+        <Button size="sm" variant="outline" onClick={onBack}>Back to apps</Button>
       </Center>
     )
   }
@@ -103,21 +132,25 @@ export function RunApp({ appId }: { appId: string }) {
     )
   }
   return (
-    <div data-testid="run-root" className="relative h-full w-full overflow-hidden bg-neutral-900/95">
+    <div
+      data-testid={embedded ? 'tab-run-root' : 'run-root'}
+      data-app-id={appId}
+      className={cn('relative h-full w-full overflow-hidden', embedded ? 'bg-muted/70 dark:bg-neutral-950/60' : 'bg-neutral-900/95')}
+    >
       {exited ? (
         <Center>
           <Power className="size-6 text-muted-foreground" />
           <p className="text-sm font-medium">The app has exited</p>
-          <Button size="sm" onClick={() => useStore.getState().restartRuntime()}>
+          <Button size="sm" onClick={() => store.getState().restartRuntime()}>
             <RotateCcw /> Start again
           </Button>
         </Center>
       ) : (
-        <RunSurface testId="run-screen" />
+        <RunSurface testId="run-screen" padding={embedded ? 12 : 0} />
       )}
       <DataLoading />
-      <Toasts />
-      {connected && <DebugBar />}
+      <Toasts contained={embedded} />
+      {connected && !embedded && <DebugBar />}
     </div>
   )
 }
@@ -125,7 +158,7 @@ export function RunApp({ appId }: { appId: string }) {
 /** small corner spinner while the app's tables load from the server */
 function DataLoading() {
   const loading = usePlatform((s) => s.loading)
-  const sources = useStore((s) => s.app.dataSources)
+  const sources = useAppStore((s) => s.app.dataSources)
   const mine = (loading ?? []).filter((t) => (sources ?? []).includes(t))
   if (mine.length === 0) return null
   return (
@@ -135,7 +168,7 @@ function DataLoading() {
   )
 }
 
-function Center({ children }: { children: React.ReactNode }) {
+function Center({ children }: { children: ReactNode }) {
   return <div className="flex h-full flex-col items-center justify-center gap-2 bg-background text-center text-foreground">{children}</div>
 }
 
@@ -147,13 +180,14 @@ const PRESETS: Array<[string, number, number]> = [
 ]
 
 function DebugBar() {
+  const store = useAppStoreApi()
   const [open, setOpen] = useState(true)
   const [panel, setPanel] = useState<'trace' | 'errors' | null>(null)
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight })
-  const app = useStore((s) => s.app)
-  const nav = useStore((s) => s.runtime.navStack)
-  const env = useStore((s) => s.env)
-  const log = useStore((s) => s.debugLog)
+  const app = useAppStore((s) => s.app)
+  const nav = useAppStore((s) => s.runtime.navStack)
+  const env = useAppStore((s) => s.env)
+  const log = useAppStore((s) => s.debugLog)
   const users = usePlatform((s) => s.users)
   const serverMode = usePlatform((s) => s.mode === 'server')
   const currentUserId = usePlatform((s) => s.currentUserId)
@@ -190,13 +224,13 @@ function DebugBar() {
       {open && (
         <div className="space-y-2 p-2.5 text-xs">
           <div className="flex items-center gap-1.5">
-            <Button size="xs" variant="outline" data-testid="hot-restart" onClick={() => useStore.getState().restartRuntime()}>
+            <Button size="xs" variant="outline" data-testid="hot-restart" onClick={() => store.getState().restartRuntime()}>
               <RotateCcw /> Hot restart
             </Button>
             <select
               data-testid="debug-screen"
               value={current}
-              onChange={(e) => useStore.getState().navigateTo(e.target.value)}
+              onChange={(e) => store.getState().navigateTo(e.target.value)}
               className="h-7 min-w-0 flex-1 rounded-md border border-input bg-background px-1.5 text-xs"
             >
               {app.screens.map((s) => (
@@ -213,7 +247,7 @@ function DebugBar() {
                 try {
                   platform.security.setCurrentUser(e.target.value)
                 } catch (err) {
-                  useStore.getState().notify(errorMessage(err), 'error')
+                  store.getState().notify(errorMessage(err), 'error')
                 }
               }}
               className="h-7 w-28 rounded-md border border-input bg-background px-1.5 text-xs"
@@ -247,7 +281,7 @@ function DebugBar() {
               <CircleAlert className={cn(errors.length && 'text-destructive')} /> Show errors ({errors.length})
             </Button>
             {log.length > 0 && (
-              <Button size="xs" variant="ghost" className="ml-auto" onClick={() => useStore.getState().clearLog()}>
+              <Button size="xs" variant="ghost" className="ml-auto" onClick={() => store.getState().clearLog()}>
                 <X /> Clear
               </Button>
             )}

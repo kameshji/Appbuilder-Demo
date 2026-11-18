@@ -103,18 +103,30 @@ export function themeOf(app: AppDef): { className: string; style: CSSProperties 
 
 export const MIN_W = 1024
 export const MIN_H = 576
+/** minimum responsive screen of a portrait (phone / tablet portrait) design */
+export const MIN_PW = 320
+export const MIN_PH = 480
 
 /**
  * Actual screen size and scale for a surface of `area` px.
- * responsive: the screen fills the area (min 1024x576); a portrait area keeps the design aspect (letterbox).
+ * responsive, landscape design: the screen fills the area (min 1024x576); a portrait area keeps the design aspect.
+ * responsive, portrait design (phone, tablet portrait): in a portrait area (a real phone) the screen fills it
+ *   (min 320x480); in a landscape area (a desktop window or app tab) the design size is kept and scaled to fit,
+ *   centred by the caller.
  * fit: design size scaled uniformly.
  */
 export function surfaceSize(app: AppDef, area: { w: number; h: number }): { w: number; h: number; scale: number } {
   const aw = Math.max(1, area.w)
   const ah = Math.max(1, area.h)
-  if (app.scaleMode === 'fit') {
+  const portraitDesign = app.height > app.width
+  if (app.scaleMode === 'fit' || (portraitDesign && aw >= ah)) {
     const scale = Math.min(aw / app.width, ah / app.height)
-    return { w: app.width, h: app.height, scale }
+    return { w: app.width, h: app.height, scale: app.scaleMode === 'fit' ? scale : Math.min(1, scale) }
+  }
+  if (portraitDesign) {
+    const w = Math.max(MIN_PW, aw)
+    const h = Math.max(MIN_PH, ah)
+    return { w: Math.round(w), h: Math.round(h), scale: Math.min(1, aw / w, ah / h) }
   }
   let w = Math.max(MIN_W, aw)
   let h = Math.max(MIN_H, ah)

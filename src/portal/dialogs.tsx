@@ -9,31 +9,25 @@ import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CodeDialog, Empty, Field, Segmented, slugName, useToast } from './kit'
-import { RESOLUTIONS, createAppWithData } from './actions'
+import { createAppWithData } from './actions'
+import { SizePicker } from './SizePicker'
+import { sizeError } from '@/runtime/sizes'
 
 /* ------------------------------------------------------------------ new app */
 
 export function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChange(o: boolean): void }) {
   const { fail, toast } = useToast()
   const [name, setName] = useState('')
-  const [preset, setPreset] = useState<'fhd' | '2k' | 'custom'>('fhd')
-  const [cw, setCw] = useState('1920')
-  const [ch, setCh] = useState('1080')
+  const [size, setSize] = useState({ w: 1920, h: 1080 })
   const [scale, setScale] = useState<'responsive' | 'fit'>('responsive')
   const [busy, setBusy] = useState(false)
+  const [epoch, setEpoch] = useState(0)
   useEffect(() => {
-    if (open) { setName(''); setPreset('fhd'); setScale('responsive'); setCw('1920'); setCh('1080') }
+    if (open) { setName(''); setScale('responsive'); setSize({ w: 1920, h: 1080 }); setEpoch((e) => e + 1) }
   }, [open])
 
-  const dims = (): { w: number; h: number } => {
-    if (preset === 'custom') return { w: Math.round(Number(cw)), h: Math.round(Number(ch)) }
-    const p = RESOLUTIONS.find((r) => r.id === preset)!
-    return { w: p.w, h: p.h }
-  }
-  const { w, h } = dims()
-  const customError = preset === 'custom' && (!(w >= 640 && h >= 360 && w <= 7680 && h <= 4320) || w < h)
-    ? 'Apps are landscape: width must be at least the height (min 640 x 360).'
-    : ''
+  const { w, h } = size
+  const customError = sizeError(w, h) ?? ''
 
   const create = async () => {
     if (!name.trim() || customError) return
@@ -59,31 +53,14 @@ export function NewAppDialog({ open, onOpenChange }: { open: boolean; onOpenChan
       <DialogContent data-testid="new-app-dialog">
         <DialogHeader>
           <DialogTitle>New blank app</DialogTitle>
-          <DialogDescription>Apps are designed for the desktop in landscape and adapt to any window size.</DialogDescription>
+          <DialogDescription>Pick the device you design for. Desktop apps adapt to any window size; phone and tablet apps can be portrait.</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); void create() }}>
           <Field label="App name" htmlFor="new-app-name">
             <Input id="new-app-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Field inspections" data-testid="new-app-name" />
           </Field>
-          <Field label="Design resolution">
-            <Segmented
-              label="Design resolution"
-              value={preset}
-              onChange={setPreset}
-              options={[
-                { value: 'fhd', label: 'Full HD 1920 x 1080' },
-                { value: '2k', label: '2K 2560 x 1440' },
-                { value: 'custom', label: 'Custom' },
-              ]}
-            />
-            {preset === 'custom' && (
-              <div className="mt-1 flex items-center gap-2">
-                <Input aria-label="Width" type="number" className="h-8 w-24" value={cw} onChange={(e) => setCw(e.target.value)} />
-                <span className="text-muted-foreground">x</span>
-                <Input aria-label="Height" type="number" className="h-8 w-24" value={ch} onChange={(e) => setCh(e.target.value)} />
-                <span className="text-xs text-muted-foreground">px</span>
-              </div>
-            )}
+          <Field label="Design size">
+            <SizePicker key={epoch} value={size} onChange={setSize} testId="new-app-size" />
             {customError && <p className="text-xs text-destructive">{customError}</p>}
           </Field>
           <Field label="Scaling" hint={scale === 'responsive' ? 'Controls follow their anchors as the window changes size.' : 'The design is scaled uniformly and letterboxed.'}>
@@ -107,10 +84,14 @@ export function StartWithDataDialog({ open, onOpenChange }: { open: boolean; onO
   const [mode, setMode] = useState<'existing' | 'new'>('existing')
   const [tableId, setTableId] = useState('')
   const [newName, setNewName] = useState('')
+  const [size, setSize] = useState({ w: 1920, h: 1080 })
+  const [epoch, setEpoch] = useState(0)
   const [busy, setBusy] = useState(false)
   useEffect(() => {
     if (!open) return
     setNewName('')
+    setSize({ w: 1920, h: 1080 })
+    setEpoch((e) => e + 1)
     setMode(tables.length ? 'existing' : 'new')
     setTableId(tables[0]?.id ?? '')
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -125,7 +106,7 @@ export function StartWithDataDialog({ open, onOpenChange }: { open: boolean; onO
         table = await platform.tables.create({ displayName: newName.trim(), columns: [{ displayName: 'Name', type: 'text', name: 'Name' }] })
       }
       if (!table) return
-      const meta = await createAppWithData(table)
+      const meta = await createAppWithData(table, size)
       toast(`Created "${meta.name}" from ${table.displayName}`, 'success')
       onOpenChange(false)
       go({ page: 'studio', id: meta.id })
@@ -135,14 +116,15 @@ export function StartWithDataDialog({ open, onOpenChange }: { open: boolean; onO
       setBusy(false)
     }
   }
-  const ok = mode === 'existing' ? !!tableId : !!newName.trim()
+  const badSize = sizeError(size.w, size.h)
+  const ok = (mode === 'existing' ? !!tableId : !!newName.trim()) && !badSize
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent data-testid="start-with-data-dialog">
         <DialogHeader>
           <DialogTitle>Start with data</DialogTitle>
-          <DialogDescription>Creates an app with a data table and an edit form already connected to your table.</DialogDescription>
+          <DialogDescription>Creates an app with a list and an edit form already connected to your table. Phone apps get the list and the form on separate screens.</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); if (ok) void run() }}>
           <Segmented label="Table source" value={mode} onChange={setMode} options={[{ value: 'existing', label: 'Use an existing table' }, { value: 'new', label: 'Create a new table' }]} />
@@ -166,6 +148,10 @@ export function StartWithDataDialog({ open, onOpenChange }: { open: boolean; onO
               <Input autoFocus value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. Inspections" data-testid="start-new-table-name" />
             </Field>
           )}
+          <Field label="Design size">
+            <SizePicker key={epoch} value={size} onChange={setSize} testId="start-size" />
+            {badSize && <p className="text-xs text-destructive">{badSize}</p>}
+          </Field>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
             <Button type="submit" disabled={busy || !ok} data-testid="start-with-data-create">Create app</Button>

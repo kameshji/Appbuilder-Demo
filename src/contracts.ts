@@ -28,12 +28,16 @@ export interface ControlNode {
 export interface AppDef {
   formatVersion: 1 | 2
   name: string
-  /** design resolution of every screen, px. Landscape only (width >= height). Presets: 1920x1080 (Full HD), 2560x1440 (2K). */
+  /**
+   * design resolution of every screen, px. Landscape or portrait (200..16000 per side). Presets (src/runtime/sizes.ts):
+   * desktop 1920x1080, 2560x1440; phone 360x800, 390x844, 412x915; tablet 800x1280, 1280x800.
+   */
   width: number
   height: number
   /**
-   * 'responsive' (default): at run time the screen fills the window at any landscape aspect ratio;
-   *   controls follow their anchors / auto-layout; App.Width and App.Height are live.
+   * 'responsive' (default): at run time the screen fills the window at any landscape aspect ratio (a portrait
+   *   design fills a portrait window and is scaled to fit a landscape one); controls follow their anchors /
+   *   auto-layout; App.Width and App.Height are live.
    * 'fit': the design resolution is scaled uniformly and letterboxed.
    */
   scaleMode?: 'responsive' | 'fit'

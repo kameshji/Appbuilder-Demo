@@ -85,6 +85,9 @@ describe('parseNamedFormulas', () => {
   it('functions may not reuse a built-in name; enums may not be shadowed', () => {
     expect(fx.parseNamedFormulas('Sum(a: Number): Number = a;').errors[0]!.message).toBe('Sum is already a built-in function')
     expect(fx.parseNamedFormulas('Color = 1;').errors[0]!.message).toBe('Color is already a built-in list of values')
+    // a user function registered by another app is not a built-in: the same name may be defined again
+    fx.setUserFunctions([{ name: 'Twice', formula: '=x * 2', params: [{ name: 'x', type: 'Number' }] }])
+    expect(fx.parseNamedFormulas('Twice(x: Number): Number = x * 3;').errors).toEqual([])
   })
   it('parameter problems', () => {
     expect(fx.parseNamedFormulas('F(a, b: Number) = 1;').errors[0]!.message).toBe('a needs a type, like a: Number')

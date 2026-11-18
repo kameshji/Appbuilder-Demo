@@ -670,7 +670,8 @@ describe('apps', () => {
     expect(def.screens).toHaveLength(1)
     expect(def.screens[0].type).toBe('Screen')
     expect(def.scaleMode).toBe('responsive')
-    expect(await acode(() => p.apps.create({ name: 'Portrait', width: 1080, height: 1920 }))).toBe('invalid')
+    expect((await p.apps.create({ name: 'Portrait', width: 1080, height: 1920 })).height).toBe(1920) // portrait is allowed
+    expect(await acode(() => p.apps.create({ name: 'Huge', width: 20000, height: 1920 }))).toBe('invalid')
     expect(await acode(() => p.apps.create({ name: '', width: 1920, height: 1080 }))).toBe('invalid')
     const dup = await p.apps.create({ name: 'Blank', width: 2560, height: 1440 })
     expect(dup.name).toBe('Blank (2)')
@@ -679,7 +680,7 @@ describe('apps', () => {
     expect(sdef.screens.map((s) => s.name)).toEqual(['Home'])
     expect(sdef.dataSources).toEqual(['Contacts', 'Orders'])
     expect(sdef.width).toBe(1920)
-    expect(p.getState().apps).toHaveLength(4)
+    expect(p.getState().apps).toHaveLength(5)
   })
 
   it('the sample template recreates the Contacts table when it is gone', async () => {
@@ -793,6 +794,20 @@ describe('app packages', () => {
     expect(p.tables.rows('Contacts')).toHaveLength(8)
     expect(p.tables.rows('Contacts').map((r) => r.id)).toEqual(ids)
     expect(p.getState().roles.find((r) => r.name === 'Maker')!.privileges.some((x) => x.table === p.tables.get('Contacts')!.id)).toBe(true)
+  })
+
+  it('phone and tablet (portrait) sizes are accepted and round-trip through the YAML package', async () => {
+    const { p } = await boot()
+    for (const [w, h] of [[360, 800], [390, 844], [412, 915], [800, 1280], [1280, 800]]) {
+      const a = await p.apps.create({ name: `Size ${w}`, width: w, height: h })
+      expect(a).toMatchObject({ width: w, height: h })
+      const text = await p.apps.exportPackage(a.id)
+      expect((yaml.load(text) as { app: { definition: { width: number; height: number } } }).app.definition).toMatchObject({ width: w, height: h })
+      const imp = await p.apps.importPackage(text)
+      expect(imp).toMatchObject({ width: w, height: h })
+      expect(await p.apps.load(imp.id)).toMatchObject({ width: w, height: h })
+    }
+    expect(await acode(() => p.apps.create({ name: 'Too small', width: 100, height: 800 }))).toBe('invalid')
   })
 
   it('rejects bad packages with PlatformError invalid', async () => {

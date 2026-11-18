@@ -100,6 +100,14 @@ describe('layout', () => {
     expect(surfaceSize(a, { w: 1200, h: 1600 })).toMatchObject({ w: 1200, h: 675 })
     expect(surfaceSize({ ...a, scaleMode: 'fit' }, { w: 960, h: 540 })).toMatchObject({ w: 1920, h: 1080, scale: 0.5 })
   })
+  it('portrait (phone) designs: fill a portrait area, keep their size and scale to fit in a landscape one', () => {
+    const phone = blankApp('P', 360, 800)
+    expect(surfaceSize(phone, { w: 390, h: 844 })).toMatchObject({ w: 390, h: 844, scale: 1 })
+    expect(surfaceSize(phone, { w: 1400, h: 800 })).toMatchObject({ w: 360, h: 800, scale: 1 })
+    expect(surfaceSize(phone, { w: 1400, h: 400 })).toMatchObject({ w: 360, h: 800, scale: 0.5 })
+    expect(surfaceSize(phone, { w: 200, h: 300 })).toMatchObject({ w: 320, h: 480 })
+    expect(surfaceSize({ ...phone, scaleMode: 'fit' }, { w: 720, h: 1600 })).toMatchObject({ w: 360, h: 800, scale: 2 })
+  })
 })
 
 describe('apps', () => {

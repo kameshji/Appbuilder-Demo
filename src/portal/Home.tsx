@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { ArrowRight, Database, FileUp, LayoutGrid, LayoutTemplate, MonitorPlay, Plus } from 'lucide-react'
+import { ArrowRight, Database, FileUp, LayoutGrid, LayoutTemplate, Plus } from 'lucide-react'
 import { usePlatform, type AppMeta } from '@/platform'
 import { go } from '@/router'
 import { Button } from '@/components/ui/button'
 import { Empty, fmtRelative } from './kit'
-import { AppMenu, runApp } from './AppMenu'
+import { AppMenu } from './AppMenu'
+import { RunChoice } from './UserMode'
 import { ImportDialog, NewAppDialog, StartWithDataDialog } from './dialogs'
 import { matches, useSearch } from './Shell'
 
@@ -65,7 +66,7 @@ export function AppCard({ app }: { app: AppMeta }) {
       </div>
       <div className="flex gap-1.5 border-t border-border px-3 py-2">
         <Button size="xs" onClick={() => go({ page: 'studio', id: app.id })}>Edit</Button>
-        <Button size="xs" variant="outline" onClick={() => runApp(app.id)}><MonitorPlay /> Run</Button>
+        <RunChoice app={app} variant="outline" />
       </div>
     </div>
   )
@@ -92,7 +93,7 @@ export function Home() {
       </div>
 
       <section aria-label="Start building" className="grid grid-cols-3 gap-4">
-        <StartCard testId="new-app-button" icon={LayoutTemplate} accent="bg-primary/12 text-primary" title="Blank app" text="Design a desktop app from scratch on a Full HD or 2K canvas." onClick={() => setDlg('blank')} />
+        <StartCard testId="new-app-button" icon={LayoutTemplate} accent="bg-primary/12 text-primary" title="Blank app" text="Design an app from scratch for desktop, phone or tablet." onClick={() => setDlg('blank')} />
         <StartCard testId="start-with-data-button" icon={Database} accent="bg-emerald-500/12 text-emerald-600 dark:text-emerald-400" title="Start with data" text="Pick or create a table and get a ready-made list and edit form." onClick={() => setDlg('data')} />
         <StartCard testId="import-package-button" icon={FileUp} accent="bg-amber-500/12 text-amber-600 dark:text-amber-400" title="Import package" text="Bring in an app package from a file or pasted YAML." onClick={() => setDlg('import')} />
       </section>

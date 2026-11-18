@@ -2,16 +2,21 @@
  * Tiny hash router. Routes are plain ASCII names with hyphens (safe for sandboxed hosts):
  *   #home  #apps  #tables  #datafiles  #table-<tableId>  #roles  #solutions  #solution-<id>  #connections
  *   #studio-<appId>   the editor
- *   #run-<appId>      the running app (debug window / player)
+ *   #run-<appId>      the running app (debug window / player, standalone window)
+ *   #u                User mode: the app launcher ("My apps")
+ *   #u-<appId>        User mode with that app open as a tab
+ *   #soon-<key>       placeholder page of a planned module (src/portal/modules.ts), in the current mode
+ *   #chat             the chat panel in its own window (pop-out)
+ * Every other page is Dev mode (the maker portal).
  */
 import { useSyncExternalStore } from 'react'
 
 export type Route =
-  | { page: 'home' | 'apps' | 'tables' | 'roles' | 'solutions' | 'connections' | 'datafiles' }
-  | { page: 'table' | 'solution' | 'studio' | 'run'; id: string }
+  | { page: 'home' | 'apps' | 'tables' | 'roles' | 'solutions' | 'connections' | 'datafiles' | 'u' | 'chat' }
+  | { page: 'table' | 'solution' | 'studio' | 'run' | 'u' | 'soon'; id: string }
 
-const SIMPLE = ['home', 'apps', 'tables', 'roles', 'solutions', 'connections', 'datafiles'] as const
-const WITH_ID = ['table', 'solution', 'studio', 'run'] as const
+const SIMPLE = ['home', 'apps', 'tables', 'roles', 'solutions', 'connections', 'datafiles', 'u', 'chat'] as const
+const WITH_ID = ['table', 'solution', 'studio', 'run', 'u', 'soon'] as const
 
 export function parseRoute(hash: string): Route {
   const h = hash.replace(/^#/, '')

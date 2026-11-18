@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { LayoutGrid, List, MonitorPlay, Plus, Upload } from 'lucide-react'
+import { LayoutGrid, List, Plus, Upload } from 'lucide-react'
 import { usePlatform } from '@/platform'
 import { go } from '@/router'
 import { Button } from '@/components/ui/button'
 import { Empty, Panel, PageHeader, Segmented, fmtDate } from './kit'
-import { AppMenu, runApp } from './AppMenu'
+import { AppMenu } from './AppMenu'
+import { DeviceIcon, RunChoice } from './UserMode'
 import { AppCard } from './Home'
 import { ImportDialog, NewAppDialog } from './dialogs'
 import { matches, useSearch } from './Shell'
@@ -69,13 +70,13 @@ export function Apps() {
                     <button type="button" className="rounded font-medium outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/40" onClick={() => go({ page: 'studio', id: a.id })}>{a.name}</button>
                     {a.description && <div className="truncate text-xs text-muted-foreground">{a.description}</div>}
                   </td>
-                  <td className="px-4 py-2.5 text-muted-foreground">{a.width} x {a.height}</td>
+                  <td className="px-4 py-2.5 text-muted-foreground"><span className="inline-flex items-center gap-1.5"><DeviceIcon app={a} className="size-3.5" /> {a.width} x {a.height}</span></td>
                   <td className="px-4 py-2.5 text-muted-foreground">{fmtDate(a.modifiedOn)}</td>
                   <td className="px-4 py-2.5 text-muted-foreground">{who(a.modifiedBy)}</td>
                   <td className="px-4 py-1.5">
                     <div className="flex items-center justify-end gap-1">
                       <Button size="xs" variant="outline" onClick={() => go({ page: 'studio', id: a.id })}>Edit</Button>
-                      <Button size="xs" variant="ghost" onClick={() => runApp(a.id)}><MonitorPlay /> Run</Button>
+                      <RunChoice app={a} />
                       <AppMenu app={a} />
                     </div>
                   </td>

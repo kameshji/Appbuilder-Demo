@@ -1,10 +1,11 @@
-import { create } from 'zustand'
+import { useStore as useZustand, type UseBoundStore } from 'zustand'
+import { createStore } from 'zustand/vanilla'
 import { immer } from 'zustand/middleware/immer'
 import { current, original, setAutoFreeze } from 'immer'
 import type { AppDef, ControlNode, FxRecord, FxValue } from '@/contracts'
 import { fx } from '@/fx'
 import { controls } from '@/controls'
-import { getEvaluator, isContainerType, isOverlayType, metaMap, ROOT_CTX, type Env, type Evaluator, type NodeCtx } from './evaluator'
+import { EvaluatorSlot, isContainerType, isOverlayType, metaMap, ROOT_CTX, type Env, type Evaluator, type NodeCtx } from './evaluator'
 import { runFormula, type DeferredSubmit, type RunResult, type Toast, type ToastKind, type TraceEntry } from './host'
 import { SubmitError } from './submit'
 import { readClipboard, writeClipboard } from './persist'
@@ -56,6 +57,21 @@ export interface StudioState {
   /** bumps when the whole app is replaced (load / import) */
   epoch: number
   debugLog: TraceEntry[]
+  /**
+   * true in the player, the debug window and app tabs: events fire although the store has no 'preview' mode.
+   * Per store, so the Studio (design) and app tabs (run) can be mounted at the same time.
+   */
+  runSurface: boolean
+  /** this store's evaluator cache (never shared between stores) */
+  evSlot: EvaluatorSlot
+
+  /** trace / error output of this store (the run window forwards it to the Studio) */
+  subscribeLog(fn: (entries: TraceEntry[]) => void): () => void
+  /** Exit() was called in this store */
+  subscribeExit(fn: () => void): () => void
+  /** deliver entries to this store's log listeners (without adding them to debugLog) */
+  emitLog(entries: TraceEntry[]): void
+  setRunSurface(on: boolean): void
 
   select(ids: string[]): void
   setCurrentScreen(id: string): void
@@ -136,11 +152,7 @@ export function migrateApp(def: AppDef): AppDef {
   }
   if (!out.scaleMode) out.scaleMode = 'responsive'
   if (!Array.isArray(out.dataSources)) out.dataSources = []
-  if (!(out.width >= out.height)) {
-    const w = Math.max(out.width, out.height)
-    out.height = Math.min(out.width, out.height)
-    out.width = w
-  }
+  // portrait designs (phone, tablet portrait) are valid since 0.5: width and height are kept as stored
   return out
 }
 
@@ -168,22 +180,18 @@ function newTableRefs(app: AppDef, formula: string): string[] {
   return out
 }
 
-const logListeners = new Set<(entries: TraceEntry[]) => void>()
-/** the run window forwards trace / error output to the Studio */
-export function onLog(fn: (entries: TraceEntry[]) => void): () => void {
-  logListeners.add(fn)
-  return () => logListeners.delete(fn)
-}
-const exitListeners = new Set<() => void>()
-export function onExit(fn: () => void): () => void {
-  exitListeners.add(fn)
-  return () => exitListeners.delete(fn)
-}
-
 const initialApp = blankApp('App', 1920, 1080)
 
-export const useStore = create<StudioState>()(
-  immer((set, get) => {
+/**
+ * A new, independent app store: definition, editor state and runtime state (variables, collections, outputs,
+ * navigation, toasts) plus its own evaluator cache and log listeners. The Studio uses the shared instance
+ * (`useStore`); every app tab in User mode creates its own with `run: true`, so two open apps never share state.
+ */
+export function createAppStore(opts: { run?: boolean } = {}) {
+  return createStore<StudioState>()(immer((set, get) => {
+    const logListeners = new Set<(entries: TraceEntry[]) => void>()
+    const exitListeners = new Set<() => void>()
+
     /** apply an edit to `app`, recording one undo step (or coalescing into the previous one with the same key) */
     const mutate = (fn: (app: AppDef, s: StudioState) => void, key?: string) => {
       set((s) => {
@@ -211,7 +219,7 @@ export const useStore = create<StudioState>()(
 
     const ev = (): Evaluator => {
       const st = get()
-      return getEvaluator(st.app, st.runtime, st.env)
+      return st.evSlot.get(st.app, st.runtime, st.env)
     }
 
     const applyRun = (r: RunResult) => {
@@ -222,7 +230,7 @@ export const useStore = create<StudioState>()(
         rt.collections = r.collections
         rt.navStack = r.navStack
         rt.formModes = r.formModes
-        if (s.mode === 'preview' || !s.appId || surfaceIsRun) rt.currentScreenId = r.navStack[r.navStack.length - 1] ?? rt.currentScreenId
+        if (s.mode === 'preview' || !s.appId || s.runSurface) rt.currentScreenId = r.navStack[r.navStack.length - 1] ?? rt.currentScreenId
         if (r.resetIds.length) {
           const outs = { ...rt.outputs }
           const keys = { ...rt.resetKeys }
@@ -317,6 +325,27 @@ export const useStore = create<StudioState>()(
       pasteCount: 0,
       epoch: 0,
       debugLog: [],
+      runSurface: !!opts.run,
+      evSlot: new EvaluatorSlot(),
+
+      subscribeLog(fn) {
+        logListeners.add(fn)
+        return () => {
+          logListeners.delete(fn)
+        }
+      },
+      subscribeExit(fn) {
+        exitListeners.add(fn)
+        return () => {
+          exitListeners.delete(fn)
+        }
+      },
+      emitLog(entries) {
+        logListeners.forEach((fn) => fn(entries))
+      },
+      setRunSurface(on) {
+        if (get().runSurface !== on) set({ runSurface: on })
+      },
 
       select(ids) {
         set((s) => {
@@ -789,7 +818,7 @@ export const useStore = create<StudioState>()(
 
       fire(nodeId, event, ctx, opts) {
         const st = get()
-        if (st.mode === 'design' && !surfaceIsRun && !opts?.allowInDesign) return
+        if (st.mode === 'design' && !st.runSurface && !opts?.allowInDesign) return
         const e = ev()
         const info = e.byId.get(nodeId)
         if (!info) return
@@ -878,21 +907,39 @@ export const useStore = create<StudioState>()(
         })
       },
     }
-  }),
-)
-
-/** the evaluator for the current state */
-export function evaluatorOf(s: StudioState = useStore.getState()): Evaluator {
-  return getEvaluator(s.app, s.runtime, s.env)
+  }))
 }
 
-/** true in the player / debug window: events fire even though the store has no 'preview' mode */
-let surfaceIsRun = false
+export type AppStore = ReturnType<typeof createAppStore>
+
+/** the shared store: the Studio, its Preview and the standalone player (`#run-<id>`) */
+export const appStore: AppStore = createAppStore()
+
+/** hook over the shared store, with the store API attached (`useStore.getState()`, `.setState`, `.subscribe`) */
+export const useStore: UseBoundStore<AppStore> = Object.assign(
+  <U>(selector: (s: StudioState) => U): U => useZustand(appStore, selector),
+  appStore,
+) as UseBoundStore<AppStore>
+
+/** the evaluator for a store state (each store has its own cache) */
+export function evaluatorOf(s: StudioState = appStore.getState()): Evaluator {
+  return s.evSlot.get(s.app, s.runtime, s.env)
+}
+
+/** shared store: the player / debug window fires events although the store has no 'preview' mode */
 export function setRunSurface(on: boolean) {
-  surfaceIsRun = on
+  appStore.getState().setRunSurface(on)
 }
 export function isRunSurface() {
-  return surfaceIsRun
+  return appStore.getState().runSurface
+}
+
+/** trace / error output of the shared store */
+export function onLog(fn: (entries: TraceEntry[]) => void): () => void {
+  return appStore.getState().subscribeLog(fn)
+}
+export function onExit(fn: () => void): () => void {
+  return appStore.getState().subscribeExit(fn)
 }
 
 /* ------------------------------------------------------------------ recent inserts */
@@ -917,40 +964,58 @@ function recordRecent(type: string) {
 
 /* ------------------------------------------------------------------ platform link */
 
-let linked = false
-/** keep the runtime's data key / current user in step with the platform (re-evaluates formulas) */
-export function linkPlatform() {
-  if (linked) return
-  linked = true
+/**
+ * Keep a store's data key / current user in step with the platform (re-evaluates formulas), load its app's tables
+ * and report refused writes. `scoped`: only report errors for the store's own data sources (app tabs; the shared
+ * store reports everything). Returns a disposer.
+ */
+export function linkStore(store: AppStore, opts: { scoped?: boolean } = {}): () => void {
   const sync = () => {
     const key = platformDataKey()
     const uid2 = currentUserId()
-    const rt = useStore.getState().runtime
+    const rt = store.getState().runtime
     if (rt.dataKey === key && rt.userId === uid2) return
-    useStore.setState((s) => {
+    store.setState((s) => {
       s.runtime.dataKey = key
       s.runtime.userId = uid2
     })
   }
-  subscribePlatform(sync)
+  const offPlatform = subscribePlatform(sync)
   sync()
   // load the rows of the app's tables when an app opens and whenever a data source is added
-  useStore.subscribe((s, prev) => {
+  const offStore = store.subscribe((s, prev) => {
     if (s.app !== prev.app && s.app.dataSources !== prev.app.dataSources) ensureTablesLoaded(s.app.dataSources ?? [])
   })
-  ensureTablesLoaded(useStore.getState().app.dataSources ?? [])
+  ensureTablesLoaded(store.getState().app.dataSources ?? [])
   // writes the server refused (the platform already rolled the cache back)
-  subscribeDataErrors((e) => {
+  const offErrors = subscribeDataErrors((e) => {
+    if (opts.scoped && !(store.getState().app.dataSources ?? []).includes(e.table)) return
     const verb = e.op === 'create' ? 'add to' : e.op === 'update' ? 'change' : 'delete from'
     const message = `Could not ${verb} ${e.table}: ${e.error.message}`
     const entries: TraceEntry[] = [
       { id: uid(), at: Date.now(), kind: 'error', message, source: 'Data' },
       { id: uid(), at: Date.now(), kind: 'trace', message: `Data error (${e.op} ${e.table})`, data: JSON.stringify({ code: e.error.code, rows: e.rowIds, message: e.error.message }), source: 'Data' },
     ]
-    const st = useStore.getState()
+    const st = store.getState()
     st.log(entries)
-    logListeners.forEach((fn) => fn(entries))
-    if (st.mode === 'preview' || surfaceIsRun) st.notify(e.error.message, 'error')
+    st.emitLog(entries)
+    if (st.mode === 'preview' || st.runSurface) st.notify(e.error.message, 'error')
   })
-  ;(window as unknown as Record<string, unknown>).__ab = { store: useStore, ui: useUi, evaluator: () => evaluatorOf(), sampleApp }
+  return () => {
+    offPlatform()
+    offStore()
+    offErrors()
+  }
+}
+
+/** app stores of the mounted app tabs, by app id (browser checks and debugging: `window.__ab.tabs`) */
+export const tabStores = new Map<string, AppStore>()
+
+let linked = false
+/** link the shared store to the platform once (App start) */
+export function linkPlatform() {
+  if (linked) return
+  linked = true
+  linkStore(appStore)
+  ;(window as unknown as Record<string, unknown>).__ab = { store: useStore, ui: useUi, evaluator: () => evaluatorOf(), sampleApp, tabs: tabStores }
 }

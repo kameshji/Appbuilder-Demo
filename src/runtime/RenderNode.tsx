@@ -2,7 +2,8 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type C
 import type { ControlNode, ControlType, FxRecord, FxValue } from '@/contracts'
 import { controls } from '@/controls'
 import { enumName, isTemplateType, ROOT_CTX, type Evaluator, type LayoutKind, type NodeCtx } from './evaluator'
-import { evaluatorOf, useStore } from './store'
+import { evaluatorOf } from './store'
+import { useAppStore, useAppStoreApi } from './context'
 import { useUi } from './ui'
 import { placeStyle, themeOf } from './layout'
 
@@ -67,22 +68,25 @@ interface Props {
 
 /** One control: positioned wrapper + registry renderer. Used by the design canvas, the preview and the player. */
 export const RenderNode = memo(function RenderNode({ node, ctx, mode, ev, pk, pdw, pdh, pai }: Props) {
+  const store = useAppStoreApi()
   const nk = ev.nodeKey(node, ctx)
   // re-render only when something this node reads changed
-  useStore((s) => evaluatorOf(s).versionOf(nk))
-  const rect = useUi((s) => (ctx.inert ? undefined : s.dragRects[node.id]))
-  const beingDragged = useUi((s) => s.dragging && !ctx.inert && s.dragRects[node.id] !== undefined)
+  useAppStore((s) => evaluatorOf(s).versionOf(nk))
+  // drag rectangles belong to the Studio canvas; a running copy of the same app (tab, preview) ignores them
+  const canvas = mode === 'design' && !ctx.inert
+  const rect = useUi((s) => (canvas ? s.dragRects[node.id] : undefined))
+  const beingDragged = useUi((s) => canvas && s.dragging && s.dragRects[node.id] !== undefined)
   const flowGhost = useUi((s) => s.flowDragId === node.id)
   const wrapRef = useRef<HTMLDivElement>(null)
   const outKey = ev.outKey(node, ctx)
-  const setOutput = useCallback((name: string, value: FxValue) => useStore.getState().setOutput(outKey, name, value), [outKey])
+  const setOutput = useCallback((name: string, value: FxValue) => store.getState().setOutput(outKey, name, value), [store, outKey])
   const design = mode === 'design'
   const fire = useCallback(
     (event: string) => {
       if (design) return
-      useStore.getState().fire(node.id, event, ctx)
+      store.getState().fire(node.id, event, ctx)
     },
-    [design, node.id, ctx],
+    [store, design, node.id, ctx],
   )
 
   const def = getDef(node.type)
@@ -185,10 +189,11 @@ export const RenderNode = memo(function RenderNode({ node, ctx, mode, ev, pk, pd
 
 /** A whole screen at `width` x `height` (actual size). */
 export function ScreenView({ screenId, mode, width, height, testId = 'screen-frame' }: { screenId: string; mode: RenderMode; width: number; height: number; testId?: string }) {
-  const ev = useStore((s) => evaluatorOf(s))
-  const app = useStore((s) => s.app)
+  const store = useAppStoreApi()
+  const ev = useAppStore((s) => evaluatorOf(s))
+  const app = useAppStore((s) => s.app)
   const screen = app.screens.find((s) => s.id === screenId) ?? app.screens[0]
-  useStore((s) => evaluatorOf(s).versionOf(screen.id))
+  useAppStore((s) => evaluatorOf(s).versionOf(screen.id))
   const wrapRef = useRef<HTMLDivElement>(null)
   const def = controls.get('Screen')
   const ne = ev.evalNode(screen, ROOT_CTX)
@@ -197,14 +202,14 @@ export function ScreenView({ screenId, mode, width, height, testId = 'screen-fra
   const setOutput = useCallback(() => {}, [])
   const fire = useCallback(
     (event: string) => {
-      if (mode === 'run') useStore.getState().fire(screen.id, event, ROOT_CTX)
+      if (mode === 'run') store.getState().fire(screen.id, event, ROOT_CTX)
     },
-    [mode, screen.id],
+    [store, mode, screen.id],
   )
 
   useEffect(() => {
-    if (mode === 'run') useStore.getState().fire(screen.id, 'OnVisible')
-  }, [mode, screen.id])
+    if (mode === 'run') store.getState().fire(screen.id, 'OnVisible')
+  }, [store, mode, screen.id])
 
   const theme = themeOf(app)
   const Render = def.render

@@ -8,11 +8,9 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
+import { sizeError as checkSize } from '@/runtime/sizes'
+import { SizePicker } from '@/portal/SizePicker'
 
-const PRESETS = [
-  { id: 'fhd', label: 'Full HD', w: 1920, h: 1080 },
-  { id: '2k', label: '2K', w: 2560, h: 1440 },
-]
 const PRIMARIES = ['', '#4f46e5', '#2563eb', '#0891b2', '#059669', '#d97706', '#dc2626', '#db2777', '#7c3aed', '#18181b']
 
 function Seg<T extends string>({ value, options, onChange, testId }: { value: T; options: Array<{ v: T; label: string }>; onChange: (v: T) => void; testId?: string }) {
@@ -45,10 +43,7 @@ export function AppSettingsDialog() {
 
 function SettingsBody({ app }: { app: AppDef }) {
   const [name, setName] = useState(app.name)
-  const preset = PRESETS.find((p) => p.w === app.width && p.h === app.height)?.id ?? 'custom'
-  const [res, setRes] = useState<string>(preset)
-  const [w, setW] = useState(String(app.width))
-  const [h, setH] = useState(String(app.height))
+  const [size, setSize] = useState({ w: app.width, h: app.height })
   const [scale, setScale] = useState<'responsive' | 'fit'>(app.scaleMode ?? 'responsive')
   const [mode, setMode] = useState<'light' | 'dark'>(app.theme?.mode ?? 'light')
   const [primary, setPrimary] = useState(app.theme?.primary ?? '')
@@ -57,10 +52,10 @@ function SettingsBody({ app }: { app: AppDef }) {
   const [onStart, setOnStart] = useState((app.appProps.OnStart ?? '=false').replace(/^=/, ''))
   useEffect(() => setName(app.name), [app.name])
 
-  const cw = res === 'custom' ? Number(w) : (PRESETS.find((p) => p.id === res)?.w ?? 1920)
-  const ch = res === 'custom' ? Number(h) : (PRESETS.find((p) => p.id === res)?.h ?? 1080)
-  const sizeError =
-    !Number.isFinite(cw) || !Number.isFinite(ch) || cw < 640 || ch < 360 ? 'Width ≥ 640 and height ≥ 360' : cw < ch ? 'Apps are landscape: width must be at least the height' : null
+  const cw = size.w
+  const ch = size.h
+  const sizeError = checkSize(cw, ch)
+  const resized = cw !== app.width || ch !== app.height
   const parsed = parseFormulas(formulas)
 
   const apply = () => {
@@ -84,7 +79,7 @@ function SettingsBody({ app }: { app: AppDef }) {
     <DialogContent className="max-h-[90vh] max-w-[640px] overflow-auto" data-testid="app-settings">
       <DialogHeader>
         <DialogTitle>App settings</DialogTitle>
-        <DialogDescription>Design resolution, scaling, theme and app-wide formulas.</DialogDescription>
+        <DialogDescription>Design size, scaling, theme and app-wide formulas.</DialogDescription>
       </DialogHeader>
       <div className="space-y-4 text-sm">
         <label className="block space-y-1">
@@ -92,22 +87,12 @@ function SettingsBody({ app }: { app: AppDef }) {
           <Input value={name} onChange={(e) => setName(e.target.value)} className="h-8" data-testid="settings-name" />
         </label>
         <div className="space-y-1.5">
-          <span className="text-xs font-medium">Design resolution</span>
-          <div className="flex flex-wrap items-center gap-2">
-            <Seg
-              value={res}
-              onChange={setRes}
-              testId="settings-resolution"
-              options={[...PRESETS.map((p) => ({ v: p.id, label: `${p.label} ${p.w}×${p.h}` })), { v: 'custom', label: 'Custom' }]}
-            />
-            {res === 'custom' && (
-              <span className="flex items-center gap-1">
-                <Input value={w} onChange={(e) => setW(e.target.value)} className="h-8 w-20 tabular-nums" data-testid="settings-w" />×
-                <Input value={h} onChange={(e) => setH(e.target.value)} className="h-8 w-20 tabular-nums" data-testid="settings-h" />
-              </span>
-            )}
-          </div>
+          <span className="text-xs font-medium">Design size</span>
+          <SizePicker value={size} onChange={setSize} testId="settings-resolution" />
           {sizeError && <p className="text-xs text-destructive">{sizeError}</p>}
+          {!sizeError && resized && (
+            <p className="text-[11px] text-muted-foreground">Controls keep their positions; check anchors and layouts after changing between desktop and phone sizes.</p>
+          )}
         </div>
         <div className="space-y-1.5">
           <span className="text-xs font-medium">Scale mode</span>

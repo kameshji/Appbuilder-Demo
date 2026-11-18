@@ -595,7 +595,6 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     if (!Number.isFinite(width) || !Number.isFinite(height) || width < 200 || height < 200 || width > 16000 || height > 16000) {
       fail('invalid', 'Width and height must be numbers between 200 and 16000.')
     }
-    if (width < height) fail('invalid', 'Apps are landscape only: width must be at least the height.')
   }
 
   function validateDef(def: unknown): AppDef {

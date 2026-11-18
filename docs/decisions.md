@@ -29,7 +29,9 @@ user-defined functions and named formulas. Behaviour differences must be documen
 **Decision.** Apps are designed at 1920×1080 or 2560×1440 and adapt to any landscape window with anchors and auto-layout
 containers. No portrait or phone layouts.
 **Why.** Target users run business apps on desktops and laptops.
-**Status.** Active.
+**Status.** Superseded in part (Nov 2026): phone and tablet design sizes, including portrait, were added for the P2
+"supervisor logs production from a phone" exit check (master plan section 5). An app still has one design size; desktop
+apps stay landscape and responsive as described here.
 
 ## D5. Use existing component libraries behind adapters (Nov 2026)
 **Decision.** Controls wrap shadcn/Radix components and other permissive libraries (Recharts, react-day-picker, cmdk,

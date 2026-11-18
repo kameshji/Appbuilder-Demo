@@ -14,7 +14,7 @@ How to read the tables:
 - Outputs whose names start with two underscores are internal and not listed.
 - Controls are listed in the order of the Insert pane's categories.
 
-**Not supported yet.** The set of controls is fixed: makers cannot add their own controls or import component packs. Apps are landscape only; there are no portrait or phone layouts.
+**Not supported yet.** The set of controls is fixed: makers cannot add their own controls or import component packs. Phone and tablet apps are separate apps with their own design size; one app does not switch between a desktop and a phone layout.
 
 ## Common properties
 

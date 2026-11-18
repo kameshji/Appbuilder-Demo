@@ -6,7 +6,7 @@ The Studio is where you design an app. Open it with **Edit** on the Apps page.
 
 ## Layout
 
-- **Top bar**: back, app name and save status, undo and redo, Insert menu, New screen, theme, Settings, the "..." menu (Export and Import package), Preview and Run in window.
+- **Top bar**: back, app name and save status, undo and redo, Insert menu, New screen, chat, account menu, theme, Settings, the "..." menu (Export and Import package), Preview and Run in window. When the chat panel is open and the bar gets narrow, New screen and Settings show only their icons.
 - **Formula bar**: pick a property on the left and edit its formula.
 - **Left rail**: Tree view, Insert, Data, Variables and Debug console.
 - **Canvas**: your screen. Screen tabs are at the bottom left.
@@ -57,9 +57,24 @@ The Insert pane has a search box and recent items. Click or drag to insert. Dial
 
 The bar shows the leading `=` for you. Typing one is optional; a single leading `=` is ignored, so `=Filter(...)` and `Filter(...)` behave the same. Autocomplete appears as you type. `Up`/`Down` and `Tab` or `Enter` accept; `Esc` closes. `Enter` finishes, `Shift+Enter` adds a new line. A call tip shows the function signature with the current argument in bold. A chip shows the result type and value, or the error message.
 
+## Phone and tablet apps
+
+A phone or portrait tablet app shows as a tall frame on the canvas; **Fit** fits its height. Design it like any other
+app: anchors and auto-layout work the same. **Preview** runs it at its design size, centred. Change between desktop,
+phone and tablet sizes in **Settings** (see [Apps](apps.md#phone-and-tablet-apps)).
+
+![A phone app in the Studio](../../images/studio-phone-app.png)
+
+## Chat panel
+
+The chat button in the top bar opens the chat panel on the right, the same panel as in the portal. Drag its left edge to
+make it wider or narrower; it remembers whether it was open and its width. **Pop out** moves chat into its own window;
+the panel then says "Chat is open in another window" and **Bring back** closes that window and shows chat in the panel
+again (closing the window yourself does the same). Chat itself is not built yet: the panel lists what it will do.
+
 ## Viewports and anchors
 
-The status bar viewport menu previews the screen at Full HD, 2K, Laptop 1366x768, 16:10, 21:9, Ultrawide or a custom size. These views are read-only ("Viewing at W x H. Switch to design size to edit."). To make controls adapt, set **AnchorH** and **AnchorV** (Start, End, Stretch, Center, Scale).
+The status bar viewport menu previews the screen at Full HD, 2K, Laptop 1366x768, 16:10, 21:9, Ultrawide, the phone sizes (360x800, 390x844, 412x915), the tablet sizes (800x1280, 1280x800) or a custom size. These views are read-only ("Viewing at W x H. Switch to design size to edit."). To make controls adapt, set **AnchorH** and **AnchorV** (Start, End, Stretch, Center, Scale).
 
 ## Auto-layout
 

@@ -372,6 +372,7 @@ export function runFormula(input: RunInput): RunResult {
   }
 
   try {
+    evr.useUdfs()
     if (input.action) input.action(host)
     else {
       const r = fx.evaluate(formula ?? '=', evr.scopeFor(node, ctx), host)

@@ -1,6 +1,6 @@
 import type { FxDiagnostic, FxNamedFormula } from '@/contracts'
 import { ENUM_RECORDS } from './enums'
-import { lookupFunction } from './functions'
+import { isBuiltinFunction } from './functions'
 import { ParseError, readInterp, readString } from './lexer'
 import { parse } from './parser'
 import { hasOwn } from './values'
@@ -169,7 +169,8 @@ export function parseNamedFormulas(source: string): { items: FxNamedFormula[]; e
     const nameEnd = nm.end
     if (body === '') { bad(`${nm.name} needs a formula after =`, defStart, nameEnd); continue }
     if (seen.has(nm.name)) { bad(`${nm.name} is already defined`, defStart, nameEnd); continue }
-    if (params && lookupFunction(nm.name)) { bad(`${nm.name} is already a built-in function`, defStart, nameEnd); continue }
+    // built-ins only: the user functions currently registered may belong to another app (several apps can be mounted)
+    if (params && isBuiltinFunction(nm.name)) { bad(`${nm.name} is already a built-in function`, defStart, nameEnd); continue }
     if (!params && hasOwn(ENUM_RECORDS, nm.name)) { bad(`${nm.name} is already a built-in list of values`, defStart, nameEnd); continue }
     const formula = '=' + body
     const parsed = parse(formula)

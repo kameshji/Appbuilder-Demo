@@ -110,8 +110,12 @@ export function parseFormulas(source: string | undefined): { named: FxNamedFormu
   }
 }
 
-function registerUdfs(udfs: FxNamedFormula[]) {
-  const key = JSON.stringify(udfs)
+/**
+ * The formula engine holds one set of user-defined functions. Several apps can be mounted at once (app tabs in
+ * User mode, the Studio), each with its own App.Formulas, so every evaluator re-registers its own set right
+ * before it evaluates (a no-op when it is already the active set: `key` is compared by reference first).
+ */
+function registerUdfs(udfs: FxNamedFormula[], key = JSON.stringify(udfs)) {
   if (key === registeredUdfs) return
   registeredUdfs = key
   try {
@@ -138,6 +142,8 @@ export class Evaluator {
   namedErrors: FxDiagnostic[] = []
   private structKey: string
   private formulasSrc: string | undefined
+  private udfs: FxNamedFormula[] = []
+  private udfKey = '[]'
 
   private cache = new Map<string, PropEval>()
   private deps = new Map<string, Set<string>>()
@@ -182,7 +188,14 @@ export class Evaluator {
     this.named.clear()
     for (const n of named) this.named.set(n.name, n.formula)
     this.namedErrors = errors
-    registerUdfs(udfs)
+    this.udfs = udfs
+    this.udfKey = JSON.stringify(udfs)
+    registerUdfs(udfs, this.udfKey)
+  }
+
+  /** make this app's user-defined functions the engine's active set (see registerUdfs) */
+  useUdfs() {
+    if (registeredUdfs !== this.udfKey) registerUdfs(this.udfs, this.udfKey)
   }
 
   /**
@@ -384,6 +397,7 @@ export class Evaluator {
   private defaultValue(node: ControlNode, meta: PropMeta | undefined, ctx: NodeCtx): FxValue {
     if (!meta) return null
     try {
+      this.useUdfs()
       const r = fx.evaluate(meta.default, this.scopeFor(node, ctx))
       return r.ok ? r.value : null
     } catch {
@@ -421,9 +435,11 @@ export class Evaluator {
     const formula = node.props[prop] ?? meta?.default ?? '='
     try {
       if (meta?.kind === 'action') {
+        this.useUdfs()
         const d = fx.check(formula)
         return { value: null, error: d[0]?.message, diag: d[0] }
       }
+      this.useUdfs()
       const r = fx.evaluate(formula, this.scopeFor(node, ctx))
       return r.ok ? { value: r.value } : { value: this.defaultValue(node, meta, ctx), error: r.error.message, diag: r.error }
     } catch (e) {
@@ -444,6 +460,7 @@ export class Evaluator {
     try {
       res = this.track(key, () => {
         try {
+          this.useUdfs()
           const r = fx.evaluate(formula, this.scopeFor(null, ROOT_CTX))
           return r.ok ? { value: r.value } : { value: null, error: `${name}: ${r.error.message}` }
         } catch (e) {
@@ -713,15 +730,27 @@ export class Evaluator {
 
 /* ---------------------------------------------------------------- shared instance */
 
-let cached: Evaluator | null = null
-
-/** The evaluator for the store's current state; reused (and incrementally invalidated) across changes. */
-export function getEvaluator(app: AppDef, rt: RuntimeView, env?: Env): Evaluator {
-  const e = env ?? { w: app.width, h: app.height }
-  if (cached && cached.withApp(app)) {
-    cached.update(rt, e)
-    return cached
+/**
+ * Holds one store's evaluator, reused (and incrementally invalidated) across state changes. Every app store has its
+ * own slot (see createAppStore), so two mounted apps never share cached values. A class instance: immer does not
+ * draft it, so it can live in zustand state without being copied.
+ */
+export class EvaluatorSlot {
+  private cached: Evaluator | null = null
+  get(app: AppDef, rt: RuntimeView, env?: Env): Evaluator {
+    const e = env ?? { w: app.width, h: app.height }
+    if (this.cached && this.cached.withApp(app)) {
+      this.cached.update(rt, e)
+      return this.cached
+    }
+    this.cached = new Evaluator(app, rt, e)
+    return this.cached
   }
-  cached = new Evaluator(app, rt, e)
-  return cached
+}
+
+const sharedSlot = new EvaluatorSlot()
+
+/** The evaluator for a state outside any store (kept for callers without a slot). Stores use their own EvaluatorSlot. */
+export function getEvaluator(app: AppDef, rt: RuntimeView, env?: Env): Evaluator {
+  return sharedSlot.get(app, rt, env)
 }

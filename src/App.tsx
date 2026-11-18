@@ -6,7 +6,7 @@ import { useRoute } from '@/router'
 import { linkPlatform } from '@/runtime/store'
 import { errorMessage } from '@/runtime/data'
 import { RunApp } from '@/runtime/RunApp'
-import { Studio } from '@/studio/Studio'
+import { ChatWindow } from '@/chat/ChatWindow'
 
 export default function App() {
   const [state, setState] = useState<{ phase: 'loading' | 'ready' | 'error'; error?: string }>({ phase: 'loading' })
@@ -46,8 +46,10 @@ export default function App() {
       </div>
     )
   }
-  // server mode needs a session for every page (the debug run window shares the cookie); demo mode passes through
-  if (route.page === 'studio') return <AuthGate><Studio key={route.id} appId={route.id} /></AuthGate>
+  // server mode needs a session for every page (the debug run window shares the cookie); demo mode passes through.
+  // The standalone player and the chat pop-out are windows of their own; everything else (Dev mode, User mode with
+  // its app tabs, the Studio) lives in the shell, so app tabs stay mounted while you build.
   if (route.page === 'run') return <AuthGate><RunApp key={route.id} appId={route.id} /></AuthGate>
+  if (route.page === 'chat') return <AuthGate><ChatWindow /></AuthGate>
   return <AuthGate><Portal route={route} /></AuthGate>
 }

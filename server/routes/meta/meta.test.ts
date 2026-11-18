@@ -53,7 +53,12 @@ describe('apps', () => {
     expect(clash.code).toBe('conflict')
     expect((await h.call(M, 'GET', `/api/v1/apps/${id}`)).body.meta.name).toBe('Renamed')
     expect((await h.call(M, 'PUT', `/api/v1/apps/${id}`, { definition: { nope: 1 } })).status).toBe(422)
-    expect((await h.call(M, 'POST', '/api/v1/apps', { name: 'Tall', width: 500, height: 900 })).status).toBe(422)
+    // portrait designs (phone, tablet portrait) are allowed; sizes outside 200..16000 are not
+    const tall = await h.call(M, 'POST', '/api/v1/apps', { name: 'Tall', width: 360, height: 800 })
+    expect(tall.status).toBe(200)
+    expect(tall.body).toMatchObject({ width: 360, height: 800 })
+    expect((await h.call(M, 'GET', `/api/v1/apps/${tall.body.id}`)).body.definition).toMatchObject({ width: 360, height: 800 })
+    expect((await h.call(M, 'POST', '/api/v1/apps', { name: 'Tiny', width: 100, height: 900 })).status).toBe(422)
     expect((await h.call(M, 'DELETE', `/api/v1/apps/${id}`)).body).toEqual({ ok: true })
     expect((await h.call(M, 'GET', `/api/v1/apps/${id}`)).status).toBe(404)
   })
@@ -101,5 +106,16 @@ describe('apps', () => {
     expect((await h.services.data.query(null, items, {})).rows.map((r) => r.Title)).toEqual(['a'])
     expect((await h.call(M, 'POST', '/api/v1/apps/import', { yaml: 'kind: appbuilder/solution\npackageVersion: 1' })).status).toBe(422)
     expect((await h.call(M, 'POST', '/api/v1/apps/import', { yaml: '' })).status).toBe(422)
+  })
+
+  it('phone and tablet sizes round-trip through the YAML package', async () => {
+    for (const [w, hh] of [[360, 800], [412, 915], [800, 1280], [1280, 800]]) {
+      const created = (await h.call(M, 'POST', '/api/v1/apps', { name: `Size ${w}x${hh}`, width: w, height: hh })).body
+      const { yaml } = (await h.call(M, 'GET', `/api/v1/apps/${created.id}/package`)).body
+      const imp = await h.call(M, 'POST', '/api/v1/apps/import', { yaml })
+      expect(imp.status, JSON.stringify(imp.body)).toBe(200)
+      expect(imp.body).toMatchObject({ width: w, height: hh })
+      expect((await h.call(M, 'GET', `/api/v1/apps/${imp.body.id}`)).body.definition).toMatchObject({ width: w, height: hh })
+    }
   })
 })

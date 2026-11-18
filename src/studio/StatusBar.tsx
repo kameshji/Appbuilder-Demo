@@ -8,6 +8,7 @@ import { pathTo, walk } from '@/runtime/util'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
+import { sizeError } from '@/runtime/sizes'
 
 const VIEWPORTS: Array<[string, number, number]> = [
   ['Full HD', 1920, 1080],
@@ -16,6 +17,11 @@ const VIEWPORTS: Array<[string, number, number]> = [
   ['16:10', 1920, 1200],
   ['21:9', 2560, 1080],
   ['Ultrawide', 3440, 1440],
+  ['Phone', 360, 800],
+  ['Phone (large)', 390, 844],
+  ['Phone (tall)', 412, 915],
+  ['Tablet portrait', 800, 1280],
+  ['Tablet landscape', 1280, 800],
 ]
 
 function ViewportSelect() {
@@ -71,8 +77,8 @@ function ViewportSelect() {
             onClick={() => {
               const w = Math.round(Number(cw))
               const h = Math.round(Number(ch))
-              if (!(w >= 640 && h >= 360)) return useStore.getState().notify('Viewport must be at least 640×360', 'warning')
-              if (w < h) return useStore.getState().notify('Apps are landscape: width must be at least the height', 'warning')
+              const bad = sizeError(w, h)
+              if (bad) return useStore.getState().notify(bad, 'warning')
               setCustom(false)
               apply({ w, h })
             }}

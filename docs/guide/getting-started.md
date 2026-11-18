@@ -61,7 +61,14 @@ When you finish, you are signed in. Appbuilder also adds a few sample tables (Co
 
 ## A tour of the portal
 
-The portal is where you manage everything. The left menu has:
+Appbuilder has two modes, switched in the top bar. **Dev mode** is where you build: the portal pages below and the
+Studio. **User mode** is where people use apps: a **My apps** launcher with search and recently opened apps, and every
+app you open becomes a tab under the top bar, like a browser tab (see [Apps](maker/apps.md#user-mode-and-app-tabs)).
+Makers and administrators get the switch and return to the mode they used last; everyone else sees only User mode.
+The chat button in the top bar opens a chat panel on the right (chat itself is coming soon). Menu entries with a
+**Soon** badge are planned modules; they open a short page about what they will do and in which phase.
+
+In Dev mode the left menu has:
 
 - **Home**: shortcuts, including "Start with data".
 - **Apps**: your apps. Open, run, rename, duplicate, export.
@@ -72,6 +79,8 @@ The portal is where you manage everything. The left menu has:
 - **Security roles**: who can see and change what (Administrator only).
 
 If a page says "Not available for your role", ask an administrator to give you the Maker role.
+
+![User mode with two app tabs](../images/user-mode-tabs.png)
 
 ![Home](../images/portal-home.png)
 ![Apps](../images/portal-apps.png)
