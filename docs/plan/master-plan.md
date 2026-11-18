@@ -184,3 +184,60 @@ P5 Documents, slides, sheets, mail client -> P6 Sites.
 
 App size presets (logical pixels, scale to fit): Desktop 1920x1080, 2560x1440; Phone 360x800 (default),
 390x844, 412x915; Tablet 800x1280 portrait, 1280x800 landscape.
+
+## 11. Owner decisions, 18 Nov 2026 (evening)
+
+### 11.1 Naming
+"Controls" become "UI components" in all user-facing text and docs. Code identifiers stay. Done as a sweep
+at the end of P0 (package M).
+
+### 11.2 Core data model (our "CDS"), package N in P0 wave 4
+Every environment gets a set of system tables out of the box, so sharing, chat, mentions, activity and
+logging work the same in every app. Makers can read them, look up to them and add their own columns, but
+cannot delete them or change system columns.
+
+| Group | Tables |
+|---|---|
+| People and organisation | User, Department, Team, Team member, Role, Role assignment (read-only projections of the install-wide and security data) |
+| Collaboration | Activity (base for Task, Call, Meeting, Email log), Comment, Mention, Share, Follow, Notification, Tag, Tag link |
+| Files | Document (file library entry), Document version, Attachment link |
+| Communication (filled later by chat and mail) | Channel, Channel member, Message, Message reaction |
+| Logging | Audit entry, Sign-in log, Job run, Flow run, Event run (read-only) |
+| Reference | Currency, Unit of measure, Country/State, Calendar, Holiday, Number sequence, Setting |
+| Common business model (shared by CRM and ERP templates; installed with them, not forced) | Account, Contact, Address, Product, Price list, Tax code |
+
+Rules: polymorphic "regarding" link (table id + row id) on Activity, Comment, Mention, Share, Follow, Tag
+link and Attachment link, so any row of any table gets a timeline, comments, followers and files without
+per-table work. Security: a collaboration row is visible only to users who can read the row it is about.
+
+### 11.3 Templates marketplace
+Template kinds and what "use" does:
+
+| Kind | Use action | Depends on |
+|---|---|---|
+| UI component (single or composite, e.g. address block, approval bar) | insert a copy into the current screen | optional data slots |
+| Screen (list-detail, dashboard, wizard, login-style landing) | add as a new screen of the current app | data slots |
+| App | create a new app | tables (installed or mapped) |
+| Data model (tables, relationships, sample data optional) | create tables | - |
+| Flow, dashboard, role set, theme, document template | add to the environment | tables |
+| Solution (CRM, ERP, manufacturing pack) | install as a versioned solution | everything inside |
+
+Rules that keep installs from breaking anything:
+1. Nothing existing is ever overwritten. Name clashes are resolved before install (map to an existing table,
+   or install under a new name).
+2. Data slots: a template declares the tables/columns it needs; a binding step maps each slot to an existing
+   table/column or creates it. Unmapped required slots block the install.
+3. Every install shows the same plan screen as solution import (new, changed, nothing removed) and runs in
+   one transaction; a pre-install backup is taken when backups exist.
+4. Two modes: Copy (yours to edit, no updates) and Linked (versioned solution; updates arrive as an
+   upgrade-in-place plan; local changes to linked parts are listed and kept or replaced by choice).
+5. Install target can be a sandbox environment first, then "Deploy to" production.
+6. Uninstall removes apps, flows and roles; tables with data are kept unless the admin ticks delete, typed
+   confirmation.
+7. Templates carry a minimum platform version and a signature; the built-in catalogue ships with the
+   install (works offline); an online catalogue comes later.
+8. Templates cannot contain connection secrets, users or run-as-system events without an explicit admin
+   approval step.
+
+Phase placement: catalogue mechanics and the UI component / screen / app / data model kinds in P2;
+solution templates (manufacturing pack, CRM, ERP) in P3.

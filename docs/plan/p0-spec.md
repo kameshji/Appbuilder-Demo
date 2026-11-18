@@ -51,7 +51,8 @@ fixes the cross-package contracts, and records the exit check.
 | I | Identity basics: password reset (SMTP relay settings), TOTP + recovery codes, session list/revoke | A | wave 4 |
 | J | Backup/restore (pg_dump per environment + attachments), admin console pages, restore drill script | A, E | wave 4 |
 | K | Data model designer (visual schema canvas, relationships, patterns, reporting views) | D | wave 4 |
+| N | Core data model: system tables per environment (people, collaboration, files, logging, reference), polymorphic regarding links, timeline component | F, G, H | wave 4 |
 | L | Installer: one script for Windows and Linux (PostgreSQL, service, Caddy), updater, diagnostics bundle | A, J | wave 5 |
-| M | Phase close: docs sweep, exit-check run, security re-check of new surface | all | wave 5 |
+| M | Phase close: rename "controls" to "UI components" in UI and docs, docs sweep, exit-check run, security re-check of new surface | all | wave 5 |
 
 Each package ends with: tests, typecheck, build, a real run of the affected flows, and its docs.
