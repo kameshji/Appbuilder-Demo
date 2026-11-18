@@ -151,10 +151,17 @@ Decided:
 - Identity and security (MFA, single sign-on, sessions) come before the agent runtime.
 - Email module and per-user licence passes are wanted; design options are under discussion.
 
-Open (proposals in the conversation, awaiting the owner):
-- System database: PostgreSQL (proposed) vs staying on MySQL/MariaDB vs SQL Server.
-- Email: mail client on the customer's existing mailboxes plus a sending relay (proposed) vs hosting a mail server.
-- Licence model: signed offline licence file with 2-3 pass types (proposed).
+Also decided (18 Nov 2026):
+- System database: PostgreSQL. MySQL/MariaDB and SQL Server become connectors for customer data only.
+  The MySQL system store and its tests are ported in P0, before anything new is built on the database.
+  This supersedes decision 8.1 and the MariaDB bundle in section 3.1.
+- Email: a mail client inside the suite on the customer's existing mailboxes, plus a sending relay for
+  notifications and login codes. No hosted mailboxes for now. The email address is the account key.
+- Licensing: signed licence file verified offline; passes assigned by the admin (Full user, Operator,
+  External); seat-band pricing per install; soft enforcement (grace period, then read-only, export always works);
+  a small licence portal on our side.
+
+Still open: statutory accounting stance (own ledgers vs Tally exchange), product name, which Odysseus project.
 
 Revised phase order: P0 Kernel (incl. database decision, data model designer core, identity basics: reset,
 TOTP, sessions) -> P1 Automation -> P2 Reach (phone, PDF, dashboards, auto apps) -> P3 Collaboration and
