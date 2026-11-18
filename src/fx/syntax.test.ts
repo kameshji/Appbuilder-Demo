@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { check } from './index'
-import { err, run, val } from './testutil'
+import { check } from './index.ts'
+import { err, run, val } from './testutil.ts'
 
 describe('literals and basics', () => {
   it('evaluates literals', () => {

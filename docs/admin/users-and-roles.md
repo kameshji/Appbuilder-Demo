@@ -151,7 +151,7 @@ Taken from the sign-in level each API route requires (`auth: 'user' | 'maker' | 
 
 Things a Maker can do that you may not expect. **Treat Maker as a trusted role.**
 
-- **Makers see the structure of the whole database.** Listing "source tables" of a MySQL connection shows every table
+- **Makers see the structure of the whole database.** Listing "source tables" of a database connection shows every table
   and column in that database except those starting with `ab_` and those already linked. There is no per-connection
   permission: every maker can list and link through every connection.
 - **Linking a table that is already linked is refused** (409, naming the existing table), also through a second

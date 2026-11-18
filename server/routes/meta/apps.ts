@@ -100,7 +100,7 @@ export function registerAppRoutes(router: Router, s: Services): void {
     return { yaml }
   }, { auth: 'maker' })
 
-  router.add('POST', '/api/v1/apps/import', async (ctx) => {
+  router.add('POST', '/api/v1/apps/import', (ctx) => s.transaction(async () => {
     const b = bodyObj(ctx)
     const doc = parsePackage(b.yaml, 'appbuilder/app')
     const app = readPkgApp(doc.app)
@@ -109,7 +109,7 @@ export function registerAppRoutes(router: Router, s: Services): void {
     const meta = await addApp(s, actorName(ctx), app.def, app.name, app.description)
     await audit(s, ctx, 'app.import', { id: meta.id, name: meta.name })
     return meta
-  }, { auth: 'maker', maxBodyMB: 25 })
+  }), { auth: 'maker', maxBodyMB: 25 })
 }
 
 export { isObj, optString, requireTable }

@@ -1,32 +1,29 @@
 /**
- * End-to-end over HTTP against the sandbox MariaDB/MySQL:
- *   APPBUILDER_TEST_DB=mysql://abdev:abdev-sandbox-only@127.0.0.1:3306/appbuilder_test npx vitest run server/core
- * Creates a fresh database `appbuilder_test_<random>` (the user needs CREATE on appbuilder_test%) and drops it after.
+ * End-to-end over HTTP against the sandbox PostgreSQL:
+ *   APPBUILDER_TEST_DB=postgres://abdev:abdev-sandbox-only@127.0.0.1:5433/appbuilder_test npx vitest run server/core
+ * Creates a fresh database `appbuilder_test_s1_<random>` through the setup endpoint (the role needs CREATEDB) and drops
+ * it after.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
-import { randomBytes } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
-import mysql from 'mysql2/promise'
 import { createApp } from './app.ts'
 import type { AppServer } from './app.ts'
 import { hashPassword } from './password.ts'
 import { setQuiet } from './util.ts'
+import { PG_URL, SKIP_PG, dropDatabase, pgServer, testDatabaseName } from './testdb.ts'
 import type { RoleDef, TableDef } from '../../src/platform/contracts.ts'
 
 setQuiet(true)
 
-const URL_ENV = process.env.APPBUILDER_TEST_DB
-const parsed = URL_ENV ? new URL(URL_ENV) : null
-const conn = parsed
-  ? { host: parsed.hostname, port: Number(parsed.port) || 3306, user: decodeURIComponent(parsed.username), password: decodeURIComponent(parsed.password) }
-  : null
-const dbName = `appbuilder_test_s1_${randomBytes(4).toString('hex')}`
+const URL_ENV = PG_URL
+const conn = pgServer
+const dbName = testDatabaseName('s1')
 
-const SKIP_MESSAGE = 'skipped: set APPBUILDER_TEST_DB=mysql://user:pass@host:port/appbuilder_test to run the MariaDB/MySQL integration tests'
+const SKIP_MESSAGE = SKIP_PG
 if (!URL_ENV) process.stderr.write(`[server/core integration] ${SKIP_MESSAGE}\n`)
 
 /** tiny client with a cookie jar per user */
@@ -63,7 +60,7 @@ class Client {
   del = (p: string) => this.req('DELETE', p)
 }
 
-describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (MariaDB/MySQL)' : `server core integration (MariaDB/MySQL) ${SKIP_MESSAGE}`, () => {
+describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (PostgreSQL)' : `server core integration (PostgreSQL) ${SKIP_MESSAGE}`, () => {
   let app: AppServer
   let server: http.Server
   let base = ''
@@ -111,11 +108,7 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (MariaDB/MySQL)' : 
   afterAll(async () => {
     await new Promise<void>((r) => (server ? server.close(() => r()) : r()))
     await app?.close()
-    if (conn) {
-      const c = await mysql.createConnection(conn)
-      await c.query(`DROP DATABASE IF EXISTS \`${dbName}\``)
-      await c.end()
-    }
+    if (conn) await dropDatabase(dbName)
     if (tmp) fs.rmSync(tmp, { recursive: true, force: true })
   }, 60000)
 
@@ -145,7 +138,7 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (MariaDB/MySQL)' : 
     await app.services.meta.migrate()
     await app.services.meta.migrate()
     const conns = await app.services.meta.connections.list()
-    expect(conns.find((c) => c.id === 'conn_default')).toMatchObject({ connector: 'mysql', isDefault: true, hasSecret: true })
+    expect(conns.find((c) => c.id === 'conn_default')).toMatchObject({ connector: 'postgres', isDefault: true, hasSecret: true })
     expect(conns.find((c) => c.id === 'conn_files')).toMatchObject({ connector: 'files', scope: 'device' })
   }, 60000)
 
@@ -367,7 +360,7 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (MariaDB/MySQL)' : 
     const bad = await rep.post('/api/v1/data/Deals/import', { csv: 'Title,Amount\nOk,1\nBad,abc', mode: 'append' })
     expect(bad.status).toBe(422)
     expect(bad.data.error.message).toMatch(/^Row 2:/)
-    const audit = await app.services.meta.db.query<{ action: string; details: string | null }>('SELECT action, details FROM ab_audit ORDER BY id')
+    const audit = await app.services.meta.db.query<{ action: string; details: unknown }>(`SELECT action, details FROM ${app.services.meta.tableName('ab_audit')} ORDER BY id`)
     const actions = audit.map((a) => a.action)
     expect(actions).toEqual(expect.arrayContaining(['setup.admin', 'auth.login', 'auth.login_failed', 'row.insert', 'row.update', 'row.delete', 'table.import', 'attachment.upload']))
     expect(JSON.stringify(audit)).not.toMatch(/password-1|admin-password|rita-password/)

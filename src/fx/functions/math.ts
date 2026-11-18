@@ -1,7 +1,7 @@
-import type { FxValue } from '@/contracts'
-import { toNumber, toRows } from '../values'
-import { roundHalfAway } from './format'
-import { def, type CallCtx, type FnDef } from './types'
+import type { FxValue } from '../../contracts.ts'
+import { toNumber, toRows } from '../values.ts'
+import { roundHalfAway } from './format.ts'
+import { def, type CallCtx, type FnDef } from './types.ts'
 
 function digits(c: CallCtx): number {
   return c.argc > 1 ? Math.trunc(c.num(1)) : 0

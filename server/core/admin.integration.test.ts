@@ -1,7 +1,7 @@
 /**
- * Admin console endpoints over HTTP against the sandbox MariaDB/MySQL (the SQL of the audit viewer, the environment
+ * Admin console endpoints over HTTP against the sandbox PostgreSQL (the SQL of the audit viewer, the environment
  * facts and the admin details of /status):
- *   APPBUILDER_TEST_DB=mysql://abdev:abdev-sandbox-only@127.0.0.1:3306/appbuilder_test npx vitest run server/core/admin
+ *   APPBUILDER_TEST_DB=postgres://abdev:abdev-sandbox-only@127.0.0.1:5433/appbuilder_test npx vitest run server/core/admin
  * Creates a fresh database `appbuilder_test_adm_<random>` and drops it after.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -9,22 +9,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
-import { randomBytes } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
-import mysql from 'mysql2/promise'
+import { PG_URL, SKIP_PG, dropDatabase, pgServer, testDatabaseName } from './testdb.ts'
 import { createApp } from './app.ts'
 import type { AppServer } from './app.ts'
 import { setQuiet } from './util.ts'
 
 setQuiet(true)
 
-const URL_ENV = process.env.APPBUILDER_TEST_DB
-const parsed = URL_ENV ? new URL(URL_ENV) : null
-const conn = parsed
-  ? { host: parsed.hostname, port: Number(parsed.port) || 3306, user: decodeURIComponent(parsed.username), password: decodeURIComponent(parsed.password) }
-  : null
-const dbName = `appbuilder_test_adm_${randomBytes(4).toString('hex')}`
-const SKIP = 'skipped: set APPBUILDER_TEST_DB=mysql://user:pass@host:port/appbuilder_test to run the MariaDB/MySQL integration tests'
+const URL_ENV = PG_URL
+const conn = pgServer
+const dbName = testDatabaseName('adm')
+const SKIP = SKIP_PG
 
 class Client {
   cookie = ''
@@ -46,7 +42,7 @@ class Client {
   }
 }
 
-describe.skipIf(!URL_ENV)(URL_ENV ? 'admin console endpoints (MariaDB/MySQL)' : `admin console endpoints (MariaDB/MySQL) ${SKIP}`, () => {
+describe.skipIf(!URL_ENV)(URL_ENV ? 'admin console endpoints (PostgreSQL)' : `admin console endpoints (PostgreSQL) ${SKIP}`, () => {
   let app: AppServer
   let server: http.Server
   let tmp = ''
@@ -68,11 +64,7 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'admin console endpoints (MariaDB/MySQL)' : 
   afterAll(async () => {
     await new Promise<void>((r) => (server ? server.close(() => r()) : r()))
     await app?.close()
-    if (conn) {
-      const c = await mysql.createConnection(conn)
-      await c.query(`DROP DATABASE IF EXISTS \`${dbName}\``)
-      await c.end()
-    }
+    if (conn) await dropDatabase(dbName)
     if (tmp) fs.rmSync(tmp, { recursive: true, force: true })
   }, 60000)
 

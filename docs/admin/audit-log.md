@@ -4,8 +4,8 @@ Appbuilder records security-relevant and data-changing actions in the database t
 it in **Admin console > Audit log**: newest first, 50 entries per page, filtered by action (one action, or a whole group
 such as `auth.*`), by user and by date (shown in your browser's time zone). Click a details cell to see all of it. The
 same data comes from `GET /api/v1/audit` (administrators only; see `docs/dev/data-api.md`). Reading the log is not itself
-recorded. For anything the viewer cannot do (joins, counts, exports), use SQL with a database client (the `mysql`
-command, MySQL Workbench, HeidiSQL and so on) and an account that can `SELECT` from the Appbuilder database.
+recorded. For anything the viewer cannot do (joins, counts, exports), use SQL with a database client (`psql`, pgAdmin, DBeaver and so on) and an account that can `SELECT` from the Appbuilder
+database. The log is the table `env_default.ab_audit` (one per environment); users are in `ab.users`.
 
 ## The table
 
@@ -57,22 +57,22 @@ Be aware of these gaps before you rely on the log for an investigation:
 
 ## Useful queries
 
-Run them against the Appbuilder database. `JSON_EXTRACT` works on MariaDB 10.2+ and MySQL 5.7+.
+Run them against the Appbuilder database (PostgreSQL; `details` is `jsonb`, so `details->>'email'` reads a field).
 
 Latest 100 events, with the person's name and email:
 
 ```sql
 SELECT a.at, u.email, a.action, a.table_id, a.row_id, a.details
-FROM ab_audit a LEFT JOIN ab_users u ON u.id = a.user_id
+FROM env_default.ab_audit a LEFT JOIN ab.users u ON u.id = a.user_id
 ORDER BY a.id DESC LIMIT 100;
 ```
 
 Failed and throttled sign-ins in the last 7 days, by the email entered:
 
 ```sql
-SELECT JSON_UNQUOTE(JSON_EXTRACT(details, '$.email')) AS email_entered, action, COUNT(*) AS n, MAX(at) AS last_at
-FROM ab_audit
-WHERE action IN ('auth.login_failed', 'auth.login_throttled') AND at > UTC_TIMESTAMP() - INTERVAL 7 DAY
+SELECT details->>'email' AS email_entered, action, count(*) AS n, max(at) AS last_at
+FROM env_default.ab_audit
+WHERE action IN ('auth.login_failed', 'auth.login_throttled') AND at > now() - interval '7 days'
 GROUP BY email_entered, action ORDER BY n DESC;
 ```
 
@@ -83,21 +83,21 @@ Everything one user did:
 
 ```sql
 SELECT a.at, a.action, a.table_id, a.row_id, a.details
-FROM ab_audit a JOIN ab_users u ON u.id = a.user_id
+FROM env_default.ab_audit a JOIN ab.users u ON u.id = a.user_id
 WHERE u.email = 'someone@example.com' ORDER BY a.id DESC LIMIT 500;
 ```
 
 Everything that happened to one table or row:
 
 ```sql
-SELECT at, user_id, action, row_id, details FROM ab_audit WHERE table_id = 't_orders' ORDER BY id DESC LIMIT 200;
+SELECT at, user_id, action, row_id, details FROM env_default.ab_audit WHERE table_id = 'tbl_...' ORDER BY id DESC LIMIT 200;
 ```
 
 Who changed users, roles or connections (the changes that matter most):
 
 ```sql
 SELECT a.at, u.email AS by_user, a.action, a.details
-FROM ab_audit a LEFT JOIN ab_users u ON u.id = a.user_id
+FROM env_default.ab_audit a LEFT JOIN ab.users u ON u.id = a.user_id
 WHERE a.action LIKE 'user.%' OR a.action LIKE 'role.%' OR a.action LIKE 'connection.%' OR a.action LIKE 'setup.%'
 ORDER BY a.id DESC LIMIT 200;
 ```
@@ -105,10 +105,10 @@ ORDER BY a.id DESC LIMIT 200;
 Count of events by action this month:
 
 ```sql
-SELECT action, COUNT(*) FROM ab_audit WHERE at >= DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01') GROUP BY action ORDER BY 2 DESC;
+SELECT action, count(*) FROM env_default.ab_audit WHERE at >= date_trunc('month', now()) GROUP BY action ORDER BY 2 DESC;
 ```
 
-A user id that no longer appears in `ab_users` belongs to a deleted user.
+A user id that no longer appears in `ab.users` belongs to a deleted user.
 
 ## Keeping it in check
 
@@ -116,7 +116,7 @@ Review it on a schedule you can keep (weekly is realistic): user, role, connecti
 sign-ins. To limit growth you can delete old rows yourself, after saving a copy:
 
 ```sql
-DELETE FROM ab_audit WHERE at < UTC_TIMESTAMP() - INTERVAL 400 DAY;
+DELETE FROM env_default.ab_audit WHERE at < now() - interval '400 days';
 ```
 
 Decide your own retention period with your compliance needs in mind; Appbuilder does not make that decision. The audit

@@ -1,6 +1,6 @@
 # Appbuilder
 
-Appbuilder is a desktop low-code app builder. You make apps in a maker portal, then design them in Studio, a drag-and-drop canvas with Excel-style formulas. Tables are stored in a MySQL or MariaDB database, and data files can be connected as data sources. Apps can use security roles, and related apps are grouped into solutions. Apps and solutions are saved as YAML packages, and a live run window shows the app as the user will see it.
+Appbuilder is a desktop low-code app builder. You make apps in a maker portal, then design them in Studio, a drag-and-drop canvas with Excel-style formulas. Tables are stored in a PostgreSQL database; existing PostgreSQL and MySQL/MariaDB databases, Google Sheets and data files can be connected as data sources. Apps can use security roles, and related apps are grouped into solutions. Apps and solutions are saved as YAML packages, and a live run window shows the app as the user will see it.
 
 ## Documentation
 
@@ -15,7 +15,7 @@ Appbuilder is a desktop low-code app builder. You make apps in a maker portal, t
 ## Requirements
 
 - Node.js 22.18 or newer. `npm start` runs the TypeScript server directly, which needs this version.
-- A MySQL or MariaDB server for the app data, either on this PC or reachable from it.
+- PostgreSQL 15 or newer (17 recommended) for the app data, either on this PC or reachable from it.
 - git (used by the Windows setup script)
 
 ## Run it
@@ -36,13 +36,14 @@ npm start          # http://localhost:5174
 
 ### First run and the database
 
-The first time you open the app, a setup screen asks for the MySQL or MariaDB connection (host, port, database, user and password). On Windows, create the database and its user first with the setup script, then enter the same password in the setup screen:
+The first time you open the app, a setup screen asks for the PostgreSQL connection (host, port 5432, database, user and password) and the one-time setup code printed in the server window. Create the database and its own role first with the setup script, then enter the same password in the setup screen:
 
 ```powershell
-.\scripts\setup-mysql.ps1
+winget install --id PostgreSQL.PostgreSQL.17 -e --interactive   # if PostgreSQL is not installed yet
+.\scripts\setup-postgres.ps1                                    # Linux: scripts/setup-postgres.sh
 ```
 
-The script expects a MySQL install folder, by default `%USERPROFILE%\MySQL`. Pass `-MySqlHome` if yours is elsewhere. It asks for the new user's password itself and does not save it.
+The script finds PostgreSQL (or tells you how to install it), asks for the superuser password and the new `appbuilder` role's password without showing or saving them, and creates the role and a database `appbuilder` owned by it. See [Installation](docs/admin/installation.md#prepare-the-database).
 
 Settings, read from environment variables:
 
@@ -50,13 +51,13 @@ Settings, read from environment variables:
 - `PORT`: the port for `npm start`. Default: `5174`.
 - `APPBUILDER_HOST`: the address to listen on. Default: `127.0.0.1`.
 - `APPBUILDER_SECRET_KEY`: 64 hex characters that encrypt stored connection passwords. If it is not set, a key is created in `workspace/.secret-key` on first start. Back up that key with the workspace, or the stored passwords cannot be read.
-- `APPBUILDER_DB_HOST`, `APPBUILDER_DB_PORT`, `APPBUILDER_DB_NAME`, `APPBUILDER_DB_USER`, `APPBUILDER_DB_PASSWORD`, `APPBUILDER_DB_SSL`: optional database connection. When the host, name and user are set, the setup screen is skipped.
+- `APPBUILDER_DB_HOST`, `APPBUILDER_DB_PORT` (5432), `APPBUILDER_DB_NAME`, `APPBUILDER_DB_USER`, `APPBUILDER_DB_PASSWORD`, `APPBUILDER_DB_SSL`: optional PostgreSQL connection. When the host, name and user are set, the setup screen is skipped.
 
 The server listens on `127.0.0.1` only by default. It is not reachable from other machines on your network.
 
 ## Offline use
 
-After one `npm install` and one `npm run build`, `npm start` needs no internet connection when the database is on this PC. App data lives in the MySQL or MariaDB database. Data files you pick are copied into the workspace folder, and the original files are never changed. Back up both the database and the workspace folder.
+After one `npm install` and one `npm run build`, `npm start` needs no internet connection when the database is on this PC. App data lives in the PostgreSQL database. Data files you pick are copied into the workspace folder, and the original files are never changed. Back up both the database (`pg_dump`) and the workspace folder ([Backup and restore](docs/admin/backup-and-restore.md)).
 
 ### Windows quick start
 
@@ -79,7 +80,7 @@ The script checks for Node.js 22.18 or newer and git, clones or updates the repo
 - `src/runtime/`: the run window and the sample app definitions
 - `server/main.ts`: the server entry point, used by `npm start`
 - `server/core/`: the app, configuration, sign-in, access rules (roles, row and column security), the data service and attachments
-- `server/connectors/`: the MySQL or MariaDB, data file and Google Sheets connectors
+- `server/connectors/`: the PostgreSQL (default database and external), MySQL/MariaDB (external), data file and Google Sheets connectors
 - `server/routes/meta/`: the metadata API for tables, connections, apps, packages and solutions
 - `docs/`: documentation (see Documentation above)
 
@@ -89,7 +90,7 @@ The script checks for Node.js 22.18 or newer and git, clones or updates the repo
 npm test
 ```
 
-This runs the Vitest suite. Type checking and linting are available with `npm run typecheck` and `npm run lint`.
+This runs the Vitest suite. Integration tests run when `APPBUILDER_TEST_DB` (a sandbox PostgreSQL URL) and `APPBUILDER_TEST_MYSQL` (a sandbox MySQL/MariaDB URL for the MySQL connector) are set; see [testing](docs/dev/testing.md). Type checking and linting are available with `npm run typecheck` and `npm run lint`.
 
 ## Known limits
 
@@ -97,7 +98,7 @@ This runs the Vitest suite. Type checking and linting are available with `npm ru
 - Security (sign-in, roles, row filters, column access) is enforced by the local server. The browser-only demo page simulates it and is not secure.
 - Writes are optimistic: the screen updates before the server confirms; a refused write is rolled back with an error.
 - Apps load up to 5,000 rows per table and warn when data is cut off.
-- Connectors: MySQL/MariaDB, data files (CSV, Excel, JSON; device only) and Google Sheets. Google Sheets has not been tested against a live Google account yet.
-- Verified on MariaDB 10.11; MySQL 8.4 verification is pending.
+- Connectors: PostgreSQL, MySQL/MariaDB, data files (CSV, Excel, JSON; device only) and Google Sheets. Google Sheets has not been tested against a live Google account yet.
+- Verified on PostgreSQL 16 (the MySQL connector on MariaDB 10.11). One environment per install for now.
 - Flows (automation) are not built yet. No installer, auto-update, built-in backup, password-reset email or two-factor sign-in yet.
 - The run window needs a normal browser window. Where pop-ups are blocked, it falls back to a preview inside the page.

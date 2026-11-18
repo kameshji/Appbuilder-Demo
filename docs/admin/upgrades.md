@@ -1,8 +1,8 @@
 # Upgrades
 
 Appbuilder is installed from its source folder, so an upgrade means getting newer source, rebuilding and restarting.
-There is no installer, no automatic update and no release channel yet. There is also no change log
-(`CHANGELOG`) in the repository, so read the commit history of what you pull before you apply it.
+There is no installer, no automatic update and no release channel yet. Read `CHANGELOG.md` (and the commit
+history) of what you pull before you apply it.
 
 ## Before you upgrade
 
@@ -36,23 +36,27 @@ After start, sign in and check an app, **Connections > Test**, and the console f
 
 ## What happens to the database
 
-On every start the server runs its schema step: it first reads `schemaVersion` from `ab_meta`, then does
-`CREATE TABLE IF NOT EXISTS` for every `ab_` system table and runs the upgrade steps the database has not had yet, in
-order, and records the new `schemaVersion` (`server/core/meta-store.ts`). Current version: **3**.
+On every start the server runs its schema step (`migrate()` in `server/core/meta-store.ts`): it reads `schemaVersion` from
+`ab.settings`, then, in **one transaction** (PostgreSQL DDL is transactional, so a failed step leaves the database as it was),
+creates or completes schema `ab` and every environment schema (`CREATE ... IF NOT EXISTS`), runs the upgrade steps the database has
+not had yet, in order, and records the new `schemaVersion`. Current version: **4**.
 
 | Version | Step |
 | --- | --- |
-| 1 | The initial system tables. |
-| 2 | `ab_users.email` stored trimmed and lowercase (rows that would collide are left as they are). |
-| 3 | `ab_users.must_change_password` added (`ALTER TABLE`, default 0: nobody is forced to change at once). Existing tables get their provenance: a table the audit log records as linked (`table.link`) stays *linked* (Appbuilder never drops it or its columns); if its definition lacks system columns it becomes **read-only** (before, such a table was writable but every query failed); every other table is marked as created by Appbuilder. A linked table whose audit entry was deleted is treated as created by Appbuilder. |
+| 1 to 3 | The MySQL/MariaDB system store of versions 0.1 to 0.4. **There is no upgrade from MySQL** (decision D14): a PostgreSQL database never has these versions, and a 0.5 server pointed at an old MySQL database cannot connect to it at all. |
+| 4 | The PostgreSQL layout: schema `ab` (settings, users, sessions, environments, licence) and the environment schema `env_default` (see [schema](../dev/schema.md)). |
 
+- **Moving from 0.4 (MySQL) to 0.5 (PostgreSQL).** Since there are no customer installations yet, there is no conversion. Install
+  PostgreSQL ([Installation](installation.md#prepare-the-database)), point the new version at an empty database and start fresh.
+  To carry apps and tables over, export them as **solution packages with data** from the 0.4 installation first and import them
+  into the new one ([Solutions](../guide/maker/solutions.md)); users and roles have to be created again.
 - **The migration summary** (from which version to which, and what each step did) is printed to the server console at
   start and written to the audit log as `schema.migrate` (details: `{ from, to, steps }`). An up-to-date database prints
-  "system schema version 3 (up to date)" and writes nothing.
-- The user tables (`t_...`) are yours and are not touched by upgrades. (Linked tables are touched only when a maker
-  agrees to add system columns while linking, see [Connections](connections.md).)
-- The schema step needs `CREATE` and, from version 3, `ALTER` on the Appbuilder database; the restricted user described in
-  [Installation](installation.md#prepare-the-database) has both.
+  "system schema version 4 (up to date)" and writes nothing.
+- The data tables (`t_...` in `env_default`) are yours and are not touched by upgrades. (Linked tables are touched only when a
+  maker agrees to add system columns while linking, see [Connections](connections.md).)
+- The schema step needs the Appbuilder role to own the database (or have `CREATE` on it), as set up by
+  `scripts/setup-postgres.*` ([Installation](installation.md#prepare-the-database)).
 
 ### Running an older version against a newer database
 
@@ -60,7 +64,7 @@ The server refuses a database whose `schemaVersion` is **higher** than the versi
 not run any statement against it (not even `CREATE TABLE IF NOT EXISTS`), prints
 
 ```
-ERROR DATABASE NOT USED: The database schema is version 4, but this Appbuilder only knows version 3. ...
+ERROR DATABASE NOT USED: The database schema is version 5, but this Appbuilder only knows version 4. ...
 ```
 
 and stays up without a database: every data route answers 503, `GET /api/v1/status` reports `setup.incompatible: true`,
@@ -84,13 +88,13 @@ If the new version misbehaves:
 ## Migrating an older file-based workspace
 
 Early versions (phase 2) kept data in files: `workspace.yaml`, `tables/*.schema.yaml` and `apps/*.app.yaml` in the
-workspace folder, and CSV data. The current version stores everything in MySQL. A conversion exists, but it runs only
+workspace folder, and CSV data. The current version stores everything in PostgreSQL. A conversion exists, but it runs only
 **once, at the moment the first administrator is created on the setup screen**, and only if those files are found in
 the workspace folder.
 
 What it does (tested with a sample old workspace):
 
-- Tables become tables on the built-in **Data files** connection (so they stay on this PC and are not in MySQL;
+- Tables become tables on the built-in **Data files** connection (so they stay on this PC and are not in the database;
   use *Move to database* afterwards if you want that).
 - Roles are merged by name with the built-in roles. Users are created **without passwords**: an administrator must set a
   password for each ([Users and roles](users-and-roles.md#create-a-user)).

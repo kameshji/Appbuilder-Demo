@@ -63,6 +63,7 @@ export async function resolveConnection(s: Services, connectionId?: string): Pro
 /* ------------------------------------------------------------------ physical names */
 
 export function defaultSource(kind: string, name: string): string {
+  if (kind === 'postgres') return `t_${name.toLowerCase()}`.slice(0, 63)
   if (kind === 'mysql') return `t_${name.toLowerCase()}`.slice(0, 64)
   return name
 }

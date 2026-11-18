@@ -75,9 +75,9 @@ export interface TableDef {
   columns: ColumnDef[]
   createdOn: string
   modifiedOn: string
-  /** connection that physically stores the rows. Default connection id: 'conn_default' (on-device MySQL). */
+  /** connection that physically stores the rows. Default connection id: 'conn_default' (the PostgreSQL system database, environment schema). */
   connectionId?: string
-  /** physical name inside the connection (MySQL table, file sheet, Google sheet tab). Default derived from name. */
+  /** physical name inside the connection (database table, file sheet, Google sheet tab). Default derived from name. */
   source?: string
   /** true when the source cannot be written through this connection (e.g. a read-only file or view) */
   readOnly?: boolean
@@ -218,14 +218,15 @@ export type DataOp = 'create' | 'read' | 'update' | 'delete'
 /* ------------------------------------------------------------------ connections, solutions */
 
 /**
- * Functional connectors: 'mysql' (on-device or remote MySQL/MariaDB), 'files' (CSV / Excel .xlsx / JSON data
- * files copied into the workspace's designated files folder; device-only), 'gsheets' (Google Sheets via a
- * service account). 'php-gateway' is the next phase (hosted MySQL behind a PHP API). Others are placeholders.
+ * Functional connectors: 'postgres' (the default database, and external PostgreSQL databases), 'mysql' (external
+ * MySQL/MariaDB databases), 'files' (CSV / Excel .xlsx / JSON data files copied into the workspace's designated files
+ * folder; device-only), 'gsheets' (Google Sheets via a service account). 'php-gateway' is a later phase. Others are
+ * placeholders.
  * 'local-csv' is the legacy demo-mode connector.
  */
 export type ConnectorKind =
-  | 'mysql' | 'files' | 'gsheets' | 'php-gateway'
-  | 'local-csv' | 'rest' | 'postgres' | 'sqlserver' | 'supabase' | 'firebase' | 'excel'
+  | 'postgres' | 'mysql' | 'files' | 'gsheets' | 'php-gateway'
+  | 'local-csv' | 'rest' | 'sqlserver' | 'supabase' | 'firebase' | 'excel'
 export interface ConnectionRef {
   id: string
   name: string
@@ -285,7 +286,7 @@ export interface SolutionDef {
 
 export interface WorkspaceState {
   ready: boolean
-  /** 'server' = the local Node server (MySQL, real login, server-enforced security); 'demo' = browser-only simulation */
+  /** 'server' = the local Node server (PostgreSQL, real login, server-enforced security); 'demo' = browser-only simulation */
   mode: 'server' | 'demo'
   /** server mode first-run state. Both false once the workspace is usable. */
   setup: {
@@ -298,7 +299,7 @@ export interface WorkspaceState {
   }
   /** null when signed out (server mode). Demo mode: always the run-as user. */
   session: Session | null
-  storage: { kind: StorageAdapter['kind'] | 'mysql'; location: string }
+  storage: { kind: StorageAdapter['kind'] | 'postgres'; location: string }
   apps: AppMeta[]
   tables: TableDef[]
   roles: RoleDef[]
@@ -401,12 +402,12 @@ export interface PlatformApi {
      * rows() of an unloaded table returns [] and schedules a load; subscribe() fires when it arrives.
      */
     ensureLoaded(tableNames: string[]): Promise<void>
-    /** list tables available inside a connection that are not yet registered (existing MySQL tables, sheets, file sheets) */
+    /** list tables available inside a connection that are not yet registered (existing database tables, sheets, file sheets) */
     listSourceTables(connectionId: string): Promise<{ source: string; columns: { name: string; type: ColumnType }[]; rowCount?: number }[]>
     /** register an existing source table as a workspace table (columns inferred; system columns added where the source allows) */
     /** ensureIdColumn: consent to add the missing system columns (id, createdOn, modifiedOn, createdBy, owner); without it such a table links read-only */
     linkSourceTable(connectionId: string, source: string, input?: { displayName?: string; name?: string; ensureIdColumn?: boolean; readOnly?: boolean }): Promise<TableDef>
-    /** copy a table into another connection (e.g. a file table into MySQL), keeping its name so formulas keep working */
+    /** copy a table into another connection (e.g. a file table into the default database), keeping its name so formulas keep working */
     moveToConnection(tableId: string, connectionId: string): Promise<TableDef>
   }
 
@@ -424,7 +425,7 @@ export interface PlatformApi {
     updateProfile(input: { name: string }): Promise<UserDef>
     /** first-run: the database connection for the default store (server tests it, creates the system tables) */
     /** setupCode: the one-time code the server prints to its console (first run) */
-    setupDatabase(input: { host: string; port: number; database: string; user: string; password: string; createDatabase?: boolean; setupCode?: string }): Promise<void>
+    setupDatabase(input: { host: string; port: number; database: string; user: string; password: string; createDatabase?: boolean; ssl?: boolean; setupCode?: string }): Promise<void>
     /** first-run: create the first administrator and sign in */
     setupAdmin(input: { name: string; email: string; password: string; setupCode?: string }): Promise<Session>
   }
@@ -483,12 +484,12 @@ export interface PlatformApi {
   }
 
   connections: {
-    /** secret: password (mysql) or service-account key JSON text (gsheets); stored encrypted on the server */
+    /** secret: password (postgres, mysql) or service-account key JSON text (gsheets); stored encrypted on the server */
     create(input: { name: string; connector: ConnectorKind; settings?: Record<string, string>; secret?: string }): Promise<ConnectionRef>
     update(id: string, patch: Partial<Omit<ConnectionRef, 'id' | 'hasSecret'>> & { secret?: string }): Promise<void>
     remove(id: string): Promise<void>
     test(id: string): Promise<{ ok: boolean; message: string }>
-    /** make this connection the default store for new tables (mysql only) */
+    /** make this connection the default store for new tables (postgres only) */
     setDefault(id: string): Promise<void>
   }
 

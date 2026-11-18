@@ -1,6 +1,6 @@
-import type { FxValue } from '@/contracts'
-import { describe, toNumber } from '../values'
-import { def, type CallCtx, type FnDef } from './types'
+import type { FxValue } from '../../contracts.ts'
+import { describe, toNumber } from '../values.ts'
+import { def, type CallCtx, type FnDef } from './types.ts'
 
 export function parseDateText(s: string): Date | null {
   const t = s.trim()

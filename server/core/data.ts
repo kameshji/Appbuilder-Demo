@@ -166,7 +166,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
   async function markFileModified(table: TableDef): Promise<void> {
     if (table.origin?.kind !== 'file' || !table.origin.fileId) return
     try {
-      await meta().db.exec('UPDATE ab_data_files SET modified_since_import = 1 WHERE id = ? AND modified_since_import = 0', [table.origin.fileId])
+      await meta().files.markModified(table.origin.fileId)
     } catch (e) {
       deps.log('warn', `could not flag data file ${table.origin.fileId} as modified: ${errText(e)}`)
     }
@@ -500,7 +500,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
 
   /**
    * All or nothing: the permission of EVERY target row is checked before anything is deleted (403 and no change when
-   * one readable row may not be deleted), then the rows go in one connector call (MySQL: one transaction).
+   * one readable row may not be deleted), then the rows go in one connector call (PostgreSQL and MySQL: one transaction).
    */
   async function del(ctx: UserContext | null, table: TableDef, idsIn: string[]): Promise<number> {
     const def = physical(table)
@@ -597,7 +597,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
         throw e
       }
     }
-    // MySQL: delete + inserts in one transaction. Connectors without transactions (files, Google Sheets): the delete
+    // SQL connectors: delete + inserts in one transaction. Connectors without transactions (files, Google Sheets): the delete
     // and the insert are separate writes (see docs/dev/connectors.md).
     const write = async (c: Connector) => {
       if (targets.length) await c.delete(def, targets, guard)

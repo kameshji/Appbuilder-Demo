@@ -11,8 +11,9 @@ You need:
 
 - **Node 22.18 or newer** (`engines` in `package.json`). The server runs TypeScript directly through type stripping, so older Node
   versions do not work.
-- **MySQL 8 or MariaDB 10.4+** for the server (MySQL 5.7 is a design target). On Windows `scripts/setup-mysql.ps1` creates the
-  database and its own user. For development any local server and an empty database will do.
+- **PostgreSQL 15+** for the server (17 recommended; CI runs 16). `scripts/setup-postgres.ps1` (Windows) or
+  `scripts/setup-postgres.sh` (Linux) creates the role and an empty database. For development any local server and an empty UTF8
+  database will do. MySQL/MariaDB is only needed to run the MySQL connector's tests.
 
 ```bash
 npm install
@@ -57,7 +58,8 @@ Opening `dist/index.html` without the server runs **demo mode** (browser-only si
 - Security is enforced on the server only. Client checks are for user experience. Never put a permission check in a connector or a
   component and call it security.
 - Never log or return passwords, secret keys, SQL text or stack traces. Error messages are written for makers (plain English).
-- Keep SQL portable (MySQL 5.7+/8, MariaDB 10.4+): see [schema](docs/dev/schema.md).
+- Qualify every table with its schema and never rely on `search_path`; keep the MySQL connector's SQL portable (MySQL 5.7+/8,
+  MariaDB 10.4+): see [schema](docs/dev/schema.md) and [connectors](docs/dev/connectors.md).
 
 ## Dependency rule
 
@@ -108,7 +110,7 @@ A change is done when all of these are true:
 1. `npm run typecheck` passes (client and server).
 2. `npm test` passes, including the docs staleness tests. New behaviour has tests; a bug fix has a test that failed before.
 3. If you touched the database layer, the connectors, `data.ts`, `security.ts` or any route: the integration tests pass against a real
-   MySQL or MariaDB (`APPBUILDER_TEST_DB`, see [testing](docs/dev/testing.md)).
+   PostgreSQL (`APPBUILDER_TEST_DB`) and, for the MySQL connector, MariaDB (`APPBUILDER_TEST_MYSQL`); see [testing](docs/dev/testing.md).
 4. `npm run lint` shows no new errors.
 5. The docs are updated: the matching page in `docs/dev/` (and `docs/guide` or `docs/admin` if a maker or admin would notice), the
    generated references (`npm run docs:gen`, committed), and `CHANGELOG.md` where relevant.

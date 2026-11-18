@@ -1,4 +1,4 @@
-/** SqlDb over a mysql2/promise pool (SPEC3 7.1). Also used by the server core for the system store. */
+/** SqlDb over a mysql2/promise pool (`?` placeholders). Used only by the MySQL connector (external databases). */
 import mysql from 'mysql2/promise'
 import type { Pool, PoolConnection, PoolOptions } from 'mysql2/promise'
 import type { MySqlSettings, SqlDb, SqlResult } from '../../core/contracts.ts'
@@ -36,6 +36,7 @@ type Runner = Pick<Pool | PoolConnection, 'query'>
 function wrap(run: Runner, pool: Pool | null, conn: PoolConnection | null): SqlDb {
   let version: string | null = null
   const self: SqlDb = {
+    dialect: 'mysql',
     async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
       const [rows] = await run.query(sql, params)
       return rows as unknown as T[]

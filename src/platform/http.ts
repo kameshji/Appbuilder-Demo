@@ -72,8 +72,8 @@ export interface StatusResponse {
   setup: { needsDatabase: boolean; needsAdmin: boolean; unavailable?: boolean; incompatible?: boolean }
   /** true when the workspace is usable (database reachable and compatible, administrator exists) */
   ok: boolean
-  /** admins only: default store description for the UI, e.g. "MySQL 8.4.3 at 127.0.0.1:3306/appbuilder" */
-  storage?: { kind: 'mysql'; location: string } | null
+  /** admins only: default store description for the UI, e.g. "PostgreSQL 16.4 at 127.0.0.1:5432/appbuilder" */
+  storage?: { kind: 'postgres'; location: string } | null
   /** admins only */
   databaseError?: string
   /** admins only: versions for the About page and the environment details */
@@ -150,7 +150,7 @@ export interface WorkspaceResponse {
   solutions: SolutionDef[]
   dataFiles: DataFileDef[]
   session: Session
-  storage: { kind: 'mysql'; location: string }
+  storage: { kind: 'postgres'; location: string }
   /** the environments (same as GET /api/v1/environments); absent from servers older than 0.5 */
   environments?: EnvironmentDef[]
 }

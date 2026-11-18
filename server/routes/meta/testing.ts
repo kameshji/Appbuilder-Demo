@@ -15,6 +15,7 @@ import type {
   SourceColumn, SqlDb, UserRecord,
 } from '../../core/contracts.ts'
 import { applyQuery, evaluateCondition } from '../../core/condition.ts'
+import { currentEnvironment } from '../../core/env-context.ts'
 import { createSecretBox } from '../../core/secrets.ts'
 import { createSecurityEngine } from '../../core/security.ts'
 import { createConnectionManager } from '../../core/connections.ts'
@@ -44,12 +45,11 @@ export class FakeMetaStore implements MetaStore {
   sessionsLog = new Map<string, { userId: string; expiresOn: Date }>()
 
   db: SqlDb = {
+    dialect: 'postgres',
     query: async () => [],
     exec: async (sql: string, params: unknown[] = []) => {
-      if (/INSERT INTO ab_counters/i.test(sql)) {
-        const k = String(params[0])
-        this.counters.set(k, Math.max(this.counters.get(k) ?? 0, Number(params[1])))
-      }
+      void sql
+      void params
       return { affectedRows: 1 }
     },
     tx: async (fn) => fn(this.db),
@@ -57,6 +57,11 @@ export class FakeMetaStore implements MetaStore {
     close: async () => {},
   }
   async migrate() {}
+  tableName(name: string) { return `"fake"."${name}"` }
+  environments = {
+    list: async () => [{ id: 'default', name: 'Default', schema: 'env_default', type: 'production' as const, builtIn: true, createdOn: '' }],
+    get: async (id: string) => (id === 'default' ? { id: 'default', name: 'Default', schema: 'env_default', type: 'production' as const, builtIn: true, createdOn: '' } : null),
+  }
 
   users = {
     list: async () => [...this.u.values()].map(clone),
@@ -109,6 +114,7 @@ export class FakeMetaStore implements MetaStore {
     get: async (id: string) => clone(this.f.get(id) ?? null),
     upsert: async (x: DataFileDef & { storageKey: string; originalName: string }) => { this.f.set(x.id, clone(x)) },
     remove: async (id: string) => { this.f.delete(id) },
+    markModified: async (id: string) => { const f = this.f.get(id); if (f) f.modifiedSinceImport = true },
   }
   attachments = {
     get: async (id: string) => this.att.get(id) ?? null,
@@ -116,6 +122,11 @@ export class FakeMetaStore implements MetaStore {
     insert: async (x: AttachmentRecord) => { this.att.set(x.id, x) },
     remove: async (id: string) => { this.att.delete(id) },
     forRows: async (tableId: string, rowIds: string[]) => [...this.att.values()].filter((x) => x.tableId === tableId && rowIds.includes(x.rowId)),
+    idsForTable: async (tableId: string) => [...this.att.values()].filter((x) => x.tableId === tableId).map((x) => x.id),
+    idsCreatedBefore: async (cutoff: Date, limit: number) => [...this.att.values()].filter((x) => new Date(x.createdOn) < cutoff).slice(0, limit).map((x) => x.id),
+  }
+  async raiseCounter(key: string, value: number) {
+    this.counters.set(key, Math.max(this.counters.get(key) ?? 0, value))
   }
   async nextCounter(key: string) {
     const n = (this.counters.get(key) ?? 0) + 1
@@ -144,10 +155,10 @@ export class FakeMetaStore implements MetaStore {
   async info() { return { createdOn: null } }
 }
 
-/* ------------------------------------------------------------------ in-memory connector ("mysql" stand-in) */
+/* ------------------------------------------------------------------ in-memory connector (stand-in for "postgres" and "mysql") */
 
 export class MemoryConnector implements Connector {
-  readonly kind = 'mysql' as const
+  readonly kind = 'postgres' as const
   readonly capabilities = { ddl: true, write: true, pushdown: false, transactions: false }
   tablesBySource = new Map<string, { def: TableDef; rows: RawRow[] }>()
   external = new Map<string, { columns: SourceColumn[]; rows: RawRow[] }>()
@@ -285,6 +296,7 @@ export async function makeHarness(opts: { workspace?: (dir: string) => void } = 
   const getMeta = () => meta as MetaStore
   const connections = createConnectionManager(getMeta, env)
   const memFactory: ConnectorFactory = () => mem
+  connections.register('postgres', memFactory)
   connections.register('mysql', memFactory)
   connections.register('files', createFilesConnector)
   const security = createSecurityEngine(getMeta)
@@ -293,10 +305,11 @@ export async function makeHarness(opts: { workspace?: (dir: string) => void } = 
   let n = 0
   const services = {
     config, secrets: createSecretBox(Buffer.alloc(32, 7)), ready: () => true, meta, security, data, connections, attachments, env,
+    environment: currentEnvironment, transaction: <T>(fn: () => Promise<T>) => fn(),
     uid: (p?: string) => `${p ?? 'id'}_${(++n).toString(16).padStart(8, '0')}`, now: () => new Date().toISOString(),
   } as unknown as Services
 
-  await meta.connections.upsert({ id: 'conn_default', name: 'Default database', connector: 'mysql', status: 'connected', settings: { host: 'x', port: '3306', database: 'x', user: 'x', ssl: 'false' }, secret: 'pw', isDefault: true, scope: 'server' })
+  await meta.connections.upsert({ id: 'conn_default', name: 'Default database', connector: 'postgres', status: 'connected', settings: { host: 'x', port: '5432', database: 'x', user: 'x', ssl: 'false' }, secret: 'pw', isDefault: true, scope: 'server' })
   await meta.connections.upsert({ id: 'conn_files', name: 'Data files', connector: 'files', status: 'connected', settings: {}, isDefault: false, scope: 'device' })
   await meta.roles.upsert({ id: 'role_admin', name: 'Administrator', isAdmin: true, privileges: [], apps: 'all' })
   await meta.roles.upsert({ id: 'role_maker', name: 'Maker', isMaker: true, privileges: [], apps: 'all' } as RoleDef)

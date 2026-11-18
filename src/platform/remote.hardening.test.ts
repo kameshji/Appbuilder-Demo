@@ -30,7 +30,7 @@ function server(o: { status?: Record<string, unknown>; mustChange?: boolean; sig
     if (p === '/auth/password') { current = session(false); return json(200, { ok: true }) }
     if (p === '/workspace') {
       if (current?.user.mustChangePassword) return json(403, { error: { code: 'password_change_required', message: 'Change it first.' } })
-      return json(200, { apps: [], tables: [], roles: [], users: [], connections: [], solutions: [], dataFiles: [], session: current, storage: { kind: 'mysql', location: 'Server database' } })
+      return json(200, { apps: [], tables: [], roles: [], users: [], connections: [], solutions: [], dataFiles: [], session: current, storage: { kind: 'postgres', location: 'Server database' } })
     }
     if (p.startsWith('/tables/') && method === 'DELETE') return json(200, { ok: true })
     if (p === '/connections/conn_x/link') return json(200, { id: 'tbl_l', name: 'L', displayName: 'L', primaryColumn: 'id', columns: [], createdOn: '', modifiedOn: '', readOnly: true })

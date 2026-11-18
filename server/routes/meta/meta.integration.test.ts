@@ -1,6 +1,6 @@
 /**
- * Metadata API end to end over HTTP against the sandbox MariaDB/MySQL:
- *   APPBUILDER_TEST_DB=mysql://abdev:abdev-sandbox-only@127.0.0.1:3306/appbuilder_test npx vitest run server/routes/meta
+ * Metadata API end to end over HTTP against the sandbox PostgreSQL:
+ *   APPBUILDER_TEST_DB=postgres://abdev:abdev-sandbox-only@127.0.0.1:5433/appbuilder_test npx vitest run server/routes/meta
  * Skipped when APPBUILDER_TEST_DB is unset. Creates a fresh database and drops it afterwards.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -8,22 +8,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
-import { randomBytes } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
-import mysql from 'mysql2/promise'
+import { PG_URL, SKIP_PG, dropDatabase, pgServer, testDatabaseName } from '../../core/testdb.ts'
 import { createApp } from '../../core/app.ts'
 import type { AppServer } from '../../core/app.ts'
 import { setQuiet } from '../../core/util.ts'
 
 setQuiet(true)
 
-const URL_ENV = process.env.APPBUILDER_TEST_DB
-const parsed = URL_ENV ? new URL(URL_ENV) : null
-const conn = parsed
-  ? { host: parsed.hostname, port: Number(parsed.port) || 3306, user: decodeURIComponent(parsed.username), password: decodeURIComponent(parsed.password) }
-  : null
-const dbName = `appbuilder_test_s2_${randomBytes(4).toString('hex')}`
-if (!URL_ENV) process.stderr.write('[server/routes/meta integration] skipped: set APPBUILDER_TEST_DB to run\n')
+const URL_ENV = PG_URL
+const conn = pgServer
+const dbName = testDatabaseName('s2')
+if (!URL_ENV) process.stderr.write(`[server/routes/meta integration] ${SKIP_PG}\n`)
 
 class Client {
   cookie = ''
@@ -56,7 +52,7 @@ class Client {
   del = (p: string) => this.req('DELETE', p)
 }
 
-describe.skipIf(!URL_ENV)('metadata API integration (MariaDB/MySQL)', () => {
+describe.skipIf(!URL_ENV)('metadata API integration (PostgreSQL)', () => {
   let app: AppServer
   let server: http.Server
   let tmp = ''
@@ -83,11 +79,7 @@ describe.skipIf(!URL_ENV)('metadata API integration (MariaDB/MySQL)', () => {
   afterAll(async () => {
     await new Promise<void>((r) => (server ? server.close(() => r()) : r()))
     await app?.close()
-    if (conn) {
-      const c = await mysql.createConnection(conn)
-      await c.query(`DROP DATABASE IF EXISTS \`${dbName}\``)
-      await c.end()
-    }
+    if (conn) await dropDatabase(dbName)
     if (tmp) fs.rmSync(tmp, { recursive: true, force: true })
   }, 60000)
 

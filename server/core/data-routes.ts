@@ -119,7 +119,7 @@ export function dataRoutes(router: ApiRouter, services: CoreServices): void {
       dataFiles,
       session: user.session(),
       // host, port and database name: administrators only (like GET /status)
-      storage: { kind: 'mysql', location: isAdmin ? (services.state.location ?? '') : 'Server database' },
+      storage: { kind: 'postgres', location: isAdmin ? (services.state.location ?? '') : 'Server database' },
       environments,
     }
   }, { auth: 'user' })

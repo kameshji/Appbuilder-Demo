@@ -1,8 +1,8 @@
-import type { FxRecord, FxValue } from '@/contracts'
-import { fmtDateDefault, isRecord, parseNumberText, setField, toRows, toText, describe } from '../values'
-import { parseDateText } from './dates'
-import { formatDate, formatNumber, looksLikeDateFormat } from './format'
-import { def, MANY, type CallCtx, type FnDef } from './types'
+import type { FxRecord, FxValue } from '../../contracts.ts'
+import { fmtDateDefault, isRecord, parseNumberText, setField, toRows, toText, describe } from '../values.ts'
+import { parseDateText } from './dates.ts'
+import { formatDate, formatNumber, looksLikeDateFormat } from './format.ts'
+import { def, MANY, type CallCtx, type FnDef } from './types.ts'
 
 function proper(s: string): string {
   return s.toLowerCase().replace(/(^|[^\p{L}])(\p{L})/gu, (_m, a: string, b: string) => a + b.toUpperCase())

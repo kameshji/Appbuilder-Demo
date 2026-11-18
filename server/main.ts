@@ -3,7 +3,7 @@
  * Appbuilder local server: `node server/main.ts` (Node 22.18+ type stripping).
  * Serves the Data API v1 under /api/v1 and the built app from dist/ (SPA fallback).
  *   PORT (5174)   APPBUILDER_HOST (127.0.0.1)   APPBUILDER_WORKSPACE (./workspace)   APPBUILDER_SECRET_KEY
- *   APPBUILDER_DB_HOST / _PORT / _NAME / _USER / _PASSWORD  (optional bootstrap, skips the setup screen)
+ *   APPBUILDER_DB_HOST / _PORT (5432) / _NAME / _USER / _PASSWORD / _SSL  (optional PostgreSQL bootstrap, skips the setup screen)
  *   APPBUILDER_ALLOWED_HOSTS (extra Host names)  APPBUILDER_SECURE_COOKIE=1  APPBUILDER_TRUST_PROXY=1
  */
 import http from 'node:http'

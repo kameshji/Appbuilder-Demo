@@ -13,13 +13,16 @@ src/**/*.test.ts   server/**/*.test.ts   scripts/**/*.test.ts
 | Area | Files | What they cover | Needs a database |
 | --- | --- | --- | --- |
 | Formula engine | `src/fx/*.test.ts` (`functions`, `functions2`, `behaviour`, `behaviour2`, `tables`, `tables2`, `udf`, `syntax`, `lang2`, `signature`, `api`, `perf`, `animatedIcons`) with helpers in `src/fx/testutil.ts` | Lexing, parsing, every function, behaviour functions against a fake host, user-defined functions, rename and reference analysis, performance checks, the generated animated-icon list | no |
+| Engine sharing and layering | `src/fx/engine.test.ts`, `src/fx/layering.test.ts`, `server/core/fx.test.ts` | Engine instances (own user functions and named formulas), the AST printer, src/fx imports only allowed files (relative `.ts`), the engine and translator load under plain Node | no |
+| Query v2 translator | `src/fx/query/parity.test.ts`, `src/fx/query/translate.test.ts` (data in `testdata.ts`) | Engine vs plan parity on a generated corpus (~650 formulas), exact plans, diagnostics, keyset cursors and paging | no |
 | Runtime | `src/runtime/{evaluator,submit,attachments}.test.ts` | Dependency tracking and invalidation, form submit flow, attachment helpers | no |
 | Platform (client) | `src/platform/{platform,demo,remote}.test.ts` | Demo-mode core, the remote platform's optimistic cache, rollback and mirrored checks (against a fake `fetch`) | no |
-| Server core | `server/core/unit.test.ts` | Router guards, auth, security engine, DataService, values, conditions, with in-memory fakes | no |
+| Server core | `server/core/unit.test.ts`, `server/core/env-context.test.ts` | Router guards, auth, security engine, DataService, values, conditions, with in-memory fakes; the environment resolver and the environment-keyed security and connection caches | no |
 | Server hardening | `server/core/hardening.test.ts`, `server/routes/meta/hardening.test.ts` | Loopback-only setup routes (a real LAN socket when the machine has one), host list, setup code, CSP hashes, Secure cookie, `password_change_required` gate, CSV escaping, per-email backoff, audit diffs; table delete/column unmap on linked tables, owners of imported rows, assign-owner, audit entries | no |
 | Server metadata routes | `server/routes/meta/{meta,connections,files,migrate,security,solutions,tables}.test.ts` | Apps, tables, columns, connections, roles and users, solutions, packages, legacy migration, data files. They use the in-memory `FakeMetaStore` harness `server/routes/meta/testing.ts` with the **real** `SecurityEngine`, `DataService` and `ConnectionManager` | no |
-| Connectors | `server/connectors/mysql/sql.test.ts` (pure SQL builder), `files/files.test.ts` (temp directory), `gsheets/gsheets.test.ts` (injected fake Google API) | Each connector in isolation | no |
-| Integration | `server/connectors/mysql/mysql.integration.test.ts`, `server/core/integration.test.ts`, `server/routes/meta/meta.integration.test.ts` | The MySQL connector against a real server including SQL-versus-reference **parity**, the whole HTTP API end to end (cookie jars per user, RBAC/RLS/CLS, attachments), the metadata API | **yes** |
+| Connectors | `server/connectors/postgres/sql.test.ts` and `server/connectors/mysql/sql.test.ts` (pure SQL builders, error mapping), `files/files.test.ts` (temp directory), `gsheets/gsheets.test.ts` (injected fake Google API) | Each connector in isolation | no |
+| Integration (PostgreSQL) | `server/connectors/postgres/postgres.integration.test.ts`, `server/core/{integration,fixes,hardening,admin,transactions}.integration.test.ts`, `server/routes/meta/meta.integration.test.ts` | The PostgreSQL connector against a real server including SQL-versus-reference **parity**, pooled-connection settings and transactions; the whole HTTP API end to end (cookie jars per user, RBAC/RLS/CLS, attachments); units of work (a failed import or schema change leaves nothing behind); the metadata API | **yes**, `APPBUILDER_TEST_DB` |
+| Integration (MySQL connector) | `server/connectors/mysql/mysql.integration.test.ts` | The MySQL connector (external databases) against MySQL/MariaDB including parity | **yes**, `APPBUILDER_TEST_MYSQL` |
 | Generated docs | `scripts/docs/generate.test.ts` | Staleness of `docs/reference/*.md` (below) | no |
 | Licence classifier | `scripts/licences.test.ts` | The licence allow-list logic used by `npm run licences` and `npm run notices` (SPDX expressions, arrays, missing, exceptions, forbidden imports) | no |
 
@@ -29,7 +32,7 @@ Test data: `server/routes/meta/fixtures.ts` is the legacy sample fixture; seed d
 ## Running unit tests
 
 ```bash
-npm test                              # everything; integration tests are skipped when APPBUILDER_TEST_DB is unset
+npm test                              # everything; integration tests are skipped when APPBUILDER_TEST_DB / _MYSQL are unset
 npx vitest run src/fx                 # a folder
 npx vitest run server/core/unit.test.ts
 npx vitest run -t "Switch"            # by test name
@@ -38,41 +41,57 @@ npm run typecheck                     # tsc -b --noEmit (client) and tsc -p tsco
 npm run lint                          # oxlint
 ```
 
-Skipped integration suites print a line such as `APPBUILDER_TEST_DB is not set: integration tests are SKIPPED`; a green `npm test`
-without a database therefore does **not** exercise real SQL. Run the integration tests before merging any change to
-`server/connectors/mysql/`, `server/core/meta-store.ts`, `server/core/data.ts`, `server/core/security.ts` or the routes.
+Skipped integration suites print a line such as `skipped: set APPBUILDER_TEST_DB=postgres://...`; a green `npm test` without the
+databases therefore does **not** exercise real SQL. Run the integration tests before merging any change to `server/connectors/`,
+`server/core/meta-store.ts`, `server/core/data.ts`, `server/core/security.ts` or the routes.
 
-## Running integration tests against MySQL or MariaDB
+## Running integration tests against PostgreSQL (and the MySQL connector against MariaDB)
 
-Set `APPBUILDER_TEST_DB` to a URL: `mysql://user:password@host:port/appbuilder_test`. Use a **sandbox** server and a throw-away
-account; never a database with real data. Then:
+Two variables, both URLs of **sandbox** servers with throw-away accounts; never a database with real data:
+
+- `APPBUILDER_TEST_DB=postgres://user:password@host:port/appbuilder_test`: the system store and the default connection (every
+  integration suite except the MySQL connector's). The database named in the URL must exist; the suites use it as the maintenance
+  database.
+- `APPBUILDER_TEST_MYSQL=mysql://user:password@host:port/appbuilder_test`: only `server/connectors/mysql/mysql.integration.test.ts`.
 
 ```bash
-export APPBUILDER_TEST_DB='mysql://abdev:abdev-sandbox-only@127.0.0.1:3306/appbuilder_test'
-npx vitest run server/connectors/mysql     # connector + parity
+export APPBUILDER_TEST_DB='postgres://abdev:abdev-sandbox-only@127.0.0.1:5433/appbuilder_test'
+export APPBUILDER_TEST_MYSQL='mysql://abdev:abdev-sandbox-only@127.0.0.1:3306/appbuilder_test'
+npx vitest run server/connectors/postgres  # connector + parity + transactions
+npx vitest run server/connectors/mysql     # the MySQL connector + its parity
 npx vitest run server/core                 # end-to-end over HTTP (also runs unit.test.ts)
 npx vitest run server/routes/meta          # metadata API (also runs the unit tests there)
 ```
 
-(`abdev` / `abdev-sandbox-only` is the sandbox account used by the project's documentation; any account with the grants below
-works.)
+(`abdev` / `abdev-sandbox-only` is the sandbox account used by the project's documentation; any account with the rights below
+works. `server/core/testdb.ts` holds the helpers: `withPg`, `createDatabase`, `dropDatabase` (`WITH (FORCE)`), `pgQuery`,
+`testDatabaseName`.) A `mysql://` URL in `APPBUILDER_TEST_DB` is refused with a message.
 
 What each suite creates and needs:
 
-- `server/core/integration.test.ts` creates a fresh database `appbuilder_test_s1_<8 hex>` and drops it afterwards, so the account
-  needs `CREATE` and `DROP` on `appbuilder_test%`.
-- `server/routes/meta/meta.integration.test.ts` does the same with `appbuilder_test_s2_<8 hex>`, and
-  `server/core/fixes.integration.test.ts` (body limits, RLS WITH CHECK, atomic deletes and imports, attachment limits, row order,
-  throttle codes, email migration) with `appbuilder_test_fx_<8 hex>`, and `server/core/hardening.integration.test.ts` (setup code and
-  setup lock, anonymous status, forced password change, MySQL link with and without consent, assign owner, migration v3, boot
-  retry, downgrade guard, Secure cookie) with `appbuilder_test_hd_<8 hex>`.
+- `server/core/integration.test.ts` runs the setup wizard's endpoint with `createDatabase: true`, so the server creates a fresh
+  database `appbuilder_test_s1_<8 hex>`; the suite drops it afterwards. Likewise `server/routes/meta/meta.integration.test.ts`
+  (`_s2_`), `server/core/fixes.integration.test.ts` (`_fx_`: body limits, RLS WITH CHECK, atomic deletes and imports, attachment
+  limits, row order, throttle codes, lowercase emails, refusal of MySQL-era schema versions), `server/core/hardening.integration.test.ts`
+  (`_hd_`: setup code and setup lock, anonymous status, forced password change, linking tables of the default database with and
+  without consent, assign owner, the layout of schemas `ab`/`env_default`, boot retry, downgrade guard, Secure cookie),
+  `server/core/admin.integration.test.ts` and `server/core/transactions.integration.test.ts` (`_tx_`: units of work).
 - Integration tests create the app with `createApp({ ..., printSetupCode: false })` and send `app.services.setupCode.current()`
   as `setupCode` to `/setup/database` and `/setup/admin`.
-- `server/connectors/mysql/mysql.integration.test.ts` uses the database named in the URL (`appbuilder_test`), which must exist, and
-  creates and drops its own tables inside it with a random `tst<hex>_` prefix. It needs `ALL` on that database. Besides
-  parity it covers DDL, indexes, transactions (a failing multi-row insert rolls everything back) and error mapping.
+- `server/connectors/postgres/postgres.integration.test.ts` works in a fresh schema `tst<hex>` of the URL's database and drops it
+  with `CASCADE` afterwards.
+- `server/connectors/mysql/mysql.integration.test.ts` uses the MySQL database named in its URL, which must exist, and creates and
+  drops its own tables inside it with a random `tst<hex>_` prefix. It needs `ALL` on that database.
 
-Required grants (run as an administrator on the sandbox server):
+Required rights on the sandbox PostgreSQL (run as a superuser): a login role with **CREATEDB** (no superuser needed) that may
+connect to and create schemas in the URL's database:
+
+```sql
+CREATE ROLE abdev LOGIN CREATEDB PASSWORD 'abdev-sandbox-only';
+CREATE DATABASE appbuilder_test OWNER abdev ENCODING 'UTF8' TEMPLATE template0;
+```
+
+and on the sandbox MySQL/MariaDB:
 
 ```sql
 CREATE DATABASE IF NOT EXISTS appbuilder_test;
@@ -80,10 +99,10 @@ CREATE USER 'abdev'@'%' IDENTIFIED BY 'abdev-sandbox-only';
 GRANT ALL PRIVILEGES ON `appbuilder\_test%`.* TO 'abdev'@'%';
 ```
 
-The escaped underscore matters: an unescaped `_` is a single-character wildcard in grants. On MariaDB the same statements work.
+The escaped underscore matters: an unescaped `_` is a single-character wildcard in MySQL grants.
 
-Verified status: MariaDB 10.11 passes. MySQL 8.4 is pending (decision D7). MySQL 5.7 and MariaDB 10.4 are design targets that have not
-been run; see `schema.md` for the compatibility rules. If you can run the suite on another version, record it in the decision log.
+Verified status: PostgreSQL 16 passes (sandbox and CI), also with a non-superuser CREATEDB role; PostgreSQL 15 and 17 are supported
+targets not yet run in CI. The MySQL connector passes on MariaDB 10.11; MySQL 8.4 is pending.
 
 ## What to test for each kind of change
 
@@ -91,7 +110,7 @@ been run; see `schema.md` for the compatibility rules. If you can run the suite 
 | --- | --- |
 | New Fx function | A case in the matching `src/fx/*.test.ts` using `val`/`err` (blank, error, laziness). Then `npm run docs:gen`. |
 | New control | Logic helpers in a unit test; manual check in the Studio (design and run mode, light and dark); `npm run docs:gen`. |
-| Condition semantics (`condition.ts` or `sql.ts`) | Unit tests in `sql.test.ts`, **and a new case in the parity list** of `mysql.integration.test.ts`. |
+| Condition semantics (`condition.ts` or a `sql.ts`) | Unit tests in `postgres/sql.test.ts` (and `mysql/sql.test.ts`), **and a new case in the parity lists** of `postgres.integration.test.ts` and `mysql.integration.test.ts`. |
 | Security rule (`security.ts`, `data.ts`) | A role table with expected rows in `unit.test.ts` or `security.test.ts`, and a flow in `server/core/integration.test.ts` over HTTP. |
 | New route | A route test in `server/routes/meta/*.test.ts` through the harness (status codes and error codes for each auth level), then `data-api.md`. |
 | Schema change | `schema.md`, `meta.integration.test.ts`, and a run against a real server. |
@@ -179,23 +198,26 @@ Unit tests cannot show what a maker sees. Two kinds of browser checks are used:
 `.github/workflows/ci.yml` runs on every push and pull request to `main`, on `ubuntu-latest` with Node 22.18 (the lowest version
 allowed by `engines`, needed for native type stripping). Steps, in order:
 
-1. A **MariaDB 10.11 service container** with a database `appbuilder_test` and a throwaway root password that exists only for the job.
-2. **Create the CI user** `abci` with `GRANT ALL` on `appbuilder\_test%`. The integration tests create one database per run
-   (`appbuilder_test_s1_<hex>` in `server/core/integration.test.ts`, `appbuilder_test_s2_<hex>` in
-   `server/routes/meta/meta.integration.test.ts`) and drop it afterwards, so the user needs rights on every database with that prefix,
-   not only on `appbuilder_test`. It has no rights anywhere else.
+1. Two **service containers** with throwaway root passwords that exist only for the job: **PostgreSQL 16** (`postgres:16`, database
+   `appbuilder_test`, port 5432) for the system store and the default connection, and **MariaDB 10.11** (database `appbuilder_test`,
+   port 3306) for the MySQL connector.
+2. **Create the CI roles** `abci`: on PostgreSQL a login role with `CREATEDB` (no superuser) and `ALL` on the database
+   `appbuilder_test` (the suites create and drop one database each, and the connector test a schema); on MariaDB a user with
+   `GRANT ALL` on `appbuilder\_test%`. They have no rights anywhere else.
 3. `npm ci`, then `npm run licences` (the licence gate, above), then `npm run typecheck` (client and server projects).
-4. `npm test` with `APPBUILDER_TEST_DB=mysql://abci:...@127.0.0.1:3306/appbuilder_test`. This runs the whole suite: unit tests,
-   the docs staleness tests and the MariaDB integration tests (which are skipped when that variable is unset).
+4. `npm test` with `APPBUILDER_TEST_DB=postgres://abci:...@127.0.0.1:5432/appbuilder_test` and
+   `APPBUILDER_TEST_MYSQL=mysql://abci:...@127.0.0.1:3306/appbuilder_test`. This runs the whole suite: unit tests, the docs staleness
+   tests, the PostgreSQL integration tests and the MySQL connector tests (each skipped when its variable is unset).
 5. `npm run build`.
 
 The credentials in the workflow are for the disposable service container only; never put real credentials in it. The screenshot
-script is not run in CI, and `npm run lint` is not part of the workflow yet. Not covered: a matrix over `mysql:8.4`, `mysql:5.7` and
-`mariadb:10.4` to turn the compatibility targets into tested facts (add it as a `strategy.matrix` over the service image).
+script is not run in CI, and `npm run lint` is not part of the workflow yet. Not covered: a matrix over `postgres:15` and
+`postgres:17` (and `mysql:8.4` for the connector) to turn the version targets into tested facts (add it as a `strategy.matrix` over the
+service image).
 
 ## Known gaps
 
 - No component rendering tests and no end-to-end browser tests in the repository.
 - Import-boundary rules (`architecture.md`) are not checked by a tool.
-- The integration tests run in CI against MariaDB 10.11 only; other database versions are tested by hand.
+- The integration tests run in CI against PostgreSQL 16 and (MySQL connector) MariaDB 10.11 only; other versions are tested by hand.
 - `scripts/docs/generate.test.ts` is matched by the `scripts/**/*.test.ts` glob; other scripts have no tests.

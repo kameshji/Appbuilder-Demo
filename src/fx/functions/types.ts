@@ -1,5 +1,5 @@
-import type { FxHost, FxRecord, FxScope, FxValue } from '@/contracts'
-import type { CallNode, Node } from '../ast'
+import type { FxHost, FxRecord, FxScope, FxValue } from '../../contracts.ts'
+import type { CallNode, Node } from '../ast.ts'
 
 /** State that lives for one evaluate() call, so later steps of `a; b` see earlier writes. */
 export interface Session {

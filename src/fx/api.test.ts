@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { check, enums, evaluate, fx, functions, referencedNames, renameIdentifier } from './index'
-import { val } from './testutil'
+import { check, enums, evaluate, fx, functions, referencedNames, renameIdentifier } from './index.ts'
+import { val } from './testutil.ts'
 
 describe('referencedNames', () => {
   it('lists bare identifiers once, in order', () => {

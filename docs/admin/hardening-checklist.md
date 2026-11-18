@@ -5,9 +5,13 @@ A short list for a new installation. Details are in the other pages; read the
 
 ## Before first start
 
-- [ ] **Use a dedicated database and user** for Appbuilder, not a shared or root account, and not a database that another
-  application uses. Grant only `SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX` on that database
-  ([Installation](installation.md#prepare-the-database); verified on MariaDB 10.11).
+- [ ] **Use a dedicated PostgreSQL database and role** for Appbuilder, not the `postgres` superuser and not a database that
+  another application uses. The role owns its database and has no superuser, `CREATEDB` or `CREATEROLE` rights; `CONNECT` on the
+  database is revoked from `PUBLIC` (`scripts/setup-postgres.ps1` / `.sh` do exactly this,
+  [Installation](installation.md#prepare-the-database)).
+- [ ] **Keep PostgreSQL local** unless you need otherwise: the Windows installer and the Linux packages listen on `localhost`
+  only. If the database is on another machine, require SSL (`hostssl` lines in `pg_hba.conf`, *Use SSL* in the setup) and allow
+  only the Appbuilder machine's address in `pg_hba.conf`.
 - [ ] **Keep the server on `127.0.0.1`** (the default). Do not set `APPBUILDER_HOST=0.0.0.0`: the Host header check can
   be passed by a client that sends `Host: localhost`, so other computers reach the sign-in page and the API, and there is
   no TLS. (The first-run setup is safe from them: it checks the real connection address and needs the setup code.)
@@ -18,8 +22,8 @@ A short list for a new installation. Details are in the other pages; read the
   that runs Appbuilder (and administrators) can open.
 - [ ] **Prefer the setup screen** over `APPBUILDER_DB_PASSWORD`: the screen stores the password encrypted, while an
   environment variable sits in plain text in your service definition.
-- [ ] Prefer MySQL running before Appbuilder starts. If it is not, the server retries in the background (up to every
-  30 s) and shows "The database is not reachable" meanwhile; no restart is needed.
+- [ ] Prefer PostgreSQL running before Appbuilder starts (its Windows service starts automatically). If it is not, the server
+  retries in the background (up to every 30 s) and shows "The database is not reachable" meanwhile; no restart is needed.
 
 ## First run
 
@@ -51,7 +55,8 @@ A short list for a new installation. Details are in the other pages; read the
 
 ## Data and connections
 
-- [ ] Use least-privilege database users for every extra MySQL connection (read-only where possible).
+- [ ] Use least-privilege database users for every extra PostgreSQL or MySQL connection (read-only where possible). A
+  PostgreSQL connection names one schema; Appbuilder refuses the schemas `ab`, `env_*`, `pg_*` and `information_schema`.
 - [ ] Share Google spreadsheets only with the service account and the few people who need them. Keep the service-account
   key private and delete it in Google Cloud if the PC is lost.
 - [ ] Treat CSV exports as sensitive. Text cells that a spreadsheet could run as formulas (starting with `=`, `+`, `-`,
@@ -65,11 +70,11 @@ A short list for a new installation. Details are in the other pages; read the
   set folder permissions (ACLs) yourself.
 - [ ] Lock the screen. Sessions last 7 days. The cookie is marked `Secure` only over TLS or with
   `APPBUILDER_SECURE_COOKIE` / `APPBUILDER_TRUST_PROXY` (the built-in server speaks plain HTTP on loopback).
-- [ ] Keep Windows, Node.js and MySQL up to date.
+- [ ] Keep Windows, Node.js and PostgreSQL up to date (minor releases: `winget upgrade PostgreSQL.PostgreSQL.17`).
 
 ## Backups, monitoring, updates
 
-- [ ] **Back up regularly**: there is no built-in backup. Database dump plus the workspace folder including
+- [ ] **Back up regularly**: there is no built-in backup. `pg_dump` plus the workspace folder including
   `.secret-key`, stored separately and encrypted ([Backup and restore](backup-and-restore.md)). Do a test restore.
 - [ ] **Review the audit log** weekly for user, role and connection changes, failed sign-ins and rejected setup codes
   ([Audit log](audit-log.md)); it is only readable through SQL, and it is not tamper-proof.

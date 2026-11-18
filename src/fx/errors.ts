@@ -1,4 +1,4 @@
-import type { FxDiagnostic } from '@/contracts'
+import type { FxDiagnostic } from '../contracts.ts'
 
 export interface Span { start: number; end: number }
 

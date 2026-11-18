@@ -1,6 +1,6 @@
-import type { FxRecord, FxValue } from '@/contracts'
-import { compareValues, hasOwn, isRecord, setField, toRows, toText, valueKey } from '../values'
-import { def, MANY, type CallCtx, type FnDef } from './types'
+import type { FxRecord, FxValue } from '../../contracts.ts'
+import { compareValues, hasOwn, isRecord, setField, toRows, toText, valueKey } from '../values.ts'
+import { def, MANY, type CallCtx, type FnDef } from './types.ts'
 
 function orderArg(c: CallCtx, i: number): boolean {
   const o = c.text(i).trim().toLowerCase()

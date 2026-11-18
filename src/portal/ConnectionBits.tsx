@@ -29,4 +29,4 @@ export function ConnectionFlags({ conn }: { conn: ConnectionRef | undefined }) {
 }
 
 /** Connections a new table may live in. */
-export const TABLE_HOSTS: ConnectorKind[] = ['mysql', 'gsheets', 'files']
+export const TABLE_HOSTS: ConnectorKind[] = ['postgres', 'mysql', 'gsheets', 'files']

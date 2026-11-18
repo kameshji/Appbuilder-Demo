@@ -11,6 +11,7 @@ const A = 'user_admin'
 const M = 'user_maker'
 
 const mysql = { name: 'Reports DB', connector: 'mysql', settings: { host: 'db.example', port: 3307, database: 'rep', user: 'ro', ssl: 'true' }, secret: 'hunter2-secret' }
+const pg = { name: 'Warehouse', connector: 'postgres', settings: { host: 'pg.example', database: 'wh', user: 'ro' }, secret: 'pg-secret' }
 
 describe('connections', () => {
   it('creates a mysql connection, never returns the secret, tests it', async () => {
@@ -56,8 +57,24 @@ describe('connections', () => {
     expect((await h.call(A, 'PATCH', '/api/v1/connections/conn_zzz', { name: 'x' })).status).toBe(404)
   })
 
-  it('default store: mysql only; delete refused for the default and while tables use it', async () => {
-    const c = (await h.call(A, 'POST', '/api/v1/connections', mysql)).body
+  it('creates a postgres connection: port 5432 and schema public by default; system schemas are refused', async () => {
+    const r = await h.call(A, 'POST', '/api/v1/connections', pg)
+    expect(r.status, JSON.stringify(r.body)).toBe(200)
+    expect(r.body.settings).toEqual({ host: 'pg.example', port: '5432', database: 'wh', user: 'ro', ssl: 'false', schema: 'public' })
+    for (const schema of ['ab', 'env_default', 'ENV_x', 'pg_catalog', 'information_schema']) {
+      const bad = await h.call(A, 'POST', '/api/v1/connections', { ...pg, name: `W ${schema}`, settings: { ...pg.settings, schema } })
+      expect(bad.status, schema).toBe(422)
+      expect(bad.body.error.field).toBe('settings.schema')
+    }
+    expect((await h.call(A, 'POST', '/api/v1/connections', { ...pg, name: 'W2', settings: { ...pg.settings, schema: 'bad name' } })).status).toBe(422)
+  })
+
+  it('default store: postgres only; delete refused for the default and while tables use it', async () => {
+    const my = (await h.call(A, 'POST', '/api/v1/connections', mysql)).body
+    const notDefault = await h.call(A, 'POST', `/api/v1/connections/${my.id}/default`)
+    expect(notDefault.status).toBe(422)
+    expect(notDefault.body.error.message).toMatch(/Only a PostgreSQL connection/)
+    const c = (await h.call(A, 'POST', '/api/v1/connections', pg)).body
     expect((await h.call(A, 'DELETE', '/api/v1/connections/conn_default')).status).toBe(409)
     expect((await h.call(A, 'POST', '/api/v1/connections/conn_files/default')).status).toBe(422)
     const t = (await h.call(M, 'POST', '/api/v1/tables', { displayName: 'Rep', connectionId: c.id })).body
@@ -126,13 +143,17 @@ describe('connections', () => {
   it('refuses linking a table already linked through another connection to the same database', async () => {
     h.mem.external.set('shared_tbl', { columns: [{ name: 'x', type: 'text' }], rows: [] })
     expect((await h.call(M, 'POST', '/api/v1/connections/conn_default/link', { source: 'shared_tbl', displayName: 'Shared' })).status).toBe(200)
-    // an administrator added a second connection to the very same database (host spelled differently)
-    const alias = (await h.call(A, 'POST', '/api/v1/connections', { name: 'Alias', connector: 'mysql', settings: { host: 'X', port: '3306', database: 'x', user: 'other' }, secret: 'pw' })).body
-    const r = await h.call(M, 'POST', `/api/v1/connections/${alias.id}/link`, { source: 'shared_tbl' })
-    expect(r.status).toBe(409)
-    expect(r.body.error.message).toMatch(/already linked as the table "Shared"/)
-    const list = await h.call(M, 'GET', `/api/v1/connections/${alias.id}/source-tables`)
-    expect(list.body.items.map((i: { source: string }) => i.source)).not.toContain('shared_tbl')
+    // two connections to the very same external database (host spelled differently)
+    for (const connector of ['mysql', 'postgres']) {
+      const first = (await h.call(A, 'POST', '/api/v1/connections', { name: `First ${connector}`, connector, settings: { host: 'db.x', database: 'x', user: 'a' }, secret: 'pw' })).body
+      const alias = (await h.call(A, 'POST', '/api/v1/connections', { name: `Alias ${connector}`, connector, settings: { host: 'DB.X', database: 'x', user: 'other' }, secret: 'pw' })).body
+      expect((await h.call(M, 'POST', `/api/v1/connections/${first.id}/link`, { source: 'shared_tbl', displayName: `Shared ${connector}` })).status).toBe(200)
+      const r = await h.call(M, 'POST', `/api/v1/connections/${alias.id}/link`, { source: 'shared_tbl' })
+      expect(r.status).toBe(409)
+      expect(r.body.error.message).toMatch(new RegExp(`already linked as the table "Shared ${connector}"`))
+      const list = await h.call(M, 'GET', `/api/v1/connections/${alias.id}/source-tables`)
+      expect(list.body.items.map((i: { source: string }) => i.source)).not.toContain('shared_tbl')
+    }
     // viewers cannot list source tables at all
     expect((await h.call('user_viewer', 'GET', '/api/v1/connections/conn_default/source-tables')).status).toBe(403)
   })

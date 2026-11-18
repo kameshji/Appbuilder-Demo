@@ -1,5 +1,5 @@
-import type { FxRecord, FxValue } from '@/contracts'
-import { fail, type Span } from './errors'
+import type { FxRecord, FxValue } from '../contracts.ts'
+import { fail, type Span } from './errors.ts'
 
 export const hasOwn = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k)
 

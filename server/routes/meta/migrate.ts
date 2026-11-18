@@ -47,7 +47,7 @@ function maxAutonumber(col: ColumnDef, values: string[]): number {
 
 async function seedCounter(s: Services, key: string, value: number): Promise<boolean> {
   try {
-    await s.meta.db.exec('INSERT INTO ab_counters (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = GREATEST(v, VALUES(v))', [key, value])
+    await s.meta.raiseCounter(key, value)
     return true
   } catch {
     return false

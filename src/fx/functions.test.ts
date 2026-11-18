@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { fx } from './index'
-import { err, val } from './testutil'
+import { fx } from './index.ts'
+import { err, val } from './testutil.ts'
 
 describe('logic functions', () => {
   it('If', () => {

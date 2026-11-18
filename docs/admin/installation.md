@@ -1,23 +1,23 @@
 # Installation
 
-Appbuilder is a Node.js server plus a web app. The server keeps its data in MySQL or MariaDB, and keeps a few files
+Appbuilder is a Node.js server plus a web app. The server keeps its data in PostgreSQL, and keeps a few files
 (data files, attachments, an encryption key) in a *workspace folder*. You use it in a browser on the same PC.
 
 ## Requirements
 
 | Item | Requirement | Notes |
 | --- | --- | --- |
-| Operating system | Windows 10 or 11 for the setup scripts | The scripts are PowerShell. The server itself is plain Node.js; our own tests and the checks for this guide ran on Linux. |
+| Operating system | Windows 10 or 11, or Linux | `scripts/setup-postgres.ps1` and the other Windows scripts are PowerShell; `scripts/setup-postgres.sh` is the Linux equivalent. The server itself is plain Node.js; our own tests and the checks for this guide ran on Linux. |
 | Node.js | **22.18 or newer** | The server is TypeScript that Node runs directly (`node server/main.ts`), which needs Node 22.18+. The root `README.md` and `scripts/setup-offline.ps1` currently say "Node.js 20 or newer"; that is too low for the server. |
 | git | Any recent version | Used by `setup-offline.ps1` and for [updates](upgrades.md). |
-| Database | MySQL 5.7+ or 8.x, or MariaDB 10.4+ | Verified by tests on **MariaDB 10.11 only**. MySQL 8.4 has not been verified yet (decision D7 in [decisions.md](../decisions.md)). |
+| Database | **PostgreSQL 15 or newer** (17 recommended) | One database for Appbuilder, encoding UTF8. Verified by tests on **PostgreSQL 16** (CI and sandbox). MySQL/MariaDB can no longer hold Appbuilder's own data (decision D14 in [decisions.md](../decisions.md)); it remains available as a [connection](connections.md) to existing databases. |
 | Browser | A current Chrome, Edge or Firefox | Not tested or specified beyond this. |
 | Internet | Needed once, to download the code and packages | After `npm ci` and `npm run build`, running needs no internet. Google Sheets connections need internet. |
 
 ## Install on Windows
 
 1. Install [Node.js](https://nodejs.org) (22.18 or newer) and [Git for Windows](https://git-scm.com).
-2. Install MySQL or MariaDB and make sure it is running (see [Prepare the database](#prepare-the-database)).
+2. Install PostgreSQL and create Appbuilder's role and database (see [Prepare the database](#prepare-the-database)).
 3. Open PowerShell and run the setup script from a copy of the repository:
 
    ```powershell
@@ -44,48 +44,79 @@ Things to know about the scripts:
 
 ## Prepare the database
 
-Appbuilder needs an empty database and a database user that owns it. Use a **dedicated database and user for
-Appbuilder**. Do not point it at the database of another application: makers can link and edit any table in the
-connected database (except tables starting `ab_`), see [Connections](connections.md#link-existing-tables).
+Appbuilder needs an empty PostgreSQL database and a login role that **owns** it (the owner may create the schemas `ab` and
+`env_default` in it). Use a **dedicated database and role for Appbuilder**, never the `postgres` superuser, and do not point it at
+the database of another application: makers can link and edit tables of the default database (except `ab_*` tables), see
+[Connections](connections.md#link-existing-tables).
+
+### Install PostgreSQL
+
+- **Windows**: PostgreSQL 17 from winget. The installer asks for the password of the superuser `postgres` (remember it; you need it
+  once, in the next step) and installs the Windows service `postgresql-x64-17`, which starts automatically:
+
+  ```powershell
+  winget install --id PostgreSQL.PostgreSQL.17 -e --interactive
+  ```
+
+  (or the installer from <https://www.postgresql.org/download/windows/>). The tools land in `C:\Program Files\PostgreSQL\17\bin`.
+- **Linux**: your distribution's packages (`sudo apt install postgresql`, `sudo dnf install postgresql-server`) or the PGDG
+  repositories for version 17.
 
 ### With the script
 
-`scripts/setup-mysql.ps1` creates the database and user on a MySQL that lives in `$HOME\MySQL\mysql-*` (a portable
-install with `bin\mysql.exe`, and an optional `start-mysql.cmd` that the script runs if MySQL is not listening):
+`scripts/setup-postgres.ps1` (Windows) and `scripts/setup-postgres.sh` (Linux) create the role and the database:
 
 ```powershell
-.\scripts\setup-mysql.ps1
-.\scripts\setup-mysql.ps1 -MySqlHome "C:\Users\me\MySQL" -Database appbuilder -User appbuilder -Port 3306
+.\scripts\setup-postgres.ps1
+.\scripts\setup-postgres.ps1 -Database appbuilder -User appbuilder -Port 5432 -SuperUser postgres
+.\scripts\setup-postgres.ps1 -PsqlPath "D:\PostgreSQL\17\bin\psql.exe"
 ```
 
-It starts MySQL if needed, asks you twice for a password for the new user (minimum 10 characters; it is not shown,
-logged or saved), then connects as `root` (press Enter at the prompt if root has no password) and runs the SQL below.
-Database and user names may contain only letters, digits and `_`. If your MySQL is installed any other way, use the
-manual SQL.
+```bash
+scripts/setup-postgres.sh                 # asks for the superuser password (connects over TCP to 127.0.0.1:5432)
+scripts/setup-postgres.sh --peer          # local superuser through "sudo -u postgres" (Debian/Ubuntu/RHEL default)
+scripts/setup-postgres.sh --host db.internal --port 5432 --database appbuilder --user appbuilder --superuser postgres
+```
+
+What they do:
+
+1. Find `psql` (PATH, `C:\Program Files\PostgreSQL\<version>\bin`, Scoop; on Linux `/usr/lib/postgresql/*/bin` and others). If
+   there is none they print the install command above and stop.
+2. Windows: if nothing answers on the port, start the `postgresql*` service (needs an administrator PowerShell if it is stopped).
+3. Ask for the superuser's password and twice for the new role's password (at least 12 characters) without showing them
+   (`Read-Host -AsSecureString`, `read -s`).
+4. Create (or update) the login role `appbuilder` with **no** superuser, `CREATEDB` or `CREATEROLE` rights, and the database
+   `appbuilder` (`ENCODING 'UTF8'`, `TEMPLATE template0`) owned by it; `CONNECT` on it is revoked from `PUBLIC`. Running a script
+   again only changes the role's password.
+
+Passwords are never echoed, logged, written to disk or put on a command line: the superuser password reaches `psql` through the
+`PGPASSWORD` variable of that one process, and the new role's password is turned into a SCRAM-SHA-256 verifier on your computer
+first, so even PostgreSQL's statement log cannot contain it. Database and role names may contain lowercase letters, digits and `_`.
 
 ### Manual SQL
 
-Run this as an administrative MySQL user (for example `mysql -u root -p`). Replace the password.
+Run this as a superuser (for example `psql -U postgres`). `\password appbuilder` asks for the password without echoing it and
+sends only the SCRAM verifier:
 
 ```sql
-CREATE DATABASE IF NOT EXISTS `appbuilder` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS 'appbuilder'@'localhost' IDENTIFIED BY 'choose-a-long-password';
-CREATE USER IF NOT EXISTS 'appbuilder'@'127.0.0.1' IDENTIFIED BY 'choose-a-long-password';
-GRANT ALL PRIVILEGES ON `appbuilder`.* TO 'appbuilder'@'localhost';
-GRANT ALL PRIVILEGES ON `appbuilder`.* TO 'appbuilder'@'127.0.0.1';
-FLUSH PRIVILEGES;
+CREATE ROLE appbuilder LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
+\password appbuilder
+CREATE DATABASE appbuilder OWNER appbuilder ENCODING 'UTF8' TEMPLATE template0;
+REVOKE ALL ON DATABASE appbuilder FROM PUBLIC;
+GRANT CONNECT, TEMPORARY ON DATABASE appbuilder TO appbuilder;
 ```
 
-This is what the script runs. Both host forms are created because Appbuilder connects over TCP to `127.0.0.1`.
+**Privileges.** Ownership of its database is all the role needs: Appbuilder creates the schemas `ab` and `env_default` in it, and
+makers create, alter and drop tables there. A role that does not own the database needs `GRANT CREATE ON DATABASE appbuilder TO
+appbuilder`; without it the setup stops with "User ... may not create schemas in the database ..." and the command to run.
 
-**Privileges.** Makers create, alter and drop tables, so the user needs data and schema rights on its database. We
-confirmed on MariaDB 10.11 that this narrower grant is enough to set up, create a table, add a column, insert rows and
-drop the table: `SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX`. The script grants `ALL PRIVILEGES` on the
-one database. Either way, grant nothing outside that database.
+**Locale and ICU.** Appbuilder compares text case-insensitively. It uses the ICU root collation for that when the server has it
+(the official builds for Windows, Debian/Ubuntu and the Docker image do); otherwise the database's `LC_CTYPE` decides, and a `C`
+locale lowercases only ASCII letters. See [connectors](../dev/connectors.md#postgresql-connector).
 
-**Authentication plugin (MySQL 8 and later).** If the connection fails with a message about the authentication method,
-the error text suggests turning on SSL or switching the user to `mysql_native_password`. We have not verified MySQL 8.4;
-note that MySQL 8.4 ships with `mysql_native_password` disabled by default.
+**Authentication.** PostgreSQL 14+ uses `scram-sha-256` passwords. Connections from the same PC over TCP are allowed by the
+default `pg_hba.conf` of the Windows installer and the Linux packages. If the connection fails with "no pg_hba.conf entry", add a
+`host appbuilder appbuilder 127.0.0.1/32 scram-sha-256` line and reload PostgreSQL.
 
 ## First-run setup
 
@@ -108,10 +139,13 @@ as the administrator exists. 20 wrong codes within 15 minutes block further trie
 through Task Scheduler, the code is in the log file (`appbuilder.log` in the example below). The API takes it as
 `setupCode` in the JSON body or in the `X-Appbuilder-Setup-Code` header.
 
-1. **Connect your database.** Enter Host, Port, Database, User and Password. The box *Create the database if it does not
-   exist* needs a user with the `CREATE` privilege (if that fails, the server carries on and the connection test
-   decides). Appbuilder tests the login, creates its system tables (they all start with `ab_`), and saves the login in
-   `workspace/server.json` with the password **encrypted** (see [Secrets at rest](security-model.md#secrets-at-rest)).
+1. **Connect your database.** Enter Host, Port (5432), Database, User and Password, and tick *Use SSL* for a database on another
+   machine. The box *Create the database if it does not exist* needs a role with `CREATEDB` (if that fails, the server carries on
+   and the connection test decides; the scripts above create the database already). Appbuilder tests the login, creates its
+   schemas (`ab` and `env_default`, see [schema](../dev/schema.md)), and saves the login in `workspace/server.json` with the
+   password **encrypted** (see [Secrets at rest](security-model.md#secrets-at-rest)). Clear messages explain the usual problems:
+   wrong user name or password, the database does not exist, PostgreSQL is not running (connection refused), no `pg_hba.conf`
+   entry, the role may not create schemas in the database (with the `GRANT` to run), a database that is not UTF8.
 2. **Create administrator and sign in.** Enter your name, email and a password (minimum 10 characters). This creates the
    first user, the three built-in roles (Administrator, Maker, Viewer) and signs you in.
 
@@ -150,8 +184,8 @@ All are optional. Set them before starting the server (`npm start` or `node serv
 | `APPBUILDER_HOST` | `127.0.0.1` | Address to listen on. **Leave it alone**; see the warning below. |
 | `APPBUILDER_WORKSPACE` | `workspace` folder next to `package.json` | The workspace folder. Use a path **outside** the repository folder (see [Upgrades](upgrades.md)). Created if missing. |
 | `APPBUILDER_SECRET_KEY` | none | 64 hexadecimal characters (32 bytes). If set, it is used as the encryption key and `workspace/.secret-key` is not read or created. A value that is not exactly 64 hex characters stops the server at start. |
-| `APPBUILDER_DB_HOST` | none | Together with `_NAME` and `_USER`: configures the default database at every start and **skips the setup screen**. If any of the three is missing, the variables are ignored. |
-| `APPBUILDER_DB_PORT` | `3306` | |
+| `APPBUILDER_DB_HOST` | none | Together with `_NAME` and `_USER`: configures the PostgreSQL database at every start and **skips the setup screen**. If any of the three is missing, the variables are ignored. |
+| `APPBUILDER_DB_PORT` | `5432` | |
 | `APPBUILDER_DB_NAME` | none | |
 | `APPBUILDER_DB_USER` | none | |
 | `APPBUILDER_DB_PASSWORD` | empty | The database password, in plain text in the process environment. |
@@ -163,7 +197,7 @@ All are optional. Set them before starting the server (`npm start` or `node serv
 Notes:
 
 - With `APPBUILDER_DB_*` set, the database login is **not** written to `server.json`, and it takes precedence over
-  `server.json`. The server also tries `CREATE DATABASE IF NOT EXISTS` for that name at start.
+  `server.json`. The server also creates the database at start when it is missing and the role has `CREATEDB`.
 - Environment variables are visible to other processes running as the same Windows user. For a business install prefer
   the setup screen, which stores the password encrypted.
 - Windows: set a permanent variable for your user with
@@ -176,7 +210,7 @@ Default: `workspace\` next to `package.json` (listed in `.gitignore`, so git nev
 
 | Path | What it is | Back it up? |
 | --- | --- | --- |
-| `server.json` | The saved default database login: host, port, database, user, SSL, and the password encrypted, plus `"setupComplete": true` once the first administrator exists. Written by the setup. Without `APPBUILDER_DB_*` it holds the login; with them only the marker. | Yes |
+| `server.json` | The saved PostgreSQL login: host, port, database, user, SSL, and the password encrypted, plus `"setupComplete": true` once the first administrator exists. Written by the setup. Without `APPBUILDER_DB_*` it holds the login; with them only the marker. | Yes |
 | `.secret-key` | The encryption key (64 hex characters), created on first start. **If you lose it, every saved connection password and Google key becomes unreadable.** Absent when you use `APPBUILDER_SECRET_KEY`. | **Yes, and keep it safe** |
 | `files/` | One sub-folder per data file you added (the copy Appbuilder edits). | Yes |
 | `attachments/` | Files uploaded into file and image columns, in sub-folders named after the first two characters of a random key. The database knows which file belongs to which row. | Yes |
@@ -194,7 +228,8 @@ and no Windows service. Task Scheduler works; we have not tested these exact com
 1. Preferably start the database **before** Appbuilder. If the server starts while the database is down, it keeps
    retrying in the background (after 1 s, 2 s, 4 s ... then every 30 s) and picks the database up when it comes; no
    restart is needed. Meanwhile the browser shows "The database is not reachable" with a *Try again* button, and
-   `GET /api/v1/status` reports `setup.unavailable: true`. (Start MySQL as a Windows service set to Automatic.) Retrying
+   `GET /api/v1/status` reports `setup.unavailable: true`. (The PostgreSQL installer registers the Windows service
+   `postgresql-x64-17` with start type Automatic.) Retrying
    stops only for problems that waiting cannot fix: a password that cannot be decrypted, or a database upgraded by a newer
    Appbuilder ([Upgrades](upgrades.md#running-an-older-version-against-a-newer-database)).
 2. In PowerShell, as the user who will use Appbuilder (adjust `$repo`):

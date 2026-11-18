@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { err, val } from './testutil'
+import { err, val } from './testutil.ts'
 
 /** table-driven: [formula, expected] */
 function table(rows: [string, unknown][], vars: Record<string, never> = {}): void {

@@ -45,7 +45,7 @@ function FileCard({ file, onReplace, onRemove, busy }: { file: DataFileDef; onRe
   const [downloading, setDownloading] = useState(false)
   const Icon = KIND_ICON[file.kind] ?? FileText
   const own = file.tableIds.map((id) => tables.find((t) => t.id === id)).filter((t): t is TableDef => !!t)
-  const dbDefault = connections.find((c) => c.isDefault && c.connector === 'mysql')
+  const dbDefault = connections.find((c) => c.isDefault && c.connector === 'postgres')
   const canMove = mode === 'server' && !!dbDefault
 
   const download = async () => {

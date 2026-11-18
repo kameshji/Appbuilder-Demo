@@ -1,283 +1,327 @@
 # Database schema
 
-Two kinds of tables live in the MySQL/MariaDB database a workspace is configured with:
+Appbuilder keeps everything in one **PostgreSQL** database (15 or newer; 17 is what we install, CI and the sandbox run 16).
+Decision D14 in `/home/claude/appbuilder-demo/docs/decisions.md` records the move from MySQL. The database holds:
 
-1. **System tables `ab_*`** that hold users, sessions, roles, app definitions and so on. Defined in
-   `/home/claude/appbuilder-demo/server/core/meta-store.ts` (the `DDL` array, `SCHEMA_VERSION = 3`).
-2. **User tables**, one per table a maker creates on the default MySQL connection. Generated from a `TableDef` by
-   `/home/claude/appbuilder-demo/server/connectors/mysql/sql.ts` (`createTableSql`, `sqlType`).
+1. **Schema `ab`**: install-wide objects (settings, users, sessions, the environment registry, the licence placeholder).
+2. **One schema per environment**, `env_<id>`. Today there is exactly one, `env_default`. It holds the environment's
+   metadata tables (`ab_roles`, `ab_tables`, `ab_apps`, `ab_audit`, ...) **and** the data tables of the default connection
+   (`t_orders`, `t_contacts`, ...).
 
-Everything not on this page is not stored in the database: the workspace folder holds `server.json` (database connection, password
-sealed), `.secret-key` (when `APPBUILDER_SECRET_KEY` is not set), `attachments/` (file bytes) and `files/` (data files). See
-`architecture.md`.
+Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 4`)
+and, for data tables, `/home/claude/appbuilder-demo/server/connectors/postgres/sql.ts` (`createTableSql`, `sqlType`).
 
-## Compatibility rules
+Everything not on this page is not stored in the database: the workspace folder holds `server.json` (database connection,
+password sealed), `.secret-key` (when `APPBUILDER_SECRET_KEY` is not set), `attachments/` (file bytes) and `files/` (data files).
+See `architecture.md`.
 
-The SQL is kept portable to **MySQL 5.7+ and 8.x, and MariaDB 10.4+** (decision D7):
+## Environments, schemas and how a request finds its schema
 
-- No `JSON` column type (definitions are `LONGTEXT` holding JSON text), no `CHECK` constraints, no foreign keys (integrity is
-  enforced in the service layer), no generated columns, no window functions, no CTEs.
-- `DATETIME(3)` stored in UTC (the pool is opened with `timezone: 'Z'`). Collation `utf8mb4_unicode_ci` everywhere, set explicitly
-  on every table and on every text literal the query builder emits, so a linked table with another collation cannot make a
-  comparison fail.
-- Upserts use `INSERT ... ON DUPLICATE KEY UPDATE x = VALUES(x)`. `VALUES()` in that position is deprecated since MySQL 8.0.20 but
-  still works on 8.x and is the only form MariaDB 10.4 understands, so do not change it without a compatibility plan.
-- The counter used for autonumber columns increments with the `LAST_INSERT_ID(v + 1)` trick, which works on both servers.
-- Index key length: with `utf8mb4` (up to 4 bytes per character) InnoDB's 3072-byte key limit applies, which is why a `unique` `url`
-  column is `VARCHAR(768)` instead of 1024.
-- Verified on MariaDB 10.11. MySQL 8.4 verification is pending (decisions D7). MySQL 5.7 and MariaDB 10.4 are design targets, not
-  currently tested in CI (there is no CI yet, see `testing.md`).
+- A request carries an **environment id**. `resolveEnvironment(req)` in `/home/claude/appbuilder-demo/server/core/env-context.ts`
+  decides it (today it always answers `default`); `environmentSchema(id)` turns it into the schema name `env_<id>` (the id is
+  validated: `^[a-z][a-z0-9_]{0,39}$`, so the schema name is always a safe identifier).
+- The router runs every handler inside `runInEnvironment(id, ...)` (Node's `AsyncLocalStorage`), and `ctx.environmentId` carries the
+  id. The MetaStore, the security cache, the connection cache and the default connector read `currentEnvironment()`; code that runs
+  outside a request (boot, timers, tests) works in the default environment.
+- Caches are keyed by environment id: the security engine keeps one roles/tables cache per environment, the ConnectionManager one
+  connector instance per `<environment>:<connection>`.
+- `ab.environments` is the registry (`id`, `name`, `schema_name`, `type`, `built_in`, `created_on`). `migrate()` creates the built-in
+  `default` row and every registered environment schema. P0 package E adds create/switch/delete on top of `migrateEnvironment()`.
 
-`migrate()` is idempotent. It first reads the stored `schemaVersion`; **a version above `SCHEMA_VERSION` throws
-`SchemaTooNewError` before any statement runs** (downgrade guard: the server then keeps the database closed, reports
-`setup.incompatible` and does not retry). Otherwise it runs every `CREATE TABLE IF NOT EXISTS` statement, then the upgrade
-steps newer than the stored `schemaVersion` (ordered by version), then writes `schemaVersion` into `ab_meta`, and returns a
-`MigrationSummary` `{ from, to, steps }` that `services.ts` logs and writes to `ab_audit` as `schema.migrate` (only when
-something changed). MySQL 5.7 has no `ADD COLUMN IF NOT EXISTS`, so column additions look the column up in
-`information_schema.columns` first. Upgrade steps:
+### Fully qualified names, never `search_path`
 
-- **2**: `ab_users.email` is normalised to trimmed lowercase (`normaliseUserEmails`). A row whose normalised address collides with
-  another row is left unchanged. The rule is kept by the MetaStore write path (`users.insert` and `users.update` lowercase), not
-  by a `CHECK` constraint, because MySQL 5.7 parses `CHECK` and ignores it.
-- **3**: `ab_users.must_change_password TINYINT NOT NULL DEFAULT 0` (`addMustChangePassword`), and table provenance in
-  `ab_tables.def` (`markTableProvenance`): tables with an `ab_audit` entry `table.link` stay unmanaged and, when their
-  definition lacks system columns, get `readOnly: true` and `missingSystem`; every other non-file table gets
-  `managed: true`.
+Every statement names its tables **fully qualified**: `"ab"."users"`, `"env_default"."ab_tables"`, `"env_default"."t_orders"`. The
+schema part comes from the environment resolver (MetaStore: `tableName()` and the `E()`/`A()` helpers; connector: the `Dialect`
+passed to `sql.ts`), never from `search_path`. We chose this over `SET LOCAL search_path` in a transaction because:
 
-All `ab_*` tables end with `ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`. Ids are generated by the server
-(`uid()` in `/home/claude/appbuilder-demo/server/core/util.ts`) and are strings. `NN` below means `NOT NULL`.
+- **Nothing can leak between requests.** Pooled connections carry no per-request state at all, so a connection returned to the pool
+  in any state cannot make the next request see another environment. With `SET LOCAL` every statement would have to run inside a
+  transaction (three extra round trips per single read) and one forgotten `SET`, a plain `SET`, or a code path outside a transaction
+  would silently read the wrong schema.
+- **Mistakes fail loudly.** Every pooled connection starts with the startup options `search_path=pg_catalog,pg_temp` and
+  `TimeZone=UTC` (`SESSION_OPTIONS` in `/home/claude/appbuilder-demo/server/connectors/postgres/db.ts`), so an unqualified table name
+  is an error (`42P01`) instead of resolving to `public` or another schema. It also means a table or function someone creates in
+  `public` can never shadow a built-in function.
+- Logs, `EXPLAIN` output and `pg_dump --schema=env_x` all name the real schema.
 
-## System tables
+The integration test `postgres connector > SqlDb` checks the startup settings on every pooled connection, that a `SET` made inside a
+rolled-back or `SET LOCAL` transaction never reaches the next user of the connection, and that unqualified names fail.
 
-### `ab_meta`: key/value settings
+## Transactions and units of work
+
+- `SqlDb.tx(fn)` runs `fn` on one pooled client inside `BEGIN`/`COMMIT` (`ROLLBACK` when `fn` throws). A nested `tx()` is a
+  `SAVEPOINT`, so a failing inner block rolls back only its own statements.
+- While `tx()` runs, the pool-level `SqlDb` **joins** it for code in the same async context (`AsyncLocalStorage`). That is how a
+  **unit of work** works: `Services.transaction(fn)` opens one transaction on the system pool, and everything inside it, MetaStore
+  writes and the default connector's DDL and row statements (it uses the same pool, `ConnectorEnv.systemDb`), lands in that one
+  transaction. Such *ambient* statements are each wrapped in a savepoint: a failing statement that the caller catches does not abort
+  the transaction (PostgreSQL otherwise refuses every later statement with `25P02`). Statements of one transaction are serialised on
+  its client.
+- PostgreSQL DDL is transactional (`CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`): these routes run as one unit of work, so a failure
+  leaves **nothing** behind (no physical table, column, row, definition, role privilege or audit entry):
+  `POST /tables`, `POST /tables/from-csv`, `PATCH /tables/:id`, `DELETE /tables/:id`, `POST|PATCH|DELETE /tables/:id/columns...`,
+  `POST /tables/:id/move`, `POST /connections/:id/link`, `POST /apps/import`, `POST /solutions/import`. Their compensating undo code
+  stays for the parts a database transaction cannot cover: other connectors (files, Google Sheets, external databases) and files in
+  the workspace folder. `/home/claude/appbuilder-demo/server/core/transactions.integration.test.ts` proves it with the undo code
+  switched off.
+- Inside a unit of work the new tables are invisible to other connections until `COMMIT`; the security cache is dropped afterwards
+  (it may have been filled with rows that were rolled back).
+- Each connector DDL method (`createTable`, `alterColumn`, ...) is itself one transaction (a savepoint inside a unit of work).
+
+## Migrations
+
+`migrate()` is idempotent. It first reads `ab.settings` `schemaVersion` (0 when schema `ab` does not exist):
+
+- **above `SCHEMA_VERSION`**: `SchemaTooNewError` before any statement runs (downgrade guard: the server keeps the database closed,
+  reports `setup.incompatible` and does not retry);
+- **1 to 3**: those were the MySQL system store. There is no migration from MySQL (decision D14); such a database is refused
+  (`UnsuitableDatabaseError`, "use an empty database");
+- the database encoding must be `UTF8`, otherwise it is refused before anything is created.
+
+Then, in **one transaction** holding `pg_advisory_xact_lock(hashtext('appbuilder.migrate'))` (two servers starting together wait for
+each other), it runs `INSTALL_DDL`, registers and creates `env_default`, completes every other registered environment schema, and
+writes `schemaVersion`. The summary `{ from, to, steps }` is logged and written to the audit log as `schema.migrate` when something
+changed. Future upgrade steps go into that transaction, ordered by version.
+
+## Types and conventions
+
+| Kind of value | PostgreSQL type | Notes |
+| --- | --- | --- |
+| ids (users, roles, tables, apps, rows) | `text` | generated by the server: `uid()`, row ids UUIDv7 from `rowUid()` (`server/core/util.ts`) |
+| timestamps | `timestamptz` (`timestamptz(3)` in data tables) | the API carries ISO strings in UTC |
+| metadata documents | `jsonb` | role apps, privileges' columns and row filters, table and app definitions, connection settings, solution components, data file table ids, audit details |
+| flags | `boolean` | |
+| currency | `numeric(19,4)` | read back as a JavaScript number |
+| names that must be unique | unique index on `lower(name)` | case-insensitive like the MySQL `_ci` collations were |
+
+Notes on `jsonb`: PostgreSQL normalises key order (shorter keys first) and refuses the NUL character (`\u0000`). The audit writer
+strips NUL characters; a table or app definition containing one is refused with 422. Lists are ordered by `lower(name) COLLATE "C"`
+(code point order), so the order does not depend on the database locale. Metadata index names start with `ab_` (index names are
+per schema in PostgreSQL; user tables can never start with `ab_`, see below). There are no foreign keys: integrity is kept by the
+service layer, as before.
+
+## Schema `ab` (install-wide)
+
+### `ab.settings`: key/value
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `k` | `VARCHAR(64) NN` | primary key. Currently `schemaVersion` |
-| `v` | `TEXT NULL` | |
+| `k` | `text` | primary key. `schemaVersion` |
+| `v` | `text` | |
 
-### `ab_users`
-
-| Column | Type | Notes |
-| --- | --- | --- |
-| `id` | `VARCHAR(64) NN` | primary key |
-| `name` | `VARCHAR(255) NN` | |
-| `email` | `VARCHAR(191) NN` | unique `ux_ab_users_email`; always trimmed lowercase (MetaStore write path; migration 2 fixed older rows) |
-| `password_hash` | `VARCHAR(255) NULL` | `scrypt$32768$8$1$<salt>$<hash>`; null = no password set |
-| `status` | `VARCHAR(16) NN DEFAULT 'active'` | `active` or `disabled` |
-| `must_change_password` | `TINYINT NN DEFAULT 0` | 1 after an administrator set the password; the user's sessions can then only change it (v3) |
-| `created_on` | `DATETIME(3) NN` | |
-| `last_login` | `DATETIME(3) NULL` | |
-
-### `ab_sessions`
+### `ab.users`
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `id_hash` | `CHAR(64) NN` | primary key; SHA-256 hex of the cookie token (the token itself is never stored) |
-| `user_id` | `VARCHAR(64) NN` | key `ix_ab_sessions_user` |
-| `created_on`, `expires_on`, `last_seen` | `DATETIME(3) NN` | key `ix_ab_sessions_expires` on `expires_on` |
-| `user_agent` | `VARCHAR(255) NULL` | |
+| `id` | `text` | primary key |
+| `name` | `text NOT NULL` | |
+| `email` | `text NOT NULL` | unique index `ab_ux_users_email`; always trimmed lowercase (the MetaStore write path) |
+| `password_hash` | `text` | `scrypt$32768$8$1$<salt>$<hash>`; NULL = no password set |
+| `status` | `text NOT NULL DEFAULT 'active'` | `active` or `disabled` |
+| `must_change_password` | `boolean NOT NULL DEFAULT false` | true after an administrator set the password |
+| `created_on` | `timestamptz NOT NULL` | |
+| `last_login` | `timestamptz` | |
+
+Users are install-wide; their **roles are per environment** (`ab_user_roles` in each environment schema). Deleting a user removes
+their role assignments in every registered environment and their sessions.
+
+### `ab.sessions`
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id_hash` | `text` | primary key; SHA-256 hex of the cookie token (the token itself is never stored) |
+| `user_id` | `text NOT NULL` | index `ab_ix_sessions_user` |
+| `created_on`, `expires_on`, `last_seen` | `timestamptz NOT NULL` | index `ab_ix_sessions_expires` on `expires_on` |
+| `user_agent` | `text` | at most 255 characters |
 
 Expired rows are purged hourly by the server.
+
+### `ab.environments`
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `text` | primary key (`default`) |
+| `name` | `text NOT NULL` | `Default` |
+| `schema_name` | `text NOT NULL UNIQUE` | `env_default` |
+| `type` | `text NOT NULL DEFAULT 'production'` | `production`, `sandbox`, `developer` |
+| `built_in` | `boolean NOT NULL DEFAULT false` | |
+| `created_on` | `timestamptz NOT NULL` | |
+
+### `ab.licence`
+
+Placeholder for the signed licence file (`docs/plan/master-plan.md` section 9): at most one row (`id smallint` primary key,
+`CHECK (id = 1)`), `document jsonb`, `installed_on timestamptz`. Nothing reads it yet.
+
+## Environment schema `env_<id>`: metadata tables
 
 ### `ab_roles`
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `id` | `VARCHAR(64) NN` | primary key. Built-in: `role_admin`, `role_maker`, `role_viewer` |
-| `name` | `VARCHAR(191) NN` | unique `ux_ab_roles_name` |
-| `description` | `TEXT NULL` | |
-| `is_admin` | `TINYINT NN DEFAULT 0` | |
-| `is_maker` | `TINYINT NN DEFAULT 0` | |
-| `apps` | `LONGTEXT NULL` | JSON: `"all"` or an array of app ids |
+| `id` | `text` | primary key. Built-in: `role_admin`, `role_maker`, `role_viewer` |
+| `name` | `text NOT NULL` | unique `ab_ux_roles_name` on `lower(name)` |
+| `description` | `text` | |
+| `is_admin`, `is_maker` | `boolean NOT NULL DEFAULT false` | |
+| `apps` | `jsonb` | `"all"` or an array of app ids |
 
 ### `ab_user_roles`
 
-| Column | Type | Notes |
-| --- | --- | --- |
-| `user_id` | `VARCHAR(64) NN` | primary key part 1 |
-| `role_id` | `VARCHAR(64) NN` | primary key part 2; key `ix_ab_user_roles_role` |
+`user_id text`, `role_id text`, primary key `(user_id, role_id)`, index `ab_ix_user_roles_role`.
 
 ### `ab_role_tables`: one row per role and table (the privilege matrix)
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `role_id` | `VARCHAR(64) NN` | primary key part 1 |
-| `table_id` | `VARCHAR(64) NN` | primary key part 2; key `ix_ab_role_tables_table` |
-| `can_create` | `TINYINT NN DEFAULT 0` | |
-| `read_scope`, `update_scope`, `delete_scope` | `VARCHAR(8) NN DEFAULT 'none'` | `none`, `own`, `all` |
-| `columns` | `LONGTEXT NULL` | JSON map column name to `none`/`read`/`update` (CLS) |
-| `row_filter` | `LONGTEXT NULL` | JSON array of `RowCondition` (RLS) |
+| `role_id`, `table_id` | `text` | primary key; index `ab_ix_role_tables_table` |
+| `can_create` | `boolean NOT NULL DEFAULT false` | |
+| `read_scope`, `update_scope`, `delete_scope` | `text NOT NULL DEFAULT 'none'` | `none`, `own`, `all` |
+| `columns` | `jsonb` | map column name to `none`/`read`/`update` (CLS) |
+| `row_filter` | `jsonb` | array of `RowCondition` (RLS) |
 
-### `ab_tables`: table definitions (the platform's catalogue)
+### `ab_tables`: table definitions (the catalogue)
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `id` | `VARCHAR(64) NN` | primary key |
-| `name` | `VARCHAR(191) NN` | identifier used in formulas; unique `ux_ab_tables_name` |
-| `connection_id` | `VARCHAR(64) NULL` | |
-| `source` | `VARCHAR(255) NULL` | physical name in the connection (MySQL table, `<fileId>/<sheet>`, sheet tab) |
-| `def` | `LONGTEXT NN` | JSON `TableDef` (columns, display names, primary column, origin, `managed`: Appbuilder created the physical table, `missingSystem`: system columns a linked source lacks, `readOnly`) |
-| `created_on`, `modified_on` | `DATETIME(3) NN` | |
+| `id` | `text` | primary key |
+| `name` | `text NOT NULL` | identifier used in formulas; unique `ab_ux_tables_name` on `lower(name)`; lookups by name are case-insensitive |
+| `connection_id` | `text` | |
+| `source` | `text` | physical name in the connection (table, `<fileId>/<sheet>`, sheet tab) |
+| `def` | `jsonb NOT NULL` | `TableDef` (columns, display names, primary column, origin, `managed`, `missingSystem`, `readOnly`) |
+| `created_on`, `modified_on` | `timestamptz NOT NULL` | |
 
 ### `ab_apps`
 
-| Column | Type | Notes |
-| --- | --- | --- |
-| `id` | `VARCHAR(64) NN` | primary key |
-| `name` | `VARCHAR(191) NN` | unique `ux_ab_apps_name` |
-| `description` | `TEXT NULL` | |
-| `width`, `height` | `INT NN DEFAULT 1920 / 1080` | design size |
-| `definition` | `LONGTEXT NN` | JSON `AppDef` (see `architecture.md`) |
-| `created_on`, `modified_on` | `DATETIME(3) NN` | |
-| `modified_by` | `VARCHAR(64) NULL` | user name of the last writer |
+`id text` primary key, `name text` (unique on `lower(name)`), `description text`, `width`/`height integer` (default 1920/1080),
+`definition jsonb NOT NULL` (the `AppDef`, see `architecture.md`), `created_on`/`modified_on timestamptz`, `modified_by text`.
 
 ### `ab_connections`
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `id` | `VARCHAR(64) NN` | primary key. Built-in: `conn_default` (mysql), `conn_files` (files) |
-| `name` | `VARCHAR(191) NN` | unique `ux_ab_connections_name` |
-| `connector` | `VARCHAR(32) NN` | `mysql`, `files`, `gsheets` |
-| `settings` | `LONGTEXT NULL` | JSON of non-secret settings |
-| `secret_sealed` | `TEXT NULL` | `v1:<iv>:<tag>:<ciphertext>` AES-256-GCM, see below |
-| `status` | `VARCHAR(16) NN DEFAULT 'not-configured'` | `connected`, `error`, `not-configured` |
-| `last_error` | `TEXT NULL` | |
-| `is_default` | `TINYINT NN DEFAULT 0` | exactly one mysql connection is the default |
-| `scope` | `VARCHAR(8) NN DEFAULT 'server'` | `device` for the files connection |
-| `created_on`, `modified_on` | `DATETIME(3) NN` | |
+| `id` | `text` | primary key. Built-in: `conn_default` (postgres, the system database), `conn_files` (files) |
+| `name` | `text NOT NULL` | unique on `lower(name)` |
+| `connector` | `text NOT NULL` | `postgres`, `mysql`, `files`, `gsheets` |
+| `settings` | `jsonb` | non-secret settings (`host`, `port`, `database`, `user`, `ssl`, `schema`, `spreadsheetId`, ...) |
+| `secret_sealed` | `text` | `v1:<iv>:<tag>:<ciphertext>` AES-256-GCM |
+| `status` | `text NOT NULL DEFAULT 'not-configured'` | `connected`, `error`, `not-configured` |
+| `last_error` | `text` | |
+| `is_default` | `boolean NOT NULL DEFAULT false` | exactly one postgres connection is the default store for new tables |
+| `scope` | `text NOT NULL DEFAULT 'server'` | `device` for the files connection |
+| `created_on`, `modified_on` | `timestamptz NOT NULL` | |
 
 The key for `secret_sealed` comes from `APPBUILDER_SECRET_KEY` (64 hex characters) or from `workspace/.secret-key` (mode 0600,
-created on first use). Losing the key makes stored secrets unreadable; there is no recovery.
+created on first use). Losing the key makes stored secrets unreadable; there is no recovery. `conn_default` is rewritten from
+`server.json` / `APPBUILDER_DB_*` at every start; its tables live in the environment schema of the system database (see below).
 
 ### `ab_solutions`
 
-| Column | Type | Notes |
-| --- | --- | --- |
-| `id` | `VARCHAR(64) NN` | primary key |
-| `name` | `VARCHAR(191) NN` | unique `ux_ab_solutions_name` |
-| `display_name` | `VARCHAR(255) NN` | |
-| `publisher` | `VARCHAR(255) NULL` | |
-| `version` | `VARCHAR(64) NULL` | |
-| `description` | `TEXT NULL` | |
-| `components` | `LONGTEXT NULL` | JSON array of `{ kind, id }` |
-| `created_on`, `modified_on` | `DATETIME(3) NN` | |
+`id text` primary key, `name text` (unique on `lower(name)`), `display_name text NOT NULL`, `publisher text`, `version text`,
+`description text`, `components jsonb` (array of `{ kind, id }`), `created_on`/`modified_on timestamptz`.
 
 ### `ab_data_files`: files managed by the files connector
 
-| Column | Type | Notes |
-| --- | --- | --- |
-| `id` | `VARCHAR(64) NN` | primary key |
-| `connection_id` | `VARCHAR(64) NN` | |
-| `file_name` | `VARCHAR(255) NN` | |
-| `original_name` | `VARCHAR(255) NULL` | |
-| `kind` | `VARCHAR(8) NN` | `csv`, `xlsx`, `json` |
-| `size_bytes` | `BIGINT NN DEFAULT 0` | |
-| `checksum` | `VARCHAR(128) NULL` | |
-| `storage_key` | `VARCHAR(255) NULL` | |
-| `imported_on` | `DATETIME(3) NN` | |
-| `table_ids` | `LONGTEXT NULL` | JSON array of table ids made from the file |
-| `modified_since_import` | `TINYINT NN DEFAULT 0` | |
+`id text` primary key, `connection_id text NOT NULL`, `file_name text NOT NULL`, `original_name text`, `kind text NOT NULL`
+(`csv`, `xlsx`, `json`), `size_bytes bigint`, `checksum text`, `storage_key text`, `imported_on timestamptz NOT NULL`,
+`table_ids jsonb` (array of table ids), `modified_since_import boolean NOT NULL DEFAULT false`.
 
 ### `ab_attachments`
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `id` | `VARCHAR(64) NN` | primary key (`att_...`) |
-| `table_id` | `VARCHAR(64) NN` | |
-| `col` | `VARCHAR(64) NN` | column name (`column` is a reserved word, hence `col`) |
-| `row_id` | `CHAR(36) NN` | key `ix_ab_attachments_row (table_id, row_id)` |
-| `file_name` | `VARCHAR(255) NN` | |
-| `mime` | `VARCHAR(127) NN` | |
-| `size_bytes` | `BIGINT NN` | |
-| `sha256` | `CHAR(64) NN` | |
-| `storage_key` | `VARCHAR(128) NN` | file on disk: `workspace/attachments/<key[0..1]>/<key>` |
-| `created_by` | `VARCHAR(64) NULL` | |
-| `created_on` | `DATETIME(3) NN` | |
+| `id` | `text` | primary key (`att_...`) |
+| `table_id`, `col`, `row_id` | `text NOT NULL` | index `ab_ix_attachments_row (table_id, row_id)` (`column` is a reserved word, hence `col`) |
+| `file_name`, `mime`, `sha256`, `storage_key` | `text NOT NULL` | file on disk: `workspace/attachments/<key[0..1]>/<key>` |
+| `size_bytes` | `bigint NOT NULL` | |
+| `created_by` | `text` | |
+| `created_on` | `timestamptz NOT NULL` | index `ab_ix_attachments_created` (orphan sweep) |
 
 ### `ab_counters`
 
-| Column | Type | Notes |
-| --- | --- | --- |
-| `k` | `VARCHAR(191) NN` | primary key; `<tableId>:<column>` for autonumber |
-| `v` | `BIGINT NN` | last number issued |
+`k text` primary key (`<tableId>:<column>` for autonumber), `v bigint NOT NULL` (last number issued). `nextCounter` is one atomic
+statement: `INSERT ... ON CONFLICT (k) DO UPDATE SET v = c.v + 1 RETURNING v`.
 
 ### `ab_audit`
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `id` | `BIGINT NN AUTO_INCREMENT` | primary key |
-| `at` | `DATETIME(3) NN` | key `ix_ab_audit_at` |
-| `user_id` | `VARCHAR(64) NULL` | |
-| `action` | `VARCHAR(64) NN` | e.g. `auth.login`, `table.create`, `role.create` |
-| `table_id`, `row_id` | `VARCHAR(64) NULL` | |
-| `details` | `LONGTEXT NULL` | JSON, truncated to 60,000 characters. Never holds passwords |
+| `id` | `bigint GENERATED ALWAYS AS IDENTITY` | primary key |
+| `at` | `timestamptz NOT NULL` | index `ab_ix_audit_at` |
+| `user_id` | `text` | |
+| `action` | `text NOT NULL` | e.g. `auth.login`, `table.create`, `role.create`; index `ab_ix_audit_action` |
+| `table_id`, `row_id` | `text` | |
+| `details` | `jsonb` | at most 60,000 characters of JSON (longer details are kept as a truncated JSON string). Never holds passwords |
 
-## User tables (default connection, MySQL)
+The audit log is per environment (sign-ins of install-wide users are written to the environment the request ran in).
 
-A table created through the API becomes a physical table named `def.source`, or `t_<lowercase name>` if `source` is empty.
-`pickSource` in `/home/claude/appbuilder-demo/server/routes/meta/tables-core.ts` de-duplicates with `_2`, `_3`. The identifier rule is
-`^[A-Za-z_][A-Za-z0-9_]{0,63}$`, always backtick-quoted. **Any name starting with `ab_` is refused** (403): system tables are not
-reachable through a connector.
+## Data tables (default connection, PostgreSQL)
 
-Engine and charset: `ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`.
+A table created through the API on the default connection becomes the physical table `"env_<id>"."<source>"`, where `source` is
+`def.source` or `t_<lowercase name>`. `pickSource` in `/home/claude/appbuilder-demo/server/routes/meta/tables-core.ts` de-duplicates
+with `_2`, `_3`. Identifiers: `^[A-Za-z_][A-Za-z0-9_]{0,62}$`, always double-quoted (so `createdOn` keeps its case). **Any name
+starting with `ab_` is refused** (403): the metadata tables are not reachable through a connector, and `listSourceTables` hides them.
 
 ### System columns (every table)
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `id` | `CHAR(36) NOT NULL` | primary key; a UUID |
-| `createdOn`, `modifiedOn` | `DATETIME(3) NULL` | |
-| `createdBy`, `owner` | `VARCHAR(64) NULL` | user ids; `owner` has an index and drives the `own` scope |
+| `id` | `text NOT NULL` | primary key; a UUIDv7 (lowercase) |
+| `createdOn`, `modifiedOn` | `timestamptz(3)` | |
+| `createdBy`, `owner` | `text` | user ids; `owner` has an index and drives the `own` scope |
 
-All other columns are `NULL`able at the database level. `required`, `unique` defaults and so on are enforced by the service layer
-and (for `unique`) by an index.
+All other columns are nullable. `required`, defaults and so on are enforced by the service layer; `unique` by an index too.
 
 ### Column type map (`sqlType`)
 
 | Column type | SQL type |
 | --- | --- |
-| `text`, `email`, `phone`, `choice` | `VARCHAR(255)` |
-| `url` | `VARCHAR(1024)` (`VARCHAR(768)` when `unique`) |
-| `multiline` | `MEDIUMTEXT` |
-| `number` | `BIGINT` |
-| `decimal` | `DOUBLE` |
-| `currency` | `DECIMAL(19,4)` |
-| `boolean` | `TINYINT(1)` |
-| `date` | `DATE` |
-| `datetime` | `DATETIME(3)` |
-| `lookup` | `CHAR(36)` (the target row id) |
-| `image`, `file` | `TEXT` (an attachment id or a JSON array of ids) |
-| `autonumber` | `VARCHAR(64)` (prefix plus a 4-digit counter) |
+| `text`, `email`, `phone`, `choice` | `varchar(255)` |
+| `url` | `varchar(1024)` (`varchar(768)` when `unique`: btree entries are limited to about 2,700 bytes) |
+| `multiline` | `text` |
+| `number` | `bigint` |
+| `decimal` | `double precision` |
+| `currency` | `numeric(19,4)` |
+| `boolean` | `boolean` |
+| `date` | `date` |
+| `datetime` | `timestamptz(3)` |
+| `lookup` | `text` (the target row id) |
+| `image`, `file` | `text` (an attachment id or a JSON array of ids) |
+| `autonumber` | `varchar(64)` (prefix plus a 4-digit counter) |
 
-Reading an existing table (`describe`, linking) maps SQL types back with `mapSqlType` (for example `tinyint(1)` to `boolean`,
-`DECIMAL(19,4)` to `currency`, other decimals to `decimal`, integer types to `number`).
+Reading an existing table (`describe`, linking) maps types back with `mapSqlType`: `boolean`, integer types to `number`,
+`numeric(19,4)` to `currency`, `numeric(p,0)` to `number`, other numerics and floats to `decimal`, `date`, both timestamp types to
+`datetime` (a `timestamp without time zone` is read as UTC), `text`/`json`/`jsonb`/`xml` to `multiline`, enums to `choice`, everything
+else (`varchar`, `uuid`, `time`, arrays, ...) to `text`.
 
 ### Indexes
 
-`wantedIndex(col)` decides:
+`wantedIndex(col)` decides; index names are unique per **schema** in PostgreSQL, so they carry the table name
+(`indexName(table, kind, col)`: `uq_<table>_<col>` / `ix_<table>_<col>`, shortened with a hash past 63 characters):
 
-| Column | Index | Name |
-| --- | --- | --- |
-| `id` | primary key | `PRIMARY` |
-| `owner` | non-unique | `ix_owner` |
-| `unique: true` (not `multiline`, `image`, `file`) | unique | `uq_<column>` |
-| `lookup` | non-unique | `ix_<column>` |
+| Column | Index |
+| --- | --- |
+| `id` | primary key (`<table>_pkey`) |
+| `owner` | `ix_<table>_owner` |
+| `unique: true` (not `multiline`, `image`, `file`) | `uq_<table>_<col>` (unique) |
+| `lookup` | `ix_<table>_<col>` |
 
-Names are cut to 64 characters. When a column is altered, `syncIndexes` adds or drops only indexes named `uq_...` or `ix_...`;
-indexes a DBA created by hand with other names are left alone.
+Text-kind columns are indexed on their **lowercased** form (`lower(("col") COLLATE "und-x-icu")`, see `connectors.md`), which is
+what conditions compare: uniqueness is case-insensitive, and `owner = @me` row filters and lookups use the index. When a column is
+altered, its two possible index names are dropped first (an expression index cannot survive a type change) and the wanted one is
+created again; indexes a DBA created by hand with other names are left alone.
 
-### Queries against user tables
+### Queries against data tables
 
-The select builder always appends `id ASC` as a tiebreaker for paging, sorts blanks last (`(col IS NULL) ASC` before the column
-order; text columns treat `''` as blank), parameterises every value, and neutralises three-valued logic under `NOT` with
-`COALESCE(..., 0)`. Details and the remaining known differences from the in-memory semantics are in `connectors.md`.
+The select builder always appends `createdOn, id` as the default order / tie-breaker, sorts blanks last (`(col IS NULL) ASC`, for text
+`(col IS NULL OR col = '')`), parameterises every value with an explicit cast (`$1::text`, `$2::bigint`, ...), and neutralises
+three-valued logic under `NOT` with `COALESCE(..., FALSE)`. On a managed table (`def.managed`) the `id` column is compared exactly
+(its ids are lowercase UUIDs), so row lookups use the primary key. Details and the remaining differences from the in-memory semantics
+are in `connectors.md`.
 
 ## Changing the schema
 
-1. Add the change to `DDL` in `meta-store.ts` for new tables (keep `IF NOT EXISTS`).
-2. For existing installations add an ordered upgrade step in `migrate()` and bump `SCHEMA_VERSION`.
-3. Update the `MetaStore` repository code in the same file, the `FakeMetaStore` in
-   `/home/claude/appbuilder-demo/server/routes/meta/testing.ts`, and this page.
-4. Run the integration tests against a real server (see `testing.md`). Unit tests cannot catch SQL dialect problems.
-5. Keep the SQL portable (see the compatibility rules above) and avoid anything MariaDB 10.4 or MySQL 5.7 lacks.
+1. Add the change to `INSTALL_DDL` or `environmentDdl()` in `meta-store.ts` (keep `IF NOT EXISTS`, name indexes `ab_...`).
+2. For existing installations add an ordered upgrade step to `migrate()` (inside its transaction) and bump `SCHEMA_VERSION`.
+3. Qualify every table: `A('x')` for schema `ab`, `E('x')` for the environment schema. Never rely on `search_path`.
+4. Update the `MetaStore` repository code, the `FakeMetaStore` in `/home/claude/appbuilder-demo/server/routes/meta/testing.ts`, the
+   contract in `server/core/contracts.ts` if the interface changes, and this page.
+5. Run the integration tests against a real server (see `testing.md`). Unit tests cannot catch SQL problems.

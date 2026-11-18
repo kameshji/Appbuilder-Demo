@@ -200,12 +200,12 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
             <Tooltip>
               <TooltipTrigger asChild>
                 <span data-testid="storage-badge" tabIndex={0} className="flex h-7 max-w-[220px] items-center gap-1.5 rounded-md border border-border bg-background px-2 text-xs text-muted-foreground">
-                  {storage.kind === 'mysql' ? <Database className="size-3.5 shrink-0" /> : storage.kind === 'local-folder' ? <HardDrive className="size-3.5 shrink-0" /> : <Cloud className="size-3.5 shrink-0" />}
+                  {storage.kind === 'postgres' ? <Database className="size-3.5 shrink-0" /> : storage.kind === 'local-folder' ? <HardDrive className="size-3.5 shrink-0" /> : <Cloud className="size-3.5 shrink-0" />}
                   <span className="truncate">{storage.kind === 'browser' ? 'Browser storage' : storage.location}</span>
                 </span>
               </TooltipTrigger>
               <TooltipContent>
-                {storage.kind === 'mysql' ? `Default store: ${storage.location}` : storage.kind === 'local-folder' ? `Workspace folder: ${storage.location}` : 'Demo mode: your workspace is kept in this browser. Run the local server for MySQL, sign-in and server-enforced security.'}
+                {storage.kind === 'postgres' ? `Default store: ${storage.location}` : storage.kind === 'local-folder' ? `Workspace folder: ${storage.location}` : 'Demo mode: your workspace is kept in this browser. Run the local server for PostgreSQL, sign-in and server-enforced security.'}
               </TooltipContent>
             </Tooltip>
           )}

@@ -1,19 +1,21 @@
 # Architecture
 
-Appbuilder is a desktop low-code app builder. Makers design apps on a canvas with Excel-style formulas; data lives in MySQL, data
-files or Google Sheets; the server decides who may see what. The decisions behind the shape are in
-`/home/claude/appbuilder-demo/docs/decisions.md` (D1 to D12). This page describes the code as it is.
+Appbuilder is a desktop low-code app builder. Makers design apps on a canvas with Excel-style formulas; data lives in PostgreSQL
+(the default database), external MySQL/PostgreSQL databases, data files or Google Sheets; the server decides who may see what. The decisions behind the shape are in
+`/home/claude/appbuilder-demo/docs/decisions.md` (D1 to D13). This page describes the code as it is.
 
 - **Browser**: React 19 + TypeScript, built with Vite into **one HTML file** (`dist/index.html`). Hash routes, zustand + immer for
   state, Tailwind 4 for styles.
 - **Server**: Node (22.18 or newer) running TypeScript directly through type stripping (`node server/main.ts`); no build step, no
   framework. It serves the Data API under `/api/v1` and the built app from `dist/`.
-- **Storage**: a MySQL/MariaDB database (system tables `ab_*` plus user tables) and the **workspace folder** on disk.
+- **Storage**: one PostgreSQL database (schema `ab` for install-wide objects, one schema `env_<id>` per environment with its
+  metadata tables `ab_*` and its data tables; see `schema.md`) and the **workspace folder** on disk.
 - **Demo mode**: the same browser build can run with no server at all, simulating the platform over IndexedDB.
 
 What is not supported: multi-tenant hosting, horizontal scaling of the Node server (it keeps session throttling, security caches and
 the files store in process memory), real-time collaboration (two makers saving the same app overwrite each other, last write wins),
-and any server-side formula evaluation (formulas run only in the browser).
+and server-side formula evaluation in the request path (the engine is shared and runs under Node, see rule 3, but no route
+evaluates formulas yet; P0 package D adds query pushdown).
 
 ## Component diagram
 
@@ -45,7 +47,8 @@ flowchart TB
     Data["DataService<br/>validate, guard, audit"]
     Meta["MetaStore<br/>ab_* repositories"]
     Conn["ConnectionManager"]
-    MySQLc["MySQL connector"]
+    PGc["PostgreSQL connector<br/>(default + external)"]
+    MySQLc["MySQL connector<br/>(external)"]
     Filesc["Files connector"]
     Gsc["Google Sheets connector"]
     Att["Attachment store"]
@@ -61,6 +64,7 @@ flowchart TB
     Routes --> Sec
     Routes --> Conn
     Auth --> Meta
+    Conn --> PGc
     Conn --> MySQLc
     Conn --> Filesc
     Conn --> Gsc
@@ -68,14 +72,17 @@ flowchart TB
   end
 
   subgraph Storage["Storage"]
-    DB[("MySQL / MariaDB<br/>ab_* tables + user tables")]
+    DB[("PostgreSQL<br/>schema ab + env_default<br/>(ab_* tables + data tables)")]
+    ExtDB[("Customer databases<br/>MySQL / MariaDB / PostgreSQL")]
     WS[("Workspace folder<br/>server.json, .secret-key,<br/>attachments/, files/")]
     Google[("Google Sheets API")]
   end
 
   Remote -->|"HTTPS JSON /api/v1<br/>cookie ab_session"| Router
   Meta --> DB
-  MySQLc --> DB
+  PGc --> DB
+  PGc -.-> ExtDB
+  MySQLc --> ExtDB
   Filesc --> WS
   Att --> WS
   Gsc --> Google
@@ -90,10 +97,10 @@ A PHP gateway for shared hosting (D12) replaces the whole Server box and keeps t
 | Path | What lives there |
 | --- | --- |
 | `src/contracts.ts` | The shared contract: `AppDef`, `ControlNode`, Fx types, `PropMeta`, `ControlType`. Changes need the architect's agreement. |
-| `src/fx/` | Formula engine. No React, no DOM. `index.ts` exports `fx` (`check`, `evaluate`, `referencedNames`, `renameIdentifier`, `functions`, `enums`, `parseNamedFormulas`, `setUserFunctions`, `signatureAt`). |
+| `src/fx/` | Formula engine, shared by browser and server. No React, no DOM, explicit `.ts` imports. `index.ts` exports `fx` (`check`, `evaluate`, `referencedNames`, `renameIdentifier`, `functions`, `enums`, `parseNamedFormulas`, `setUserFunctions`, `signatureAt`, `createEngine`); `engine.ts` the per-app engine instance (`createEngine`: its own user-defined functions and named formulas); `query/` the formula-to-query translator (Query v2, see `query-v2.md`). |
 | `src/controls/` | Control registry (`index.ts`), control components, `sets/` (Insert-pane order), `icon/` (lucide and animated icons). |
 | `src/components/ui/` | shadcn-style wrappers over Radix and other libraries. |
-| `src/platform/` | The platform facade (`index.ts`), `remote.ts` (server mode), `core.ts` (demo mode), `contracts.ts` (platform types), `http.ts` (Data API types, shared with the server), `rowfilter.ts`, `storage.ts`. |
+| `src/platform/` | The platform facade (`index.ts`), `remote.ts` (server mode), `core.ts` (demo mode), `contracts.ts` (platform types), `http.ts` (Data API types, shared with the server), `query.ts` (Query v2 plan types, shared with the server and `src/fx/query`), `rowfilter.ts`, `storage.ts`. |
 | `src/runtime/` | App stores (`createAppStore`: definition and runtime state; the shared `useStore` plus one per app tab), store context, evaluator, Fx host, player (`RunApp`, `RenderNode`), design sizes, autosave session. |
 | `src/studio/` | The editor: canvas, formula bar, properties panel, left rail, command bar. |
 | `src/portal/` | The application shell (`Portal.tsx`, `Shell.tsx`: Dev mode and User mode, app tabs in `UserMode.tsx`, `workspace.ts`), the planned-module registry (`modules.ts`) and the maker pages: home, apps, tables, data grid, roles, solutions, connections, data files, sign-in. |
@@ -102,9 +109,9 @@ A PHP gateway for shared hosting (D12) replaces the whole Server box and keeps t
 | `server/main.ts` | Process entry: creates the app, HTTP server, static files, graceful shutdown. |
 | `server/core/` | Router, auth, security engine, DataService, values, conditions, services wiring, meta store, connection manager, attachments. |
 | `server/routes/meta/` | Metadata routes (apps, tables, connections, security, solutions, files), packages (YAML), seed data, legacy migration. |
-| `server/connectors/{mysql,files,gsheets}/` | The connectors. |
+| `server/connectors/{postgres,mysql,files,gsheets}/` | The connectors. `postgres/db.ts` is also the system store's pool (`SqlDb`, units of work). |
 | `server/vite-plugin.mjs` | Mounts the same API handler into the Vite dev and preview servers. |
-| `scripts/` | PowerShell installers (`setup-mysql.ps1`, `setup-offline.ps1`, `start.ps1`), `gen-animated-icons.mjs`, `gen-notices.mjs`, `docs/` (reference generators and their test), `docs-shots/` (screenshot capture, developer tool). |
+| `scripts/` | installers (`setup-postgres.ps1` and `setup-postgres.sh`: PostgreSQL role and database; `setup-offline.ps1`, `start.ps1`), `gen-animated-icons.mjs`, `gen-notices.mjs`, `docs/` (reference generators and their test), `docs-shots/` (screenshot capture, developer tool). |
 | `docs/` | Documentation (see `docs/README.md` for the rules). |
 
 ## Module boundaries: who may import what
@@ -114,7 +121,8 @@ enforce them.
 
 ```
 contracts.ts   <- imported by everyone (types only)
-fx             -> contracts only. No React, no DOM, no platform, no controls.
+fx             -> relative .ts files in src/fx; `import type` only from contracts.ts, platform/query.ts, platform/http.ts.
+                  No React, no DOM, no packages, no runtime / studio / portal / controls / platform code (enforced by a test).
 platform       -> contracts, fx values where needed. Never imports studio, portal, controls.
 controls       -> contracts, components/ui, platform types and a few calls (data table, Form, attachment controls), runtime attachment helpers
 components/ui  -> third-party UI libraries, lib/utils. Nothing from the app.
@@ -123,7 +131,8 @@ studio         -> runtime, controls, fx, platform, components/ui, portal (Profil
 portal         -> platform, components/ui, router, chat, runtime public pieces (RunApp, sizes, sample/store for Start with data),
                   studio (the shell mounts Studio). Not runtime or studio internals.
 chat           -> components/ui, lib, portal/theme. Nothing else (the chat module will add platform).
-server/**      -> server/** with relative `.ts` imports, plus `import type` from src/platform/{contracts,http}.ts and src/contracts.ts
+server/**      -> server/** with relative `.ts` imports, plus `import type` from src/platform/{contracts,http,query}.ts and src/contracts.ts,
+                  and the formula engine src/fx/** at run time (rule 3)
 ```
 
 Specific rules:
@@ -134,10 +143,18 @@ Specific rules:
    keeps working when the platform is a stub or fails (reads give empty values, writes throw a `PlatformError` that becomes a formula
    failure). The evaluator, host and store use only this bridge; `RunApp.tsx`, `session.ts` (autosave) and `attachments.ts` import
    `@/platform` directly because they need app and upload calls.
-3. **The server never imports client code at run time.** It uses `import type` (erased by type stripping) from
-   `src/platform/contracts.ts`, `src/platform/http.ts` and `src/contracts.ts`, and `import { DEFAULT_ROW_CAP, API_BASE, ... } from
-   '../../src/platform/http.ts'`, which therefore must stay free of React, the DOM and the `@/` alias. Never `import '@/...'` in
-   server code: the alias does not exist at run time.
+3. **The formula engine is shared; other client code is not.** The server may import `src/fx/**` at run time (relative paths,
+   e.g. `import { createEngine } from '../../src/fx/index.ts'` and `import { analyze } from '../../src/fx/query/index.ts'`). So
+   `src/fx` follows the server's rules: relative imports with explicit `.ts` extensions, erasable TypeScript only, no React, no DOM, no
+   browser globals at import time, no packages; anything environment-specific (clipboard, launch, navigation, notifications) goes
+   through the `FxHost` the caller passes. Outside `src/fx` it may only `import type` from `src/contracts.ts`,
+   `src/platform/query.ts` and `src/platform/http.ts`. `/home/claude/appbuilder-demo/src/fx/layering.test.ts` enforces this and
+   `server/core/fx.test.ts` loads the engine under plain Node. Apart from `src/fx`, the server uses only `import type` (erased by type
+   stripping) from `src/platform/contracts.ts`, `src/platform/http.ts`, `src/platform/query.ts` and `src/contracts.ts`, and
+   `import { DEFAULT_ROW_CAP, API_BASE, ... } from '../../src/platform/http.ts'`, which therefore must stay free of React, the DOM
+   and the `@/` alias. Never `import '@/...'` in server code: the alias does not exist at run time. User-defined functions and named
+   formulas belong to an engine instance (`createEngine({ formulas })`): create one per app definition, never share one between
+   requests for different apps.
 4. **Server TypeScript must be erasable**: relative imports with the `.ts` extension, `import type` for types, no enums, no
    namespaces, no parameter properties (`erasableSyntaxOnly` in `tsconfig.server.json`). Checked by `npm run typecheck:server`.
 5. **Connectors know nothing about users or security**; security lives in `security.ts` and `data.ts` (see `connectors.md`).
@@ -184,8 +201,9 @@ Rules:
 - **Every property is a formula string that starts with `=`.** A literal is a formula too: text is `="Save"`, a number `=40`, a boolean
   `=true`, a colour `=RGBA(79, 70, 229, 1)` or `=Color.Red`, blank is `=Blank()`. There are no "plain" values, which keeps the
   evaluator uniform. A property that is missing from `props` takes the control's default (`PropMeta.default`, itself a formula).
-- **Formulas are stored as text and are never executed by the server.** The server stores and returns them; the browser evaluates
-  them. A formula can only affect data through the Data API with the caller's own session, so the server's security applies.
+- **Formulas are stored as text; today only the browser evaluates them.** The server stores and returns them. A formula can only
+  affect data through the Data API with the caller's own session, so the server's security applies. The engine itself also runs on
+  the server (rule 3) for the coming query pushdown, table events and jobs (P0 packages D and G).
 - `ControlNode.type` is a key in the control registry (`controls.get(type)`); an unknown type makes the registry throw, so a
   control type name is part of the stored format and must never be renamed.
 - `name` is unique across the whole app (not per screen) because formulas refer to controls by bare name (`TextInput1.Value`). Renaming a
@@ -202,9 +220,11 @@ Rules:
 ## How the runtime evaluates formulas
 
 The evaluator is `/home/claude/appbuilder-demo/src/runtime/evaluator.ts` (`Evaluator`, one instance per open app, reused and
-incrementally invalidated through `getEvaluator`).
+incrementally invalidated through `getEvaluator`). Each `Evaluator` owns a formula engine instance (`evaluator.engine`, from
+`createEngine()`) holding that app's user-defined functions, so apps open side by side (app tabs, Studio and preview) never see each
+other's definitions; the Studio's formula bar uses the same instance for autocomplete, signature help and checks.
 
-**Scope resolution.** `fx.evaluate(formula, scope)` asks the scope to resolve every bare identifier (`FxScope.resolve(name)`). The
+**Scope resolution.** `engine.evaluate(formula, scope)` asks the scope to resolve every bare identifier (`FxScope.resolve(name)`). The
 evaluator's `resolveName(node, ctx, name)` looks names up in this order:
 
 1. `ThisItem`: the current gallery row (innermost gallery of the node's context).
@@ -259,8 +279,9 @@ empty until `ensureTablesLoaded` (called from `linkPlatform()` for `app.dataSour
    `POST /api/v1/data/Tickets/query` with `{ top: 5000 }`, and notifies subscribers when the rows arrive (the runtime's `dataKey`
    changes and formulas re-evaluate). If a write finished while the load was in flight, it re-reads (at most twice). The server's
    `truncated` flag is recorded so the UI can warn. `Filter`, `Sum`, `Sort` and the rest run in the browser over those rows.
-3. **Server side** (`server/core/router.ts`, `data-routes.ts`, `data.ts`): the router checks Host, Origin and the session cookie
-   (resolving the user and loading their roles); `dataRoutes` finds the table (404 if the user has no privilege on it at all);
+3. **Server side** (`server/core/router.ts`, `data-routes.ts`, `data.ts`): the router resolves the request's **environment**
+   (`env-context.ts`; today always `default`, schema `env_default`) and runs the handler inside it, checks Host, Origin and the
+   session cookie (resolving the user and loading their roles from the environment's cached roles); `dataRoutes` finds the table (404 if the user has no privilege on it at all);
    `DataService.query` validates the query, rejects columns the user may not read (403), ANDs the user's **row predicate** into
    `where`, narrows `select` to visible columns, asks the connector for `cap + 1` rows (cap 5000) to know whether to set `truncated`,
    and removes hidden columns from the output (`rowOut`). Dates leave as ISO text, numbers as numbers.
@@ -289,8 +310,8 @@ empty until `ensureTablesLoaded` (called from `linkPlatform()` for `app.dataSour
    reflect the server's verdict.
 
 Multi-row writes are all or nothing where the connector allows it: a multi-row delete checks every row's permission before deleting
-(one transaction on MySQL), and a CSV import validates every row first and runs `replace` (delete + inserts) in one transaction on
-MySQL. On the files and Google Sheets connectors the delete and the insert remain two writes (see `connectors.md`).
+(one transaction on PostgreSQL and MySQL), and a CSV import validates every row first and runs `replace` (delete + inserts) in one
+transaction on the SQL connectors. On the files and Google Sheets connectors the delete and the insert remain two writes (see `connectors.md`).
 
 ### Sign-in
 
@@ -307,8 +328,8 @@ registered wins. Requests starting with `/api` go to the router; everything else
 Configuration is by environment variable: `PORT` (5174), `APPBUILDER_HOST` (127.0.0.1), `APPBUILDER_WORKSPACE` (`./workspace`),
 `APPBUILDER_SECRET_KEY` (64 hex characters; otherwise `workspace/.secret-key` is created), `APPBUILDER_ALLOWED_HOSTS` (extra
 Host/Origin names), `APPBUILDER_SECURE_COOKIE=1` and `APPBUILDER_TRUST_PROXY=1` (Secure session cookie), and the optional
-database bootstrap `APPBUILDER_DB_HOST/PORT/NAME/USER/PASSWORD/SSL` which skips the setup screen (and creates the database if
-needed). Without them the setup wizard calls `POST /setup/database` and the settings are saved to `workspace/server.json` with
+PostgreSQL bootstrap `APPBUILDER_DB_HOST/PORT (5432)/NAME/USER/PASSWORD/SSL` which skips the setup screen (and creates the
+database if the role may). Without them the setup wizard calls `POST /setup/database` and the settings are saved to `workspace/server.json` with
 the password sealed; `setupComplete: true` is added once the first administrator exists (`ServerConfig` in `contracts.ts`,
 `loadConfig` in `config.ts`).
 
@@ -320,7 +341,11 @@ Boot (`services.boot()`, `app.ts`):
   problems (undecryptable password, incompatible schema) and on `close()`.
 - A database whose schema version is above `SCHEMA_VERSION` is not used at all (`state.incompatible`, `SchemaTooNewError`):
   data routes answer 503, setup is refused, no retry.
-- The schema migration summary is logged and audited (`schema.migrate`).
+- `migrate()` creates or completes schema `ab` and every environment schema in one transaction (`schema.md`); its summary is
+  logged and audited (`schema.migrate`). A database with an old MySQL-era schema version, or not UTF8, is refused with a clear
+  message.
+- The system pool (`createPgDb` in `server/connectors/postgres/db.ts`, 10 connections) is shared by the MetaStore and the default
+  connection (`conn_default`, through `ConnectorEnv.systemDb`); `services.transaction(fn)` runs a unit of work on it.
 - While setup is needed (no `setupComplete`, or a database without users) a one-time setup code is generated
   (`services.setupCode`) and printed in a banner; `/setup/*` require it and are `loopbackOnly` routes (the router checks
   `req.socket.remoteAddress`). It rotates when the administrator is created. Tests pass `printSetupCode: false` to
@@ -337,7 +362,8 @@ sessions hourly. `SIGINT`/`SIGTERM` flush the files connector, close connections
   deploying the client is copying one file. The Vite config also mounts the API into `vite` and `vite preview` through
   `server/vite-plugin.mjs`, which loads the server core lazily so merely loading the config has no side effects.
 - **Run it**: `npm run build`, then `npm start` (`node server/main.ts`). `npm run dev` runs Vite with the API mounted (hot reload).
-  The Windows installers in `scripts/` (`setup-mysql.ps1`, `setup-offline.ps1`, `start.ps1`) prepare MySQL and start the server.
+  `scripts/setup-postgres.ps1` (Windows) and `scripts/setup-postgres.sh` (Linux) create the PostgreSQL role and database;
+  `setup-offline.ps1` and `start.ps1` install and start the server on Windows.
 - **Demo mode**: if `GET /api/v1/status` does not answer within 800 ms with `{ app: 'appbuilder' }`, the facade falls back to the demo
   platform (`src/platform/core.ts`), so the same `dist/index.html` also works when opened as a static file or hosted on any static
   web server. It seeds a sample workspace into IndexedDB (falling back to memory if IndexedDB fails), simulates roles for one person

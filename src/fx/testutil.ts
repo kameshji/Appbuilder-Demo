@@ -1,5 +1,5 @@
-import type { FxHost, FxRecord, FxResult, FxValue } from '@/contracts'
-import { evaluate } from './index'
+import type { FxHost, FxRecord, FxResult, FxValue } from '../contracts.ts'
+import { evaluate } from './index.ts'
 
 export type Vars = Record<string, FxValue>
 

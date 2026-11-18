@@ -4,10 +4,13 @@
 
 | Message | What to do |
 |---|---|
-| Could not connect to host:port: connection refused | MySQL is not running, or the host/port is wrong. Start MySQL and check. |
-| Access denied for user "x": wrong user name or password | Re-enter the credentials, or run `scripts\setup-mysql.ps1` again. |
-| The database "x" does not exist | Create it, or tick "Create the database if it does not exist". |
-| The server uses an authentication method this connector cannot use over an insecure connection | Turn SSL on, or switch the user to `mysql_native_password` (a common MySQL 8 issue). |
+| Could not connect to host:port: connection refused. Check that PostgreSQL is running ... | PostgreSQL is not running, or the host/port is wrong (default 5432). On Windows start the service `postgresql-x64-17` (Services, or `Start-Service postgresql-x64-17` as administrator). |
+| Access denied for user "x": wrong user name or password | Re-enter the credentials, or run `scripts\setup-postgres.ps1` again (it sets a new password for the role). |
+| The database "x" does not exist | Run `scripts\setup-postgres.ps1`, or tick "Create the database if it does not exist" (needs a role that may create databases). |
+| User "x" may not create schemas in the database "y" | The role does not own the database. Run the `ALTER DATABASE ... OWNER TO ...` or `GRANT CREATE ...` shown in the message as the `postgres` superuser, or use the role `setup-postgres` created. |
+| The server does not accept connections from this computer ... pg_hba.conf | PostgreSQL's access file has no line for this connection. Add `host appbuilder appbuilder 127.0.0.1/32 scram-sha-256` to `pg_hba.conf` and reload PostgreSQL. |
+| The database uses the ... encoding; Appbuilder needs UTF8 | Create the database again with `scripts\setup-postgres.ps1` (UTF8). |
+| This database holds an Appbuilder schema of version N, which is not supported on PostgreSQL | Use an empty database. |
 | The setup code is missing or wrong. It is shown in the window where the Appbuilder server runs. | Type the code printed in the server window (the newest one if the server restarted). |
 | This can only be done on the computer that runs Appbuilder | Open `http://localhost:5174` on the PC where the server runs. |
 | Too many wrong setup codes | Wait 15 minutes, or restart the server (a new code is printed). |
@@ -18,7 +21,7 @@
 
 "Choose a new password" right after signing in: an administrator set your password, so you must choose your own before you continue. Type the password you were given as the current one.
 
-"The database is not reachable": Appbuilder cannot reach MySQL right now and keeps trying by itself. Start MySQL, then press **Try again**.
+"The database is not reachable": Appbuilder cannot reach PostgreSQL right now and keeps trying by itself. Start PostgreSQL, then press **Try again**.
 
 ## Port already in use
 

@@ -1,12 +1,12 @@
-import type { FxHost, FxRecord, FxResult, FxScope, FxValue } from '@/contracts'
-import type { BinaryNode, CallNode, IdNode, MemberNode, Node } from './ast'
-import { ENUM_RECORDS, ENUM_SET } from './enums'
-import { FxError, fail, type Span } from './errors'
-import { lookupFunction, suggestFunction } from './functions'
-import { addDays } from './functions/dates'
-import { NOT_PURE, type CallCtx, type Session } from './functions/types'
-import { parse } from './parser'
-import { compareValues, describe, hasOwn, isRecord, looseEq, setField, toBool, toNumber, toRows, toText } from './values'
+import type { FxHost, FxRecord, FxResult, FxScope, FxValue } from '../contracts.ts'
+import type { BinaryNode, CallNode, IdNode, MemberNode, Node } from './ast.ts'
+import { ENUM_RECORDS, ENUM_SET } from './enums.ts'
+import { FxError, fail, type Span } from './errors.ts'
+import { BUILTIN_TABLE, type FunctionTable } from './functions/index.ts'
+import { addDays } from './functions/dates.ts'
+import { NOT_PURE, type CallCtx, type Session } from './functions/types.ts'
+import { parse } from './parser.ts'
+import { compareValues, describe, hasOwn, isRecord, looseEq, setField, toBool, toNumber, toRows, toText } from './values.ts'
 
 interface Frame {
   parent: Frame | null
@@ -28,17 +28,19 @@ export function arityMessage(name: string, min: number, max: number, got: number
   return null
 }
 
-export function unknownFunctionMessage(name: string): string {
-  const s = suggestFunction(name)
+export function unknownFunctionMessage(name: string, fns: FunctionTable = BUILTIN_TABLE): string {
+  const s = fns.suggest(name)
   return s ? `Did you mean ${s.name}?` : `Function isn't recognised: ${name}`
 }
 
 class Evaluator {
   session: Session
   host: FxHost | undefined
+  fns: FunctionTable
 
-  constructor(scope: FxScope, host: FxHost | undefined) {
+  constructor(scope: FxScope, host: FxHost | undefined, fns: FunctionTable) {
     this.host = host
+    this.fns = fns
     this.session = { scope, host, vars: new Map(), colls: new Map(), depth: 0 }
   }
 
@@ -110,7 +112,7 @@ class Evaluator {
       fail(n, e instanceof Error && e.message ? e.message : `Couldn't read ${name}`, true)
     }
     if (v !== undefined) return v
-    if (lookupFunction(name)) fail(n, `${name} is a function: add brackets after it, like ${name}(...)`, true)
+    if (this.fns.lookup(name)) fail(n, `${name} is a function: add brackets after it, like ${name}(...)`, true)
     const local = this.localNames(env)
     const guess = local.find((x) => x.toLowerCase() === name.toLowerCase())
     fail(n, guess ? `Name isn't recognised: ${name}. Did you mean ${guess}?` : `Name isn't recognised: ${name}`, true)
@@ -208,8 +210,8 @@ class Evaluator {
 
   private call(n: CallNode, env: Frame | null): FxValue {
     const nameSpan = { start: n.nameStart, end: n.nameEnd }
-    const def = lookupFunction(n.name)
-    if (!def) return fail(nameSpan, unknownFunctionMessage(n.name), true)
+    const def = this.fns.lookup(n.name)
+    if (!def) return fail(nameSpan, unknownFunctionMessage(n.name, this.fns), true)
     const msg = arityMessage(def.name, def.min, def.max, n.args.length)
     if (msg) fail(n, msg, true)
     const ctx = this.ctx(n, env)
@@ -285,12 +287,12 @@ class Evaluator {
   }
 }
 
-export function evaluateSource(source: string, scope: FxScope, host?: FxHost): FxResult {
+export function evaluateSource(source: string, scope: FxScope, host?: FxHost, fns: FunctionTable = BUILTIN_TABLE): FxResult {
   const p = parse(source)
   if (p.error) return { ok: false, error: p.error }
   if (!p.ast) return { ok: true, value: null }
   try {
-    const v = new Evaluator(scope, host).run(p.ast)
+    const v = new Evaluator(scope, host, fns).run(p.ast)
     return { ok: true, value: v === undefined ? null : v }
   } catch (e) {
     if (e instanceof FxError) return { ok: false, error: e.toDiagnostic() }

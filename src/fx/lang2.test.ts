@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import * as lucide from 'lucide-react'
-import { enums, fx } from './index'
-import { ICON_NAMES, NAMED_COLORS } from './enums'
-import { contacts, err, val } from './testutil'
+import { enums, fx } from './index.ts'
+import { ICON_NAMES, NAMED_COLORS } from './enums.ts'
+import { contacts, err, val } from './testutil.ts'
 
 const C = () => ({ Contacts: contacts() })
 

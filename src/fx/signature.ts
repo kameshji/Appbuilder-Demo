@@ -1,4 +1,4 @@
-import { lookupFunction, suggestFunction } from './functions'
+import { BUILTIN_TABLE, type FunctionTable } from './functions/index.ts'
 
 const WORD_OPS = new Set(['and', 'or', 'in', 'exactin', 'as'])
 
@@ -14,7 +14,7 @@ interface Frame {
  * (the formula bar calls it on every keystroke), so it scans text instead of using the parser.
  * `offset` is the caret position: characters before it count, characters after it do not.
  */
-export function signatureAt(source: string, offset: number): { name: string; signature: string; summary: string; argIndex: number } | null {
+export function signatureAt(source: string, offset: number, fns: FunctionTable = BUILTIN_TABLE): { name: string; signature: string; summary: string; argIndex: number } | null {
   const end = Math.max(0, Math.min(offset, source.length))
   let i = 0
   while (i < source.length && /\s/.test(source[i]!)) i++
@@ -122,7 +122,7 @@ export function signatureAt(source: string, offset: number): { name: string; sig
   for (let k = stack.length - 1; k >= 0; k--) {
     const f = stack[k]!
     if (!f.call || f.name === null) continue
-    const def = lookupFunction(f.name) ?? suggestFunction(f.name)
+    const def = fns.lookup(f.name) ?? fns.suggest(f.name)
     if (!def) return null
     return { name: def.name, signature: def.signature, summary: def.summary, argIndex: f.argIndex }
   }

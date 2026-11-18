@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { evaluate } from './index'
+import { evaluate } from './index.ts'
 
 const rows = Array.from({ length: 40 }, (_, i) => ({
   __id: 'r' + i,

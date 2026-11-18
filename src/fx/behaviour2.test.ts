@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { contacts, err, fakeHost, val } from './testutil'
+import { contacts, err, fakeHost, val } from './testutil.ts'
 
 const NO_HOST = 'Behaviour function in a non-behaviour property'
 
@@ -186,7 +186,7 @@ describe('Concurrent', () => {
 
 describe('behaviour functions are listed', () => {
   it('as behaviour kind', async () => {
-    const { functions } = await import('./index')
+    const { functions } = await import('./index.ts')
     const docs = new Map(functions().map((f) => [f.name, f]))
     for (const n of ['SubmitForm', 'ResetForm', 'NewForm', 'EditForm', 'ViewForm', 'Select', 'SetFocus', 'Launch', 'Download', 'Copy', 'Trace', 'Exit', 'Refresh', 'Concurrent']) {
       expect(docs.get(n)?.kind, n).toBe('behaviour')

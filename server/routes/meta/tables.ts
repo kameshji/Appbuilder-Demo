@@ -116,7 +116,7 @@ export async function rollbackCreate(s: Services, connector: Connector, def: Tab
 
 export function registerTableRoutes(router: Router, s: Services): void {
   /* create */
-  router.add('POST', '/api/v1/tables', async (ctx) => {
+  router.add('POST', '/api/v1/tables', (ctx) => s.transaction(async () => {
     const b = bodyObj(ctx)
     const displayName = reqString(b, 'displayName', 'A table needs a display name.', 200)
     const all = await s.meta.tables.list()
@@ -151,10 +151,10 @@ export function registerTableRoutes(router: Router, s: Services): void {
     await createPhysical(s, record, connector, def)
     await audit(s, ctx, 'table.create', { name, connection: record.id }, def.id)
     return def
-  }, { auth: 'maker' })
+  }), { auth: 'maker' })
 
   /* create from csv */
-  router.add('POST', '/api/v1/tables/from-csv', async (ctx) => {
+  router.add('POST', '/api/v1/tables/from-csv', (ctx) => s.transaction(async () => {
     const b = bodyObj(ctx)
     const displayName = reqString(b, 'displayName', 'A table needs a display name.', 200)
     const csv = b.csv
@@ -196,10 +196,10 @@ export function registerTableRoutes(router: Router, s: Services): void {
     }
     await audit(s, ctx, 'table.create', { name, connection: record.id, fromCsv: true }, def.id)
     return def
-  }, { auth: 'maker', maxBodyMB: 25 })
+  }), { auth: 'maker', maxBodyMB: 25 })
 
   /* update */
-  router.add('PATCH', '/api/v1/tables/:id', async (ctx) => {
+  router.add('PATCH', '/api/v1/tables/:id', (ctx) => s.transaction(async () => {
     const def = await requireTable(s, ctx.params.id)
     const b = bodyObj(ctx)
     const next = clone(def)
@@ -219,10 +219,10 @@ export function registerTableRoutes(router: Router, s: Services): void {
     s.security.invalidate()
     await audit(s, ctx, 'table.update', { name: def.name }, def.id)
     return next
-  }, { auth: 'maker' })
+  }), { auth: 'maker' })
 
   /* delete */
-  router.add('DELETE', '/api/v1/tables/:id', async (ctx) => {
+  router.add('DELETE', '/api/v1/tables/:id', (ctx) => s.transaction(async () => {
     const def = await requireTable(s, ctx.params.id)
     const refs = await lookupReferrers(s, def)
     if (refs.length) throw conflict(`"${def.displayName}" is used by lookup columns in: ${refs.map((t) => t.displayName).join(', ')}. Remove those columns first.`)
@@ -243,10 +243,10 @@ export function registerTableRoutes(router: Router, s: Services): void {
     if ('internals' in s.data) await removeTableAttachments(s as CoreServices, def.id).catch(() => 0)
     await audit(s, ctx, 'table.delete', { name: def.name, dropSource: drop }, def.id)
     return { ok: true }
-  }, { auth: 'maker' })
+  }), { auth: 'maker' })
 
   /* add column */
-  router.add('POST', '/api/v1/tables/:id/columns', async (ctx) => {
+  router.add('POST', '/api/v1/tables/:id/columns', (ctx) => s.transaction(async () => {
     const def = await requireTable(s, ctx.params.id)
     needWritable(def, 'adding columns')
     if (def.columns.length >= MAX_COLUMNS + 5) throw invalid(`A table can have at most ${MAX_COLUMNS} columns.`)
@@ -272,10 +272,10 @@ export function registerTableRoutes(router: Router, s: Services): void {
     s.security.invalidate()
     await audit(s, ctx, 'column.add', { table: def.name, column: col.name }, def.id)
     return next
-  }, { auth: 'maker' })
+  }), { auth: 'maker' })
 
   /* update column */
-  router.add('PATCH', '/api/v1/tables/:id/columns/:name', async (ctx) => {
+  router.add('PATCH', '/api/v1/tables/:id/columns/:name', (ctx) => s.transaction(async () => {
     const def = await requireTable(s, ctx.params.id)
     needWritable(def, 'changing columns')
     const idx = def.columns.findIndex((c) => c.name === ctx.params.name)
@@ -358,10 +358,10 @@ export function registerTableRoutes(router: Router, s: Services): void {
     s.security.invalidate()
     await audit(s, ctx, 'column.update', { table: def.name, column: old.name, type: next.type }, def.id)
     return nextDef
-  }, { auth: 'maker' })
+  }), { auth: 'maker' })
 
   /* remove column */
-  router.add('DELETE', '/api/v1/tables/:id/columns/:name', async (ctx) => {
+  router.add('DELETE', '/api/v1/tables/:id/columns/:name', (ctx) => s.transaction(async () => {
     const def = await requireTable(s, ctx.params.id)
     needWritable(def, 'removing columns')
     const col = def.columns.find((c) => c.name === ctx.params.name)
@@ -387,7 +387,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
     s.security.invalidate()
     await audit(s, ctx, 'column.remove', { table: def.name, column: col.name, ...(unmapOnly ? { unmappedOnly: true } : {}) }, def.id)
     return next
-  }, { auth: 'maker' })
+  }), { auth: 'maker' })
 
   /* admin: rows without an owner (linked rows that existed before) get one, so Own-scope roles can see them */
   router.add('POST', '/api/v1/tables/:id/assign-owner', async (ctx) => {
@@ -415,7 +415,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
   }, { auth: 'admin' })
 
   /* move to another connection (copy rows through the DataService as system) */
-  router.add('POST', '/api/v1/tables/:id/move', async (ctx) => {
+  router.add('POST', '/api/v1/tables/:id/move', (ctx) => s.transaction(async () => {
     const def = await requireTable(s, ctx.params.id)
     const target = reqString(bodyObj(ctx), 'connectionId', 'The target connection')
     needWritable(def, 'moving it')
@@ -426,7 +426,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
     const moved = await moveTable(s, def, record, connector)
     await audit(s, ctx, 'table.move', { name: def.name, to: record.id }, def.id)
     return moved
-  }, { auth: 'maker' })
+  }), { auth: 'maker' })
   // CSV export (GET /tables/:id/csv) lives in server/core/data-routes.ts (DataService: RBAC + RLS + CLS)
 }
 

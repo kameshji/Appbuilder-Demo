@@ -1,5 +1,5 @@
-import type { FxRecord } from '@/contracts'
-import { ANIMATED_ICON_IDS } from './animatedIcons'
+import type { FxRecord } from '../contracts.ts'
+import { ANIMATED_ICON_IDS } from './animatedIcons.ts'
 
 const rgba = (r: number, g: number, b: number, a = 1): string => `rgba(${r}, ${g}, ${b}, ${a})`
 

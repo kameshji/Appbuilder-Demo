@@ -1,9 +1,9 @@
-import type { FxDiagnostic, FxNamedFormula } from '@/contracts'
-import { ENUM_RECORDS } from './enums'
-import { isBuiltinFunction } from './functions'
-import { ParseError, readInterp, readString } from './lexer'
-import { parse } from './parser'
-import { hasOwn } from './values'
+import type { FxDiagnostic, FxNamedFormula } from '../contracts.ts'
+import { ENUM_RECORDS } from './enums.ts'
+import { isBuiltinFunction } from './functions/index.ts'
+import { ParseError, readInterp, readString } from './lexer.ts'
+import { parse } from './parser.ts'
+import { hasOwn } from './values.ts'
 
 const IDENT_CHAR = /[\p{L}\p{N}_]/u
 

@@ -1,7 +1,9 @@
 /**
- * Integration tests against a real MySQL/MariaDB. Set APPBUILDER_TEST_DB, e.g.
- *   APPBUILDER_TEST_DB=mysql://abdev:abdev-sandbox-only@127.0.0.1:3306/appbuilder_test
- * Tables are created with a random prefix and dropped in afterAll.
+ * Integration tests of the MySQL connector (an external-database connector) against a real MySQL/MariaDB. Set
+ * APPBUILDER_TEST_MYSQL, e.g.
+ *   APPBUILDER_TEST_MYSQL=mysql://abdev:abdev-sandbox-only@127.0.0.1:3306/appbuilder_test
+ * (APPBUILDER_TEST_DB is the PostgreSQL URL of the main suite.) Tables are created with a random prefix and dropped in
+ * afterAll.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { randomBytes } from 'node:crypto'
@@ -11,8 +13,8 @@ import { evaluateCondition, applyQuery } from '../../core/condition.ts'
 import type { Connector, ConnectionRecord, ConnectorEnv, RawRow, SqlDb } from '../../core/contracts.ts'
 import { createMySqlConnector, createSqlDb } from './index.ts'
 
-const URL_ENV = process.env.APPBUILDER_TEST_DB
-if (!URL_ENV) console.warn('[mysql connector] APPBUILDER_TEST_DB is not set: integration tests are SKIPPED (see the header of this file)')
+const URL_ENV = process.env.APPBUILDER_TEST_MYSQL
+if (!URL_ENV) console.warn('[mysql connector] APPBUILDER_TEST_MYSQL is not set: integration tests are SKIPPED (see the header of this file)')
 const suite = URL_ENV ? describe : describe.skip
 
 function parseUrl(u: string) {
@@ -38,7 +40,7 @@ const uuid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStar
 const ids = (rows: RawRow[]): string[] => rows.map((r) => r.id as string).sort()
 const sys = (n: number): RawRow => ({ id: uuid(n), createdOn: new Date('2024-01-01T00:00:00Z'), modifiedOn: new Date('2024-01-02T00:00:00Z'), createdBy: 'u1', owner: n % 2 ? 'u1' : 'u2' })
 
-suite(URL_ENV ? 'mysql connector (integration)' : 'mysql connector (integration) SKIPPED: set APPBUILDER_TEST_DB', () => {
+suite(URL_ENV ? 'mysql connector (integration)' : 'mysql connector (integration) SKIPPED: set APPBUILDER_TEST_MYSQL', () => {
   let c: Connector
   let raw: SqlDb
 

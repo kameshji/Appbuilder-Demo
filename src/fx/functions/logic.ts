@@ -1,7 +1,7 @@
-import type { FxValue } from '@/contracts'
-import { FxError } from '../errors'
-import { isRecord, looseEq, parseNumberText, toBool, toText } from '../values'
-import { def, MANY, type CallCtx, type FnDef } from './types'
+import type { FxValue } from '../../contracts.ts'
+import { FxError } from '../errors.ts'
+import { isRecord, looseEq, parseNumberText, toBool, toText } from '../values.ts'
+import { def, MANY, type CallCtx, type FnDef } from './types.ts'
 
 /** Evaluates argument i; non-fatal engine errors become `failed`. Fatal ones (unknown names...) still propagate. */
 function trap(c: CallCtx, i: number): { failed: boolean; value: FxValue } {

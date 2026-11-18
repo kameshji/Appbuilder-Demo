@@ -1,10 +1,11 @@
 # Connections
 
-A *connection* tells Appbuilder where a table's rows live. There are three kinds:
+A *connection* tells Appbuilder where a table's rows live. There are four kinds:
 
 | Kind | What it is | Who adds it |
 | --- | --- | --- |
-| **MySQL / MariaDB** | A database. One is the *default*: it also holds Appbuilder's own system tables. | Administrator |
+| **PostgreSQL** | A database. The built-in *Default database* is Appbuilder's own PostgreSQL database; other PostgreSQL connections link existing databases. | Built in; administrators add others |
+| **MySQL / MariaDB** | An existing MySQL or MariaDB database (link its tables, or create tables there). It can no longer hold Appbuilder's own data. | Administrator |
 | **Data files** | CSV, Excel (`.xlsx`) or JSON files copied into the workspace. One built-in connection, device only. | Built in; makers add files |
 | **Google Sheets** | A Google spreadsheet, read and written through a Google service account. | Administrator |
 
@@ -13,9 +14,11 @@ can add, edit, delete or choose the default. Passwords and keys are never shown 
 
 ## The default database
 
-When you finish the first-run setup, Appbuilder creates a connection called **Default database** that points at the
-database you entered. It holds the system tables (`ab_users`, `ab_roles`, `ab_audit`, and so on) and, by default, the
-tables makers create.
+When you finish the first-run setup, Appbuilder creates a connection called **Default database** (connector `postgres`) that
+points at the PostgreSQL database you entered. That database holds the system tables (schema `ab`: users and sessions; schema
+`env_default`: `ab_roles`, `ab_tables`, `ab_audit`, and so on) and, in `env_default`, the tables makers create (see
+[schema](../dev/schema.md)). Table changes and app or solution imports on it are all-or-nothing: if anything fails, nothing is
+left behind.
 
 **The Default database connection is read-only in the portal** (it shows *Managed by setup* instead of an edit button,
 and `PATCH /api/v1/connections/conn_default` answers 400). The system tables stay where the setup put them (the server
@@ -26,8 +29,8 @@ restart (tables created in between seemed to vanish).
 To move Appbuilder to a **different database or server**:
 
 1. Stop the server. Back up (see [Backup and restore](backup-and-restore.md)).
-2. Copy the data: dump the old database and restore it into the new one (the system tables and your tables live in the
-   same database, so one dump holds both).
+2. Copy the data: `pg_dump` the old database and `pg_restore` it into the new one (the system tables and your tables live in
+   the same database, so one dump holds both; see [Backup and restore](backup-and-restore.md)).
 3. Point Appbuilder at the new database: if you use `APPBUILDER_DB_*`, change them; otherwise delete
    `workspace/server.json`. Start the server and the setup screen appears on this PC; it needs the setup code printed in
    the server window. Enter the new login. Because the new database already has users, you go straight to the sign-in
@@ -35,12 +38,17 @@ To move Appbuilder to a **different database or server**:
    (The setup screen is only reachable while no administrator is recorded; there is no portal page to change the setup
    database later. While `server.json` says `setupComplete`, the setup stays closed even if the database is unreachable.)
 
-You can also make **another MySQL connection the default for new tables** (below); that does not move the system tables.
+You can also make **another PostgreSQL connection the default for new tables** (below); that does not move the system
+tables, and tables created there are not part of Appbuilder's all-or-nothing changes.
 
-## Add a MySQL connection
+## Add a PostgreSQL or MySQL connection
 
-**Connections > New connection > MySQL.** Enter a name, host, port, database, user and password. *Use SSL* encrypts the
-connection (TLS 1.2 or newer; the server certificate **must be valid**; a self-signed certificate is refused).
+**Connections > New connection > PostgreSQL** (or **MySQL / MariaDB**). Enter a name, host, port (5432 or 3306), database, user
+and password, and for PostgreSQL the **schema** whose tables you want (default `public`). *Use SSL* encrypts the connection
+(TLS 1.2 or newer; the server certificate **must be valid**; a self-signed certificate is refused).
+
+- A PostgreSQL connection may not name the schemas `ab` or `env_...` (Appbuilder's own) or PostgreSQL's catalogs
+  (`pg_...`, `information_schema`).
 
 - The connection is **saved even when the test fails**. It then shows status *error* with the reason; fix it with the
   pencil button, or press **Test**.
@@ -50,7 +58,7 @@ connection (TLS 1.2 or newer; the server certificate **must be valid**; a self-s
 - **Never use the database of another application** (for example a website's database) unless you want makers to be
   able to read and change its tables. See [Link existing tables](#link-existing-tables).
 
-**Set as default** (administrators): new tables are created in that connection. Only a MySQL connection that passes the
+**Set as default** (administrators): new tables are created in that connection. Only a PostgreSQL connection that passes the
 test can be the default. The default connection cannot be deleted; choose another default first.
 
 **Delete** is refused while tables or data files still use the connection ("N table(s) use this connection ...").
@@ -58,7 +66,7 @@ Unlinking or moving them first lets you delete it.
 
 ## Link existing tables
 
-Linking registers a table that already exists in a MySQL database or a Google Sheet so apps can use it **without
+Linking registers a table that already exists in a PostgreSQL or MySQL database or a Google Sheet so apps can use it **without
 copying the rows**. **Connections** > open the connection > **Browse** shows what can be linked, then press **Link**.
 
 - Tables whose names start with **`ab_` are never listed or linkable**: they are Appbuilder's own. (An attempt to use one
@@ -66,8 +74,8 @@ copying the rows**. **Connections** > open the connection > **Browse** shows wha
 - The list shows every other table in that database, including those already used by Appbuilder as normal tables, and
   any table belonging to another program in the same database.
 - **Already linked tables are not offered and cannot be linked again** (409 "... is already linked as the table "X"").
-  This also holds through a second connection to the same database (same host, port and database name; `localhost`,
-  `127.0.0.1` and `::1` count as the same host) or the same spreadsheet. Before, re-linking created a second registration
+  This also holds through a second connection to the same database (same host, port and database name, and for PostgreSQL
+  the same schema; `localhost`, `127.0.0.1` and `::1` count as the same host) or the same spreadsheet. Before, re-linking created a second registration
   with fresh default privileges, a way around the privileges of the first.
 - **Who can browse.** Makers and administrators, for every connection (there is no per-connection permission). The list
   shows every table the connection's database user can see: **a database shared with other applications exposes their
@@ -76,20 +84,22 @@ copying the rows**. **Connections** > open the connection > **Browse** shows wha
 - Appbuilder needs to address each row by a column named **`id`**. For a table to be **writable** through Appbuilder it
   must have these five columns (this is what Appbuilder's own tables have):
 
-  | Column | MySQL type |
-  | --- | --- |
-  | `id` | `CHAR(36) NOT NULL`, unique, holding a UUID text such as `9b99b3c0-e0b2-4c5b-a41b-03ec8b8e8d4a` |
-  | `createdOn`, `modifiedOn` | `DATETIME(3) NULL` |
-  | `createdBy`, `owner` | `VARCHAR(64) NULL` |
+  | Column | PostgreSQL type | MySQL type |
+  | --- | --- | --- |
+  | `id` | `text NOT NULL`, unique | `CHAR(36) NOT NULL`, unique; holding a UUID text such as `9b99b3c0-e0b2-4c5b-a41b-03ec8b8e8d4a` |
+  | `createdOn`, `modifiedOn` | `timestamptz(3) NULL` | `DATETIME(3) NULL` |
+  | `createdBy`, `owner` | `text NULL` | `VARCHAR(64) NULL` |
+
+  (Names are case-sensitive in PostgreSQL: the columns are `"createdOn"` and so on, quoted.)
 
   New rows get a generated UUID in `id`; a table whose `id` is a number (for example `INT AUTO_INCREMENT`) cannot be
   written to.
 - **The consent box.** When a table lacks any of the five, the Browse dialog shows "This table lacks Appbuilder's system
   columns (...). I agree that Appbuilder adds them ...". **Link** works either way:
-  - **Ticked** (`ensureIdColumn: true` in `POST /api/v1/connections/:id/link`): for MySQL, Appbuilder runs
-    `ALTER TABLE ... ADD COLUMN` for each missing column (owner with an index). A missing `id` is added as
-    `CHAR(36) NULL`, every existing row gets a UUIDv7, then it becomes `NOT NULL` with a unique key `uq_id`; existing rows
-    get the current UTC time in `createdOn` / `modifiedOn`. Your own primary key stays. For a Google Sheet tab the `id`
+  - **Ticked** (`ensureIdColumn: true` in `POST /api/v1/connections/:id/link`): for PostgreSQL and MySQL, Appbuilder runs
+    `ALTER TABLE ... ADD COLUMN` for each missing column (owner with an index). A missing `id` is added (PostgreSQL `text`,
+    MySQL `CHAR(36)`), every existing row gets a UUIDv7, then it becomes `NOT NULL` with a unique index; existing rows get the
+    current time in `createdOn` / `modifiedOn`. On PostgreSQL all of it is one transaction. Your own primary key stays. For a Google Sheet tab the `id`
     column is added and filled, and the other columns are added as headers. The table is then linked **writable**. Needs
     `ALTER` rights. Back up first.
   - **Not ticked**: the table is linked **read-only** and nothing is changed in it. Queries read only the columns the
@@ -98,7 +108,24 @@ copying the rows**. **Connections** > open the connection > **Browse** shows wha
     tell its rows apart.
 
   To prepare a table yourself instead (for example with your DBA), the equivalent SQL for a table `crm_clients` with its
-  own key `client_no` is:
+  own key `client_no` is, on PostgreSQL 13+:
+
+  ```sql
+  BEGIN;
+  ALTER TABLE crm_clients
+    ADD COLUMN id text NULL,
+    ADD COLUMN "createdOn" timestamptz(3) NULL,
+    ADD COLUMN "modifiedOn" timestamptz(3) NULL,
+    ADD COLUMN "createdBy" text NULL,
+    ADD COLUMN owner text NULL;
+  UPDATE crm_clients SET id = gen_random_uuid()::text, "createdOn" = now(), "modifiedOn" = now();
+  ALTER TABLE crm_clients ALTER COLUMN id SET NOT NULL;
+  CREATE UNIQUE INDEX uq_crm_clients_id ON crm_clients (id);
+  CREATE INDEX ix_crm_clients_owner ON crm_clients (lower(owner));
+  COMMIT;
+  ```
+
+  and on MySQL:
 
   ```sql
   ALTER TABLE crm_clients
@@ -129,7 +156,7 @@ copying the rows**. **Connections** > open the connection > **Browse** shows wha
 Use data files to work with a spreadsheet or export without a database. **Data files** page (makers).
 
 - **Device only.** A file you add is **copied** into `workspace/files/`. The original on your disk is never read again or
-  changed. Edits made in apps go to the copy. The copy is *not* in MySQL, is not in a `mysqldump`, and is not shared with
+  changed. Edits made in apps go to the copy. The copy is *not* in the database, is not in a `pg_dump`, and is not shared with
   any other PC. To take file data online it must be packaged in a solution; to turn it into a database table use *Move to
   database* (the table keeps its name, so formulas keep working).
 - **File types:** `.csv`, `.xlsx`, `.json`. Other types are refused, including old `.xls`. Macro-enabled (`.xlsm`) and
@@ -200,12 +227,33 @@ Things to know:
 
 ## Test a connection
 
-Press **Test** on a connection (makers and administrators). Appbuilder opens a fresh connection (MySQL: logs in and asks
-for the server version; Google Sheets: signs in and reads the spreadsheet's title and tabs), then stores the result as
+Press **Test** on a connection (makers and administrators). Appbuilder opens a fresh connection (PostgreSQL and MySQL: logs in
+and asks for the server version, PostgreSQL also checks that the schema exists; Google Sheets: signs in and reads the spreadsheet's title and tabs), then stores the result as
 the connection's status (*connected* or *error*) and last error. Editing a connection's settings or secret re-tests it
 automatically. The Data files connection has nothing to test.
 
 ## What the messages mean
+
+### PostgreSQL
+
+| Message | Meaning and what to do |
+| --- | --- |
+| Could not connect to HOST:PORT: connection refused. Check that PostgreSQL is running ... | Nothing is listening there. Start PostgreSQL (Windows service `postgresql-x64-17`); check host and port (default 5432). |
+| Could not find the server "HOST". / Timed out connecting to HOST:PORT. | Host name does not resolve / firewall, wrong address, or the machine is off. |
+| Access denied for user "U": wrong user name or password. | Wrong login. `scripts/setup-postgres.*` sets the role's password again. |
+| The server does not accept connections from this computer for user "U" and database "D" ... pg_hba.conf | `pg_hba.conf` has no line for this address, user and database (or only `hostssl`). Add one and reload PostgreSQL, or turn SSL on. |
+| The database "D" does not exist on HOST:PORT. | Create it (`scripts/setup-postgres.*`), tick *Create the database if it does not exist* in the setup, or fix the name. |
+| User "U" is not allowed to connect to the database "D" (missing CONNECT privilege). | `GRANT CONNECT ON DATABASE D TO U`. |
+| User "U" may not create schemas in the database "D". Make the user the owner ... | Setup only: the role needs to own the database (`ALTER DATABASE D OWNER TO U`) or `GRANT CREATE ON DATABASE D TO U`. |
+| The database uses the ... encoding; Appbuilder needs UTF8. | Create the database with `ENCODING 'UTF8' TEMPLATE template0`. |
+| This database holds an Appbuilder schema of version N, which is not supported on PostgreSQL. | Setup only: use an empty database. |
+| The server at HOST:PORT does not support SSL. | Turn SSL off, or enable `ssl = on` in `postgresql.conf`. |
+| Connected to PostgreSQL ..., but the schema "S" does not exist in "D". | Fix the schema name of the connection. |
+| A value contains a NUL character, which the database cannot store | PostgreSQL text cannot hold the character `\0`; remove it from the value. |
+
+The run-time messages of the MySQL table below ("The database is not reachable", "The database user is not allowed to do
+this", "A column does not exist in the database table", "already linked", "reserved for the platform") mean the same for
+PostgreSQL connections.
 
 ### MySQL / MariaDB
 
@@ -218,7 +266,7 @@ automatically. The Data files connection has nothing to test.
 | Access denied for user "U": wrong user name or password. | Wrong login, or the user is not allowed from this host (`'U'@'127.0.0.1'` and `'U'@'localhost'` are different accounts). |
 | The database "D" does not exist on HOST:PORT. Create it first, or check the name. | Create the database or fix the name. |
 | User "U" has no access to the database "D" (or it does not exist). | Grant the user rights on that database, or fix the name. |
-| The server uses an authentication method this connector cannot use over an insecure connection. Turn SSL on, or switch the user to mysql_native_password. | MySQL 8 account plugin; see [Installation](installation.md#prepare-the-database). |
+| The server uses an authentication method this connector cannot use over an insecure connection. Turn SSL on, or switch the user to mysql_native_password. | MySQL 8 account plugin: ask the database administrator for a `mysql_native_password` or `caching_sha2_password` account usable over SSL, and turn SSL on. |
 | The SSL handshake with HOST:PORT failed. | The server does not support SSL (turn SSL off) or the TLS setup is wrong. |
 | The server's SSL certificate could not be verified (CODE). | Use a valid certificate, or turn SSL off for a trusted local server. Self-signed certificates are refused. |
 | The server does not allow connections from this machine for user "U". | Host-based block (`ER_HOST_NOT_PRIVILEGED`). |

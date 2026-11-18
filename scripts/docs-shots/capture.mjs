@@ -10,10 +10,11 @@
  *
  * It needs TWO servers, both started by you from the built app (`npm run build` first), using SANDBOX values only:
  *   1. A main server with a database, for everything except the setup wizard:
- *        APPBUILDER_DB_HOST=127.0.0.1 APPBUILDER_DB_PORT=3306 APPBUILDER_DB_NAME=appbuilder_test_docs \
+ *        APPBUILDER_DB_HOST=127.0.0.1 APPBUILDER_DB_PORT=5433 APPBUILDER_DB_NAME=appbuilder_test_docs \
  *        APPBUILDER_DB_USER=abdev APPBUILDER_DB_PASSWORD=abdev-sandbox-only APPBUILDER_WORKSPACE=/tmp/ws-docs \
  *        PORT=5196 node server/main.ts
  *      The workspace and database must be EMPTY (no administrator yet): the script creates the first administrator.
+ *      The sandbox PostgreSQL role must have CREATEDB (the server creates the database) or the database must exist.
  *   2. A wizard server with a fresh workspace and no APPBUILDER_DB_* variables, for the setup wizard screens:
  *        APPBUILDER_WORKSPACE=/tmp/ws-docs-wizard PORT=5296 node server/main.ts
  *      Give it its OWN database (the script uses appbuilder_test_docs_wiz). Two servers must never share one database:
@@ -26,6 +27,7 @@
  *   DB_*         sandbox database values typed into the wizard (defaults match the commands above)
  *   ONLY         comma list of step names to run (default: all, in order)
  *   SETUP_CODE   the setup code the main server printed (needed when its database comes from APPBUILDER_DB_*)
+ *   WIZARD_SETUP_CODE  the setup code the wizard server printed
  *   OUT          output folder              (default docs/images next to this repository's docs/)
  *
  * Only fake data is used: the test email admin@example.test and an obviously fake password.
@@ -47,7 +49,7 @@ const OUT = process.env.OUT || path.join(root, 'docs', 'images')
 const ONLY = (process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean)
 const DB = {
   host: process.env.DB_HOST || '127.0.0.1',
-  port: process.env.DB_PORT || '3306',
+  port: process.env.DB_PORT || '5433',
   name: process.env.DB_NAME || 'appbuilder_test_docs',
   wizardName: process.env.WIZARD_DB_NAME || 'appbuilder_test_docs_wiz',
   user: process.env.DB_USER || 'abdev',
@@ -215,9 +217,12 @@ const step = (name, fn) => steps.push({ name, fn })
 step('wizard', async () => {
   const page = await newPage(WIZARD + '/')
   await page.waitForSelector(tid('setup-database-form'))
+  // the one-time code the wizard server printed on its console
+  await type(page, tid('setup-code'), process.env.WIZARD_SETUP_CODE || '')
   await shot(page, 'setup-database')
 
-  // a wrong password shows the real error message
+  // a wrong password shows the real error message (the sandbox server may listen on another port than 5432)
+  await type(page, tid('setup-port'), String(DB.port))
   await type(page, tid('setup-database'), DB.wizardName)
   await type(page, tid('setup-user'), DB.user)
   await type(page, tid('setup-password'), 'not-the-right-password')

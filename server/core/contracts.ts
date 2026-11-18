@@ -57,6 +57,11 @@ export interface Ctx {
   readBody?(limitBytes: number): Promise<Buffer>
   /** present when the route's auth level is not 'none' */
   user?: UserContext
+  /**
+   * the environment this request works in (resolveEnvironment() in env-context.ts; 'default' for now). The router runs
+   * the handler inside that environment, so services.meta, the security cache and the connection cache all use it.
+   */
+  environmentId: string
   services: Services
   /** set or clear the session cookie */
   setSessionCookie(token: string | null, expires?: Date): void
@@ -96,20 +101,32 @@ export type RouteModule = (router: Router, services: Services) => void
 
 /* ------------------------------------------------------------------ database */
 
+/** insertId: MySQL connector only (PostgreSQL code uses RETURNING) */
 export interface SqlResult { affectedRows: number; insertId?: number }
 
-/** Thin wrapper over a mysql2/promise pool. Always parameterised (`?` placeholders); identifiers via quoteId(). */
+/**
+ * Thin wrapper over a connection pool. Always parameterised; identifiers via the dialect's quoteId().
+ * Placeholders are the driver's: `$1, $2, ...` for 'postgres' (system store, postgres connector, connectors/postgres/db.ts),
+ * `?` for 'mysql' (the MySQL connector only, connectors/mysql/db.ts).
+ */
 export interface SqlDb {
+  readonly dialect: 'postgres' | 'mysql'
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>
   exec(sql: string, params?: unknown[]): Promise<SqlResult>
-  /** runs fn inside BEGIN/COMMIT on one pooled connection; ROLLBACK on throw */
+  /**
+   * runs fn inside BEGIN/COMMIT on one pooled connection; ROLLBACK on throw. Nested calls join the outer transaction
+   * (PostgreSQL: as a SAVEPOINT, so a failing inner fn rolls back only its own statements).
+   */
   tx<T>(fn: (db: SqlDb) => Promise<T>): Promise<T>
-  /** e.g. "MySQL 8.4.3" / "MariaDB 10.11.14" */
+  /** e.g. "PostgreSQL 16.4" / "MySQL 8.4.3" / "MariaDB 10.11.14" */
   serverVersion(): Promise<string>
   close(): Promise<void>
 }
 
-export interface MySqlSettings { host: string; port: number; database: string; user: string; ssl?: boolean }
+/** where a database server is (system store, postgres and mysql connections); the password travels separately */
+export interface DatabaseSettings { host: string; port: number; database: string; user: string; ssl?: boolean }
+/** the MySQL connector's settings (same shape) */
+export type MySqlSettings = DatabaseSettings
 
 /* ------------------------------------------------------------------ connectors */
 
@@ -153,9 +170,14 @@ export interface Connector {
   delete(def: TableDef, ids: string[], guard?: Condition): Promise<number>
   /**
    * Only when capabilities.transactions: runs fn with a connector bound to one transaction (BEGIN/COMMIT,
-   * ROLLBACK when fn throws). Data statements only (no DDL).
+   * ROLLBACK when fn throws). Data statements only on MySQL; on PostgreSQL DDL is transactional too.
    */
   transaction?<T>(fn: (tx: Connector) => Promise<T>): Promise<T>
+  /**
+   * SQL connectors with ddl (postgres, mysql): adds the system columns a linked table lacks (with the maker's consent
+   * at link time); a missing id is added and filled with UUIDv7 values.
+   */
+  ensureSystemColumns?(source: string): Promise<{ added: string[]; filled: number }>
   close(): Promise<void>
 }
 
@@ -165,6 +187,16 @@ export interface ConnectionRecord extends ConnectionRef {
 }
 
 export interface ConnectorEnv {
+  /**
+   * the environment the connector instance serves (the ConnectionManager creates one instance per environment and
+   * connection). Absent outside the server (connector unit tests).
+   */
+  environment?: EnvironmentRef
+  /**
+   * the system database (PostgreSQL). The default connection (conn_default) stores its tables in the environment
+   * schema of this database and uses this pool, so its statements join a unit of work (Services.transaction).
+   */
+  systemDb?: () => SqlDb | null
   /** absolute workspace folder */
   workspaceDir: string
   /** designated data files folder (files connector) */
@@ -176,7 +208,17 @@ export interface ConnectorEnv {
 
 export type ConnectorFactory = (conn: ConnectionRecord, env: ConnectorEnv) => Connector
 
-/* ------------------------------------------------------------------ system store (MySQL, default connection) */
+/* ------------------------------------------------------------------ system store (PostgreSQL) */
+
+/** an environment: its id (in requests and cache keys) and its schema in the system database (env_<slug>) */
+export interface EnvironmentRef { id: string; schema: string }
+
+export interface EnvironmentRecord extends EnvironmentRef {
+  name: string
+  type: 'production' | 'sandbox' | 'developer'
+  builtIn: boolean
+  createdOn: string
+}
 
 export interface UserRecord extends UserDef { passwordHash: string | null }
 
@@ -197,16 +239,26 @@ export interface AttachmentRecord {
 }
 
 /**
- * Repositories over the ab_* system tables (schema in docs/internal/specs/SPEC3.md section 3). All methods hit MySQL;
- * callers may cache. ids are generated by callers (uid()).
+ * Repositories over the system tables (docs/dev/schema.md). All methods hit PostgreSQL; callers may cache.
+ * ids are generated by callers (uid()). Install-wide objects (users, sessions, settings, environments) live in schema
+ * `ab`; everything else in the schema of the current environment (env-context.ts), resolved on every call.
  */
 export interface MetaStore {
   db: SqlDb
   /**
-   * create/upgrade the ab_* tables; idempotent. Throws SchemaTooNewError when the database was upgraded by a newer
-   * server (ab_meta schemaVersion above SCHEMA_VERSION); nothing is changed then.
+   * create/upgrade schema `ab` and every registered environment schema; idempotent. Throws SchemaTooNewError when the
+   * database was upgraded by a newer server (ab.settings schemaVersion above SCHEMA_VERSION); nothing is changed then.
    */
   migrate(): Promise<MigrationSummary | void>
+  /**
+   * fully qualified, quoted name of a system table: users / sessions / settings / environments / licence -> "ab"."x";
+   * the others (ab_tables, ab_audit, ...) -> "<current environment schema>"."ab_x". For maintenance code and tests.
+   */
+  tableName(name: string): string
+  environments: {
+    list(): Promise<EnvironmentRecord[]>
+    get(id: string): Promise<EnvironmentRecord | null>
+  }
 
   users: {
     list(): Promise<UserRecord[]>
@@ -260,6 +312,8 @@ export interface MetaStore {
     get(id: string): Promise<DataFileDef | null>
     upsert(f: DataFileDef & { storageKey: string; originalName: string }): Promise<void>
     remove(id: string): Promise<void>
+    /** sets modifiedSinceImport (rows of one of its tables were edited) */
+    markModified(id: string): Promise<void>
   }
   attachments: {
     get(id: string): Promise<AttachmentRecord | null>
@@ -268,9 +322,15 @@ export interface MetaStore {
     remove(id: string): Promise<void>
     /** attachments of these rows (for cleanup on row delete) */
     forRows(tableId: string, rowIds: string[]): Promise<AttachmentRecord[]>
+    /** ids of every attachment of a table (cleanup on table delete) */
+    idsForTable(tableId: string): Promise<string[]>
+    /** ids of attachments created before `cutoff` (orphan sweep), at most `limit` */
+    idsCreatedBefore(cutoff: Date, limit: number): Promise<string[]>
   }
-  /** next autonumber value for a column (transactional counter in ab_counters) */
+  /** next autonumber value for a column (atomic counter in ab_counters) */
   nextCounter(key: string): Promise<number>
+  /** raises a counter to at least `value` (legacy import); never lowers it */
+  raiseCounter(key: string, value: number): Promise<void>
   audit(entry: { userId: string | null; action: string; tableId?: string; rowId?: string; details?: unknown }): Promise<void>
   /** admin audit viewer: newest first, filtered; total counts every matching entry */
   auditPage(filter: AuditFilter): Promise<{ items: AuditRecord[]; total: number }>
@@ -323,10 +383,10 @@ export interface UserContext {
 }
 
 export interface SecurityEngine {
-  /** loads roles once per request (cache invalidated by invalidate()) */
+  /** loads roles once per request (cache keyed by environment id, invalidated by invalidate()) */
   forUser(user: UserDef): Promise<UserContext>
-  /** call after any role/user/table change */
-  invalidate(): void
+  /** call after any role/user/table change: drops the cache of the current environment (all: every environment) */
+  invalidate(scope?: 'all'): void
 }
 
 /* ------------------------------------------------------------------ data service */
@@ -343,11 +403,14 @@ export interface DataService {
 }
 
 export interface ConnectionManager {
-  /** cached connector for a connection id (re-created when the record changes) */
+  /**
+   * cached connector for a connection id in the current environment (re-created when the record changes); the cache is
+   * keyed by environment id and connection id
+   */
   get(connectionId: string): Promise<Connector>
-  /** the default (mysql) connection id */
+  /** the default (postgres) connection id of the current environment */
   defaultId(): Promise<string>
-  /** drop cached instance (after settings/secret change) */
+  /** drop the cached instance in the current environment (after settings/secret change) */
   reset(connectionId: string): Promise<void>
   register(kind: ConnectorKind, factory: ConnectorFactory): void
 }
@@ -398,6 +461,14 @@ export interface Services {
   connections: ConnectionManager
   attachments: AttachmentStore
   env: ConnectorEnv
+  /** the environment of the current request (env-context.ts): id and schema */
+  environment(): EnvironmentRef
+  /**
+   * unit of work: everything fn does on the system database (MetaStore writes, and DDL and rows through the default
+   * connection) commits together or not at all (transactional DDL). Other connectors (files, Google Sheets, external
+   * databases) are not covered; callers keep their compensating undo for those. Security caches are dropped afterwards.
+   */
+  transaction<T>(fn: () => Promise<T>): Promise<T>
   /** small helpers */
   uid(prefix?: string): string
   now(): string

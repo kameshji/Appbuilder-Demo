@@ -264,7 +264,7 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     }
     // details (host, port, database name, server version, error text naming them) for administrators only
     if (ctx.user?.privileges.isAdmin && !ctx.user.user.mustChangePassword) {
-      out.storage = services.state.location ? { kind: 'mysql', location: services.state.location } : null
+      out.storage = services.state.location ? { kind: 'postgres', location: services.state.location } : null
       if (databaseError) out.databaseError = databaseError
       let database: string | undefined
       if (reachable && services.state.db) {
@@ -314,7 +314,7 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
       await checkSetupCode(ctx, b)
     }
     const host = text(b, 'host', 255).trim()
-    const port = Number(b.port ?? 3306)
+    const port = Number(b.port ?? 5432)
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(422, 'invalid', 'Port must be between 1 and 65535.', 'port')
     const database = text(b, 'database', 64).trim()
     const user = text(b, 'user', 80).trim()

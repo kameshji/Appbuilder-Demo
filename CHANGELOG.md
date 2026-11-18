@@ -4,7 +4,39 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 
 ## [Unreleased]
 
+Version 0.5.0-dev. **PostgreSQL replaces MySQL/MariaDB as Appbuilder's database** (P0 package A, decision D14). There is no
+migration from a MySQL installation: install PostgreSQL, run `scripts/setup-postgres.ps1` (or `.sh`) and start with an empty
+database; carry apps and tables over as solution packages with data.
+
 ### Added
+- PostgreSQL system store (driver `pg`): schema `ab` for install-wide objects (settings, users, sessions, the environment
+  registry, a licence placeholder) and one schema per environment (`env_default`) for roles, privileges, tables, apps,
+  connections, solutions, data files, attachments, audit and the data tables. Every statement uses fully qualified names; pooled
+  connections start with `search_path=pg_catalog,pg_temp` and `TimeZone=UTC`, so nothing can leak between requests. Schema
+  version 4.
+- The request's environment is resolved per request (`server/core/env-context.ts`, today always `default`); the security cache and
+  connector instances are kept per environment. Ready for creating and switching environments (package E).
+- Units of work with transactional DDL: creating, changing and deleting tables and columns, linking tables, and importing apps and
+  solutions run in one transaction on the default database, so a failure leaves no table, column, row, definition, privilege or
+  audit entry behind.
+- `postgres` connector: the default database, and external PostgreSQL databases (with a `schema` setting; the system schemas are
+  refused). Condition pushdown with exact parity to the in-memory reference (162-case parity test, case-insensitive comparison with
+  the ICU root collation, code point ordering, no LIKE escaping), transactions, system columns, linking with consent.
+- `scripts/setup-postgres.ps1` (Windows) and `scripts/setup-postgres.sh` (Linux): find PostgreSQL (or print the `winget install
+  --id PostgreSQL.PostgreSQL.17 -e --interactive` command), ask for passwords without echoing them, create the role `appbuilder`
+  and a UTF8 database owned by it; the new password reaches the server only as a SCRAM-SHA-256 verifier.
+- Setup wizard: PostgreSQL defaults (port 5432), a *Use SSL* box, and clear messages for a wrong password, a missing database, a
+  missing `pg_hba.conf` entry, a role that may not create schemas (with the command to fix it) and a database that is not UTF8.
+- The Connections page offers PostgreSQL connections (host, port, database, user, password, schema, SSL).
+- Formula-to-query translator (Query v2, P0 package B): `analyze()` in `src/fx/query` turns formulas over data-source tables
+  (`Filter`, `Search`, `Sort`, `SortByColumns`, `LookUp`, `First`/`Last`/`FirstN`/`LastN`, `CountRows`, `CountIf`, `Sum`/`Average`/
+  `Min`/`Max`, `Distinct`, `GroupBy` with totals, `ShowColumns`/`DropColumns`, `in`/`exactin`, `StartsWith`/`EndsWith`, `IsBlank`,
+  date comparisons with `Today()`/`Now()`/`DateAdd`) into query plans, with a residual formula for the browser part, structured
+  diagnostics for what can't run on the server and `explain()` text for the Studio. Plan types in `src/platform/query.ts`, semantics
+  in `docs/dev/query-v2.md`, a reference executor, keyset cursor helpers and a parity test of about 650 generated formulas. Not used
+  by the data layer yet (package D).
+- `createEngine()` (`fx.createEngine`): independent formula engine instances, each with its own user-defined functions and named
+  formulas.
 - Top bar laid out like Power Platform: chat button, **environment picker** and your **avatar** last. The avatar (initials, colour derived from your account or chosen in Settings) shows your name and email on hover; its menu has Profile settings, Settings, Change password and Sign out, and in demo mode the switch-user list (which moved here from the old user menu).
 - Environments as a real API in both backends (`platform.environments.list/current/select`, `GET /api/v1/environments`, also in `GET /workspace`): today one built-in **Default** environment of type Production. The picker remembers your choice per user; administrators get **Manage environments**. Creating environments arrives with P0.
 - **Settings** page (`#settings`, `#settings-<section>`), opened from your name and gear at the bottom of the left menu (Dev and User mode) or from the avatar menu (also in the Studio); Back, x or Esc return to where you were. Real today: display name, avatar colour, change password, sign out; theme light / dark / system; reduce motion; mode at start; chat dock side and whether it reopens; Studio default app size, snap and grid size; export my settings and clear local data; links to the Admin console; About with version, server and database versions (administrators) and the third-party notices. Shown as **Soon** with their phase: sessions and two-step verification (P0), passkeys and single sign-on (P3.5), date / number / week / time-zone formats and interface language (not scheduled; formulas use fixed formats today), density, notifications (P1), chat messages (P3) and AI data sharing (P4).
@@ -20,9 +52,22 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 - Phone and tablet app sizes: Desktop 1920x1080 and 2560x1440, Phone 360x800 (default), 390x844 and 412x915, Tablet 800x1280 and 1280x800, and a custom size that can now be portrait, in the New app dialog, Start with data and App settings. Start with data lays a phone app out as a list screen and a form screen. Portrait apps run at their design size, centred, in landscape windows and app tabs; the Studio viewport menu has the phone and tablet sizes.
 - Documentation index in `docs/README.md`, and a decision log in `docs/decisions.md` that explains why the main choices were made.
 - Third-party notices in `THIRD-PARTY-NOTICES.md`, listing every production package with its license, and `npm run notices` to regenerate it.
-- README links to the documentation, and run instructions that match the current start-up steps (MySQL and the first-run setup screen).
+- README links to the documentation, and run instructions that match the current start-up steps (PostgreSQL and the first-run setup screen).
 
 ### Changed
+- **Database: PostgreSQL 15+ instead of MySQL/MariaDB** for the system tables and the default connection. MySQL/MariaDB stays as
+  a connector for existing customer databases only. `APPBUILDER_DB_PORT` defaults to 5432; `GET /status` and `/workspace` report
+  `storage.kind: 'postgres'`. Text conditions now compare exactly after lowercasing (no accent or trailing-space folding as with
+  `utf8mb4_unicode_ci`) and sort by code point, which agrees with the browser's row filters.
+- Backups use `pg_dump` / `pg_restore` (`docs/admin/backup-and-restore.md`, with the drill we ran).
+- Only a PostgreSQL connection can be the default store for new tables.
+- Tests: `APPBUILDER_TEST_DB` is now a PostgreSQL URL; the MySQL connector's tests use `APPBUILDER_TEST_MYSQL`. CI runs a
+  PostgreSQL 16 and a MariaDB 10.11 service.
+- The formula engine is shared with the server: `src/fx` uses explicit `.ts` imports and erasable TypeScript only and loads under
+  plain Node (`server/core/fx.test.ts`); a test enforces that it imports nothing from React, the runtime, Studio, portal, controls or
+  platform code. Architecture rule 3 and decision D13 describe the new boundary.
+- User-defined functions belong to each app's engine instance instead of one shared active set that every app re-registered before
+  evaluating; the Studio's formula bar, Advanced properties and checks use the app's own engine.
 - User management moved from Security roles to **Admin console > Users**; Security roles keeps the roles and links to Users and back. The Environments menu entry is gone: environments live in the Admin console and the top-bar picker.
 - The theme can follow the operating system; the quick toggle in the top bar and the Studio stays.
 - The first administrator's sign-in through the setup wizard now counts as their last sign-in.
@@ -47,6 +92,9 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 - The Default database connection can no longer be edited in the portal (edits silently reverted at the next start).
 - Imported rows (CSV, new table from CSV, packages with data) belong to the importing user; administrators can give rows without owner an owner.
 - The server retries an unreachable database in the background at start instead of staying unconfigured, and refuses to use a database upgraded by a newer version.
+
+### Removed
+- MySQL/MariaDB as the system store, `scripts/setup-mysql.ps1`, the MySQL-era schema upgrades (versions 2 and 3) and their tests.
 
 ## [0.3.0] - 2026-11-17
 

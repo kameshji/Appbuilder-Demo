@@ -123,7 +123,7 @@ function suggestionsFor(text: string, caret: number, node: ControlNode, ev: Eval
   for (const t of tableNames()) all.push({ label: t, insert: t, kind: 'table' })
   for (const n of ev.named.keys()) all.push({ label: n, insert: n, kind: 'named' })
   all.push({ label: 'App', insert: 'App', kind: 'scope' })
-  for (const f of fx.functions()) all.push({ label: f.name, insert: f.name + '(', kind: f.kind === 'behaviour' ? 'action' : 'fn', detail: f.signature, doc: f.summary })
+  for (const f of ev.engine.functions()) all.push({ label: f.name, insert: f.name + '(', kind: f.kind === 'behaviour' ? 'action' : 'fn', detail: f.signature, doc: f.summary })
   for (const name of ev.byName.keys()) {
     const info = ev.byName.get(name)!
     all.push({ label: name, insert: name, kind: info.node.type === 'Screen' ? 'screen' : 'control', detail: info.node.type })
@@ -245,7 +245,7 @@ function FormulaEditor({ node, prop, ev, multi }: { node: ControlNode; prop: str
     const text = stripLeadingEquals(raw)
     setDraft(text)
     const f = '=' + text
-    const d = fx.check(f)
+    const d = ev.engine.check(f)
     if (d.length === 0) {
       setSyntaxErr(null)
       sent.current = f
@@ -257,7 +257,7 @@ function FormulaEditor({ node, prop, ev, multi }: { node: ControlNode; prop: str
     const r = suggestionsFor(text, caret, node, ev, force)
     setSugg(r ? { ...r, index: 0 } : null)
     try {
-      setTip(fx.signatureAt('=' + text, caret + 1))
+      setTip(ev.engine.signatureAt('=' + text, caret + 1))
     } catch {
       setTip(null)
     }

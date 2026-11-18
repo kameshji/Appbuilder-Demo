@@ -120,12 +120,12 @@ export function registerSolutionRoutes(router: Router, s: Services): void {
 
   router.add('GET', '/api/v1/solutions/:id/package', async (ctx) => ({ yaml: await exportSolutionPackage(s, ctx, ctx.params.id, ctx.query.get('data') === '1') }), { auth: 'maker' })
 
-  router.add('POST', '/api/v1/solutions/import', async (ctx) => {
+  router.add('POST', '/api/v1/solutions/import', (ctx) => s.transaction(async () => {
     const b = bodyObj(ctx)
     const filesAs = b.filesAs ?? 'database'
     if (filesAs !== 'database' && filesAs !== 'file') throw invalid('filesAs must be "database" or "file".', 'filesAs')
     return importSolutionPackage(s, ctx, b.yaml, filesAs)
-  }, { auth: 'maker', maxBodyMB: 40 })
+  }), { auth: 'maker', maxBodyMB: 40 })
 }
 
 /* ------------------------------------------------------------------ export */
@@ -217,7 +217,7 @@ export async function importSolutionPackage(s: Services, ctx: Ctx, text: unknown
     return r as unknown as RoleX
   })
   const connDocs = listOf(doc.connections, 'connections').map((c) => {
-    if (!isObj(c) || typeof c.name !== 'string' || !['mysql', 'gsheets'].includes(String(c.connector))) throw invalid('A connection in the package is malformed.')
+    if (!isObj(c) || typeof c.name !== 'string' || !['postgres', 'mysql', 'gsheets'].includes(String(c.connector))) throw invalid('A connection in the package is malformed.')
     return c as unknown as { name: string; connector: ConnectorKind; settings?: Record<string, string> }
   })
   const warnings: string[] = []

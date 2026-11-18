@@ -5,12 +5,12 @@ people evaluating the product. Every number comes from the code; the file is nam
 ([Evidence](#evidence)) says which statements are covered by automated tests, which we confirmed by running the server,
 and which are read from the code only.
 
-Scope: **server mode** (the local Node server with MySQL/MariaDB). Version: latest `main`.
+Scope: **server mode** (the local Node server with PostgreSQL). Version: latest `main`.
 
 ## In one paragraph
 
 Appbuilder is a single-machine application. A Node.js server on the PC listens on `127.0.0.1`, authenticates users with
-email and password, and enforces table, row and column permissions on every data request. Data lives in MySQL/MariaDB
+email and password, and enforces table, row and column permissions on every data request. Data lives in PostgreSQL
 and in a workspace folder on the same PC. It protects well against *users of the apps* reading or changing what their
 role does not allow, and against *web pages in the user's browser* attacking the local server. It does **not** protect
 against someone who controls the PC or the database, has no encryption of data at rest, and has no TLS, multi-factor
@@ -205,17 +205,21 @@ with no CSP violation in the console.
 - Losing `.secret-key` makes every sealed secret unreadable. See [Backup and restore](backup-and-restore.md).
 - `server.json`, `.secret-key` and attachment files are created with owner-only permissions (`0600`) on Linux and macOS.
   **On Windows that setting has no effect**; rely on the folder's permissions.
-- Not encrypted: the database's own files, the rows in your tables, data files, attachments, and `mysqldump` backups. These
+- Not encrypted: the database's own files, the rows in your tables, data files, attachments, and `pg_dump` backups. These
   are as readable as the operating system and database permissions let them be.
 
 ## Data access and SQL
 
 - Row filters, own-row scope and column access are turned into conditions that are **part of the SQL query**, not
-  applied to the result afterwards (for the MySQL connector). Writes are guarded the same way (an `UPDATE` carries the
+  applied to the result afterwards (for the PostgreSQL and MySQL connectors). Writes are guarded the same way (an `UPDATE` carries the
   row condition), so a row changed or removed by someone else in the meantime does not slip through.
 - Values are sent to the database as query parameters; table and column names are validated (`^[A-Za-z_][A-Za-z0-9_]*$`)
-  and quoted. A test feeds `x' OR 1=1; DROP TABLE t_orders; --` through the query builder
-  (`server/connectors/mysql/sql.test.ts`).
+  and quoted, and every table name carries its schema. Tests feed values such as `x' OR 1=1; DROP TABLE t_orders; --` and
+  `'; DROP TABLE x; -- \ % $1 ?` through the query builders (`server/connectors/mysql/sql.test.ts`,
+  `server/connectors/postgres/postgres.integration.test.ts`).
+- PostgreSQL connections never carry per-request state: every pooled connection starts with `search_path=pg_catalog,pg_temp`,
+  so objects created in `public` cannot shadow built-in functions and an unqualified name fails instead of reaching another
+  schema. A PostgreSQL connection added by an administrator cannot name Appbuilder's own schemas (`ab`, `env_*`).
 - **Tables whose names start with `ab_` are never exposed or used for user data**: they are hidden from the list of
   linkable tables, and any attempt to use one is refused ("Tables starting with "ab_" are reserved for the platform").
 - **One registration per physical table.** Linking a source that is already linked (same connection, or another
@@ -346,10 +350,11 @@ beyond their role. Web pages the user visits are not trusted.
 | Anonymous `/status` without database details | Tests: `integration.test.ts`, `hardening.integration.test.ts` |
 | Forced password change (`password_change_required`) | Tests: `hardening.test.ts` (router), `hardening.integration.test.ts`, `routes/meta/hardening.test.ts`; run in headless Chrome |
 | Per-email login backoff | Test: `hardening.test.ts` |
-| Re-link refused (also through a second connection), linked tables never dropped, columns only unmapped | Tests: `routes/meta/connections.test.ts`, `routes/meta/hardening.test.ts`, `hardening.integration.test.ts` (MariaDB) |
+| Re-link refused (also through a second connection), linked tables never dropped, columns only unmapped | Tests: `routes/meta/connections.test.ts`, `routes/meta/hardening.test.ts`, `hardening.integration.test.ts` (PostgreSQL) |
 | CSV formula escaping, XLSX text cells | Tests: `hardening.test.ts`, `routes/meta/hardening.test.ts` |
 | Audit: bulk delete ids, role/user diffs, failures logged | Test: `routes/meta/hardening.test.ts` |
-| Downgrade guard, boot retry, migration summary in the audit log | Test: `hardening.integration.test.ts` (MariaDB) |
+| Downgrade guard, boot retry, migration summary in the audit log | Test: `hardening.integration.test.ts` (PostgreSQL) |
+| A failed import or schema change leaves nothing behind (units of work) | Test: `transactions.integration.test.ts` (PostgreSQL) |
 | Sliding expiry, 10-minute touch interval | **Code only** (`auth.ts`); no test |
 | Sessions removed on disable, password change, reset | Test: `integration.test.ts` ("password change rotates sessions"), `security.test.ts`; run |
 | Sessions survive restart; throttle does not | Run |

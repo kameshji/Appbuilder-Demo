@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { fx, signatureAt } from './index'
-import { err, val } from './testutil'
+import { fx, signatureAt } from './index.ts'
+import { err, val } from './testutil.ts'
 
 afterEach(() => fx.setUserFunctions([]))
 

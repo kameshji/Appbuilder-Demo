@@ -2,7 +2,7 @@
  * Platform entry point: the workspace singleton and the React hook.
  *
  * `platform` is a stable facade. On init() it probes GET /api/v1/status (800 ms): an answer with
- * `app === 'appbuilder'` selects RemotePlatform (server mode: real login, MySQL, server-enforced security);
+ * `app === 'appbuilder'` selects RemotePlatform (server mode: real login, PostgreSQL, server-enforced security);
  * anything else selects the browser-only demo core (IndexedDB, simulated security). After init,
  * `platform.getState().mode` says which one is active ('server' | 'demo').
  */

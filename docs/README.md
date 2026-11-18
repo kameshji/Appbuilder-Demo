@@ -1,7 +1,7 @@
 # Appbuilder documentation
 
 Appbuilder is a desktop low-code platform for small businesses: makers design apps on a drag-and-drop canvas with
-Excel-style formulas, keep data in MySQL, data files or Google Sheets, and control who sees what with roles, row
+Excel-style formulas, keep data in PostgreSQL, existing databases, data files or Google Sheets, and control who sees what with roles, row
 filters and column security. ("Appbuilder" is a working name.)
 
 ## For customers
@@ -22,6 +22,7 @@ filters and column security. ("Appbuilder" is a working name.)
 | --- | --- |
 | [Architecture](dev/architecture.md) | planned |
 | [Data API v1 reference](dev/data-api.md) | planned |
+| [Query v2: formula-to-query translation](dev/query-v2.md) | current (library; the endpoint is P0 package D) |
 | [Database schema](dev/schema.md) | planned |
 | [Writing a connector](dev/connectors.md) | planned |
 | [Testing](dev/testing.md) | planned |

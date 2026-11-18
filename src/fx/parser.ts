@@ -1,6 +1,6 @@
-import type { FxDiagnostic } from '@/contracts'
-import type { BinOp, Node, RecField } from './ast'
-import { lex, ParseError, type Token } from './lexer'
+import type { FxDiagnostic } from '../contracts.ts'
+import type { BinOp, Node, RecField } from './ast.ts'
+import { lex, ParseError, type Token } from './lexer.ts'
 
 export interface ParseResult {
   /** null when the formula is just '=' */
@@ -28,7 +28,12 @@ const UNARY_BP = 8
 
 class Parser {
   private i = 0
-  constructor(private src: string, private toks: Token[]) {}
+  private src: string
+  private toks: Token[]
+  constructor(src: string, toks: Token[]) {
+    this.src = src
+    this.toks = toks
+  }
 
   private peek(o = 0): Token { return this.toks[Math.min(this.i + o, this.toks.length - 1)]! }
   private next(): Token { const t = this.peek(); if (this.i < this.toks.length - 1) this.i++; return t }

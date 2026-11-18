@@ -1,8 +1,9 @@
 /**
  * SecurityEngine: RBAC + RLS + CLS (docs/internal/specs/SPEC3.md section 5). Pure computation over roles and tables;
- * the engine caches roles/tables between requests (invalidate() after any role/user/table change).
+ * the engine caches roles/tables per environment between requests (invalidate() after any role/user/table change).
  */
 import type { MetaStore, SecurityEngine, UserContext } from './contracts.ts'
+import { currentEnvironment } from './env-context.ts'
 import type {
   AccessScope, ColumnAccess, EffectivePrivileges, RoleDef, RowCondition, TableDef, TablePrivilege, UserDef,
 } from '../../src/platform/contracts.ts'
@@ -197,24 +198,31 @@ export function hasAnyTableAccess(ctx: UserContext, table: TableDef): boolean {
 export function createSecurityEngine(getMeta: () => MetaStore, ttlMs = 5000): SecurityEngine & {
   forUser(user: UserDef, expiresOn?: Date): Promise<UserContext>
 } {
-  let cache: { roles: RoleDef[]; tables: TableDef[]; at: number } | null = null
-  let loading: Promise<{ roles: RoleDef[]; tables: TableDef[] }> | null = null
-  let generation = 0
+  /** per environment id (roles and tables are environment objects) */
+  interface Slot { cache: { roles: RoleDef[]; tables: TableDef[]; at: number } | null; loading: Promise<{ roles: RoleDef[]; tables: TableDef[] }> | null; generation: number }
+  const slots = new Map<string, Slot>()
+  const slot = (id: string): Slot => {
+    let s = slots.get(id)
+    if (!s) slots.set(id, (s = { cache: null, loading: null, generation: 0 }))
+    return s
+  }
 
   async function load(): Promise<{ roles: RoleDef[]; tables: TableDef[] }> {
-    if (cache && Date.now() - cache.at < ttlMs) return cache
-    if (loading) return loading
-    const gen = generation
+    const s = slot(currentEnvironment().id)
+    if (s.cache && Date.now() - s.cache.at < ttlMs) return s.cache
+    if (s.loading) return s.loading
+    const gen = s.generation
     const meta = getMeta()
-    loading = Promise.all([meta.roles.list(), meta.tables.list()])
+    const p = Promise.all([meta.roles.list(), meta.tables.list()])
       .then(([roles, tables]) => {
-        if (gen === generation) cache = { roles, tables, at: Date.now() }
+        if (gen === s.generation) s.cache = { roles, tables, at: Date.now() }
         return { roles, tables }
       })
       .finally(() => {
-        loading = null
+        if (s.loading === p) s.loading = null
       })
-    return loading
+    s.loading = p
+    return p
   }
 
   return {
@@ -222,10 +230,13 @@ export function createSecurityEngine(getMeta: () => MetaStore, ttlMs = 5000): Se
       const { roles, tables } = await load()
       return buildUserContext(user, roles, tables, expiresOn)
     },
-    invalidate() {
-      generation++
-      cache = null
-      loading = null
+    invalidate(scope?: 'all') {
+      const list = scope === 'all' ? [...slots.values()] : [slot(currentEnvironment().id)]
+      for (const s of list) {
+        s.generation++
+        s.cache = null
+        s.loading = null
+      }
     },
   }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { contacts, err, val } from './testutil'
+import { contacts, err, val } from './testutil.ts'
 
 const C = () => ({ Contacts: contacts() })
 const names = (v: unknown) => (v as { Name: string }[]).map((r) => r.Name)

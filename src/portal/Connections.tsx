@@ -45,6 +45,7 @@ export function extractSpreadsheetId(input: string): string {
 /* ------------------------------------------------------------------ dialog */
 
 const KINDS: { kind: ConnectorKind; text: string }[] = [
+  { kind: 'postgres', text: 'Another PostgreSQL database.' },
   { kind: 'mysql', text: 'A MySQL or MariaDB database.' },
   { kind: 'gsheets', text: 'Tabs of a Google spreadsheet.' },
   { kind: 'files', text: 'CSV, Excel and JSON files on this device.' },
@@ -64,10 +65,11 @@ function CopyEmail({ email }: { email: string }) {
 
 function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: boolean; onOpenChange(o: boolean): void; connection: ConnectionRef | null; onSaved(c: ConnectionRef | null): void }) {
   const { fail, toast } = useToast()
-  const [kind, setKind] = useState<ConnectorKind>('mysql')
+  const [kind, setKind] = useState<ConnectorKind>('postgres')
   const [name, setName] = useState('')
   const [host, setHost] = useState('127.0.0.1')
-  const [port, setPort] = useState('3306')
+  const [port, setPort] = useState('5432')
+  const [schema, setSchema] = useState('public')
   const [database, setDatabase] = useState('')
   const [user, setUser] = useState('')
   const [password, setPassword] = useState('')
@@ -84,10 +86,11 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
   useEffect(() => {
     if (!open) return
     const s = connection?.settings ?? {}
-    setKind(connection?.connector ?? 'mysql')
+    setKind(connection?.connector ?? 'postgres')
     setName(connection?.name ?? '')
     setHost(s.host ?? '127.0.0.1')
-    setPort(s.port ?? '3306')
+    setPort(s.port ?? (connection?.connector === 'mysql' ? '3306' : '5432'))
+    setSchema(s.schema ?? 'public')
     setDatabase(s.database ?? '')
     setUser(s.user ?? '')
     setPassword('')
@@ -118,19 +121,22 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
   }
 
   const portNum = Number(port)
-  const mysqlOk = !!host.trim() && Number.isInteger(portNum) && portNum > 0 && portNum < 65536 && !!database.trim() && !!user.trim()
+  const sqlKind = kind === 'mysql' || kind === 'postgres'
+  const sqlOk = !!host.trim() && Number.isInteger(portNum) && portNum > 0 && portNum < 65536 && !!database.trim() && !!user.trim()
+    && (kind !== 'postgres' || /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(schema.trim()))
   const sheetId = extractSpreadsheetId(sheet)
   const gsOk = !!sheetId && (!!keyJson || (editing && !!connection?.hasSecret))
-  const valid = !!name.trim() && (kind === 'mysql' ? mysqlOk : kind === 'gsheets' ? gsOk : false)
+  const valid = !!name.trim() && (sqlKind ? sqlOk : kind === 'gsheets' ? gsOk : false)
 
   const run = async () => {
     setBusy(true)
     try {
       let saved: ConnectionRef | null = null
-      if (kind === 'mysql') {
-        const settings = { host: host.trim(), port: String(portNum), database: database.trim(), user: user.trim(), ssl: ssl ? 'true' : 'false' }
+      if (sqlKind) {
+        const settings: Record<string, string> = { host: host.trim(), port: String(portNum), database: database.trim(), user: user.trim(), ssl: ssl ? 'true' : 'false' }
+        if (kind === 'postgres') settings.schema = schema.trim() || 'public'
         if (connection) await platform.connections.update(connection.id, { name: name.trim(), settings: { ...connection.settings, ...settings }, ...(password ? { secret: password } : {}) })
-        else saved = await platform.connections.create({ name: name.trim(), connector: 'mysql', settings, secret: password })
+        else saved = await platform.connections.create({ name: name.trim(), connector: kind, settings, secret: password })
       } else {
         const settings: Record<string, string> = { spreadsheetId: sheetId }
         if (keyInfo) settings.serviceAccountEmail = keyInfo.email
@@ -158,7 +164,7 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
         </DialogHeader>
         <form className="grid gap-4" autoComplete="off" onSubmit={(e) => { e.preventDefault(); if (valid && !busy) void run() }}>
           {!editing && (
-            <div role="radiogroup" aria-label="Connector" className="grid grid-cols-3 gap-2">
+            <div role="radiogroup" aria-label="Connector" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {KINDS.map((k) => {
                 const I = CONNECTOR_INFO[k.kind].icon
                 return (
@@ -168,7 +174,7 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
                     role="radio"
                     aria-checked={kind === k.kind}
                     data-testid={`connector-${k.kind}`}
-                    onClick={() => setKind(k.kind)}
+                    onClick={() => { setKind(k.kind); if (k.kind === 'mysql' && port === '5432') setPort('3306'); if (k.kind === 'postgres' && port === '3306') setPort('5432') }}
                     className={cn('flex flex-col items-center gap-1.5 rounded-lg border p-2.5 text-center text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/40', kind === k.kind ? 'border-primary bg-accent text-accent-foreground' : 'border-border hover:bg-muted')}
                   >
                     <I className="size-5" />
@@ -188,8 +194,8 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
             </div>
           ) : (
             <>
-              <Field label="Connection name" htmlFor="conn-name"><Input id="conn-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder={kind === 'mysql' ? 'e.g. Sales database' : 'e.g. Budget sheet'} data-testid="connection-name" /></Field>
-              {kind === 'mysql' && (
+              <Field label="Connection name" htmlFor="conn-name"><Input id="conn-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder={sqlKind ? 'e.g. Sales database' : 'e.g. Budget sheet'} data-testid="connection-name" /></Field>
+              {sqlKind && (
                 <>
                   <div className="grid grid-cols-[1fr_96px] gap-3">
                     <Field label="Host" htmlFor="conn-host"><Input id="conn-host" value={host} onChange={(e) => setHost(e.target.value)} data-testid="conn-host" /></Field>
@@ -199,6 +205,11 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
                     <Field label="Database" htmlFor="conn-db"><Input id="conn-db" value={database} onChange={(e) => setDatabase(e.target.value)} data-testid="conn-database" /></Field>
                     <Field label="User" htmlFor="conn-user"><Input id="conn-user" autoComplete="off" value={user} onChange={(e) => setUser(e.target.value)} data-testid="conn-user" /></Field>
                   </div>
+                  {kind === 'postgres' && (
+                    <Field label="Schema" htmlFor="conn-schema" hint="The schema whose tables you want to use (usually public).">
+                      <Input id="conn-schema" value={schema} onChange={(e) => setSchema(e.target.value)} data-testid="conn-schema" />
+                    </Field>
+                  )}
                   <Field label="Password" htmlFor="conn-password" hint={editing && connection?.hasSecret ? 'A password is stored. Leave blank to keep it, or type a new one to replace it.' : 'Stored encrypted on the server. Never shown again.'}>
                     <PasswordInput id="conn-password" value={password} onChange={setPassword} testId="conn-password" placeholder={editing && connection?.hasSecret ? 'Unchanged' : undefined} />
                   </Field>
@@ -346,7 +357,9 @@ function BrowseDialog({ connection, onOpenChange }: { connection: ConnectionRef 
 
 function summary(c: ConnectionRef): string {
   const s = c.settings
-  if (c.connector === 'mysql') return [s.user && `${s.user}@`, s.host, s.port && `:${s.port}`, s.database && `/${s.database}`].filter(Boolean).join('') || 'Not configured'
+  if (c.connector === 'mysql' || c.connector === 'postgres') {
+    return [s.user && `${s.user}@`, s.host, s.port && `:${s.port}`, s.database && `/${s.database}`, c.connector === 'postgres' && s.schema && s.schema !== 'public' ? ` (${s.schema})` : ''].filter(Boolean).join('') || 'Not configured'
+  }
   if (c.connector === 'gsheets') return s.spreadsheetId ? `Spreadsheet ${s.spreadsheetId.length > 18 ? s.spreadsheetId.slice(0, 16) + '...' : s.spreadsheetId}` : 'No spreadsheet set'
   if (c.connector === 'files') return 'Copies of your files in the workspace folder'
   return ''
@@ -405,14 +418,14 @@ export function Connections() {
           <Alert className="mb-4" data-testid="connections-demo-note">
             <Info />
             <AlertTitle>Demo mode</AlertTitle>
-            <AlertDescription>MySQL and Google Sheets connections, testing and linking tables need the local server (<code className="font-mono text-xs">npm start</code>). In this browser demo your tables live in browser storage and files are turned into ordinary tables.</AlertDescription>
+            <AlertDescription>Database and Google Sheets connections, testing and linking tables need the local server (<code className="font-mono text-xs">npm start</code>). In this browser demo your tables live in browser storage and files are turned into ordinary tables.</AlertDescription>
           </Alert>
         )}
         {!demo && !caps.isAdmin && (
           <Alert className="mb-4"><Info /><AlertDescription>Only administrators can change connections. You can see what exists.</AlertDescription></Alert>
         )}
         {connections.length === 0 ? (
-          <Empty icon={Cloud} title="No connections yet" description={demo ? 'Connections are managed by the local server.' : 'Add a MySQL database or a Google Sheet.'} action={canEdit ? <Button onClick={() => setDlg({ conn: null })}><Plus /> New connection</Button> : undefined} />
+          <Empty icon={Cloud} title="No connections yet" description={demo ? 'Connections are managed by the local server.' : 'Add a PostgreSQL or MySQL database or a Google Sheet.'} action={canEdit ? <Button onClick={() => setDlg({ conn: null })}><Plus /> New connection</Button> : undefined} />
         ) : list.length === 0 ? (
           <Empty icon={Cable} title="No matching connections" description={`Nothing matches "${q}".`} />
         ) : (
@@ -428,7 +441,7 @@ export function Connections() {
                   const m = connectorInfo(c.connector)
                   const r = results[c.id]
                   const isFiles = c.connector === 'files'
-                  const canBrowse = !demo && (c.connector === 'mysql' || c.connector === 'gsheets')
+                  const canBrowse = !demo && (c.connector === 'postgres' || c.connector === 'mysql' || c.connector === 'gsheets')
                   return (
                     <Fragment key={c.id}>
                       <tr className={cn('hover:bg-accent/40', !r && 'border-b border-border last:border-0')} data-testid={`connection-row-${c.id}`}>
@@ -453,7 +466,7 @@ export function Connections() {
                           <div className="flex flex-wrap justify-end gap-1">
                             {!demo && !isFiles && <Button variant="outline" size="xs" onClick={() => void test(c)} disabled={r?.busy} data-testid={`test-${c.id}`}>{r?.busy ? <Spinner /> : <Play />} Test</Button>}
                             {canBrowse && <Button variant="outline" size="xs" onClick={() => setBrowse(c)} data-testid={`browse-${c.id}`}><TableProperties /> Browse tables</Button>}
-                            {canEdit && c.connector === 'mysql' && !c.isDefault && <Button variant="outline" size="xs" onClick={() => void makeDefault(c)} data-testid={`default-${c.id}`}><Star /> Set as default</Button>}
+                            {canEdit && c.connector === 'postgres' && !c.isDefault && <Button variant="outline" size="xs" onClick={() => void makeDefault(c)} data-testid={`default-${c.id}`}><Star /> Set as default</Button>}
                             {isFiles && !demo && <Button variant="outline" size="xs" onClick={() => goPortal('datafiles')}><HardDrive /> Data files</Button>}
                             {canEdit && !isFiles && c.id !== DEFAULT_CONNECTION_ID && <Button variant="ghost" size="icon-sm" aria-label={`Edit ${c.name}`} onClick={() => setDlg({ conn: c })} data-testid={`edit-${c.id}`}><Pencil /></Button>}
                             {canEdit && c.id === DEFAULT_CONNECTION_ID && <span className="inline-flex items-center gap-1 px-1.5 text-xs text-muted-foreground" title="Set up when Appbuilder was installed (workspace/server.json or APPBUILDER_DB_*). Change it in the server configuration and restart." data-testid={`managed-${c.id}`}><Lock className="size-3.5" /> Managed by setup</span>}

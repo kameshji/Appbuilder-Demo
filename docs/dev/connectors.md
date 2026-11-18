@@ -1,8 +1,9 @@
 # Connectors
 
-A **connector** is the server-side adapter that stores and fetches the rows of a table. The platform ships three:
-`mysql` (the default store), `files` (CSV, Excel and JSON data files copied into the workspace) and `gsheets` (Google Sheets through
-a service account). A planned fourth, a PHP gateway, is a *backend* for the whole Data API, not a connector (see `data-api.md`).
+A **connector** is the server-side adapter that stores and fetches the rows of a table. The platform ships four:
+`postgres` (the default database, and external PostgreSQL databases), `mysql` (external MySQL/MariaDB databases), `files` (CSV,
+Excel and JSON data files copied into the workspace) and `gsheets` (Google Sheets through a service account). A planned PHP
+gateway is a *backend* for the whole Data API, not a connector (see `data-api.md`; on hold since D14).
 
 Connectors know nothing about users or security. The `DataService`
 (`/home/claude/appbuilder-demo/server/core/data.ts`) hands a connector a fully security-augmented `Condition` (row-level filter
@@ -10,8 +11,8 @@ already ANDed in) and validates and strips columns (column-level security) befor
 connector; add them to `security.ts`/`data.ts` (see `security-engine.md`).
 
 What is not supported: connectors cannot be added at run time or by makers (they are compiled into the server and registered in one
-file), there are no joins at all (a `lookup` column stores the target row id; formulas resolve it in the browser), and only `mysql` can be
-the default store.
+file), there are no joins at all (a `lookup` column stores the target row id; formulas resolve it in the browser), and only a
+`postgres` connection can be the default store for new tables.
 
 ## The interface
 
@@ -33,110 +34,190 @@ interface Connector {
   insert(def: TableDef, rows: RawRow[]): Promise<void>
   update(def: TableDef, id: string, changes: RawRow, guard?: Condition): Promise<number>
   delete(def: TableDef, ids: string[], guard?: Condition): Promise<number>
+  transaction?<T>(fn: (tx: Connector) => Promise<T>): Promise<T>               // capabilities.transactions only
+  ensureSystemColumns?(source: string): Promise<{ added: string[]; filled: number }>  // SQL connectors with ddl
   close(): Promise<void>
 }
 type RawRow = Record<string, string | number | boolean | Date | null>
 type ConnectorFactory = (conn: ConnectionRecord, env: ConnectorEnv) => Connector
-interface ConnectorEnv { workspaceDir: string; filesDir: string; fetch: typeof fetch; log(level, msg): void }
+interface ConnectorEnv {
+  environment?: { id: string; schema: string }  // the environment this instance serves
+  systemDb?: () => SqlDb | null                 // the system database (used by conn_default)
+  workspaceDir: string; filesDir: string; fetch: typeof fetch; log(level, msg): void
+}
 ```
 
 Contract points an implementer must honour:
 
-- **One instance per connection.** The `ConnectionManager` (`server/core/connections.ts`) caches instances per connection id, keyed
-  by a SHA-256 fingerprint of `[connector, settings, secret]`; changing any of them builds a fresh instance and closes the old one.
-  `ConnectionRecord` carries the decrypted secret in memory only.
+- **One instance per environment and connection.** The `ConnectionManager` (`server/core/connections.ts`) caches instances per
+  `<environment id>:<connection id>`, keyed by a SHA-256 fingerprint of `[connector, settings, secret]`; changing any of them builds a
+  fresh instance and closes the old one. The factory gets a `ConnectorEnv` naming the environment. `ConnectionRecord` carries the
+  decrypted secret in memory only.
 - **`def.source` is always set** when a connector sees a table (the physical name; for `files` it is `<fileId>/<sheet>`).
 - **Typed rows.** `select` returns `Date` objects for `date` (UTC midnight) and `datetime` columns, numbers for number types,
   booleans for `boolean`, `null` for blank. The service converts to the JSON wire format.
 - **`update` and `delete` take a `guard`** (the row-level filter) and return the affected count. `0` means "not found or not
   allowed"; the service then decides between 403 and 404 by re-reading with the read filter. A connector must apply the guard
-  atomically with the write where it can (MySQL does it in the `WHERE`).
+  atomically with the write where it can (the SQL connectors do it in the `WHERE`).
 - **`where` references only columns of `def`.** Identifiers come from the def, never from the request; a connector must still
   validate or quote them.
 - **Errors** are `HttpError(status, code, message, field?)` with friendly text. Never put a password, key, SQL text or file path in
-  a message. `mapDbError` and `friendlyConnectionError` in `server/connectors/mysql/index.ts` show the pattern.
+  a message. `mapPgError` / `friendlyConnectionError` in `server/connectors/postgres/db.ts` and `mapDbError` in
+  `server/connectors/mysql/index.ts` show the pattern. The router maps raw driver errors with the same functions.
 - **Capabilities.**
 
   | Connector | `ddl` | `write` | `pushdown` | `transactions` |
   | --- | --- | --- | --- | --- |
-  | `mysql` | yes | yes | yes | yes |
+  | `postgres` | yes | yes | yes | yes (DDL too) |
+  | `mysql` | yes | yes | yes | yes (data statements) |
   | `files` | yes | yes | no | no |
   | `gsheets` | yes | yes | no | no |
 
   `pushdown: false` means the connector loads the sheet or file and runs `applyQuery` from `server/core/condition.ts` itself.
-  `transactions: true` means multi-row `insert`/`delete` are all-or-nothing (the MySQL tests assert a failing chunk rolls everything back)
-  and the connector implements the optional `transaction(fn)`: `fn` gets a connector whose `select`/`insert`/`update`/`delete` run on
-  one transaction (BEGIN/COMMIT, ROLLBACK when `fn` throws; data statements only). The DataService uses it for a CSV import in
-  `replace` mode (delete + inserts).
+  `transactions: true` means multi-row `insert`/`delete` are all-or-nothing (the integration tests assert a failing chunk rolls
+  everything back) and the connector implements the optional `transaction(fn)`: `fn` gets a connector whose statements run on one
+  transaction (BEGIN/COMMIT, ROLLBACK when `fn` throws). On PostgreSQL the DDL methods take part too; on MySQL only data statements
+  (MySQL commits DDL implicitly). The DataService uses it for a CSV import in `replace` mode (delete + inserts).
 - **Atomicity without transactions** (`files`, `gsheets`). The DataService validates everything first (every import row is built
   and checked, every delete target's permission is checked) and then issues one `delete` and one `insert` call. Those two calls are
   still separate writes: on the files connector they land in memory together and are persisted by the next debounced save, so a
   crash in between is the only window; on Google Sheets they are separate API requests, so a failure of the insert request after
   the delete request (network, quota) leaves the replaced rows deleted. Re-run the import in that case.
-- **Default order.** A `select` without `orderBy` returns rows in insertion order: MySQL orders by `createdOn, id` (row ids are
-  time-ordered UUIDv7 from `rowUid()` in `server/core/util.ts`, so `id` breaks ties within a millisecond; only columns the def lists
-  are used, so a linked table without system columns gets no default order) and uses the same keys as the tie-breaker of an
+- **Default order.** A `select` without `orderBy` returns rows in insertion order: the SQL connectors order by `createdOn, id` (row
+  ids are time-ordered UUIDv7 from `rowUid()` in `server/core/util.ts`, so `id` breaks ties within a millisecond; only columns the
+  def lists are used, so a linked table without system columns gets no default order) and use the same keys as the tie-breaker of an
   explicit sort; the in-memory connectors keep file/sheet order and sort stably.
 
 ## Condition semantics (the reference)
 
 `/home/claude/appbuilder-demo/server/core/condition.ts` is the reference implementation (`evaluateCondition`, `applyQuery`,
-`conditionColumns`, `and`). Every connector must produce the same answers. The rules:
+`conditionColumns`, `and`). Every connector must produce the same answers. The client mirror `src/platform/rowfilter.ts` follows the
+same rules. The rules:
 
 - `Condition` is `{ and: [...] } | { or: [...] } | { not: c } | { col, op, value? } | { const: boolean }`. An empty `and` is true, an
   empty `or` is false.
 - **Blank** means `null`, `undefined` or `''`. `isBlank` and `notBlank` test that. `eq`/`ne` with `null` (or no value) mean
   `isBlank`/`notBlank`.
-- **Text is compared case-insensitively.** `contains`, `startsWith`, `endsWith` are text operations on the cell's string form,
-  case-insensitive; a blank cell never matches them. `in` takes an array and is true if any element compares equal.
-- **Ordering** (`lt le gt ge`) on a blank cell is false. Dates compare by time (a Date against ISO text compares as time).
+- **Text is compared case-insensitively**: both sides lowercased (`toLowerCase()`), then compared exactly; ordering by code unit.
+  `contains`, `startsWith`, `endsWith` are text operations on the cell's string form, case-insensitive; a blank cell never matches
+  them. `in` takes an array and is true if any element compares equal.
+- **Ordering** (`lt le gt ge`) on a blank cell is false. Dates compare by time (a Date against text parsed by `Date.parse`).
   Numbers compare numerically; a number cell against numeric-looking text compares numerically (and vice versa).
 - A **number against non-numeric text is not comparable**: `eq` is false, `ne` is true, ordering is false. Booleans compare as
-  equal or as true greater than false.
+  equal or as true greater than false; a boolean against a non-boolean (either side) is never equal and orders by the truthiness
+  of the cell (`x === y ? 0 : x ? 1 : -1`).
 - `ne` is true for a blank cell (when the value is not null).
 - **`applyQuery`** (used by non-pushdown connectors): filter, `total` (if `count`) is the filtered count before paging, sort by
-  `orderBy` with **blanks last in both directions**, then `skip`/`top`, then `select` (the `id` column is always kept).
+  `orderBy` with **blanks last in both directions** (blanks tie with each other), then `skip`/`top`, then `select` (the `id` column
+  is always kept).
 
 The DataService also validates the tree before it reaches a connector: at most 2000 nodes, depth 32, at most 1000 values per `in`,
 known ops, known columns.
 
-## MySQL connector
+## PostgreSQL connector
+
+Files: `server/connectors/postgres/index.ts` (the connector), `sql.ts` (pure SQL builder, unit-testable), `db.ts` (pool,
+transactions, units of work, error mapping).
+
+Two uses of the same code:
+
+- **The default connection** (`conn_default`, "Default database"): its tables live in the **environment schema** of the system
+  database (`env_default`), and the connector uses the **system pool** (`ConnectorEnv.systemDb`) instead of its own, so its DDL and
+  rows take part in a unit of work (`Services.transaction`) together with the metadata. Its settings are rewritten from the setup
+  at every start and cannot be edited.
+- **External PostgreSQL databases** (a customer's): an own pool, tables in `settings.schema` (default `public`). The schemas `ab`,
+  `env_*`, `pg_*` and `information_schema` are refused so a second connection to the system database cannot reach its tables.
+
+Details:
+
+- Pool: `pg`, `max: 10`, 10 s connect timeout, keep-alive, `application_name=appbuilder`, startup options
+  `search_path=pg_catalog,pg_temp` and `TimeZone=UTC` (see `schema.md`). With `ssl` set the pool requires TLS 1.2+ and verifies the
+  certificate. Type parsers are per pool: `int8` -> number, `numeric` -> string (converted per column), `date` -> `YYYY-MM-DD`
+  (never shifted to local time), `timestamp` (without time zone) read as UTC, `timestamptz` -> Date.
+- Everything that reaches SQL text is a validated, double-quoted, schema-qualified identifier or a literal fragment from `sql.ts`;
+  every value travels as a `$n` parameter with an explicit cast. Identifier rule `^[A-Za-z_][A-Za-z0-9_]{0,62}$`; names starting with
+  `ab_` are refused (403) and hidden from `listSourceTables`.
+- DDL generation, the type map and index naming are documented in `schema.md`. Each DDL method runs in one transaction (a savepoint
+  inside a unit of work); `alterColumn` converts in SQL with `ALTER COLUMN ... TYPE ... USING ...` (`alterUsing`: text to number
+  rounds, `yes/no/true/false/1/0/t/f` to boolean, numbers to text like JavaScript's `String(number)`, dates to `YYYY-MM-DD`, datetimes
+  to ISO text in UTC). A failing conversion leaves the column unchanged.
+- `ensureSystemColumns` adds the missing system columns of a linked table in one transaction; a missing `id` is filled with UUIDv7
+  values in physical row order and gets a unique index.
+- Inserts are chunked to stay below PostgreSQL's 65,535 parameters per statement (at most 500 rows); deletes use `id = ANY($1)` in
+  chunks of 5,000. Several chunks run in one transaction.
+- `listSourceTables` excludes `ab_%` tables and counts rows exactly only when there are 50 tables or fewer (otherwise
+  `pg_class.reltuples`).
+
+### Parity with the reference
+
+The PostgreSQL translation is held to the reference by the `describe('parity: SQL vs evaluateCondition')` block in
+`/home/claude/appbuilder-demo/server/connectors/postgres/postgres.integration.test.ts`: 14 rows with nasty values (blank vs `''`
+vs `NULL`, `%`, `_`, `!` and backslash, numeric-looking text in several notations (` 42 `, `1e3`, `+7`, `1.`, `Infinity`), non-ASCII
+case pairs (`Ärger`, `İstanbul`, final sigma `ΣΑΣ`, `straße`), dates and datetimes at millisecond precision, tiny and huge decimals,
+mixed-case choices) and **162 named conditions**, each run through `connector.select` (SQL), through `evaluateCondition`, and again
+on a managed table (exact id comparison); the id sets must be equal, and so must the counts. Further blocks compare
+`orderBy`/`skip`/`top` sequences with `applyQuery` (blanks last in both directions, text sorted by code point, ties on the id
+tie-breaker), and repeat every ASCII condition with the non-ICU lowercasing. **When you change `sql.ts` or `condition.ts`, extend this
+list** with the case that motivated the change.
+
+How `sql.ts` matches the reference:
+
+- **Decided in JavaScript where the reference decides on the value**: its type, whether text is numeric-looking (the reference's
+  own test `x.trim() !== '' && !isNaN(Number(x))` on the lowercased value), `Date.parse`, booleans against non-booleans. Values that
+  can never compare equal become `FALSE`/`TRUE` constants; values outside PostgreSQL's date range become "below/above every cell".
+- **Text** is compared on lowercased forms: the cell with `lower((col) COLLATE "und-x-icu")` when the server has the ICU root
+  collation (detected once per connector; the official PostgreSQL builds for Windows, Debian/Ubuntu and the Docker image have it),
+  otherwise with `lower(col)`; the value is lowercased in JavaScript. Ordering adds `COLLATE "C"` (code point order). No `LIKE`
+  and no `ILIKE`: `contains`/`startsWith`/`endsWith` are `strpos`, `starts_with` and `right(...) =` on the lowercased string form, so
+  `%`, `_` and `\` need no escaping.
+- **String form** for `contains` on non-text columns: numbers exactly like JavaScript's `String(number)` (`jsNumberText`: plain digits
+  between 1e-6 and 1e21, exponent form outside, `12.5000` reads as `12.5`), booleans `true`/`false`.
+- **Blanks**: `''` is blank for text kinds (`col IS NULL OR col = ''`), only `NULL` otherwise; `ne` is `blank OR col <> v`; ordering
+  needs a non-blank cell; under `NOT` every leaf is `COALESCE(..., FALSE)`.
+- **Numbers**: integer values against `bigint` as `$n::bigint` (index-friendly), fractions as `numeric`; `double precision` and
+  `numeric(19,4)` against `float8`/`numeric` parameters.
+- **Dates**: a midnight value against a `date` column compares as `date` (uses an index), other instants compare the column at UTC
+  midnight with a `timestamptz`.
+- **Sort**: `(blank) ASC`, then the value (`NULLIF(lower(col), '') COLLATE "C"` for text, so `''` and `NULL` tie), then the
+  `createdOn, id` tie-breaker.
+- **id on managed tables**: compared exactly (`"id" = $1`, `"id" = ANY($1)`) with the lowercased value: Appbuilder's ids are
+  lowercase UUIDs, so the answer is the same and row lookups use the primary key. Linked tables compare `id` like other text.
+
+Documented differences that remain (each has a test that pins it down):
+
+- `contains`/`startsWith`/`endsWith` on **date and datetime** columns test ISO text (`2024-02-20`, `2024-02-20T12:30:45.123Z`);
+  the reference uses `String(Date)`, which depends on the server's time zone.
+- **Numeric-looking text** in SQL is decimal notation with at most 250 characters and a two-digit exponent; JavaScript also reads
+  `0x10`, `0o7`, `0b1` and larger exponents as numbers (`"0x10" = 16` is true only in the reference).
+- **Code points vs code units**: SQL orders by code point, JavaScript by UTF-16 code unit; they differ only for characters above
+  U+FFFF compared with U+E000..U+FFFF.
+- Without ICU, non-ASCII lowercasing follows the database's `LC_CTYPE` (`C.UTF-8` lowercases ASCII only). Create the database with a
+  real locale or keep ICU available.
+
+Compared with the MySQL store (before D14) these behaviours changed: comparison is no longer accent- or width-insensitive and no longer
+ignores trailing spaces (`utf8mb4_unicode_ci` and `PAD SPACE`), text ordering is by code point instead of by collation, and
+`contains` on numbers uses JavaScript's number formatting. All of these now agree with the reference and with the browser.
+
+## MySQL connector (external databases)
 
 Files: `server/connectors/mysql/index.ts` (the connector), `sql.ts` (pure SQL builder, unit-testable), `db.ts` (pool, transactions).
+Used to link tables of a customer's MySQL or MariaDB, or to create tables there; never for the system store.
 
 - Pool: `mysql2/promise`, `connectionLimit: 10`, `timezone: 'Z'`, charset `utf8mb4_unicode_ci`, `dateStrings: false`,
   `supportBigNumbers: true`, `multipleStatements: false`, `connectTimeout: 10000`. With `ssl` set the pool requires TLS 1.2+ and
   verifies the certificate (`rejectUnauthorized`).
 - Everything that reaches SQL text is a validated, backtick-quoted identifier or a literal fragment from `sql.ts`; every value
   travels as a `?` parameter. Identifier rule `^[A-Za-z_][A-Za-z0-9_]{0,63}$`; names starting with `ab_` are refused (403).
-- DDL generation and the type map are documented in `schema.md`.
+- Type map (`sqlType`): `VARCHAR(255)` for text kinds, `VARCHAR(1024)`/`VARCHAR(768)` for urls, `MEDIUMTEXT`, `BIGINT`, `DOUBLE`,
+  `DECIMAL(19,4)`, `TINYINT(1)`, `DATE`, `DATETIME(3)` (UTC), `CHAR(36)` for ids and lookups; tables `ENGINE=InnoDB DEFAULT
+  CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`; indexes `ix_owner`, `ix_<col>`, `uq_<col>` (per table in MySQL). The SQL stays
+  portable to MySQL 5.7+/8.x and MariaDB 10.4+ (no JSON type, no CHECK, no CTEs, `VALUES()` in `ON DUPLICATE KEY`).
 - `listSourceTables` excludes `ab_%` tables and computes exact row counts only when there are 50 tables or fewer.
-
-### Parity with the reference
-
-The MySQL translation is held to the reference by a **parity test**: the `describe('parity: SQL vs evaluateCondition')` block in
-`/home/claude/appbuilder-demo/server/connectors/mysql/mysql.integration.test.ts`. It inserts a fixed dataset of ten rows with nasty
-values (blank vs `''` vs `NULL`, `%`, `_`, `!` and backslash for LIKE escaping, text that looks like numbers, dates and datetimes at
-millisecond precision, mixed case choices) and then runs a long list of named conditions both through `connector.select` (SQL) and
-through `evaluateCondition` over the same rows (JavaScript), and requires the same set of ids (compared sorted). A second test,
-`orderBy / top / skip match applyQuery (blanks last)`, runs several `orderBy` plus `skip`/`top` combinations and compares the
-sort-key sequence (and the exact id order when a unique tiebreaker column is part of the sort). The list covers every operator on every column kind, `and`/`or`/`not` nesting, empty `and`/`or`, `const`, and ordering with
-blanks. **When you change `sql.ts` or `condition.ts`, extend this list** with the case that motivated the change.
-
-To make SQL behave like the reference, `sql.ts`:
-
-- puts `COLLATE utf8mb4_unicode_ci` on every string literal, so comparison does not depend on the column's collation;
-- treats `''` as blank for text columns (`(col IS NULL OR CHAR_LENGTH(col) = 0)`) and only `NULL` as blank for other kinds;
-- makes `ne` true for blank cells (`col IS NULL OR col <> ?`);
-- escapes `%`, `_` and the escape character `!` (`LIKE ... ESCAPE '!'`) for `contains`/`startsWith`/`endsWith`;
-- wraps leaves in `COALESCE(..., 0)` under `NOT` so SQL's three-valued logic does not leak through;
-- sorts with `(col IS NULL) ASC` (or the text-blank test) before the column, so blanks are last in both directions, and appends
-  `id ASC`.
-
-Documented differences that cannot be removed (see the header of `sql.ts`): accent and width insensitivity and `PAD SPACE` of
-`utf8mb4_unicode_ci` in `eq`/`in`/`ne`; ordering by collation rather than code unit for `lt/le/gt/ge` on text; `contains` on date
-columns compares the SQL text form. The header of `sql.ts` still says that a non-numeric text against a numeric literal is "not
-equal in SQL but equal in the reference"; `condition.ts` was changed to match SQL (not comparable) and the sentence is stale.
+- Parity: the same kind of test in `/home/claude/appbuilder-demo/server/connectors/mysql/mysql.integration.test.ts` (100 conditions).
+  The translation puts `COLLATE utf8mb4_unicode_ci` on every string literal, treats `''` as blank for text, escapes `%`, `_` and `!`
+  for `LIKE ... ESCAPE '!'`, and wraps leaves in `COALESCE(..., 0)` under `NOT`. Remaining differences (see the header of its
+  `sql.ts`): accent and width insensitivity and `PAD SPACE` in `eq`/`in`/`ne`, collation ordering for `lt/le/gt/ge` on text, `contains`
+  on date columns compares the SQL text form. These only affect tables in an external MySQL.
 
 ## Files connector
 
@@ -154,6 +235,7 @@ source is `<fileId>/<sheet>`.
 - `dropTable` refuses to remove the last sheet of a file ("remove the file instead").
 - Files are **device-only** (decision D8): the connection has scope `device` and is left out of a hosted deployment unless a file is
   packaged into a solution. `modifiedSinceImport` records that apps edited rows since the file was added.
+- Not part of a unit of work: a failed import undoes its file changes with compensating code.
 
 ## Google Sheets connector
 
@@ -173,31 +255,35 @@ column (`ensureIdColumn` adds it).
 
 ## Registering a connector
 
-1. Create `server/connectors/<kind>/index.ts` exporting a `ConnectorFactory` (see `createMySqlConnector`,
-   `createFilesConnector`, `createGSheetsConnector`). Follow the server TypeScript rules: relative imports with the `.ts`
-   extension, `import type` for types, no enums, no runtime import of `@/...` (see `architecture.md`).
+1. Create `server/connectors/<kind>/index.ts` exporting a `ConnectorFactory` (see `createPostgresConnector`,
+   `createMySqlConnector`, `createFilesConnector`, `createGSheetsConnector`). Follow the server TypeScript rules: relative imports
+   with the `.ts` extension, `import type` for types, no enums, no runtime import of `@/...` (see `architecture.md`).
 2. Add the kind to `ConnectorKind` in `/home/claude/appbuilder-demo/src/platform/contracts.ts` if it is not there.
 3. Register it in `/home/claude/appbuilder-demo/server/connectors/index.ts`:
 
    ```ts
+   manager.register('postgres', createPostgresConnector)
    manager.register('mysql', createMySqlConnector)
    manager.register('files', createFilesConnector)
    manager.register('gsheets', createGSheetsConnector)
    ```
 
    An unknown kind makes `ConnectionManager.get` answer 503 `unavailable`.
-4. Allow the kind in `POST /connections` validation (`server/routes/meta/connections.ts`; today `mysql`, `files`, `gsheets`) and give
-   the Connections screen a form for its settings (`/home/claude/appbuilder-demo/src/portal/`).
-5. Add tests (below) and update this page and `schema.md` if the connector stores anything in `ab_*`.
+4. Allow the kind in `POST /connections` validation (`server/routes/meta/connections.ts`; today `postgres`, `mysql`, `files`,
+   `gsheets`) and give the Connections screen a form for its settings (`/home/claude/appbuilder-demo/src/portal/Connections.tsx`).
+5. Add tests (below) and update this page and `schema.md` if the connector stores anything in the system tables.
 
 ## Testing a connector
 
 - **Fakes.** Connectors take everything external through injection: `ConnectorEnv.fetch` for HTTP, directories for files. The
   Google tests (`gsheets.test.ts`) use a `FakeGoogle` that implements the parts of the Sheets API the connector calls and is passed
-  as `env.fetch`; no network is used. The files tests (`files.test.ts`) work in a temp directory. Unit tests of the SQL builder
-  (`sql.test.ts`) need no database at all because `sql.ts` is pure.
+  as `env.fetch`; no network is used. The files tests (`files.test.ts`) work in a temp directory. Unit tests of the SQL builders
+  (`postgres/sql.test.ts`, `mysql/sql.test.ts`) need no database at all because `sql.ts` is pure.
 - **Route and service tests** use the in-memory `FakeMetaStore` harness `/home/claude/appbuilder-demo/server/routes/meta/testing.ts`
-  together with the real `SecurityEngine`, `DataService` and `ConnectionManager`, and a fake connector registered under a kind.
-- **Parity.** A pushdown connector must be added to a parity test like the MySQL one: same dataset, same condition list, compare with
-  `evaluateCondition`. A non-pushdown connector should use `applyQuery`/`evaluateCondition` directly, which makes parity automatic.
-- **Integration** tests against a real server run only when `APPBUILDER_TEST_DB` is set (see `testing.md`).
+  together with the real `SecurityEngine`, `DataService` and `ConnectionManager`, and an in-memory connector registered for
+  `postgres` and `mysql`.
+- **Parity.** A pushdown connector must be added to a parity test like the PostgreSQL one: same dataset, same condition list,
+  compare with `evaluateCondition`. A non-pushdown connector should use `applyQuery`/`evaluateCondition` directly, which makes
+  parity automatic.
+- **Integration** tests run against a real PostgreSQL when `APPBUILDER_TEST_DB` is set and against MySQL/MariaDB when
+  `APPBUILDER_TEST_MYSQL` is set (see `testing.md`).

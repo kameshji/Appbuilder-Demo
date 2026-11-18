@@ -172,7 +172,16 @@ def('Clamp', 'Clamp(value, min, max)', 'Limits a number to a range.', 3, 3, (c) 
   `NOT_PURE` for the behaviour form.
 - Errors are `FxError` (`src/fx/errors.ts`); `fatal` errors (unknown names) are not swallowed by `IfError`.
 - User-defined functions (named formulas with parameters, `App.Formulas`) are in `functions/user.ts`; the call depth limit is 64
-  (`MAX_UDF_DEPTH`). A built-in name cannot be redefined by a user function.
+  (`MAX_UDF_DEPTH`). A built-in name cannot be redefined by a user function. They belong to an **engine instance**
+  (`src/fx/engine.ts`): `createEngine({ formulas })` parses App.Formulas into user functions and named formulas;
+  `engine.setUserFunctions` / `setNamedFormulas` / `setFormulas` replace them on that instance only. The built-ins are shared and
+  immutable; the function table is passed explicitly into evaluation (`FunctionTable` in `functions/index.ts`), never global.
+- The engine is **shared with the server** (architecture rule 3): inside `src/fx` import with relative paths and an explicit `.ts`
+  extension (`import { toText } from '../values.ts'`, `import type { FxValue } from '../../contracts.ts'`), use only erasable
+  TypeScript (no enums, namespaces or constructor parameter properties), no React, DOM or browser globals; side effects go through
+  `c.host`. `src/fx/layering.test.ts` fails otherwise, and `server/core/fx.test.ts` loads the engine under plain Node.
+- A new function that should work in pushed-down queries also needs a rule in `src/fx/query/` (see `query-v2.md`); otherwise a
+  condition using it over a large table is reported as "can't run on the server".
 
 Docs: `docs/reference/formulas.md` is generated from `fx.functions()`. Add the new function to `CATEGORY_OF` in
 `/home/claude/appbuilder-demo/scripts/docs/formulas.ts` (an unmapped function is listed under "Other" with a warning), run
@@ -184,7 +193,9 @@ the first error, `run`/`fakeHost` for behaviour functions, `contacts` as sample 
 laziness. Keep results deterministic (no `Now()` without injection).
 
 The formula language itself (lexer, parser, evaluator) is in `src/fx/{lexer,parser,ast,evaluate,values,errors}.ts`; named formulas in
-`named.ts`; `signature.ts` supports the signature help.
+`named.ts`; `signature.ts` supports the signature help; `print.ts` prints an AST back to formula text; `engine.ts` is the engine
+instance; `query/` translates formulas over data-source tables into Query v2 plans (`analyze`, `explain`, the reference executor and
+keyset cursors, `docs/dev/query-v2.md`).
 
 ## The application shell
 
@@ -291,9 +302,11 @@ both the **definition** and the **runtime state** of one app.
   `useStore` in code that can run inside an app tab.
 - Each store has its own evaluator cache (`evSlot`, an `EvaluatorSlot`), its own log and exit listeners (`subscribeLog`,
   `subscribeExit`; `onLog`/`onExit` are the shared store's) and a `runSurface` flag (events fire although `mode` is `design`).
-- User-defined functions: the formula engine holds one active set. Every `Evaluator` re-registers its app's set right before it
-  evaluates (`useUdfs()`, a reference comparison when nothing changed), so apps with different (or same-named) functions can be
-  mounted together. `parseNamedFormulas` checks names against built-ins only.
+- User-defined functions: every `Evaluator` owns a formula engine instance (`evaluator.engine`, `createEngine()` from `@/fx`) that
+  holds its app's user-defined functions, so apps with different (or same-named) functions can be mounted together; there is no
+  shared active set. Evaluate, check and autocomplete through `ev.engine` (`ev.engine.evaluate`, `.check`, `.functions()`,
+  `.signatureAt`) wherever an app's formulas are involved; the global `fx` object is the default engine with built-ins only.
+  `parseNamedFormulas` checks names against built-ins only.
 - `src/runtime/instances.test.ts` proves the isolation (two stores: variables, collections, navigation, UDFs, log listeners).
 
 - Definition and editor state (`StudioState`): `app` (the `AppDef`), `appId`, `loadState`, `saveState` (`saved|saving|unsaved|error`),

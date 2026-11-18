@@ -1,7 +1,7 @@
-import type { FxRecord, FxValue } from '@/contracts'
-import { isRecord, toRows, withoutId } from '../values'
-import { FxError } from '../errors'
-import { def, MANY, NOT_PURE, type CallCtx, type FnDef } from './types'
+import type { FxRecord, FxValue } from '../../contracts.ts'
+import { isRecord, toRows, withoutId } from '../values.ts'
+import { FxError } from '../errors.ts'
+import { def, MANY, NOT_PURE, type CallCtx, type FnDef } from './types.ts'
 
 /** Items for Collect: records stay records, scalars become { Value }, tables are flattened. __id is dropped so the host assigns fresh ids. */
 function itemsFrom(c: CallCtx, from: number): FxRecord[] {

@@ -1,7 +1,7 @@
 /**
  * Shared Condition helpers (architect-owned). Used by in-memory connectors (files, gsheets) and by the
- * DataService. Semantics are the reference that the MySQL translator must match:
- *  - text comparisons are case-insensitive (like MySQL's default utf8mb4_*_ci collations);
+ * DataService. Semantics are the reference that the SQL translators (postgres, mysql) must match:
+ *  - text comparisons are case-insensitive (like MySQL's utf8mb4_*_ci collations; the postgres translator lowercases);
  *  - blank = null, undefined or '' ; isBlank/notBlank test that; eq/ne with value null mean isBlank/notBlank;
  *  - ordering ops (lt/le/gt/ge) on a blank cell are false; Dates compare by time; numbers numerically;
  *  - 'in' takes an array; 'contains' / 'startsWith' / 'endsWith' are text, case-insensitive.

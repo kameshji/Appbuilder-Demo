@@ -1,5 +1,5 @@
-import { NAMED_COLORS } from '../enums'
-import { def, type CallCtx, type FnDef } from './types'
+import { NAMED_COLORS } from '../enums.ts'
+import { def, type CallCtx, type FnDef } from './types.ts'
 
 type Rgba = [number, number, number, number]
 

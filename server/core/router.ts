@@ -10,6 +10,8 @@ import { HttpError } from './contracts.ts'
 import type { Ctx, Handler, RawResponse, RouteOptions, Router, Services, UserContext } from './contracts.ts'
 import { API_BASE, CSRF_HEADER, SESSION_COOKIE } from '../../src/platform/http.ts'
 import { mapDbError } from '../connectors/mysql/index.ts'
+import { isPgError, mapPgError } from '../connectors/postgres/db.ts'
+import { resolveEnvironment, runInEnvironment } from './env-context.ts'
 import { errText, log } from './util.ts'
 
 /** default JSON body limit; a route's maxBodyMB overrides it (JSON and raw bodies alike) */
@@ -170,6 +172,11 @@ export function sendJson(res: ServerResponse, status: number, body: unknown, ext
 /** any thrown value -> HttpError (never leaks stacks, SQL or secrets; unexpected errors are logged) */
 export function toHttpError(e: unknown): HttpError {
   if (e instanceof HttpError) return e
+  if (isPgError(e)) {
+    const mapped = mapPgError(e)
+    if (mapped.status >= 500) log('error', `database error: ${errText(e)}`)
+    return mapped
+  }
   const code = (e as { code?: unknown })?.code
   if (typeof code === 'string' && (code.startsWith('ER_') || /^(ECONN|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH|PROTOCOL_|POOL_)/.test(code))) {
     const mapped = mapDbError(e)
@@ -283,9 +290,21 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
     return best
   }
 
+  /** every request runs inside its environment (env-context.ts): meta store, caches and the default connector follow it */
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const url = new URL(req.url ?? '/', 'http://localhost')
     if (url.pathname !== '/api' && !url.pathname.startsWith('/api/')) return false
+    let environmentId: string
+    try {
+      environmentId = resolveEnvironment(req)
+    } catch (e) {
+      sendError(res, e, req)
+      return true
+    }
+    return runInEnvironment(environmentId, () => handleIn(req, res, url, environmentId))
+  }
+
+  async function handleIn(req: IncomingMessage, res: ServerResponse, url: URL, environmentId: string): Promise<boolean> {
     /** a streamBody route answered without reading its body: close instead of draining the upload */
     let unreadStream = false
     const closeIfUnread = () => {
@@ -324,6 +343,7 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
         params,
         query: url.searchParams,
         body: undefined,
+        environmentId,
         services,
         setSessionCookie(token, expires) {
           const prev = res.getHeader('Set-Cookie')

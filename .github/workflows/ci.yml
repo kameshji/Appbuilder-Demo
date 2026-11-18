@@ -14,6 +14,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
+      # system store and default connection
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci-root-only-not-a-secret
+          POSTGRES_DB: appbuilder_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d appbuilder_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+      # the MySQL connector (external databases) is tested against MariaDB
       mariadb:
         image: mariadb:10.11
         env:
@@ -27,7 +41,7 @@ jobs:
           --health-timeout=5s
           --health-retries=30
     env:
-      # throwaway credentials for the service container above; it only lives for this job
+      # throwaway credentials for the service containers above; they only live for this job
       CI_DB_USER: abci
       CI_DB_PASSWORD: ci-user-only-not-a-secret
     steps:
@@ -38,10 +52,17 @@ jobs:
           node-version: '22.18'   # package.json engines: >=22.18 (native TypeScript type stripping)
           cache: npm
 
-      # The integration tests create a fresh database per run (appbuilder_test_s1_<hex>, appbuilder_test_s2_<hex>)
-      # and drop it afterwards, so the CI user needs all privileges on every database named appbuilder_test*.
-      - name: Create the CI database user
+      # PostgreSQL: each integration suite creates its own database (appbuilder_test_<suite>_<hex>) and drops it, so the CI
+      # role needs CREATEDB (and nothing else: no superuser). It connects to appbuilder_test as the maintenance database.
+      - name: Create the CI database roles
+        env:
+          PGPASSWORD: ci-root-only-not-a-secret
         run: |
+          psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U postgres -d appbuilder_test <<SQL
+          CREATE ROLE ${CI_DB_USER} LOGIN CREATEDB PASSWORD '${CI_DB_PASSWORD}';
+          GRANT ALL ON DATABASE appbuilder_test TO ${CI_DB_USER};
+          SQL
+          # MariaDB: the MySQL connector tests create prefixed tables inside appbuilder_test
           mysql --protocol=TCP -h127.0.0.1 -P3306 -uroot -p"ci-root-only-not-a-secret" <<SQL
           CREATE USER '${CI_DB_USER}'@'%' IDENTIFIED BY '${CI_DB_PASSWORD}';
           GRANT ALL PRIVILEGES ON \`appbuilder\_test%\`.* TO '${CI_DB_USER}'@'%';
@@ -54,9 +75,10 @@ jobs:
 
       - run: npm run typecheck
 
-      - name: Tests (unit, docs staleness and MariaDB integration)
+      - name: Tests (unit, docs staleness, PostgreSQL integration, MySQL connector on MariaDB)
         env:
-          APPBUILDER_TEST_DB: mysql://abci:ci-user-only-not-a-secret@127.0.0.1:3306/appbuilder_test
+          APPBUILDER_TEST_DB: postgres://abci:ci-user-only-not-a-secret@127.0.0.1:5432/appbuilder_test
+          APPBUILDER_TEST_MYSQL: mysql://abci:ci-user-only-not-a-secret@127.0.0.1:3306/appbuilder_test
         run: npm test
 
       - run: npm run build

@@ -1,21 +1,27 @@
 /**
- * MetaStore over the ab_* system tables (docs/internal/specs/SPEC3.md section 3). Portable SQL: MySQL 5.7+, 8.x, MariaDB 10.4+
- * (no JSON type, no CHECK, VALUES() in ON DUPLICATE KEY, utf8mb4_unicode_ci, DATETIME(3) in UTC, InnoDB).
+ * MetaStore over the system tables in PostgreSQL (docs/dev/schema.md).
+ *
+ * Layout: schema `ab` holds the install-wide objects (settings, users, sessions, environments, licence); each environment
+ * is one schema `env_<id>` holding its metadata tables (ab_roles, ab_tables, ab_apps, ab_audit, ...) and the data tables of
+ * the default connection. Every statement names its tables fully qualified ("schema"."table"); the environment schema is
+ * resolved at call time from env-context.ts, so one MetaStore serves every environment and nothing depends on search_path.
+ * Metadata documents are jsonb, timestamps timestamptz, flags boolean, ids text.
  */
 import type {
-  AttachmentRecord, ConnectionRecord, MetaStore, MigrationSummary, SecretBox, SqlDb, UserRecord,
+  AttachmentRecord, ConnectionRecord, EnvironmentRecord, EnvironmentRef, MetaStore, MigrationSummary, SecretBox, SqlDb, UserRecord,
 } from './contracts.ts'
 import type {
   AccessScope, AppMeta, ColumnAccess, ConnectionRef, DataFileDef, RoleDef, RowCondition, SolutionDef, TableDef, TablePrivilege,
 } from '../../src/platform/contracts.ts'
 import type { AppDef } from '../../src/contracts.ts'
 import { parseJson, toDate, toIso } from './util.ts'
+import { DEFAULT_ENVIRONMENT_ID, INSTALL_SCHEMA, currentEnvironment, environmentSchema } from './env-context.ts'
 
 /**
- * 1: initial schema; 2: ab_users.email normalised to trimmed lowercase; 3: ab_users.must_change_password (an administrator
- * set the password, the user must change it at the next sign-in)
+ * 1-3: the MySQL system store (no longer supported, never upgraded: there is no migration path from MySQL).
+ * 4: PostgreSQL layout, schema `ab` plus one schema per environment.
  */
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 /** the database was upgraded by a newer server: this one must not touch it (downgrade guard) */
 export class SchemaTooNewError extends Error {
@@ -28,247 +34,243 @@ export class SchemaTooNewError extends Error {
   }
 }
 
-/** MySQL 5.7 has no ADD COLUMN IF NOT EXISTS: look the column up in information_schema first */
-async function hasColumn(db: SqlDb, table: string, column: string): Promise<boolean> {
-  const rows = await db.query<Record<string, unknown>>(
-    'SELECT COUNT(*) AS n FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
-    [table, column],
-  )
-  return Number(rows[0]?.n) > 0
-}
-
-const SYSTEM_COLUMN_LIST = ['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner']
-
-/**
- * v3: provenance of existing tables. A table the audit log records as linked (action table.link) stays unmanaged
- * (Appbuilder never drops it or its columns); if its definition lacks system columns it becomes read-only with
- * missingSystem (before, such a table was writable but every query failed). Every other table (created by Appbuilder,
- * no file origin) is marked managed. A linked table whose audit entry is gone is treated as created by Appbuilder.
- */
-export async function markTableProvenance(db: SqlDb): Promise<{ managed: number; linked: number; readOnly: number }> {
-  const linked = new Set(
-    (await db.query<{ table_id: string }>("SELECT DISTINCT table_id FROM ab_audit WHERE action = 'table.link' AND table_id IS NOT NULL")).map((r) => String(r.table_id)),
-  )
-  const out = { managed: 0, linked: 0, readOnly: 0 }
-  for (const r of await db.query<{ id: string; def: string }>('SELECT id, def FROM ab_tables')) {
-    const def = parseJson<TableDef | null>(r.def, null)
-    if (!def || typeof def !== 'object' || def.managed !== undefined || def.origin?.kind === 'file') continue
-    if (linked.has(String(r.id))) {
-      out.linked++
-      const names = new Set((def.columns ?? []).map((c) => c.name))
-      const missing = SYSTEM_COLUMN_LIST.filter((n) => !names.has(n))
-      if (!missing.length) continue
-      def.missingSystem = missing
-      def.readOnly = true
-      out.readOnly++
-    } else {
-      def.managed = true
-      out.managed++
-    }
-    await db.exec('UPDATE ab_tables SET def = ? WHERE id = ?', [JSON.stringify(def), r.id])
-  }
-  return out
-}
-
-/** v3: ab_users.must_change_password TINYINT NOT NULL DEFAULT 0 (existing users: 0) */
-export async function addMustChangePassword(db: SqlDb): Promise<boolean> {
-  if (await hasColumn(db, 'ab_users', 'must_change_password')) return false
-  await db.exec('ALTER TABLE ab_users ADD COLUMN must_change_password TINYINT NOT NULL DEFAULT 0')
-  return true
-}
+/** the database cannot hold Appbuilder's data (e.g. not UTF-8): nothing was created */
+export class UnsuitableDatabaseError extends Error {}
 
 /** RoleDef as stored: the optional maker flag (ab_roles.is_maker) travels with the role. */
 export type StoredRole = RoleDef & { isMaker?: boolean }
 
-/**
- * v2: every ab_users.email is stored trimmed and lowercase. A CHECK constraint is not portable (MySQL 5.7 parses and
- * ignores CHECK), so the rule is enforced by the MetaStore write path (users.insert / users.update lowercase) and this
- * migration fixes older rows. ux_ab_users_email (utf8mb4_unicode_ci, case-insensitive) already prevents two rows that
- * differ only in case; a row whose trimmed form collides with another row is left as it is (and logged by the caller).
- */
-export async function normaliseUserEmails(db: SqlDb): Promise<{ changed: number; skipped: string[] }> {
-  const rows = await db.query<{ id: string; email: string }>('SELECT id, email FROM ab_users')
-  let changed = 0
-  const skipped: string[] = []
-  for (const r of rows) {
-    const email = String(r.email)
-    const norm = email.trim().toLowerCase()
-    if (norm === email) continue
-    try {
-      await db.exec('UPDATE ab_users SET email = ? WHERE id = ?', [norm, r.id])
-      changed++
-    } catch (e) {
-      if ((e as { code?: string }).code !== 'ER_DUP_ENTRY') throw e
-      skipped.push(String(r.id))
-    }
-  }
-  return { changed, skipped }
+/* ------------------------------------------------------------------ DDL */
+
+const q = (id: string): string => `"${id}"`
+const A = (t: string): string => `${q(INSTALL_SCHEMA)}.${q(t)}`
+
+/** install-wide objects in schema ab */
+export const INSTALL_DDL: string[] = [
+  `CREATE SCHEMA IF NOT EXISTS ${q(INSTALL_SCHEMA)}`,
+  `CREATE TABLE IF NOT EXISTS ${A('settings')} (
+    k text PRIMARY KEY,
+    v text NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS ${A('users')} (
+    id text PRIMARY KEY,
+    name text NOT NULL,
+    email text NOT NULL,
+    password_hash text NULL,
+    status text NOT NULL DEFAULT 'active',
+    must_change_password boolean NOT NULL DEFAULT false,
+    created_on timestamptz NOT NULL,
+    last_login timestamptz NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS ab_ux_users_email ON ${A('users')} (email)`,
+  `CREATE TABLE IF NOT EXISTS ${A('sessions')} (
+    id_hash text PRIMARY KEY,
+    user_id text NOT NULL,
+    created_on timestamptz NOT NULL,
+    expires_on timestamptz NOT NULL,
+    last_seen timestamptz NOT NULL,
+    user_agent text NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS ab_ix_sessions_user ON ${A('sessions')} (user_id)`,
+  `CREATE INDEX IF NOT EXISTS ab_ix_sessions_expires ON ${A('sessions')} (expires_on)`,
+  `CREATE TABLE IF NOT EXISTS ${A('environments')} (
+    id text PRIMARY KEY,
+    name text NOT NULL,
+    schema_name text NOT NULL UNIQUE,
+    type text NOT NULL DEFAULT 'production',
+    built_in boolean NOT NULL DEFAULT false,
+    created_on timestamptz NOT NULL
+  )`,
+  // placeholder for the signed licence file (docs/plan/master-plan.md section 9): one row at most
+  `CREATE TABLE IF NOT EXISTS ${A('licence')} (
+    id smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    document jsonb NULL,
+    installed_on timestamptz NULL
+  )`,
+]
+
+/** the metadata tables of one environment schema */
+export function environmentDdl(schema: string): string[] {
+  const E = (t: string): string => `${q(schema)}.${q(t)}`
+  return [
+    `CREATE SCHEMA IF NOT EXISTS ${q(schema)}`,
+    `CREATE TABLE IF NOT EXISTS ${E('ab_roles')} (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      description text NULL,
+      is_admin boolean NOT NULL DEFAULT false,
+      is_maker boolean NOT NULL DEFAULT false,
+      apps jsonb NULL
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ab_ux_roles_name ON ${E('ab_roles')} (lower(name))`,
+    `CREATE TABLE IF NOT EXISTS ${E('ab_user_roles')} (
+      user_id text NOT NULL,
+      role_id text NOT NULL,
+      PRIMARY KEY (user_id, role_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS ab_ix_user_roles_role ON ${E('ab_user_roles')} (role_id)`,
+    `CREATE TABLE IF NOT EXISTS ${E('ab_role_tables')} (
+      role_id text NOT NULL,
+      table_id text NOT NULL,
+      can_create boolean NOT NULL DEFAULT false,
+      read_scope text NOT NULL DEFAULT 'none',
+      update_scope text NOT NULL DEFAULT 'none',
+      delete_scope text NOT NULL DEFAULT 'none',
+      columns jsonb NULL,
+      row_filter jsonb NULL,
+      PRIMARY KEY (role_id, table_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS ab_ix_role_tables_table ON ${E('ab_role_tables')} (table_id)`,
+    `CREATE TABLE IF NOT EXISTS ${E('ab_tables')} (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      connection_id text NULL,
+      source text NULL,
+      def jsonb NOT NULL,
+      created_on timestamptz NOT NULL,
+      modified_on timestamptz NOT NULL
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ab_ux_tables_name ON ${E('ab_tables')} (lower(name))`,
+    `CREATE TABLE IF NOT EXISTS ${E('ab_apps')} (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      description text NULL,
+      width integer NOT NULL DEFAULT 1920,
+      height integer NOT NULL DEFAULT 1080,
+      definition jsonb NOT NULL,
+      created_on timestamptz NOT NULL,
+      modified_on timestamptz NOT NULL,
+      modified_by text NULL
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ab_ux_apps_name ON ${E('ab_apps')} (lower(name))`,
+    `CREATE TABLE IF NOT EXISTS ${E('ab_connections')} (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      connector text NOT NULL,
+      settings jsonb NULL,
+      secret_sealed text NULL,
+      status text NOT NULL DEFAULT 'not-configured',
+      last_error text NULL,
+      is_default boolean NOT NULL DEFAULT false,
+      scope text NOT NULL DEFAULT 'server',
+      created_on timestamptz NOT NULL,
+      modified_on timestamptz NOT NULL
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ab_ux_connections_name ON ${E('ab_connections')} (lower(name))`,
+    `CREATE TABLE IF NOT EXISTS ${E('ab_solutions')} (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      display_name text NOT NULL,
+      publisher text NULL,
+      version text NULL,
+      description text NULL,
+      components jsonb NULL,
+      created_on timestamptz NOT NULL,
+      modified_on timestamptz NOT NULL
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ab_ux_solutions_name ON ${E('ab_solutions')} (lower(name))`,
+    `CREATE TABLE IF NOT EXISTS ${E('ab_data_files')} (
+      id text PRIMARY KEY,
+      connection_id text NOT NULL,
+      file_name text NOT NULL,
+      original_name text NULL,
+      kind text NOT NULL,
+      size_bytes bigint NOT NULL DEFAULT 0,
+      checksum text NULL,
+      storage_key text NULL,
+      imported_on timestamptz NOT NULL,
+      table_ids jsonb NULL,
+      modified_since_import boolean NOT NULL DEFAULT false
+    )`,
+    `CREATE TABLE IF NOT EXISTS ${E('ab_attachments')} (
+      id text PRIMARY KEY,
+      table_id text NOT NULL,
+      col text NOT NULL,
+      row_id text NOT NULL,
+      file_name text NOT NULL,
+      mime text NOT NULL,
+      size_bytes bigint NOT NULL,
+      sha256 text NOT NULL,
+      storage_key text NOT NULL,
+      created_by text NULL,
+      created_on timestamptz NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS ab_ix_attachments_row ON ${E('ab_attachments')} (table_id, row_id)`,
+    `CREATE INDEX IF NOT EXISTS ab_ix_attachments_created ON ${E('ab_attachments')} (created_on)`,
+    `CREATE TABLE IF NOT EXISTS ${E('ab_counters')} (
+      k text PRIMARY KEY,
+      v bigint NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS ${E('ab_audit')} (
+      id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      at timestamptz NOT NULL,
+      user_id text NULL,
+      action text NOT NULL,
+      table_id text NULL,
+      row_id text NULL,
+      details jsonb NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS ab_ix_audit_at ON ${E('ab_audit')} (at)`,
+    `CREATE INDEX IF NOT EXISTS ab_ix_audit_action ON ${E('ab_audit')} (action)`,
+  ]
 }
 
-const TAIL = 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
-
-export const DDL: string[] = [
-  `CREATE TABLE IF NOT EXISTS ab_meta (
-    k VARCHAR(64) NOT NULL PRIMARY KEY,
-    v TEXT NULL
-  ) ${TAIL}`,
-  `CREATE TABLE IF NOT EXISTS ab_users (
-    id VARCHAR(64) NOT NULL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    email VARCHAR(191) NOT NULL,
-    password_hash VARCHAR(255) NULL,
-    status VARCHAR(16) NOT NULL DEFAULT 'active',
-    must_change_password TINYINT NOT NULL DEFAULT 0,
-    created_on DATETIME(3) NOT NULL,
-    last_login DATETIME(3) NULL,
-    UNIQUE KEY ux_ab_users_email (email)
-  ) ${TAIL}`,
-  `CREATE TABLE IF NOT EXISTS ab_sessions (
-    id_hash CHAR(64) NOT NULL PRIMARY KEY,
-    user_id VARCHAR(64) NOT NULL,
-    created_on DATETIME(3) NOT NULL,
-    expires_on DATETIME(3) NOT NULL,
-    last_seen DATETIME(3) NOT NULL,
-    user_agent VARCHAR(255) NULL,
-    KEY ix_ab_sessions_user (user_id),
-    KEY ix_ab_sessions_expires (expires_on)
-  ) ${TAIL}`,
-  `CREATE TABLE IF NOT EXISTS ab_roles (
-    id VARCHAR(64) NOT NULL PRIMARY KEY,
-    name VARCHAR(191) NOT NULL,
-    description TEXT NULL,
-    is_admin TINYINT NOT NULL DEFAULT 0,
-    is_maker TINYINT NOT NULL DEFAULT 0,
-    apps LONGTEXT NULL,
-    UNIQUE KEY ux_ab_roles_name (name)
-  ) ${TAIL}`,
-  `CREATE TABLE IF NOT EXISTS ab_user_roles (
-    user_id VARCHAR(64) NOT NULL,
-    role_id VARCHAR(64) NOT NULL,
-    PRIMARY KEY (user_id, role_id),
-    KEY ix_ab_user_roles_role (role_id)
-  ) ${TAIL}`,
-  `CREATE TABLE IF NOT EXISTS ab_role_tables (
-    role_id VARCHAR(64) NOT NULL,
-    table_id VARCHAR(64) NOT NULL,
-    can_create TINYINT NOT NULL DEFAULT 0,
-    read_scope VARCHAR(8) NOT NULL DEFAULT 'none',
-    update_scope VARCHAR(8) NOT NULL DEFAULT 'none',
-    delete_scope VARCHAR(8) NOT NULL DEFAULT 'none',
-    columns LONGTEXT NULL,
-    row_filter LONGTEXT NULL,
-    PRIMARY KEY (role_id, table_id),
-    KEY ix_ab_role_tables_table (table_id)
-  ) ${TAIL}`,
-  `CREATE TABLE IF NOT EXISTS ab_tables (
-    id VARCHAR(64) NOT NULL PRIMARY KEY,
-    name VARCHAR(191) NOT NULL,
-    connection_id VARCHAR(64) NULL,
-    source VARCHAR(255) NULL,
-    def LONGTEXT NOT NULL,
-    created_on DATETIME(3) NOT NULL,
-    modified_on DATETIME(3) NOT NULL,
-    UNIQUE KEY ux_ab_tables_name (name)
-  ) ${TAIL}`,
-  `CREATE TABLE IF NOT EXISTS ab_apps (
-    id VARCHAR(64) NOT NULL PRIMARY KEY,
-    name VARCHAR(191) NOT NULL,
-    description TEXT NULL,
-    width INT NOT NULL DEFAULT 1920,
-    height INT NOT NULL DEFAULT 1080,
-    definition LONGTEXT NOT NULL,
-    created_on DATETIME(3) NOT NULL,
-    modified_on DATETIME(3) NOT NULL,
-    modified_by VARCHAR(64) NULL,
-    UNIQUE KEY ux_ab_apps_name (name)
-  ) ${TAIL}`,
-  `CREATE TABLE IF NOT EXISTS ab_connections (
-    id VARCHAR(64) NOT NULL PRIMARY KEY,
-    name VARCHAR(191) NOT NULL,
-    connector VARCHAR(32) NOT NULL,
-    settings LONGTEXT NULL,
-    secret_sealed TEXT NULL,
-    status VARCHAR(16) NOT NULL DEFAULT 'not-configured',
-    last_error TEXT NULL,
-    is_default TINYINT NOT NULL DEFAULT 0,
-    scope VARCHAR(8) NOT NULL DEFAULT 'server',
-    created_on DATETIME(3) NOT NULL,
-    modified_on DATETIME(3) NOT NULL,
-    UNIQUE KEY ux_ab_connections_name (name)
-  ) ${TAIL}`,
-  `CREATE TABLE IF NOT EXISTS ab_solutions (
-    id VARCHAR(64) NOT NULL PRIMARY KEY,
-    name VARCHAR(191) NOT NULL,
-    display_name VARCHAR(255) NOT NULL,
-    publisher VARCHAR(255) NULL,
-    version VARCHAR(64) NULL,
-    description TEXT NULL,
-    components LONGTEXT NULL,
-    created_on DATETIME(3) NOT NULL,
-    modified_on DATETIME(3) NOT NULL,
-    UNIQUE KEY ux_ab_solutions_name (name)
-  ) ${TAIL}`,
-  `CREATE TABLE IF NOT EXISTS ab_data_files (
-    id VARCHAR(64) NOT NULL PRIMARY KEY,
-    connection_id VARCHAR(64) NOT NULL,
-    file_name VARCHAR(255) NOT NULL,
-    original_name VARCHAR(255) NULL,
-    kind VARCHAR(8) NOT NULL,
-    size_bytes BIGINT NOT NULL DEFAULT 0,
-    checksum VARCHAR(128) NULL,
-    storage_key VARCHAR(255) NULL,
-    imported_on DATETIME(3) NOT NULL,
-    table_ids LONGTEXT NULL,
-    modified_since_import TINYINT NOT NULL DEFAULT 0
-  ) ${TAIL}`,
-  `CREATE TABLE IF NOT EXISTS ab_attachments (
-    id VARCHAR(64) NOT NULL PRIMARY KEY,
-    table_id VARCHAR(64) NOT NULL,
-    col VARCHAR(64) NOT NULL,
-    row_id CHAR(36) NOT NULL,
-    file_name VARCHAR(255) NOT NULL,
-    mime VARCHAR(127) NOT NULL,
-    size_bytes BIGINT NOT NULL,
-    sha256 CHAR(64) NOT NULL,
-    storage_key VARCHAR(128) NOT NULL,
-    created_by VARCHAR(64) NULL,
-    created_on DATETIME(3) NOT NULL,
-    KEY ix_ab_attachments_row (table_id, row_id)
-  ) ${TAIL}`,
-  `CREATE TABLE IF NOT EXISTS ab_counters (
-    k VARCHAR(191) NOT NULL PRIMARY KEY,
-    v BIGINT NOT NULL
-  ) ${TAIL}`,
-  `CREATE TABLE IF NOT EXISTS ab_audit (
-    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    at DATETIME(3) NOT NULL,
-    user_id VARCHAR(64) NULL,
-    action VARCHAR(64) NOT NULL,
-    table_id VARCHAR(64) NULL,
-    row_id VARCHAR(64) NULL,
-    details LONGTEXT NULL,
-    KEY ix_ab_audit_at (at)
-  ) ${TAIL}`,
+/** names of the metadata tables inside an environment schema (never reachable through a connector: prefix ab_) */
+export const ENVIRONMENT_TABLES = [
+  'ab_roles', 'ab_user_roles', 'ab_role_tables', 'ab_tables', 'ab_apps', 'ab_connections', 'ab_solutions', 'ab_data_files',
+  'ab_attachments', 'ab_counters', 'ab_audit',
 ]
+/** names of the tables in schema ab */
+export const INSTALL_TABLES = ['settings', 'users', 'sessions', 'environments', 'licence']
+
+/**
+ * Creates (or completes) the metadata tables of an environment schema and registers it. Idempotent; runs on the given
+ * SqlDb (call it inside a transaction). Package E calls it to create a new environment.
+ */
+export async function migrateEnvironment(db: SqlDb, env: { id: string; name: string; type?: EnvironmentRecord['type']; builtIn?: boolean }): Promise<string> {
+  const schema = environmentSchema(env.id)
+  for (const stmt of environmentDdl(schema)) await db.exec(stmt)
+  await db.exec(
+    `INSERT INTO ${A('environments')} (id, name, schema_name, type, built_in, created_on) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
+    [env.id, env.name, schema, env.type ?? 'production', !!env.builtIn, new Date()],
+  )
+  return schema
+}
+
+/* ------------------------------------------------------------------ helpers */
 
 type Row = Record<string, unknown>
 
 const str = (v: unknown): string => (v === null || v === undefined ? '' : String(v))
 const optStr = (v: unknown): string | undefined => (v === null || v === undefined || v === '' ? undefined : String(v))
-const bool = (v: unknown): boolean => v === 1 || v === true || v === '1' || (typeof v === 'object' && v !== null && Buffer.isBuffer(v) && v[0] === 1)
+const bool = (v: unknown): boolean => v === true || v === 1 || v === '1' || v === 't' || v === 'true'
 const scope = (v: unknown): AccessScope => (v === 'own' || v === 'all' ? v : 'none')
+/** a jsonb parameter: always JSON text (pg would send a JS array as a PostgreSQL array) */
 const json = (v: unknown): string => JSON.stringify(v ?? null)
+/** a jsonb column value (pg parses it already; text from an older driver path is parsed here) */
+function doc<T>(v: unknown, fallback: T): T {
+  if (v === null || v === undefined) return fallback
+  if (typeof v === 'string') return parseJson<T>(v, fallback)
+  return v as T
+}
+/** $1, $2, ... starting after `offset` */
+const ph = (n: number, offset = 0): string => Array.from({ length: n }, (_, i) => `$${i + offset + 1}`).join(', ')
 
-function placeholders(n: number): string {
-  return new Array(n).fill('?').join(', ')
+export interface MetaStoreOptions {
+  /** the environment a call works in (default: currentEnvironment() of env-context.ts) */
+  environment?: () => EnvironmentRef
 }
 
-export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
+export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOptions = {}): MetaStore {
+  const envOf = opts.environment ?? currentEnvironment
+  /** qualified table of the current environment */
+  const E = (t: string): string => `${q(envOf().schema)}.${q(t)}`
+
   /* ---------------------------------------------------------------- users */
   async function userRoles(ids: string[]): Promise<Map<string, string[]>> {
     const out = new Map<string, string[]>()
     if (!ids.length) return out
-    const rows = await db.query<Row>(`SELECT user_id, role_id FROM ab_user_roles WHERE user_id IN (${placeholders(ids.length)}) ORDER BY role_id`, ids)
+    const rows = await db.query<Row>(`SELECT user_id, role_id FROM ${E('ab_user_roles')} WHERE user_id IN (${ph(ids.length)}) ORDER BY role_id`, ids)
     for (const r of rows) {
       const list = out.get(str(r.user_id)) ?? []
       list.push(str(r.role_id))
@@ -293,22 +295,25 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
     }
   }
   async function usersWhere(where: string, params: unknown[]): Promise<UserRecord[]> {
-    const rows = await db.query<Row>(`SELECT id, name, email, password_hash, status, must_change_password, created_on, last_login FROM ab_users ${where}`, params)
+    const rows = await db.query<Row>(`SELECT id, name, email, password_hash, status, must_change_password, created_on, last_login FROM ${A('users')} ${where}`, params)
     const roles = await userRoles(rows.map((r) => str(r.id)))
     return rows.map((r) => toUser(r, roles))
   }
   async function setUserRoles(tx: SqlDb, userId: string, roleIds: string[]): Promise<void> {
-    await tx.exec('DELETE FROM ab_user_roles WHERE user_id = ?', [userId])
-    for (const rid of [...new Set(roleIds)]) await tx.exec('INSERT INTO ab_user_roles (user_id, role_id) VALUES (?, ?)', [userId, rid])
+    await tx.exec(`DELETE FROM ${E('ab_user_roles')} WHERE user_id = $1`, [userId])
+    for (const rid of [...new Set(roleIds)]) await tx.exec(`INSERT INTO ${E('ab_user_roles')} (user_id, role_id) VALUES ($1, $2)`, [userId, rid])
+  }
+  async function environmentSchemas(d: SqlDb): Promise<string[]> {
+    return (await d.query<Row>(`SELECT schema_name FROM ${A('environments')} ORDER BY id`)).map((r) => str(r.schema_name))
   }
 
   /* ---------------------------------------------------------------- roles */
   async function rolesWhere(where: string, params: unknown[]): Promise<StoredRole[]> {
-    const rows = await db.query<Row>(`SELECT id, name, description, is_admin, is_maker, apps FROM ab_roles ${where} ORDER BY name`, params)
+    const rows = await db.query<Row>(`SELECT id, name, description, is_admin, is_maker, apps FROM ${E('ab_roles')} ${where} ORDER BY lower(name) COLLATE "C", id`, params)
     if (!rows.length) return []
     const ids = rows.map((r) => str(r.id))
     const privs = await db.query<Row>(
-      `SELECT role_id, table_id, can_create, read_scope, update_scope, delete_scope, columns, row_filter FROM ab_role_tables WHERE role_id IN (${placeholders(ids.length)}) ORDER BY table_id`,
+      `SELECT role_id, table_id, can_create, read_scope, update_scope, delete_scope, columns, row_filter FROM ${E('ab_role_tables')} WHERE role_id IN (${ph(ids.length)}) ORDER BY table_id`,
       ids,
     )
     const byRole = new Map<string, TablePrivilege[]>()
@@ -321,15 +326,15 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
         update: scope(p.update_scope),
         delete: scope(p.delete_scope),
       }
-      const columns = parseJson<Record<string, ColumnAccess> | null>(p.columns, null)
-      if (columns && typeof columns === 'object' && Object.keys(columns).length) priv.columns = columns
-      const rowFilter = parseJson<RowCondition[] | null>(p.row_filter, null)
+      const columns = doc<Record<string, ColumnAccess> | null>(p.columns, null)
+      if (columns && typeof columns === 'object' && !Array.isArray(columns) && Object.keys(columns).length) priv.columns = columns
+      const rowFilter = doc<RowCondition[] | null>(p.row_filter, null)
       if (Array.isArray(rowFilter) && rowFilter.length) priv.rowFilter = rowFilter
       list.push(priv)
       byRole.set(str(p.role_id), list)
     }
     return rows.map((r) => {
-      const apps = parseJson<string[] | 'all'>(r.apps, 'all')
+      const apps = doc<string[] | 'all'>(r.apps, 'all')
       const role: StoredRole = {
         id: str(r.id),
         name: str(r.name),
@@ -346,7 +351,7 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
 
   /* ---------------------------------------------------------------- tables */
   function toTable(r: Row): TableDef {
-    const def = parseJson<TableDef>(r.def, {} as TableDef)
+    const def = doc<TableDef>(r.def, {} as TableDef)
     def.id = str(r.id)
     def.name = str(r.name)
     if (r.connection_id) def.connectionId = str(r.connection_id)
@@ -372,7 +377,7 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
       name: str(r.name),
       connector: str(r.connector) as ConnectionRef['connector'],
       status,
-      settings: parseJson<Record<string, string>>(r.settings, {}),
+      settings: doc<Record<string, string>>(r.settings, {}),
       hasSecret: !!sealed,
       isDefault: bool(r.is_default),
       scope: r.scope === 'device' ? 'device' : 'server',
@@ -394,7 +399,7 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
       sizeBytes: Number(r.size_bytes) || 0,
       checksum: str(r.checksum),
       importedOn: toIso(r.imported_on),
-      tableIds: parseJson<string[]>(r.table_ids, []),
+      tableIds: doc<string[]>(r.table_ids, []),
       modifiedSinceImport: bool(r.modified_since_import),
       storageKey: str(r.storage_key),
       originalName: str(r.original_name),
@@ -417,57 +422,79 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
     }
   }
 
+  function toEnvironment(r: Row): EnvironmentRecord {
+    const type = r.type === 'sandbox' || r.type === 'developer' ? r.type : 'production'
+    return { id: str(r.id), name: str(r.name), schema: str(r.schema_name), type, builtIn: bool(r.built_in), createdOn: toIso(r.created_on) }
+  }
+
+  async function storedVersion(): Promise<number> {
+    const exists = await db.query<Row>(`SELECT to_regclass('ab.settings') IS NOT NULL AS ok`)
+    if (!bool(exists[0]?.ok)) return 0
+    const rows = await db.query<Row>(`SELECT v FROM ${A('settings')} WHERE k = 'schemaVersion'`)
+    return rows.length ? Number(rows[0].v) || 0 : 0
+  }
+
   const store: MetaStore = {
     db,
 
+    tableName(name) {
+      return INSTALL_TABLES.includes(name) ? A(name) : E(name)
+    },
+
     async migrate(): Promise<MigrationSummary> {
-      // downgrade guard first: a newer server's schema is never touched (not even CREATE TABLE IF NOT EXISTS)
-      let current = 0
-      try {
-        const rows = await db.query<Row>("SELECT v FROM ab_meta WHERE k = 'schemaVersion'")
-        current = rows.length ? Number(rows[0].v) || 0 : 0
-      } catch (e) {
-        if ((e as { code?: string }).code !== 'ER_NO_SUCH_TABLE') throw e
-      }
+      // downgrade guard first: a newer server's schema is never touched (not even CREATE ... IF NOT EXISTS)
+      const current = await storedVersion()
       if (current > SCHEMA_VERSION) throw new SchemaTooNewError(current, SCHEMA_VERSION)
-      for (const stmt of DDL) await db.exec(stmt)
-      const steps: string[] = []
-      if (current === 0) steps.push(`created the system tables (schema version ${SCHEMA_VERSION})`)
-      else if (current < SCHEMA_VERSION) {
-        // upgrades, ordered by version
-        if (current < 2) {
-          const r = await normaliseUserEmails(db)
-          steps.push(`v2: lowercased ${r.changed} user email(s)${r.skipped.length ? `, ${r.skipped.length} left as they were (duplicates)` : ''}`)
-        }
-        if (current < 3) {
-          steps.push(`v3: ${(await addMustChangePassword(db)) ? 'added' : 'kept'} ab_users.must_change_password`)
-          const t = await markTableProvenance(db)
-          steps.push(`v3: tables marked created-by-Appbuilder: ${t.managed}, linked: ${t.linked} (${t.readOnly} made read-only: system columns missing)`)
-        }
-      } else await addMustChangePassword(db) // same version, defensive (a column dropped by hand)
-      if (current < SCHEMA_VERSION) {
-        await db.exec('INSERT INTO ab_meta (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)', ['schemaVersion', String(SCHEMA_VERSION)])
+      if (current > 0 && current < 4) throw new UnsuitableDatabaseError(`This database holds an Appbuilder schema of version ${current}, which is not supported on PostgreSQL. Use an empty database.`)
+      const enc = await db.query<Row>('SHOW server_encoding')
+      if (str(enc[0]?.server_encoding).toUpperCase() !== 'UTF8') {
+        throw new UnsuitableDatabaseError(`The database uses the ${str(enc[0]?.server_encoding)} encoding; Appbuilder needs UTF8. Create the database with ENCODING 'UTF8'.`)
       }
+      const steps: string[] = []
+      await db.tx(async (tx) => {
+        // one migration at a time per database (two servers starting together)
+        await tx.query("SELECT pg_advisory_xact_lock(hashtext('appbuilder.migrate'))")
+        for (const stmt of INSTALL_DDL) await tx.exec(stmt)
+        await migrateEnvironment(tx, { id: DEFAULT_ENVIRONMENT_ID, name: 'Default', type: 'production', builtIn: true })
+        for (const schema of await environmentSchemas(tx)) {
+          if (schema === environmentSchema(DEFAULT_ENVIRONMENT_ID)) continue
+          for (const stmt of environmentDdl(schema)) await tx.exec(stmt)
+        }
+        if (current < SCHEMA_VERSION) {
+          await tx.exec(`INSERT INTO ${A('settings')} (k, v) VALUES ('schemaVersion', $1) ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v`, [String(SCHEMA_VERSION)])
+        }
+      })
+      if (current === 0) steps.push(`created schema ab and environment schema ${environmentSchema(DEFAULT_ENVIRONMENT_ID)} (schema version ${SCHEMA_VERSION})`)
       return { from: current, to: SCHEMA_VERSION, steps }
     },
 
-    users: {
-      list: () => usersWhere('ORDER BY name', []),
+    environments: {
+      async list() {
+        return (await db.query<Row>(`SELECT * FROM ${A('environments')} ORDER BY built_in DESC, lower(name) COLLATE "C", id`)).map(toEnvironment)
+      },
       async get(id) {
-        return (await usersWhere('WHERE id = ?', [id]))[0] ?? null
+        const rows = await db.query<Row>(`SELECT * FROM ${A('environments')} WHERE id = $1`, [id])
+        return rows.length ? toEnvironment(rows[0]) : null
+      },
+    },
+
+    users: {
+      list: () => usersWhere('ORDER BY lower(name) COLLATE "C", id', []),
+      async get(id) {
+        return (await usersWhere('WHERE id = $1', [id]))[0] ?? null
       },
       async byEmail(email) {
-        return (await usersWhere('WHERE email = ?', [email.trim().toLowerCase()]))[0] ?? null
+        return (await usersWhere('WHERE email = $1', [email.trim().toLowerCase()]))[0] ?? null
       },
       async count() {
-        const rows = await db.query<Row>('SELECT COUNT(*) AS n FROM ab_users')
+        const rows = await db.query<Row>(`SELECT count(*)::int AS n FROM ${A('users')}`)
         return Number(rows[0]?.n) || 0
       },
       async insert(u) {
         await db.tx(async (tx) => {
           await tx.exec(
-            'INSERT INTO ab_users (id, name, email, password_hash, status, must_change_password, created_on, last_login) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [u.id, u.name, u.email.trim().toLowerCase(), u.passwordHash ?? null, u.status ?? 'active', u.mustChangePassword ? 1 : 0, new Date(), toDate(u.lastLogin)],
+            `INSERT INTO ${A('users')} (id, name, email, password_hash, status, must_change_password, created_on, last_login) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [u.id, u.name, u.email.trim().toLowerCase(), u.passwordHash ?? null, u.status ?? 'active', !!u.mustChangePassword, new Date(), toDate(u.lastLogin)],
           )
           await setUserRoles(tx, u.id, u.roleIds ?? [])
         })
@@ -476,21 +503,23 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
         await db.tx(async (tx) => {
           const sets: string[] = []
           const params: unknown[] = []
-          if (patch.name !== undefined) (sets.push('name = ?'), params.push(patch.name))
-          if (patch.email !== undefined) (sets.push('email = ?'), params.push(patch.email.trim().toLowerCase()))
-          if (patch.passwordHash !== undefined) (sets.push('password_hash = ?'), params.push(patch.passwordHash))
-          if (patch.status !== undefined) (sets.push('status = ?'), params.push(patch.status))
-          if (patch.mustChangePassword !== undefined) (sets.push('must_change_password = ?'), params.push(patch.mustChangePassword ? 1 : 0))
-          if (patch.lastLogin !== undefined) (sets.push('last_login = ?'), params.push(toDate(patch.lastLogin)))
-          if (sets.length) await tx.exec(`UPDATE ab_users SET ${sets.join(', ')} WHERE id = ?`, [...params, id])
+          const set = (col: string, v: unknown) => { params.push(v); sets.push(`${col} = $${params.length}`) }
+          if (patch.name !== undefined) set('name', patch.name)
+          if (patch.email !== undefined) set('email', patch.email.trim().toLowerCase())
+          if (patch.passwordHash !== undefined) set('password_hash', patch.passwordHash)
+          if (patch.status !== undefined) set('status', patch.status)
+          if (patch.mustChangePassword !== undefined) set('must_change_password', !!patch.mustChangePassword)
+          if (patch.lastLogin !== undefined) set('last_login', toDate(patch.lastLogin))
+          if (sets.length) await tx.exec(`UPDATE ${A('users')} SET ${sets.join(', ')} WHERE id = $${params.length + 1}`, [...params, id])
           if (patch.roleIds !== undefined) await setUserRoles(tx, id, patch.roleIds)
         })
       },
       async remove(id) {
         await db.tx(async (tx) => {
-          await tx.exec('DELETE FROM ab_user_roles WHERE user_id = ?', [id])
-          await tx.exec('DELETE FROM ab_sessions WHERE user_id = ?', [id])
-          await tx.exec('DELETE FROM ab_users WHERE id = ?', [id])
+          // users are install-wide: their role assignments go in every environment
+          for (const schema of await environmentSchemas(tx)) await tx.exec(`DELETE FROM ${q(schema)}.${q('ab_user_roles')} WHERE user_id = $1`, [id])
+          await tx.exec(`DELETE FROM ${A('sessions')} WHERE user_id = $1`, [id])
+          await tx.exec(`DELETE FROM ${A('users')} WHERE id = $1`, [id])
         })
       },
     },
@@ -499,27 +528,27 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
       async insert(s) {
         const now = new Date()
         await db.exec(
-          'INSERT INTO ab_sessions (id_hash, user_id, created_on, expires_on, last_seen, user_agent) VALUES (?, ?, ?, ?, ?, ?)',
+          `INSERT INTO ${A('sessions')} (id_hash, user_id, created_on, expires_on, last_seen, user_agent) VALUES ($1, $2, $3, $4, $5, $6)`,
           [s.idHash, s.userId, now, s.expiresOn, now, (s.userAgent ?? '').slice(0, 255)],
         )
       },
       async get(idHash) {
-        const rows = await db.query<Row>('SELECT user_id, expires_on FROM ab_sessions WHERE id_hash = ?', [idHash])
+        const rows = await db.query<Row>(`SELECT user_id, expires_on FROM ${A('sessions')} WHERE id_hash = $1`, [idHash])
         if (!rows.length) return null
         const expiresOn = new Date(toIso(rows[0].expires_on))
         return { userId: str(rows[0].user_id), expiresOn }
       },
       async touch(idHash, expiresOn) {
-        await db.exec('UPDATE ab_sessions SET expires_on = ?, last_seen = ? WHERE id_hash = ?', [expiresOn, new Date(), idHash])
+        await db.exec(`UPDATE ${A('sessions')} SET expires_on = $1, last_seen = $2 WHERE id_hash = $3`, [expiresOn, new Date(), idHash])
       },
       async remove(idHash) {
-        await db.exec('DELETE FROM ab_sessions WHERE id_hash = ?', [idHash])
+        await db.exec(`DELETE FROM ${A('sessions')} WHERE id_hash = $1`, [idHash])
       },
       async removeForUser(userId) {
-        await db.exec('DELETE FROM ab_sessions WHERE user_id = ?', [userId])
+        await db.exec(`DELETE FROM ${A('sessions')} WHERE user_id = $1`, [userId])
       },
       async purgeExpired() {
-        const r = await db.exec('DELETE FROM ab_sessions WHERE expires_on < ?', [new Date()])
+        const r = await db.exec(`DELETE FROM ${A('sessions')} WHERE expires_on < $1`, [new Date()])
         return r.affectedRows
       },
     },
@@ -527,27 +556,27 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
     roles: {
       list: () => rolesWhere('', []),
       async get(id) {
-        return (await rolesWhere('WHERE id = ?', [id]))[0] ?? null
+        return (await rolesWhere('WHERE id = $1', [id]))[0] ?? null
       },
       async upsert(role) {
         const r = role as StoredRole
         await db.tx(async (tx) => {
           await tx.exec(
-            `INSERT INTO ab_roles (id, name, description, is_admin, is_maker, apps) VALUES (?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description), is_admin = VALUES(is_admin),
-             is_maker = VALUES(is_maker), apps = VALUES(apps)`,
-            [r.id, r.name, r.description ?? null, r.isAdmin ? 1 : 0, r.isMaker ? 1 : 0, json(r.apps ?? 'all')],
+            `INSERT INTO ${E('ab_roles')} (id, name, description, is_admin, is_maker, apps) VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description, is_admin = EXCLUDED.is_admin,
+             is_maker = EXCLUDED.is_maker, apps = EXCLUDED.apps`,
+            [r.id, r.name, r.description ?? null, !!r.isAdmin, !!r.isMaker, json(r.apps ?? 'all')],
           )
-          await tx.exec('DELETE FROM ab_role_tables WHERE role_id = ?', [r.id])
+          await tx.exec(`DELETE FROM ${E('ab_role_tables')} WHERE role_id = $1`, [r.id])
           const seen = new Set<string>()
           for (const p of r.privileges ?? []) {
             if (seen.has(p.table)) continue
             seen.add(p.table)
             await tx.exec(
-              `INSERT INTO ab_role_tables (role_id, table_id, can_create, read_scope, update_scope, delete_scope, columns, row_filter)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              `INSERT INTO ${E('ab_role_tables')} (role_id, table_id, can_create, read_scope, update_scope, delete_scope, columns, row_filter)
+               VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
               [
-                r.id, p.table, p.create ? 1 : 0, scope(p.read), scope(p.update), scope(p.delete),
+                r.id, p.table, !!p.create, scope(p.read), scope(p.update), scope(p.delete),
                 p.columns && Object.keys(p.columns).length ? json(p.columns) : null,
                 p.rowFilter && p.rowFilter.length ? json(p.rowFilter) : null,
               ],
@@ -557,53 +586,56 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
       },
       async remove(id) {
         await db.tx(async (tx) => {
-          await tx.exec('DELETE FROM ab_role_tables WHERE role_id = ?', [id])
-          await tx.exec('DELETE FROM ab_user_roles WHERE role_id = ?', [id])
-          await tx.exec('DELETE FROM ab_roles WHERE id = ?', [id])
+          await tx.exec(`DELETE FROM ${E('ab_role_tables')} WHERE role_id = $1`, [id])
+          await tx.exec(`DELETE FROM ${E('ab_user_roles')} WHERE role_id = $1`, [id])
+          await tx.exec(`DELETE FROM ${E('ab_roles')} WHERE id = $1`, [id])
         })
       },
     },
 
     tables: {
       async list() {
-        return (await db.query<Row>('SELECT id, name, connection_id, source, def FROM ab_tables ORDER BY name')).map(toTable)
+        return (await db.query<Row>(`SELECT id, name, connection_id, source, def FROM ${E('ab_tables')} ORDER BY lower(name) COLLATE "C", id`)).map(toTable)
       },
       async get(idOrName) {
-        const rows = await db.query<Row>('SELECT id, name, connection_id, source, def FROM ab_tables WHERE id = ? OR name = ? ORDER BY (id = ?) DESC LIMIT 1', [idOrName, idOrName, idOrName])
+        const rows = await db.query<Row>(
+          `SELECT id, name, connection_id, source, def FROM ${E('ab_tables')} WHERE id = $1 OR lower(name) = lower($1) ORDER BY (id = $1) DESC LIMIT 1`,
+          [idOrName],
+        )
         return rows.length ? toTable(rows[0]) : null
       },
       async upsert(t) {
         await db.exec(
-          `INSERT INTO ab_tables (id, name, connection_id, source, def, created_on, modified_on) VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE name = VALUES(name), connection_id = VALUES(connection_id), source = VALUES(source),
-           def = VALUES(def), modified_on = VALUES(modified_on)`,
+          `INSERT INTO ${E('ab_tables')} (id, name, connection_id, source, def, created_on, modified_on) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, connection_id = EXCLUDED.connection_id, source = EXCLUDED.source,
+           def = EXCLUDED.def, modified_on = EXCLUDED.modified_on`,
           [t.id, t.name, t.connectionId ?? null, t.source ?? null, JSON.stringify(t), toDate(t.createdOn) ?? new Date(), toDate(t.modifiedOn) ?? new Date()],
         )
       },
       async remove(id) {
         await db.tx(async (tx) => {
-          await tx.exec('DELETE FROM ab_role_tables WHERE table_id = ?', [id])
-          await tx.exec('DELETE FROM ab_tables WHERE id = ?', [id])
+          await tx.exec(`DELETE FROM ${E('ab_role_tables')} WHERE table_id = $1`, [id])
+          await tx.exec(`DELETE FROM ${E('ab_tables')} WHERE id = $1`, [id])
         })
       },
     },
 
     apps: {
       async list() {
-        const rows = await db.query<Row>('SELECT id, name, description, width, height, created_on, modified_on, modified_by FROM ab_apps ORDER BY name')
+        const rows = await db.query<Row>(`SELECT id, name, description, width, height, created_on, modified_on, modified_by FROM ${E('ab_apps')} ORDER BY lower(name) COLLATE "C", id`)
         return rows.map(toAppMeta)
       },
       async get(id) {
-        const rows = await db.query<Row>('SELECT id, name, description, width, height, created_on, modified_on, modified_by, definition FROM ab_apps WHERE id = ?', [id])
+        const rows = await db.query<Row>(`SELECT id, name, description, width, height, created_on, modified_on, modified_by, definition FROM ${E('ab_apps')} WHERE id = $1`, [id])
         if (!rows.length) return null
-        return { meta: toAppMeta(rows[0]), definition: parseJson<AppDef>(rows[0].definition, {} as AppDef) }
+        return { meta: toAppMeta(rows[0]), definition: doc<AppDef>(rows[0].definition, {} as AppDef) }
       },
       async upsert(meta, definition) {
         await db.exec(
-          `INSERT INTO ab_apps (id, name, description, width, height, definition, created_on, modified_on, modified_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description), width = VALUES(width),
-           height = VALUES(height), definition = VALUES(definition), modified_on = VALUES(modified_on), modified_by = VALUES(modified_by)`,
+          `INSERT INTO ${E('ab_apps')} (id, name, description, width, height, definition, created_on, modified_on, modified_by)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
+           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description, width = EXCLUDED.width,
+           height = EXCLUDED.height, definition = EXCLUDED.definition, modified_on = EXCLUDED.modified_on, modified_by = EXCLUDED.modified_by`,
           [
             meta.id, meta.name, meta.description ?? null, Math.round(meta.width) || 1920, Math.round(meta.height) || 1080,
             JSON.stringify(definition), toDate(meta.createdOn) ?? new Date(), toDate(meta.modifiedOn) ?? new Date(), meta.modifiedBy || null,
@@ -611,47 +643,47 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
         )
       },
       async remove(id) {
-        await db.exec('DELETE FROM ab_apps WHERE id = ?', [id])
+        await db.exec(`DELETE FROM ${E('ab_apps')} WHERE id = $1`, [id])
       },
     },
 
     connections: {
       async list() {
-        return (await db.query<Row>('SELECT * FROM ab_connections ORDER BY name')).map(toConnection)
+        return (await db.query<Row>(`SELECT * FROM ${E('ab_connections')} ORDER BY lower(name) COLLATE "C", id`)).map(toConnection)
       },
       async get(id) {
-        const rows = await db.query<Row>('SELECT * FROM ab_connections WHERE id = ?', [id])
+        const rows = await db.query<Row>(`SELECT * FROM ${E('ab_connections')} WHERE id = $1`, [id])
         return rows.length ? toConnection(rows[0]) : null
       },
       async upsert(c) {
         // secret: undefined = keep the stored one, '' = clear, text = seal and store
         await db.tx(async (tx) => {
-          const existing = await tx.query<Row>('SELECT secret_sealed, created_on FROM ab_connections WHERE id = ?', [c.id])
+          const existing = await tx.query<Row>(`SELECT secret_sealed, created_on FROM ${E('ab_connections')} WHERE id = $1`, [c.id])
           let sealed: string | null = existing.length ? (existing[0].secret_sealed as string | null) ?? null : null
           if (c.secret !== undefined) sealed = c.secret === '' ? null : secrets.encrypt(c.secret)
-          if (c.isDefault) await tx.exec('UPDATE ab_connections SET is_default = 0 WHERE id <> ?', [c.id])
+          if (c.isDefault) await tx.exec(`UPDATE ${E('ab_connections')} SET is_default = false WHERE id <> $1`, [c.id])
           const now = new Date()
           await tx.exec(
-            `INSERT INTO ab_connections (id, name, connector, settings, secret_sealed, status, last_error, is_default, scope, created_on, modified_on)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE name = VALUES(name), connector = VALUES(connector), settings = VALUES(settings),
-             secret_sealed = VALUES(secret_sealed), status = VALUES(status), last_error = VALUES(last_error),
-             is_default = VALUES(is_default), scope = VALUES(scope), modified_on = VALUES(modified_on)`,
+            `INSERT INTO ${E('ab_connections')} (id, name, connector, settings, secret_sealed, status, last_error, is_default, scope, created_on, modified_on)
+             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11)
+             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, connector = EXCLUDED.connector, settings = EXCLUDED.settings,
+             secret_sealed = EXCLUDED.secret_sealed, status = EXCLUDED.status, last_error = EXCLUDED.last_error,
+             is_default = EXCLUDED.is_default, scope = EXCLUDED.scope, modified_on = EXCLUDED.modified_on`,
             [
               c.id, c.name, c.connector, json(c.settings ?? {}), sealed, c.status ?? 'not-configured', c.lastError ?? null,
-              c.isDefault ? 1 : 0, c.scope === 'device' ? 'device' : 'server', existing.length ? existing[0].created_on : now, now,
+              !!c.isDefault, c.scope === 'device' ? 'device' : 'server', existing.length ? existing[0].created_on : now, now,
             ],
           )
         })
       },
       async remove(id) {
-        await db.exec('DELETE FROM ab_connections WHERE id = ?', [id])
+        await db.exec(`DELETE FROM ${E('ab_connections')} WHERE id = $1`, [id])
       },
     },
 
     solutions: {
       async list() {
-        const rows = await db.query<Row>('SELECT * FROM ab_solutions ORDER BY display_name')
+        const rows = await db.query<Row>(`SELECT * FROM ${E('ab_solutions')} ORDER BY lower(display_name) COLLATE "C", id`)
         return rows.map((r): SolutionDef => {
           const s: SolutionDef = {
             id: str(r.id),
@@ -659,7 +691,7 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
             displayName: str(r.display_name),
             publisher: str(r.publisher),
             version: str(r.version),
-            components: parseJson<SolutionDef['components']>(r.components, []),
+            components: doc<SolutionDef['components']>(r.components, []),
             createdOn: toIso(r.created_on),
             modifiedOn: toIso(r.modified_on),
           }
@@ -670,10 +702,10 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
       },
       async upsert(s) {
         await db.exec(
-          `INSERT INTO ab_solutions (id, name, display_name, publisher, version, description, components, created_on, modified_on)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE name = VALUES(name), display_name = VALUES(display_name), publisher = VALUES(publisher),
-           version = VALUES(version), description = VALUES(description), components = VALUES(components), modified_on = VALUES(modified_on)`,
+          `INSERT INTO ${E('ab_solutions')} (id, name, display_name, publisher, version, description, components, created_on, modified_on)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
+           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, display_name = EXCLUDED.display_name, publisher = EXCLUDED.publisher,
+           version = EXCLUDED.version, description = EXCLUDED.description, components = EXCLUDED.components, modified_on = EXCLUDED.modified_on`,
           [
             s.id, s.name, s.displayName, s.publisher ?? '', s.version ?? '', s.description ?? null, json(s.components ?? []),
             toDate(s.createdOn) ?? new Date(), toDate(s.modifiedOn) ?? new Date(),
@@ -681,88 +713,108 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
         )
       },
       async remove(id) {
-        await db.exec('DELETE FROM ab_solutions WHERE id = ?', [id])
+        await db.exec(`DELETE FROM ${E('ab_solutions')} WHERE id = $1`, [id])
       },
     },
 
     files: {
       async list() {
-        return (await db.query<Row>('SELECT * FROM ab_data_files ORDER BY file_name')).map(toFile)
+        return (await db.query<Row>(`SELECT * FROM ${E('ab_data_files')} ORDER BY lower(file_name) COLLATE "C", id`)).map(toFile)
       },
       async get(id) {
-        const rows = await db.query<Row>('SELECT * FROM ab_data_files WHERE id = ?', [id])
+        const rows = await db.query<Row>(`SELECT * FROM ${E('ab_data_files')} WHERE id = $1`, [id])
         return rows.length ? toFile(rows[0]) : null
       },
       async upsert(f) {
         await db.exec(
-          `INSERT INTO ab_data_files (id, connection_id, file_name, original_name, kind, size_bytes, checksum, storage_key, imported_on, table_ids, modified_since_import)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE connection_id = VALUES(connection_id), file_name = VALUES(file_name), original_name = VALUES(original_name),
-           kind = VALUES(kind), size_bytes = VALUES(size_bytes), checksum = VALUES(checksum), storage_key = VALUES(storage_key),
-           imported_on = VALUES(imported_on), table_ids = VALUES(table_ids), modified_since_import = VALUES(modified_since_import)`,
+          `INSERT INTO ${E('ab_data_files')} (id, connection_id, file_name, original_name, kind, size_bytes, checksum, storage_key, imported_on, table_ids, modified_since_import)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
+           ON CONFLICT (id) DO UPDATE SET connection_id = EXCLUDED.connection_id, file_name = EXCLUDED.file_name, original_name = EXCLUDED.original_name,
+           kind = EXCLUDED.kind, size_bytes = EXCLUDED.size_bytes, checksum = EXCLUDED.checksum, storage_key = EXCLUDED.storage_key,
+           imported_on = EXCLUDED.imported_on, table_ids = EXCLUDED.table_ids, modified_since_import = EXCLUDED.modified_since_import`,
           [
             f.id, f.connectionId, f.fileName, f.originalName ?? f.fileName, f.kind, f.sizeBytes ?? 0, f.checksum ?? '', f.storageKey ?? '',
-            toDate(f.importedOn) ?? new Date(), json(f.tableIds ?? []), f.modifiedSinceImport ? 1 : 0,
+            toDate(f.importedOn) ?? new Date(), json(f.tableIds ?? []), !!f.modifiedSinceImport,
           ],
         )
       },
       async remove(id) {
-        await db.exec('DELETE FROM ab_data_files WHERE id = ?', [id])
+        await db.exec(`DELETE FROM ${E('ab_data_files')} WHERE id = $1`, [id])
+      },
+      async markModified(id) {
+        await db.exec(`UPDATE ${E('ab_data_files')} SET modified_since_import = true WHERE id = $1 AND NOT modified_since_import`, [id])
       },
     },
 
     attachments: {
       async get(id) {
-        const rows = await db.query<Row>('SELECT * FROM ab_attachments WHERE id = ?', [id])
+        const rows = await db.query<Row>(`SELECT * FROM ${E('ab_attachments')} WHERE id = $1`, [id])
         return rows.length ? toAttachment(rows[0]) : null
       },
       async many(ids) {
-        const list = [...new Set(ids.filter((x) => typeof x === 'string' && x))].slice(0, 1000)
+        const list = [...new Set(ids.filter((x) => typeof x === 'string' && x))].slice(0, 5000)
         if (!list.length) return []
-        return (await db.query<Row>(`SELECT * FROM ab_attachments WHERE id IN (${placeholders(list.length)})`, list)).map(toAttachment)
+        return (await db.query<Row>(`SELECT * FROM ${E('ab_attachments')} WHERE id = ANY($1::text[])`, [list])).map(toAttachment)
       },
       async insert(a) {
         await db.exec(
-          `INSERT INTO ab_attachments (id, table_id, col, row_id, file_name, mime, size_bytes, sha256, storage_key, created_by, created_on)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO ${E('ab_attachments')} (id, table_id, col, row_id, file_name, mime, size_bytes, sha256, storage_key, created_by, created_on)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
           [a.id, a.tableId, a.column, a.rowId, a.fileName, a.mime, a.sizeBytes, a.sha256, a.storageKey, a.createdBy || null, toDate(a.createdOn) ?? new Date()],
         )
       },
       async remove(id) {
-        await db.exec('DELETE FROM ab_attachments WHERE id = ?', [id])
+        await db.exec(`DELETE FROM ${E('ab_attachments')} WHERE id = $1`, [id])
       },
       async forRows(tableId, rowIds) {
         const out: AttachmentRecord[] = []
-        for (let i = 0; i < rowIds.length; i += 500) {
-          const chunk = rowIds.slice(i, i + 500)
+        for (let i = 0; i < rowIds.length; i += 1000) {
+          const chunk = rowIds.slice(i, i + 1000)
           if (!chunk.length) continue
-          const rows = await db.query<Row>(`SELECT * FROM ab_attachments WHERE table_id = ? AND row_id IN (${placeholders(chunk.length)})`, [tableId, ...chunk])
+          const rows = await db.query<Row>(`SELECT * FROM ${E('ab_attachments')} WHERE table_id = $1 AND row_id = ANY($2::text[])`, [tableId, chunk])
           out.push(...rows.map(toAttachment))
         }
         return out
       },
+      async idsForTable(tableId) {
+        return (await db.query<Row>(`SELECT id FROM ${E('ab_attachments')} WHERE table_id = $1 ORDER BY id`, [tableId])).map((r) => str(r.id))
+      },
+      async idsCreatedBefore(cutoff, limit) {
+        const n = Math.max(1, Math.min(100000, Math.floor(limit)))
+        return (await db.query<Row>(`SELECT id FROM ${E('ab_attachments')} WHERE created_on < $1 ORDER BY table_id, id LIMIT $2`, [cutoff, n])).map((r) => str(r.id))
+      },
     },
 
     async nextCounter(key) {
-      return db.tx(async (tx) => {
-        await tx.exec('INSERT INTO ab_counters (k, v) VALUES (?, LAST_INSERT_ID(1)) ON DUPLICATE KEY UPDATE v = LAST_INSERT_ID(v + 1)', [key])
-        const rows = await tx.query<Row>('SELECT LAST_INSERT_ID() AS v')
-        return Number(rows[0]?.v) || 1
-      })
+      const rows = await db.query<Row>(
+        `INSERT INTO ${E('ab_counters')} AS c (k, v) VALUES ($1, 1) ON CONFLICT (k) DO UPDATE SET v = c.v + 1 RETURNING v`,
+        [key],
+      )
+      return Number(rows[0]?.v) || 1
+    },
+
+    async raiseCounter(key, value) {
+      await db.exec(
+        `INSERT INTO ${E('ab_counters')} AS c (k, v) VALUES ($1, $2) ON CONFLICT (k) DO UPDATE SET v = GREATEST(c.v, EXCLUDED.v)`,
+        [key, Math.max(0, Math.floor(value))],
+      )
     },
 
     async audit(entry) {
       let details: string | null = null
       if (entry.details !== undefined) {
         try {
-          details = JSON.stringify(entry.details)
+          details = JSON.stringify(entry.details) ?? null
         } catch {
           details = null
         }
-        if (details && details.length > 60000) details = details.slice(0, 60000)
+        // jsonb cannot hold NUL characters
+        if (details) details = details.replace(/(?<!\\)\\u0000/g, '')
+        // truncated text is no longer valid JSON: keep it as a JSON string then
+        if (details && details.length > 60000) details = JSON.stringify(details.slice(0, 60000))
       }
       await db.exec(
-        'INSERT INTO ab_audit (at, user_id, action, table_id, row_id, details) VALUES (?, ?, ?, ?, ?, ?)',
+        `INSERT INTO ${E('ab_audit')} (at, user_id, action, table_id, row_id, details) VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
         [new Date(), entry.userId ?? null, entry.action.slice(0, 64), entry.tableId ?? null, entry.rowId ? String(entry.rowId).slice(0, 64) : null, details],
       )
     },
@@ -770,35 +822,24 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
     async auditPage(f) {
       const where: string[] = []
       const params: unknown[] = []
+      const add = (sql: (p: string) => string, v: unknown) => { params.push(v); where.push(sql(`$${params.length}`)) }
       if (f.action) {
-        if (f.action.endsWith('.')) {
-          where.push('action LIKE ?')
-          params.push(`${f.action.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)
-        } else {
-          where.push('action = ?')
-          params.push(f.action)
-        }
+        if (f.action.endsWith('.')) add((p) => `starts_with(action, ${p})`, f.action)
+        else add((p) => `action = ${p}`, f.action)
       }
-      if (f.userId) {
-        where.push('user_id = ?')
-        params.push(f.userId)
-      }
+      if (f.userId) add((p) => `user_id = ${p}`, f.userId)
       const from = toDate(f.from)
-      if (from) {
-        where.push('at >= ?')
-        params.push(from)
-      }
+      if (from) add((p) => `at >= ${p}`, from)
       const to = toDate(f.to)
-      if (to) {
-        where.push('at < ?')
-        params.push(to)
-      }
+      if (to) add((p) => `at < ${p}`, to)
       const w = where.length ? `WHERE ${where.join(' AND ')}` : ''
-      const total = Number((await db.query<Row>(`SELECT COUNT(*) AS n FROM ab_audit ${w}`, params))[0]?.n) || 0
+      const total = Number((await db.query<Row>(`SELECT count(*)::int AS n FROM ${E('ab_audit')} ${w}`, params))[0]?.n) || 0
       const limit = Math.max(1, Math.min(500, Math.floor(f.limit)))
       const offset = Math.max(0, Math.floor(f.offset))
-      // LIMIT/OFFSET are validated integers (placeholders there are not portable across MySQL versions)
-      const rows = await db.query<Row>(`SELECT id, at, user_id, action, table_id, row_id, details FROM ab_audit ${w} ORDER BY id DESC LIMIT ${limit} OFFSET ${offset}`, params)
+      const rows = await db.query<Row>(
+        `SELECT id, at, user_id, action, table_id, row_id, details FROM ${E('ab_audit')} ${w} ORDER BY id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset],
+      )
       return {
         total,
         items: rows.map((r) => ({
@@ -808,17 +849,17 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
           action: str(r.action),
           tableId: optStr(r.table_id) ?? null,
           rowId: optStr(r.row_id) ?? null,
-          details: r.details === null || r.details === undefined ? null : parseJson<unknown>(r.details, str(r.details)),
+          details: r.details === null || r.details === undefined ? null : doc<unknown>(r.details, null),
         })),
       }
     },
 
     async auditActions() {
-      return (await db.query<Row>('SELECT DISTINCT action FROM ab_audit ORDER BY action')).map((r) => str(r.action))
+      return (await db.query<Row>(`SELECT action FROM ${E('ab_audit')} GROUP BY action ORDER BY action COLLATE "C"`)).map((r) => str(r.action))
     },
 
     async info() {
-      const rows = await db.query<Row>('SELECT MIN(created_on) AS c FROM ab_users')
+      const rows = await db.query<Row>(`SELECT min(created_on) AS c FROM ${A('users')}`)
       return { createdOn: rows[0]?.c ? toIso(rows[0].c) : null }
     },
   }

@@ -74,7 +74,7 @@ function makeServer(opts: { signedIn?: boolean; session?: Session; rowCount?: nu
     log.push({ method, path: url.pathname + url.search, headers, body, credentials: init.credentials, contentType: headers['Content-Type'] })
     const p = url.pathname.replace('/api/v1', '')
     if (method !== 'GET' && headers['X-Appbuilder'] !== '1') return err(403, 'denied', 'CSRF')
-    if (p === '/status') return json(200, { app: 'appbuilder', apiVersion: 1, backend: 'node', setup: { needsDatabase: false, needsAdmin: false }, storage: { kind: 'mysql', location: 'test' }, session })
+    if (p === '/status') return json(200, { app: 'appbuilder', apiVersion: 1, backend: 'node', setup: { needsDatabase: false, needsAdmin: false }, storage: { kind: 'postgres', location: 'test' }, session })
     if (p === '/auth/login') {
       const b = body as { password: string }
       if (b.password !== 'secret-password') return err(401, 'unauthenticated', 'Wrong email or password')
@@ -84,7 +84,7 @@ function makeServer(opts: { signedIn?: boolean; session?: Session; rowCount?: nu
     if (p === '/auth/logout') { session = null; return json(200, { ok: true }) }
     if (!session || rules.expire) { rules.expire = false; session = null; return err(401, 'unauthenticated', 'Sign in required') }
     if (p === '/workspace') {
-      return json(200, { apps: [], tables: [CONTACTS], roles: [], users: [session.user], connections: [], solutions: [], dataFiles: [], session, storage: { kind: 'mysql', location: 'test' } })
+      return json(200, { apps: [], tables: [CONTACTS], roles: [], users: [session.user], connections: [], solutions: [], dataFiles: [], session, storage: { kind: 'postgres', location: 'test' } })
     }
     const m = /^\/data\/([^/]+)(\/.*)?$/.exec(p)
     if (m) {

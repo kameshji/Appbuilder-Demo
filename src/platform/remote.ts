@@ -145,7 +145,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
 
   let state: WorkspaceState = {
     ready: false, mode: 'server', setup: { needsDatabase: false, needsAdmin: false }, session: null,
-    storage: { kind: 'mysql', location: '' },
+    storage: { kind: 'postgres', location: '' },
     apps: [], tables: [], roles: [], users: [], currentUserId: '', connections: [], solutions: [], dataFiles: [],
     dataVersion: 0, loading: [], truncated: [], environments: [], environmentId: '',
   }

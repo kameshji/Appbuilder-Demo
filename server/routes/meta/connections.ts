@@ -1,20 +1,23 @@
 /**
- * Connections: CRUD (admin), test / source-tables / link (maker), default store (admin, mysql only).
+ * Connections: CRUD (admin), test / source-tables / link (maker), default store (admin, postgres only).
  * Secrets are handed to the MetaStore (which seals them) and never come back in a response.
  */
 import type { ColumnDef, ConnectionRef, ConnectorKind, TableDef } from '../../../src/platform/contracts.ts'
 import type { ConnectionRecord, Connector, Router, Services, SourceColumn } from '../../core/contracts.ts'
 import { ensureIdColumn } from '../../connectors/gsheets/index.ts'
-import { ensureMySqlSystemColumns } from '../../connectors/mysql/index.ts'
 import { HttpError } from '../../core/contracts.ts'
 import { DEFAULT_CONNECTION_ID } from '../../core/connections.ts'
+import { currentEnvironment } from '../../core/env-context.ts'
 import {
   IDENT, MAX_IDENT, SYSTEM_NAMES, SYSTEM_TABLE_NAMES, bodyObj, conflict, invalid, isObj, notFound, optString, redact, reqString, systemColumns, toIdentifier,
   uniqueIdentifier,
 } from './util.ts'
 import { FILES_CONNECTION_ID, audit, ensureFilesConnection, friendly, grantDefaults, resolveConnection, toRef } from './tables-core.ts'
 
-const KINDS: ConnectorKind[] = ['mysql', 'files', 'gsheets']
+const KINDS: ConnectorKind[] = ['postgres', 'mysql', 'files', 'gsheets']
+
+/** schemas a postgres connection may not name: the system store's own (ab, env_*) and PostgreSQL's catalogs */
+const RESERVED_SCHEMA = /^(ab|env_.*|pg_.*|information_schema)$/i
 
 function cleanSettings(kind: ConnectorKind, raw: unknown, base: Record<string, string> = {}): Record<string, string> {
   if (raw !== undefined && !isObj(raw)) throw invalid('"settings" must be an object.', 'settings')
@@ -26,8 +29,13 @@ function cleanSettings(kind: ConnectorKind, raw: unknown, base: Record<string, s
     if (String(v).length > 2000) throw invalid(`Setting "${k}" is too long.`, `settings.${k}`)
     out[k] = String(v).trim()
   }
-  if (kind === 'mysql') {
-    out.port ||= '3306'
+  if (kind === 'postgres') {
+    out.schema ||= 'public'
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(out.schema)) throw invalid('The schema must be a plain name (letters, digits and underscore).', 'settings.schema')
+    if (RESERVED_SCHEMA.test(out.schema)) throw invalid(`The schema "${out.schema}" is reserved (Appbuilder's system schemas and PostgreSQL's catalogs cannot be linked).`, 'settings.schema')
+  }
+  if (kind === 'mysql' || kind === 'postgres') {
+    out.port ||= kind === 'mysql' ? '3306' : '5432'
     out.ssl = out.ssl === 'true' ? 'true' : 'false'
     for (const k of ['host', 'database', 'user']) if (!out[k]) throw invalid(`Setting "${k}" is required.`, `settings.${k}`)
     const port = Number(out.port)
@@ -93,14 +101,18 @@ const LOOPBACK_NAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
 
 /**
  * What physical store a connection points at: two connections with the same key reach the same tables (e.g. a second
- * MySQL connection to the default database). null when it cannot be told.
+ * connection to the same external database). null when it cannot be told.
  */
-export function physicalKey(rec: Pick<ConnectionRecord, 'connector' | 'settings'>): string | null {
+export function physicalKey(rec: Pick<ConnectionRecord, 'connector' | 'settings'> & { id?: string }): string | null {
   const st = rec.settings ?? {}
-  if (rec.connector === 'mysql') {
+  if (rec.connector === 'mysql' || rec.connector === 'postgres') {
     const host = String(st.host ?? '').trim().toLowerCase()
     if (!host || !st.database) return null
-    return `mysql|${LOOPBACK_NAMES.has(host) ? 'loopback' : host}|${Number(st.port) || 3306}|${String(st.database).trim().toLowerCase()}`
+    const where = `${LOOPBACK_NAMES.has(host) ? 'loopback' : host}|${Number(st.port) || (rec.connector === 'mysql' ? 3306 : 5432)}`
+    if (rec.connector === 'mysql') return `mysql|${where}|${String(st.database).trim().toLowerCase()}`
+    // PostgreSQL database names are case-sensitive; the default connection's schema is the environment's
+    const schema = rec.id === DEFAULT_CONNECTION_ID ? currentEnvironment().schema : String(st.schema || 'public')
+    return `postgres|${where}|${String(st.database).trim()}|${schema}`
   }
   if (rec.connector === 'gsheets') return st.spreadsheetId ? `gsheets|${String(st.spreadsheetId).trim()}` : null
   return null
@@ -128,7 +140,7 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
     const b = bodyObj(ctx)
     const name = reqString(b, 'name', 'A connection needs a name.', 100)
     const kind = b.connector as ConnectorKind
-    if (!KINDS.includes(kind)) throw invalid(`The connector "${String(b.connector)}" is not available yet (use mysql, gsheets or files).`, 'connector')
+    if (!KINDS.includes(kind)) throw invalid(`The connector "${String(b.connector)}" is not available yet (use postgres, mysql, gsheets or files).`, 'connector')
     const existing = await s.meta.connections.list()
     if (existing.some((c) => c.name.toLowerCase() === name.toLowerCase())) throw conflict(`A connection named "${name}" already exists.`)
     if (kind === 'files' && existing.some((c) => c.connector === 'files')) throw conflict('The Data files connection already exists.')
@@ -191,7 +203,7 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
   router.add('DELETE', '/api/v1/connections/:id', async (ctx) => {
     const rec = await s.meta.connections.get(ctx.params.id)
     if (!rec) throw notFound('Connection not found.')
-    if (rec.isDefault) throw conflict('The default connection cannot be deleted. Make another MySQL connection the default first.')
+    if (rec.isDefault) throw conflict('The default connection cannot be deleted. Make another PostgreSQL connection the default first.')
     if (rec.id === FILES_CONNECTION_ID) throw conflict('The Data files connection is built in and cannot be deleted.')
     const users = (await s.meta.tables.list()).filter((t) => t.connectionId === rec.id)
     if (users.length) throw conflict(`${users.length} table(s) use this connection: ${users.slice(0, 5).map((t) => t.displayName).join(', ')}${users.length > 5 ? ', ...' : ''}. Move or remove them first.`)
@@ -217,7 +229,7 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
   router.add('POST', '/api/v1/connections/:id/default', async (ctx) => {
     const rec = await s.meta.connections.get(ctx.params.id)
     if (!rec) throw notFound('Connection not found.')
-    if (rec.connector !== 'mysql') throw invalid('Only a MySQL connection can be the default store for new tables.')
+    if (rec.connector !== 'postgres') throw invalid('Only a PostgreSQL connection can be the default store for new tables.')
     const r = await testAndStore(s, rec.id)
     if (!r.ok) throw conflict(`This connection cannot be the default store: ${r.message}`)
     let next = r.record
@@ -248,12 +260,12 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
       throw friendly(e, 'Could not list the tables')
     }
     const items = list
-      .filter((t) => !registered.has(t.source.toLowerCase()) && !(record.connector === 'mysql' && SYSTEM_TABLE_NAMES.has(t.source.toLowerCase())))
+      .filter((t) => !registered.has(t.source.toLowerCase()) && !((record.connector === 'mysql' || record.connector === 'postgres') && (t.source.toLowerCase().startsWith('ab_') || SYSTEM_TABLE_NAMES.has(t.source.toLowerCase()))))
       .map((t) => ({ source: t.source, columns: t.columns.map((c) => ({ name: c.name, type: c.type })), ...(t.rowCount !== undefined ? { rowCount: t.rowCount } : {}) }))
     return { items }
   }, { auth: 'maker' })
 
-  router.add('POST', '/api/v1/connections/:id/link', async (ctx) => {
+  router.add('POST', '/api/v1/connections/:id/link', (ctx) => s.transaction(async () => {
     const b = bodyObj(ctx)
     const source = reqString(b, 'source', 'The source table', 300)
     const { record, connector } = await resolveConnection(s, ctx.params.id)
@@ -277,7 +289,8 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
     let readOnly = wantReadOnly || !connector.capabilities.write
     // system columns the source lacks; with consent (and a writable link) they are added, otherwise the link is read-only
     let missing = systemColumns().map((c) => c.name).filter((n) => n === 'id' ? !hasId : !present.has(n))
-    const canFix = consent && !readOnly && missing.length > 0 && (record.connector === 'gsheets' || (record.connector === 'mysql' && connector.capabilities.ddl))
+    const sqlFix = (record.connector === 'mysql' || record.connector === 'postgres') && connector.capabilities.ddl && typeof connector.ensureSystemColumns === 'function'
+    const canFix = consent && !readOnly && missing.length > 0 && (record.connector === 'gsheets' || sqlFix)
     if (missing.length && !canFix) readOnly = true
     const displayName = optString(b, 'displayName', { max: 200 })?.trim() || source
     let name = optString(b, 'name')
@@ -289,7 +302,7 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
     const now = s.now()
     if (canFix) {
       try {
-        if (record.connector === 'mysql') await ensureMySqlSystemColumns(connector as Connector, source)
+        if (sqlFix) await connector.ensureSystemColumns!(source)
         else {
           if (!hasId) await ensureIdColumn(connector as Connector, source)
           const withId: TableDef = { id: '', name: source, displayName: source, primaryColumn: 'id', columns: [], createdOn: now, modifiedOn: now, source }
@@ -313,7 +326,7 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
     await grantDefaults(s, [def])
     await audit(s, ctx, 'table.link', { name, connection: record.id, source, readOnly, ...(canFix ? { addedSystemColumns: true } : {}), ...(missing.length ? { missingSystem: missing } : {}) }, def.id)
     return def
-  }, { auth: 'maker' })
+  }), { auth: 'maker' })
 }
 
 export { ensureFilesConnection }

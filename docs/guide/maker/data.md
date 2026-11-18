@@ -6,7 +6,7 @@ Apps read and write **tables**. You manage them under **Tables** (Maker role).
 
 ## Create a table
 
-Choose **New table**, name it, add columns, and pick where to **Store in** (a connection; the default MySQL database is normal). The table designer has four tabs: **Data**, **Columns**, **Security** and **Settings** (primary column and delete table).
+Choose **New table**, name it, add columns, and pick where to **Store in** (a connection; the default database is normal). The table designer has four tabs: **Data**, **Columns**, **Security** and **Settings** (primary column and delete table).
 
 ![New table](../../images/table-new.png)
 
@@ -34,7 +34,7 @@ If your role cannot create rows, Add row and Import CSV are disabled.
 
 ## Data files
 
-On **Data files** you can add .csv, .xlsx or .json files (up to 25 MB). Appbuilder copies the file into its workspace; your original is never changed. Each file, sheet or array becomes a table. You can Replace (it warns if the data was edited since import), Download, or Remove (optionally dropping the tables). **Move to database** copies a table's rows to the default MySQL connection under the same table name.
+On **Data files** you can add .csv, .xlsx or .json files (up to 25 MB). Appbuilder copies the file into its workspace; your original is never changed. Each file, sheet or array becomes a table. You can Replace (it warns if the data was edited since import), Download, or Remove (optionally dropping the tables). **Move to database** copies a table's rows to the default database under the same table name.
 
 ![Data files](../../images/portal-datafiles.png)
 
@@ -46,7 +46,7 @@ When you edit a sheet of an Excel file in Appbuilder, the stored copy is written
 
 ![Connections](../../images/portal-connections.png)
 
-Administrators create connections: **MySQL / MariaDB** (host, port, database, user, password, SSL) and **Google Sheets** (spreadsheet URL or id plus a service-account key; share the sheet with the service account email as Editor). On a connection use **Test**, **Browse tables** (link existing MySQL tables or Sheets tabs), **Set as default** (MySQL), **Edit** and **Delete** (the default cannot be deleted). Linking a source that has no `id` column asks permission to add one.
+Administrators create connections: **PostgreSQL** (host, port, database, user, password, schema, SSL), **MySQL / MariaDB** (host, port, database, user, password, SSL) and **Google Sheets** (spreadsheet URL or id plus a service-account key; share the sheet with the service account email as Editor). On a connection use **Test**, **Browse tables** (link existing MySQL tables or Sheets tabs), **Set as default** (MySQL), **Edit** and **Delete** (the default cannot be deleted). Linking a source that has no `id` column asks permission to add one.
 
 ## The 5,000-row limit
 

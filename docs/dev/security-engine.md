@@ -127,13 +127,13 @@ All data routes call `DataService`, which receives the `UserContext`.
 **Delete** (all or nothing)
 1. Before anything is deleted the service selects (in chunks of 500 ids) the ids readable under the read predicate and those
    deletable under the delete predicate. If any readable id is not deletable the whole request is refused with 403 and nothing is
-   deleted. Ids the user cannot read are silently skipped. The deletable ids then go to one `connector.delete` call (MySQL: one
-   transaction over the chunks). If exactly one id was requested and nothing was deleted the answer is 404.
+   deleted. Ids the user cannot read are silently skipped. The deletable ids then go to one `connector.delete` call (PostgreSQL and
+   MySQL: one transaction over the chunks). If exactly one id was requested and nothing was deleted the answer is 404.
 2. Deleting also removes the attachments of those rows.
 
 **Import** (`/data/:table/import`): needs create; columns the user cannot update are ignored (not errors); every row passes the
 insert checks above (including the create WITH CHECK) before anything is written; `replace` deletes the rows under the delete
-predicate and inserts the new ones, in one transaction on MySQL.
+predicate and inserts the new ones, in one transaction on PostgreSQL and MySQL.
 
 **Export** (`/tables/:id/csv`): visible columns, rows under the read predicate.
 

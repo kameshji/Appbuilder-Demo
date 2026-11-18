@@ -7,7 +7,7 @@ Appbuilder is a tool for building small business apps (forms, lists, dashboards)
 - Windows 10 or 11.
 - Node.js. The installer checks for version 20, but the server itself needs **Node 22.18 or newer**. Install the current LTS release to be safe.
 - git.
-- MySQL 8 or MariaDB 10.4 or newer.
+- PostgreSQL 15 or newer (17 recommended). The next section shows how to install it.
 
 ## Install
 
@@ -18,14 +18,24 @@ Leave the server window open while you use Appbuilder. Closing it stops the serv
 
 ## Set up the database
 
-If you do not already have a MySQL or MariaDB server and database for Appbuilder, run `scripts\setup-mysql.ps1`. It:
+Appbuilder keeps everything in a PostgreSQL database.
 
-1. Finds a `mysql-*` folder inside `%USERPROFILE%\MySQL` (use `-MySqlHome` to change this) and starts MySQL if it is not running.
-2. Asks you twice for a password for the new `appbuilder` user (at least 10 characters).
-3. Creates the `appbuilder` database and user.
-4. Prints the values to type into the setup wizard.
+1. If PostgreSQL is not installed yet, install it (the installer asks for a password for the `postgres` superuser; note it):
 
-Options: `-Database`, `-User`, `-Port` (default 3306).
+   ```powershell
+   winget install --id PostgreSQL.PostgreSQL.17 -e --interactive
+   ```
+
+2. Run `scripts\setup-postgres.ps1` (on Linux `scripts/setup-postgres.sh`). It:
+   1. Finds PostgreSQL (`psql.exe` in `C:\Program Files\PostgreSQL\<version>\bin` or on the PATH) and starts its service if needed.
+      If PostgreSQL is missing it tells you the `winget` command above.
+   2. Asks for the `postgres` superuser password, then twice for a password for the new `appbuilder` role (at least 12
+      characters). Nothing you type is shown or saved.
+   3. Creates the `appbuilder` role and an empty `appbuilder` database that it owns.
+   4. Prints the values to type into the setup wizard.
+
+Options: `-Database`, `-User`, `-Port` (default 5432), `-SuperUser`, `-PsqlPath`. See
+[Installation](../admin/installation.md#prepare-the-database) for details and the manual SQL.
 
 ## Start Appbuilder later
 
@@ -43,7 +53,7 @@ The first time you open Appbuilder it asks you to set up a database and the firs
 
 Type it in the first field, **Setup code (shown in the server window)**. It proves that the person doing the setup is at this PC. The code changes every time the server starts, so if you restarted it, use the newest one. After the administrator is created the code is no longer needed.
 
-**Step 1: Database.** Enter the host (default `127.0.0.1`), port (`3306`), database name (`appbuilder`), user (`appbuilder`) and password. Tick "Create the database if it does not exist" if you want Appbuilder to create it.
+**Step 1: Database.** Enter the host (default `127.0.0.1`), port (`5432`), database name (`appbuilder`), user (`appbuilder`) and the password you chose in `setup-postgres`. "Create the database if it does not exist" is only needed when you did not run the script and your PostgreSQL role may create databases. Tick "Use SSL" for a database on another machine.
 
 ![Setup wizard, database step](../images/setup-database.png)
 
@@ -95,7 +105,7 @@ In Dev mode the left menu has:
 - **Apps**: your apps. Open, run, rename, duplicate, export.
 - **Tables**: your data (Maker role).
 - **Data files**: CSV, Excel and JSON files used as tables (Maker role).
-- **Connections**: where data lives, such as MySQL or Google Sheets (Maker role).
+- **Connections**: where data lives: the default PostgreSQL database, other PostgreSQL or MySQL databases, Google Sheets (Maker role).
 - **Solutions**: bundles you move between machines (Maker role).
 - **Security roles**: who can see and change what (Administrator only).
 - **Admin console**: environments, users, licences and the audit log (Administrator only). Backups, server logs and

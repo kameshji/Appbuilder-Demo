@@ -2,16 +2,16 @@
  * Services container + database bootstrap (server.json / APPBUILDER_DB_* env) and the setup step that
  * (re)configures the default store. `meta` / `data` throw 503 while no database is configured.
  */
-import mysql from 'mysql2/promise'
 import { randomInt, timingSafeEqual } from 'node:crypto'
 import { HttpError } from './contracts.ts'
 import type {
-  ConnectorEnv, MetaStore, MigrationSummary, MySqlSettings, ServerConfig, Services, SqlDb,
+  ConnectorEnv, DatabaseSettings, MetaStore, MigrationSummary, ServerConfig, Services, SqlDb,
 } from './contracts.ts'
-import { createSqlDb, friendlyConnectionError } from '../connectors/mysql/index.ts'
+import { createPgDb, friendlyConnectionError, isPgError, withClient } from '../connectors/postgres/db.ts'
 import { flushFiles } from '../connectors/files/index.ts'
 import { createSecretBox, loadSecretKey } from './secrets.ts'
-import { SchemaTooNewError, createMetaStore } from './meta-store.ts'
+import { SchemaTooNewError, UnsuitableDatabaseError, createMetaStore } from './meta-store.ts'
+import { currentEnvironment } from './env-context.ts'
 import { createSecurityEngine } from './security.ts'
 import { createConnectionManager, DEFAULT_CONNECTION_ID, FILES_CONNECTION_ID } from './connections.ts'
 import { createDataService } from './data.ts'
@@ -19,13 +19,13 @@ import { createAttachmentStore } from './attachment-store.ts'
 import { envDatabase, readServerJson, writeServerJson } from './config.ts'
 import { errText, log, nowIso, uid } from './util.ts'
 
-export type SqlDbFactory = (settings: MySqlSettings, password: string) => SqlDb
+export type SqlDbFactory = (settings: DatabaseSettings, password: string) => SqlDb
 
 export interface CoreState {
   db: SqlDb | null
   meta: MetaStore | null
-  settings: MySqlSettings | null
-  /** e.g. "MySQL 8.4.3 at 127.0.0.1:3306/appbuilder" */
+  settings: DatabaseSettings | null
+  /** e.g. "PostgreSQL 16.4 at 127.0.0.1:5432/appbuilder" */
   location: string | null
   databaseError?: string
   /** a database is configured (server.json or APPBUILDER_DB_*) but could not be opened; boot keeps retrying */
@@ -92,7 +92,7 @@ export type CoreServices = Services & {
   data: ReturnType<typeof createDataService>
   connections: ReturnType<typeof createConnectionManager>
   /** test + connect + migrate the default store; persist=true seals the password into server.json */
-  configureDatabase(settings: MySqlSettings, password: string, opts: { createDatabase?: boolean; persist: boolean }): Promise<void>
+  configureDatabase(settings: DatabaseSettings, password: string, opts: { createDatabase?: boolean; persist: boolean }): Promise<void>
   /**
    * reads env / server.json and connects (errors are kept in state.databaseError, never thrown). When a configured
    * database cannot be reached it keeps retrying in the background (1 s, doubling, at most 30 s) until it can.
@@ -115,11 +115,22 @@ export function retryDelayMs(attempt: number): number {
   return Math.min(30000, 1000 * 2 ** Math.max(0, attempt))
 }
 
-const DB_NAME_RE = /^[A-Za-z0-9_$]{1,64}$/
+const DB_NAME_RE = /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/
+
+const defaultFactory: SqlDbFactory = (settings, password) => createPgDb(settings, password, { onError: (e) => log('warn', `database pool: ${e.message}`) })
+
+/** the system tables could not be created: say why in words the administrator can act on */
+function migrationProblem(e: unknown, settings: DatabaseSettings): HttpError {
+  if (e instanceof UnsuitableDatabaseError) return new HttpError(422, 'invalid', e.message, 'database')
+  if (isPgError(e) && e.code === '42501') {
+    return new HttpError(422, 'invalid', `User "${settings.user}" may not create schemas in the database "${settings.database}". Make the user the owner (ALTER DATABASE ${settings.database} OWNER TO ${settings.user}) or run GRANT CREATE ON DATABASE ${settings.database} TO ${settings.user}, then try again.`, 'user')
+  }
+  return new HttpError(500, 'storage', 'Could not create the system tables in this database (check the user\'s privileges).')
+}
 
 export function createServices(config: ServerConfig, opts: { env?: NodeJS.ProcessEnv; sqlDbFactory?: SqlDbFactory; fetch?: typeof fetch } = {}): CoreServices {
   const procEnv = opts.env ?? process.env
-  const sqlDbFactory = opts.sqlDbFactory ?? createSqlDb
+  const sqlDbFactory = opts.sqlDbFactory ?? defaultFactory
   const secrets = createSecretBox(loadSecretKey(config.workspaceDir, procEnv))
   const state: CoreState = { db: null, meta: null, settings: null, location: null }
   let purgeTimer: NodeJS.Timeout | null = null
@@ -135,6 +146,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   }
 
   const env: ConnectorEnv = {
+    systemDb: () => state.db,
     workspaceDir: config.workspaceDir,
     filesDir: config.filesDir,
     fetch: opts.fetch ?? globalThis.fetch,
@@ -145,7 +157,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   const attachments = createAttachmentStore(config.attachmentsDir)
   const data = createDataService({ meta: getMeta, connections, attachments, log: env.log })
 
-  async function ensureBuiltinConnections(meta: MetaStore, settings: MySqlSettings, password: string): Promise<void> {
+  async function ensureBuiltinConnections(meta: MetaStore, settings: DatabaseSettings, password: string): Promise<void> {
     const all = await meta.connections.list()
     const current = all.find((c) => c.id === DEFAULT_CONNECTION_ID)
     const hasOtherDefault = all.some((c) => c.isDefault && c.id !== DEFAULT_CONNECTION_ID)
@@ -155,7 +167,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     let name = current?.name ?? 'Default database'
     if (!current && all.some((c) => c.name.toLowerCase() === name.toLowerCase())) name = `Default database (${settings.database})`
     await meta.connections.upsert({
-      id: DEFAULT_CONNECTION_ID, name, connector: 'mysql', status: 'connected', settings: s, secret: password,
+      id: DEFAULT_CONNECTION_ID, name, connector: 'postgres', status: 'connected', settings: s, secret: password,
       isDefault: current ? !!current.isDefault : !hasOtherDefault, scope: 'server',
     })
     if (!all.some((c) => c.id === FILES_CONNECTION_ID)) {
@@ -165,30 +177,37 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     }
   }
 
-  async function createDatabaseIfMissing(settings: MySqlSettings, password: string): Promise<void> {
-    const c = await mysql.createConnection({
-      host: settings.host, port: settings.port, user: settings.user, password,
-      ssl: settings.ssl ? { minVersion: 'TLSv1.2', rejectUnauthorized: true } : undefined, connectTimeout: 10000,
-    })
-    try {
-      await c.query(`CREATE DATABASE IF NOT EXISTS \`${settings.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)
-    } finally {
+  /** CREATE DATABASE (UTF8) through the maintenance database; false when it already exists */
+  async function createDatabaseIfMissing(settings: DatabaseSettings, password: string): Promise<boolean> {
+    let lastError: unknown = null
+    for (const maintenance of ['postgres', 'template1']) {
       try {
-        await c.end()
-      } catch {
-        c.destroy()
+        return await withClient(settings, password, maintenance, async (c) => {
+          const has = await c.query('SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1', [settings.database])
+          if (has.rowCount) return false
+          // the name is validated (DB_NAME_RE) and quoted
+          await c.query(`CREATE DATABASE "${settings.database}" ENCODING 'UTF8' TEMPLATE template0`)
+          return true
+        })
+      } catch (e) {
+        lastError = e
+        // the maintenance database itself is missing or closed to this user: try the next one
+        if (isPgError(e) && (e.code === '3D000' || e.code === '42501')) continue
+        throw e
       }
     }
+    throw lastError
   }
 
-  async function configureDatabase(settings: MySqlSettings, password: string, o: { createDatabase?: boolean; persist: boolean }): Promise<void> {
-    if (!DB_NAME_RE.test(settings.database)) throw new HttpError(422, 'invalid', 'The database name may contain letters, digits, _ and $ only.', 'database')
+  async function configureDatabase(settings: DatabaseSettings, password: string, o: { createDatabase?: boolean; persist: boolean }): Promise<void> {
+    if (!DB_NAME_RE.test(settings.database)) throw new HttpError(422, 'invalid', 'The database name may contain letters, digits, _ and $ only (not starting with a digit or $).', 'database')
     if (o.createDatabase) {
       try {
-        await createDatabaseIfMissing(settings, password)
+        if (await createDatabaseIfMissing(settings, password)) log('info', `created the database "${settings.database}"`)
       } catch (e) {
-        // may lack CREATE privilege on an existing database: the connect below decides
-        log('warn', `CREATE DATABASE skipped: ${friendlyConnectionError(e, settings, password)}`)
+        // the user may lack CREATEDB while the database exists: the connect below decides (and explains)
+        const why = isPgError(e) && e.code === '42501' ? `user "${settings.user}" may not create databases` : friendlyConnectionError(e, settings, password)
+        log('warn', `CREATE DATABASE skipped: ${why}`)
       }
     }
     const db = sqlDbFactory(settings, password)
@@ -213,7 +232,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
         throw new HttpError(503, 'unavailable', 'The database was upgraded by a newer version of Appbuilder. Run that version, or restore a backup taken before the upgrade.')
       }
       log('error', `system schema migration failed: ${errText(e)}`)
-      throw new HttpError(500, 'storage', 'Could not create the system tables in this database (check the user\'s privileges).')
+      throw migrationProblem(e, settings)
     }
     delete state.incompatible
     if (migration) {
@@ -293,7 +312,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     } catch {
       throw Object.assign(new HttpError(503, 'unavailable', 'The saved database password cannot be decrypted (was workspace/.secret-key replaced?). Run the database setup again.'), { permanent: true })
     }
-    await configureDatabase({ host: sj.host, port: Number(sj.port) || 3306, database: sj.database, user: sj.user, ssl: !!sj.ssl }, password, { persist: false })
+    await configureDatabase({ host: sj.host, port: Number(sj.port) || 5432, database: sj.database, user: sj.user, ssl: !!sj.ssl }, password, { persist: false })
     return true
   }
 
@@ -386,6 +405,17 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     connections,
     attachments,
     env,
+    environment: currentEnvironment,
+    async transaction<T>(fn: () => Promise<T>): Promise<T> {
+      const db = state.db
+      if (!db) return fn()
+      try {
+        return await db.tx(() => fn())
+      } finally {
+        // caches filled inside the transaction may hold rolled-back rows
+        security.invalidate()
+      }
+    },
     uid,
     now: nowIso,
     state,

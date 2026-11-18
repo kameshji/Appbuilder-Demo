@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AppDef, ControlNode } from '@/contracts'
+import { fx } from '@/fx'
 import { ROOT_CTX } from './evaluator'
 import { appStore, createAppStore, evaluatorOf, type AppStore } from './store'
 import { blankApp } from './sample'
@@ -49,6 +50,15 @@ describe('app stores are independent (app tabs)', () => {
     expect(labelText(b)).toBe('Count 1 / 100')
     expect(labelText(a)).toBe('Count 3 / 30')
     expect(evaluatorOf(a.getState())).not.toBe(evaluatorOf(b.getState()))
+    // the user-defined functions live in each app's own engine instance, not in a shared active set
+    const ea = evaluatorOf(a.getState()).engine
+    const eb = evaluatorOf(b.getState()).engine
+    expect(ea).not.toBe(eb)
+    const none = { resolve: () => undefined }
+    expect(ea.evaluate('=Scaled(2)', none)).toEqual({ ok: true, value: 20 })
+    expect(eb.evaluate('=Scaled(2)', none)).toEqual({ ok: true, value: 200 })
+    expect(ea.evaluate('=Scaled(2)', none)).toEqual({ ok: true, value: 20 })
+    expect(fx.check('=Scaled(2)')[0]?.message).toMatch(/isn't recognised/)
 
     a.getState().navigateTo('s2')
     expect(a.getState().runtime.currentScreenId).toBe('s2')

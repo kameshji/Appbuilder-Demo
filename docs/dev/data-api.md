@@ -77,7 +77,7 @@ Every later example uses `-b $JAR` (and `-c $JAR` where the cookie changes).
 
 | Method and path | Auth | Request body | Response |
 | --- | --- | --- | --- |
-| `GET /status` | none | none | `StatusResponse`: `{ app: 'appbuilder', apiVersion: 1, backend, setup: { needsDatabase, needsAdmin, unavailable?, incompatible? }, ok, session: Session \| null }`; plus `storage: { kind: 'mysql', location } \| null`, `databaseError?` and `server: { version, node, database?, schemaVersion }` **for a signed-in administrator only** |
+| `GET /status` | none | none | `StatusResponse`: `{ app: 'appbuilder', apiVersion: 1, backend, setup: { needsDatabase, needsAdmin, unavailable?, incompatible? }, ok, session: Session \| null }`; plus `storage: { kind: 'postgres', location } \| null` (e.g. `PostgreSQL 16.4 at 127.0.0.1:5432/appbuilder`), `databaseError?` and `server: { version, node, database?, schemaVersion }` **for a signed-in administrator only** |
 | `POST /setup/database` | none + loopback + setup code, or an admin from loopback; see below | `{ host, port, database, user, password, createDatabase?, ssl?, setupCode? }` | `{ ok: true }` |
 | `POST /setup/admin` | none + loopback + setup code, only while there are no users | `{ name, email, password, setupCode? }` | `Session` and sets the cookie |
 | `POST /auth/login` | none | `{ email, password }` | `Session` and sets the cookie |
@@ -100,10 +100,15 @@ Errors and rules:
 - `/setup/database`: allowed for an admin, or (with the code) while no administrator exists. Once `server.json` records
   `setupComplete`, it is refused without an admin session: 403 while the database is reachable, 409 while it is not (the database
   is then changed on disk). 409 also when the database is incompatible (schema too new), 503 when the user count cannot be read.
-  `port` defaults to 3306 and must be 1..65535, `database` must match `^[A-Za-z0-9_$]{1,64}$`. `ssl` is accepted by the server but is
-  not declared in the `SetupDatabaseRequest` type. The connection is tested, the metadata tables are created or upgraded
-  (`ab_*`, see `schema.md`), and `workspace/server.json` is written with the password sealed. A failure is 422 or 503 with a
-  friendly message (never the password).
+  The fields describe a **PostgreSQL** database: `host`, `port` (default 5432, 1..65535), `database` (must match
+  `^[A-Za-z_][A-Za-z0-9_$]{0,62}$`), `user`, `password`, `ssl` (TLS 1.2+, certificate verified) and `createDatabase` (`CREATE
+  DATABASE ... ENCODING 'UTF8'` through the `postgres` maintenance database when it is missing; needs `CREATEDB`, skipped with a log
+  line when the role lacks it). The connection is tested, schema `ab` and the environment schema `env_default` are created or
+  upgraded (see `schema.md`), and `workspace/server.json` is written with the password sealed. Failures are 422 with a friendly
+  message that never contains the password: wrong user name or password, database does not exist, connection refused, no
+  `pg_hba.conf` entry, SSL not supported, the role may not create schemas in the database (`field: 'user'`, with the `GRANT` /
+  `ALTER DATABASE ... OWNER` to run), the database is not UTF8 or holds an old MySQL-era schema (`field: 'database'`); 503 when the
+  schema is newer than this server.
 - `/setup/admin`: 503 when the database is not configured, 409 when a user already exists, 422 for a weak password (minimum 10
   characters, maximum 1024, must not equal the email). It also seeds the sample data or migrates a phase-2 workspace.
 - `/auth/login`: 401 `Invalid email or password.` (the same message for unknown email, wrong password and disabled user, with a
@@ -113,7 +118,7 @@ Errors and rules:
 
 ```bash
 curl -sS $BASE/status
-curl -sS -c $JAR -H "$H" -H "$JSON" -d '{"host":"127.0.0.1","port":3306,"database":"appbuilder","user":"abdev","password":"secret","createDatabase":true}' $BASE/setup/database
+curl -sS -c $JAR -H "$H" -H "$JSON" -d '{"host":"127.0.0.1","port":5432,"database":"appbuilder","user":"appbuilder","password":"secret","createDatabase":true}' $BASE/setup/database
 curl -sS -c $JAR -H "$H" -H "$JSON" -d '{"name":"Admin","email":"admin@example.test","password":"a-long-password"}' $BASE/setup/admin
 curl -sS -b $JAR $BASE/auth/session
 curl -sS -b $JAR -c $JAR -H "$H" -H "$JSON" -d '{"current":"a-long-password","next":"another-long-password"}' $BASE/auth/password
@@ -154,10 +159,11 @@ Body (`Query`, every field optional): `{ select?: string[], where?: Condition, o
   whether more matched. If `top` is 5000 or less, exactly that many rows are returned at most, and `truncated` is false.
 - `count: true` adds `total` (rows matching `where` and the caller's row filter).
 - A column in `select`, `where` or `orderBy` that does not exist: 422. A column the caller may not read (column access `none`): 403.
-- Without `orderBy` rows come in insertion order (MySQL: `ORDER BY createdOn, id`; row ids are time-ordered UUIDv7; the file and
-  Google Sheets connectors keep file/sheet order). The same keys break ties of an explicit sort.
-- The caller's row filter and row scope are ANDed into `where` on the server. Blanks sort last for both directions in the
-  in-memory connectors and in MySQL (MySQL sorts `(col IS NULL)` first, then the value); see `connectors.md`.
+- Without `orderBy` rows come in insertion order (SQL connectors: `ORDER BY createdOn, id`; row ids are time-ordered UUIDv7; the
+  file and Google Sheets connectors keep file/sheet order). The same keys break ties of an explicit sort.
+- The caller's row filter and row scope are ANDed into `where` on the server. Blanks sort last for both directions in every
+  connector (SQL sorts the blank test first, then the value); text compares and sorts case-insensitively by code point on
+  PostgreSQL and in memory; see `connectors.md`.
 
 Response `QueryResponse`: `{ rows, truncated, total? }`.
 
@@ -203,7 +209,7 @@ curl -sS -b $JAR -H "$H" -H "$JSON" -X PATCH -d '{"changes":{"Status":"Closed"}}
 
 Body `{ ids: string[] }` -> `{ deleted: number }`. All or nothing: the permission of every target row is checked first; if any row
 the caller can read may not be deleted, the answer is 403 and nothing is deleted. The rows are then deleted in one connector call
-(MySQL: chunks of 500 inside one transaction). Ids the caller cannot read are skipped. Deleting a single id that deletes nothing is 404. Attachments of deleted rows are removed.
+(PostgreSQL: chunks of 5,000 ids, MySQL: chunks of 500, inside one transaction). Ids the caller cannot read are skipped. Deleting a single id that deletes nothing is 404. Attachments of deleted rows are removed.
 
 ```bash
 curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"ids":["3b1f6f7a-2c1e-4c5e-9d3a-0f7c9d2e8a11"]}' $BASE/data/Tickets/delete
@@ -219,7 +225,7 @@ Body `{ csv: string, mode?: 'append' | 'replace' }` (default `append`) -> `{ imp
 - Every row is built and checked (types, required, unique within the file and against the table, lookups, the create row filter)
   before anything changes; a bad row gives `Row N: ... (nothing was imported)` with the status of the failed check.
 - `replace` deletes the existing rows the caller may delete and inserts the new rows; the new rows may reuse ids and unique values
-  of the rows they replace. On MySQL the delete and the inserts run in one transaction. On connectors without transactions
+  of the rows they replace. On PostgreSQL and MySQL the delete and the inserts run in one transaction. On connectors without transactions
   (files, Google Sheets) the delete and the insert are two writes, see `connectors.md`.
 - The table privileges needed are the same as for insert (and delete for `replace`).
 
@@ -310,8 +316,10 @@ curl -sS -b $JAR "$BASE/apps/app_1a2b3c/package?data=1"
 Rules that clients and a gateway must reproduce:
 
 - `name` must be an identifier (`^[A-Za-z_][A-Za-z0-9_]*$`, unique, not reserved); without it one is derived from `displayName`.
-  The physical name is `t_<lowercase name>` on MySQL (de-duplicated with `_2`, `_3`) and is stored in `source`. The prefix `ab_`
-  is reserved.
+  The physical name is `t_<lowercase name>` on PostgreSQL and MySQL (de-duplicated with `_2`, `_3`; on the default connection inside
+  the environment schema, `env_default.t_orders`) and is stored in `source`. The prefix `ab_` is reserved.
+- Table and column changes on the default connection are one transaction each (metadata, `CREATE`/`ALTER TABLE` and indexes): a
+  failure leaves nothing behind. App and solution imports likewise.
 - A new table gets the system columns `id`, `createdOn`, `modifiedOn`, `createdBy`, `owner` plus the requested columns
   (default one `text` column named Name). At most 200 columns.
 - Tables on the `files` connection are created by adding a data file, not through `POST /tables`.
@@ -348,23 +356,29 @@ curl -sS -b $JAR -H "$H" -X DELETE "$BASE/tables/tbl_1a2b3c?dropSource=1"  # als
 | `GET /connections/:id/source-tables` | maker | none | `{ items: SourceTableInfo[] }` |
 | `POST /connections/:id/link` | maker | `{ source, displayName?, name?, readOnly?, ensureIdColumn? }` | `TableDef` |
 
-- `connector` is one of `mysql`, `files`, `gsheets`. The `files` connection is built in and unique. The two built-in connections are
-  `conn_default` (MySQL, the metadata database) and `conn_files` (data files, scope `device`).
+- `connector` is one of `postgres`, `mysql`, `files`, `gsheets`. The `files` connection is built in and unique. The two built-in
+  connections are `conn_default` (`postgres`: the system database, tables in the environment schema) and `conn_files` (data files,
+  scope `device`).
+- `postgres` settings: `host`, `port` (default `5432`), `database`, `user`, `ssl`, `schema` (default `public`; `ab`, `env_*`, `pg_*`
+  and `information_schema` are refused with 422 `field: 'settings.schema'`). `mysql` settings: the same without `schema`, port
+  `3306`.
 - Secrets (database password, service-account key) are write-only: on `PATCH`, omitted keeps the stored secret, `''` clears it. They
   are stored AES-256-GCM sealed in `ab_connections.secret_sealed` and are never returned.
 - Delete is refused (409) for the default connection and while tables or data files use it. `PATCH` on `conn_default` is refused
   (400): it is rewritten from `server.json` / `APPBUILDER_DB_*` at every start.
-- `default` is only valid for a `mysql` connection that tests successfully.
+- `default` is only valid for a `postgres` connection that tests successfully (422 otherwise: "Only a PostgreSQL connection can be
+  the default store for new tables").
 - `link` registers an existing physical table or sheet as a table (read from `source-tables`). 409 when that source is already
-  linked through this connection or another one to the same store (same MySQL host, port and database, `localhost` = `127.0.0.1` =
-  `::1`; same spreadsheet id); the message names the existing table. `source-tables` leaves such tables out.
+  linked through this connection or another one to the same store (same host, port and database, and for PostgreSQL the same schema;
+  `localhost` = `127.0.0.1` = `::1`; same spreadsheet id); the message names the existing table. `source-tables` leaves such tables out.
 - A source lacking system columns (`id`, `createdOn`, `modifiedOn`, `createdBy`, `owner`): with `ensureIdColumn: true` they are
-  added (MySQL: `ALTER TABLE ... ADD COLUMN`, a missing `id` is filled with UUIDv7 and gets a unique key; Google Sheets: the `id`
+  added (PostgreSQL and MySQL: `ALTER TABLE ... ADD COLUMN`, a missing `id` is filled with UUIDv7 and gets a unique key, on
+  PostgreSQL in one transaction; Google Sheets: the `id`
   column is added and filled, the others as headers) and the table is writable; without it the table is `readOnly` with
   `missingSystem` listing what is missing, and no query names those columns.
 
 ```bash
-curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"name":"Warehouse","connector":"mysql","settings":{"host":"db.internal","port":"3306","database":"wh","user":"app"},"secret":"pw"}' $BASE/connections
+curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"name":"Warehouse","connector":"postgres","settings":{"host":"db.internal","database":"wh","user":"app","schema":"sales"},"secret":"pw"}' $BASE/connections
 curl -sS -b $JAR -H "$H" -X POST $BASE/connections/conn_abc/test
 ```
 

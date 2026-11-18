@@ -1,33 +1,30 @@
 /**
- * Regression tests for the hardening fixes over HTTP against the sandbox MariaDB/MySQL:
- *   APPBUILDER_TEST_DB=mysql://abdev:abdev-sandbox-only@127.0.0.1:3306/appbuilder_test npx vitest run server/core/hardening
- * setup code and setup lock, anonymous /status, forced password change, linking MySQL tables with and without consent,
- * assign owner, boot retry, downgrade guard, schema migration v3 and its audit entry. Creates and drops its own database.
+ * Regression tests for the hardening fixes over HTTP against the sandbox PostgreSQL:
+ *   APPBUILDER_TEST_DB=postgres://abdev:abdev-sandbox-only@127.0.0.1:5433/appbuilder_test npx vitest run server/core/hardening
+ * setup code and setup lock, anonymous /status, forced password change, linking existing tables of the default database
+ * with and without consent, assign owner, boot retry, downgrade guard, the first migration's audit entry. Creates and drops
+ * its own database.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
-import { randomBytes } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
-import mysql from 'mysql2/promise'
+import { PG_URL, SKIP_PG, dropDatabase, pgQuery, pgServer, testDatabaseName } from './testdb.ts'
 import { createApp } from './app.ts'
 import type { AppServer } from './app.ts'
-import { createSqlDb } from '../connectors/mysql/index.ts'
-import type { MySqlSettings, SqlDb } from './contracts.ts'
+import { createPgDb } from '../connectors/postgres/db.ts'
+import type { DatabaseSettings, SqlDb } from './contracts.ts'
 import { SCHEMA_VERSION } from './meta-store.ts'
 import { setQuiet } from './util.ts'
 
 setQuiet(true)
 
-const URL_ENV = process.env.APPBUILDER_TEST_DB
-const parsed = URL_ENV ? new URL(URL_ENV) : null
-const conn = parsed
-  ? { host: parsed.hostname, port: Number(parsed.port) || 3306, user: decodeURIComponent(parsed.username), password: decodeURIComponent(parsed.password) }
-  : null
-const dbName = `appbuilder_test_hd_${randomBytes(4).toString('hex')}`
-if (!URL_ENV) process.stderr.write('[server/core hardening integration] skipped: set APPBUILDER_TEST_DB to run\n')
+const URL_ENV = PG_URL
+const conn = pgServer
+const dbName = testDatabaseName('hd')
+if (!URL_ENV) process.stderr.write(`[server/core hardening integration] ${SKIP_PG}\n`)
 
 class Client {
   cookie = ''
@@ -68,13 +65,14 @@ async function serve(app: AppServer): Promise<{ server: http.Server; base: strin
   return { server, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}` }
 }
 
-describe.skipIf(!URL_ENV)('hardening (MariaDB/MySQL)', () => {
+describe.skipIf(!URL_ENV)('hardening (PostgreSQL)', () => {
   let app: AppServer
   let server: http.Server
   let tmp = ''
   let base = ''
   let A: Client
-  let raw: mysql.Connection
+  /** direct SQL on the test database (bypassing Appbuilder) */
+  const raw = { query: <T = Record<string, unknown>>(sql: string, params: unknown[] = []) => pgQuery<T>(dbName, sql, params) }
   const dbSettings = () => ({ host: conn!.host, port: conn!.port, database: dbName, user: conn!.user, password: conn!.password, createDatabase: true })
 
   beforeAll(async () => {
@@ -87,12 +85,7 @@ describe.skipIf(!URL_ENV)('hardening (MariaDB/MySQL)', () => {
   afterAll(async () => {
     await new Promise<void>((r) => (server ? server.close(() => r()) : r()))
     await app?.close()
-    await raw?.end().catch(() => {})
-    if (conn) {
-      const c = await mysql.createConnection(conn)
-      await c.query(`DROP DATABASE IF EXISTS \`${dbName}\``)
-      await c.end()
-    }
+    if (conn) await dropDatabase(dbName)
     if (tmp) fs.rmSync(tmp, { recursive: true, force: true })
   }, 60000)
 
@@ -116,7 +109,6 @@ describe.skipIf(!URL_ENV)('hardening (MariaDB/MySQL)', () => {
       body: JSON.stringify(dbSettings()),
     })
     expect(okRes.status, await okRes.clone().text()).toBe(200)
-    raw = await mysql.createConnection({ ...conn!, database: dbName })
     // the admin step needs it too
     expect((await A.post('/setup/admin', { name: 'Ada', email: 'ada@example.com', password: 'admin-password-1' })).status).toBe(403)
     const adm = await A.post('/setup/admin', { name: 'Ada', email: 'ada@example.com', password: 'admin-password-1', setupCode: code })
@@ -132,10 +124,9 @@ describe.skipIf(!URL_ENV)('hardening (MariaDB/MySQL)', () => {
   }, 60000)
 
   it('the first migration is printed and written to the audit log', async () => {
-    const [rows] = await raw.query("SELECT details FROM ab_audit WHERE action = 'schema.migrate'")
-    const list = rows as { details: string }[]
+    const list = await raw.query<{ details: unknown }>("SELECT details FROM env_default.ab_audit WHERE action = 'schema.migrate'")
     expect(list.length).toBe(1)
-    expect(JSON.parse(list[0].details)).toMatchObject({ from: 0, to: SCHEMA_VERSION })
+    expect(list[0].details).toMatchObject({ from: 0, to: SCHEMA_VERSION })
   })
 
   it('an admin-set password must be changed first; everything else answers password_change_required', async () => {
@@ -159,9 +150,9 @@ describe.skipIf(!URL_ENV)('hardening (MariaDB/MySQL)', () => {
     expect((await T2.get('/workspace')).data.error.code).toBe('password_change_required')
   }, 60000)
 
-  it('MySQL link: without consent a table lacking system columns is read-only and its queries work', async () => {
-    await raw.query('CREATE TABLE half_sys (id CHAR(36) NOT NULL PRIMARY KEY, name VARCHAR(50) NULL)')
-    await raw.query("INSERT INTO half_sys VALUES ('11111111-1111-4111-8111-111111111111', 'x')")
+  it('link from the default database: without consent a table lacking system columns is read-only and its queries work', async () => {
+    await raw.query('CREATE TABLE env_default.half_sys (id text NOT NULL PRIMARY KEY, name varchar(50) NULL)')
+    await raw.query("INSERT INTO env_default.half_sys VALUES ('11111111-1111-4111-8111-111111111111', 'x')")
     const l = await A.post('/connections/conn_default/link', { source: 'half_sys', displayName: 'Half' })
     expect(l.status, JSON.stringify(l.data)).toBe(200)
     expect(l.data).toMatchObject({ readOnly: true, missingSystem: ['createdOn', 'modifiedOn', 'createdBy', 'owner'] })
@@ -177,24 +168,25 @@ describe.skipIf(!URL_ENV)('hardening (MariaDB/MySQL)', () => {
     // deleting it never drops the customer's table
     expect((await A.req('DELETE', `/tables/${l.data.id}?dropSource=1`)).status).toBe(422)
     expect((await A.req('DELETE', `/tables/${l.data.id}`)).status).toBe(200)
-    const [left] = await raw.query("SHOW TABLES LIKE 'half_sys'")
-    expect((left as unknown[]).length).toBe(1)
+    const left = await raw.query<{ t: string | null }>("SELECT to_regclass('env_default.half_sys')::text AS t")
+    expect(left[0].t).toBe('env_default.half_sys')
   }, 60000)
 
-  it('MySQL link with consent: missing system columns are added, id backfilled with UUIDv7, the table is writable', async () => {
-    await raw.query('CREATE TABLE crm_clients (client_no INT NOT NULL PRIMARY KEY, name VARCHAR(50) NULL)')
-    await raw.query("INSERT INTO crm_clients VALUES (1, 'Alpha'), (2, 'Beta'), (3, 'Gamma')")
+  it('link with consent: missing system columns are added, id backfilled with UUIDv7, the table is writable', async () => {
+    await raw.query('CREATE TABLE env_default.crm_clients (client_no integer NOT NULL PRIMARY KEY, name varchar(50) NULL)')
+    await raw.query("INSERT INTO env_default.crm_clients VALUES (1, 'Alpha'), (2, 'Beta'), (3, 'Gamma')")
     const l = await A.post('/connections/conn_default/link', { source: 'crm_clients', displayName: 'Clients', ensureIdColumn: true })
     expect(l.status, JSON.stringify(l.data)).toBe(200)
     expect(l.data.readOnly).toBeUndefined()
     expect(l.data.missingSystem).toBeUndefined()
-    const [cols] = await raw.query("SELECT column_name AS c, is_nullable AS n FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'crm_clients' ORDER BY ordinal_position")
-    const byName = new Map((cols as { c: string; n: string }[]).map((r) => [r.c, r.n]))
+    const cols = await raw.query<{ c: string; n: string }>("SELECT column_name AS c, is_nullable AS n FROM information_schema.columns WHERE table_schema = 'env_default' AND table_name = 'crm_clients' ORDER BY ordinal_position")
+    const byName = new Map(cols.map((r) => [r.c, r.n]))
     for (const c of ['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner']) expect(byName.has(c), c).toBe(true)
     expect(byName.get('id')).toBe('NO')
-    const [ids] = await raw.query('SELECT id, createdOn FROM crm_clients ORDER BY client_no')
-    const list = ids as { id: string; createdOn: Date | null }[]
+    const list = await raw.query<{ id: string; createdOn: Date | null }>('SELECT id, "createdOn" FROM env_default.crm_clients ORDER BY client_no')
     expect(new Set(list.map((r) => r.id)).size).toBe(3)
+    // filled in physical row order: UUIDv7 values increase with it
+    expect([...list.map((r) => r.id)].sort()).toEqual(list.map((r) => r.id))
     for (const r of list) {
       expect(r.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
       expect(r.createdOn).not.toBeNull()
@@ -211,28 +203,19 @@ describe.skipIf(!URL_ENV)('hardening (MariaDB/MySQL)', () => {
     expect(q2.data.rows.every((r: any) => typeof r.owner === 'string' && r.owner)).toBe(true)
     // removing a column of the linked table only unmaps it
     expect((await A.req('DELETE', `/tables/${l.data.id}/columns/name`)).status).toBe(200)
-    const [after] = await raw.query("SELECT COUNT(*) AS n FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'crm_clients' AND column_name = 'name'")
-    expect(Number((after as { n: number }[])[0].n)).toBe(1)
+    const after = await raw.query<{ n: number }>("SELECT count(*)::int AS n FROM information_schema.columns WHERE table_schema = 'env_default' AND table_name = 'crm_clients' AND column_name = 'name'")
+    expect(after[0].n).toBe(1)
   }, 60000)
 
-  it('migration v3 marks old tables (linked + missing columns: read-only) and re-adds must_change_password', async () => {
-    const now = new Date()
-    const linkedDef = { id: 'tbl_oldlink', name: 'OldLink', displayName: 'Old link', primaryColumn: 'name', columns: [{ name: 'id', displayName: 'Id', type: 'text', system: true }, { name: 'name', displayName: 'name', type: 'text' }], createdOn: '', modifiedOn: '', connectionId: 'conn_default', source: 'half_sys' }
-    const ownDef = { id: 'tbl_oldown', name: 'OldOwn', displayName: 'Old own', primaryColumn: 'id', columns: [], createdOn: '', modifiedOn: '', connectionId: 'conn_default', source: 't_oldown' }
-    for (const d of [linkedDef, ownDef]) await raw.query('INSERT INTO ab_tables (id, name, connection_id, source, def, created_on, modified_on) VALUES (?, ?, ?, ?, ?, ?, ?)', [d.id, d.name, d.connectionId, d.source, JSON.stringify(d), now, now])
-    await raw.query("INSERT INTO ab_audit (at, user_id, action, table_id) VALUES (?, NULL, 'table.link', 'tbl_oldlink')", [now])
-    await raw.query('ALTER TABLE ab_users DROP COLUMN must_change_password')
-    await raw.query("UPDATE ab_meta SET v = '2' WHERE k = 'schemaVersion'")
-    const summary = await app.services.meta.migrate()
-    expect(summary).toMatchObject({ from: 2, to: SCHEMA_VERSION })
-    const get = async (id: string) => JSON.parse(((await raw.query('SELECT def FROM ab_tables WHERE id = ?', [id]))[0] as { def: string }[])[0].def)
-    expect(await get('tbl_oldlink')).toMatchObject({ readOnly: true, missingSystem: ['createdOn', 'modifiedOn', 'createdBy', 'owner'] })
-    expect((await get('tbl_oldlink')).managed).toBeUndefined()
-    expect(await get('tbl_oldown')).toMatchObject({ managed: true })
-    const [c] = await raw.query("SELECT COUNT(*) AS n FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'ab_users' AND column_name = 'must_change_password'")
-    expect(Number((c as { n: number }[])[0].n)).toBe(1)
-    await raw.query("DELETE FROM ab_tables WHERE id IN ('tbl_oldlink', 'tbl_oldown')")
-    app.services.security.invalidate()
+  it('migrate() is idempotent and leaves the layout: schema ab plus env_default', async () => {
+    expect(await app.services.meta.migrate()).toMatchObject({ from: SCHEMA_VERSION, to: SCHEMA_VERSION, steps: [] })
+    const schemas = (await raw.query<{ s: string }>("SELECT nspname AS s FROM pg_namespace WHERE nspname IN ('ab', 'env_default', 'public') ORDER BY 1")).map((r) => r.s)
+    expect(schemas).toEqual(['ab', 'env_default', 'public'])
+    const inAb = (await raw.query<{ t: string }>("SELECT table_name AS t FROM information_schema.tables WHERE table_schema = 'ab' ORDER BY 1")).map((r) => r.t)
+    expect(inAb).toEqual(['environments', 'licence', 'sessions', 'settings', 'users'])
+    expect(await raw.query("SELECT id, schema_name, built_in FROM ab.environments")).toEqual([{ id: 'default', schema_name: 'env_default', built_in: true }])
+    // nothing in public
+    expect((await raw.query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")).length).toBe(0)
   }, 60000)
 
   /** a copy of the workspace (server.json, .secret-key) for a second server instance */
@@ -274,13 +257,13 @@ describe.skipIf(!URL_ENV)('hardening (MariaDB/MySQL)', () => {
   it('boot retry: a database that is down at start is picked up in the background, no restart', async () => {
     const dir = copyWorkspace()
     let attempts = 0
-    const factory = (settings: MySqlSettings, password: string): SqlDb => {
+    const factory = (settings: DatabaseSettings, password: string): SqlDb => {
       attempts++
       if (attempts === 1) {
         const err = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })
-        return { query: async () => { throw err }, exec: async () => { throw err }, tx: async () => { throw err }, serverVersion: async () => '', close: async () => {} }
+        return { dialect: 'postgres', query: async () => { throw err }, exec: async () => { throw err }, tx: async () => { throw err }, serverVersion: async () => '', close: async () => {} }
       }
-      return createSqlDb(settings, password)
+      return createPgDb(settings, password)
     }
     const app2 = await createApp({ env: {}, config: { workspaceDir: dir }, sqlDbFactory: factory, printSetupCode: false })
     try {
@@ -299,7 +282,7 @@ describe.skipIf(!URL_ENV)('hardening (MariaDB/MySQL)', () => {
   }, 60000)
 
   it('downgrade guard: a database with a newer schema is not used at all', async () => {
-    await raw.query("UPDATE ab_meta SET v = '99' WHERE k = 'schemaVersion'")
+    await raw.query("UPDATE ab.settings SET v = '99' WHERE k = 'schemaVersion'")
     const dir = copyWorkspace()
     const app2 = await createApp({ env: {}, config: { workspaceDir: dir }, printSetupCode: false })
     const s2 = await serve(app2)
@@ -314,13 +297,13 @@ describe.skipIf(!URL_ENV)('hardening (MariaDB/MySQL)', () => {
       expect((await c.post('/data/x/query', {})).status).toBe(503)
       expect((await c.post('/setup/database', { ...dbSettings(), setupCode: 'ABCDEFGH' })).status).toBe(409)
       // nothing was written to the newer database
-      const [v] = await raw.query("SELECT v FROM ab_meta WHERE k = 'schemaVersion'")
-      expect((v as { v: string }[])[0].v).toBe('99')
+      const v = await raw.query<{ v: string }>("SELECT v FROM ab.settings WHERE k = 'schemaVersion'")
+      expect(v[0].v).toBe('99')
     } finally {
       await new Promise<void>((r) => s2.server.close(() => r()))
       await app2.close()
       fs.rmSync(dir, { recursive: true, force: true })
-      await raw.query("UPDATE ab_meta SET v = ? WHERE k = 'schemaVersion'", [String(SCHEMA_VERSION)])
+      await raw.query("UPDATE ab.settings SET v = $1 WHERE k = 'schemaVersion'", [String(SCHEMA_VERSION)])
     }
   }, 60000)
 

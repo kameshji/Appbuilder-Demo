@@ -145,10 +145,43 @@ export interface FxApi {
    * "Area(w: Number, h: Number): Number = w * h;" (params filled, formula = body).
    */
   parseNamedFormulas(source: string): { items: FxNamedFormula[]; errors: FxDiagnostic[] }
-  /** Register user-defined functions for subsequent evaluate() calls (replaces the previous set). */
+  /**
+   * Register user-defined functions on the DEFAULT engine (the one behind this `fx` object), replacing its previous set.
+   * Code that can run for several apps or requests at once uses its own engine from createEngine() instead.
+   */
   setUserFunctions(defs: FxNamedFormula[]): void
   /** Call-site help for the formula bar: which function and which argument the caret is in. */
   signatureAt(source: Formula, offset: number): { name: string; signature: string; summary: string; argIndex: number } | null
+  /** A new, independent engine instance with its own user-defined functions and named formulas. */
+  createEngine(options?: FxEngineOptions): FxEngine
+}
+
+export interface FxEngineOptions {
+  /** App.Formulas source ("Name = expr; F(x: Number): Number = x * 2;"): split into named formulas and user functions */
+  formulas?: string
+  userFunctions?: FxNamedFormula[]
+  namedFormulas?: FxNamedFormula[]
+}
+
+/**
+ * One formula engine instance (src/fx/engine.ts). User-defined functions and named formulas belong to the instance:
+ * two instances never see each other's definitions. Built-in functions and enums are shared and immutable.
+ * Named formulas are resolved after the scope: a name the scope answers (control, variable, table) wins.
+ */
+export interface FxEngine {
+  check(source: Formula): FxDiagnostic[]
+  evaluate(source: Formula, scope: FxScope, host?: FxHost): FxResult
+  /** built-in functions plus this engine's user-defined functions */
+  functions(): FxFunctionDoc[]
+  signatureAt(source: Formula, offset: number): { name: string; signature: string; summary: string; argIndex: number } | null
+  /** replace this engine's user-defined functions (entries without params are ignored) */
+  setUserFunctions(defs: FxNamedFormula[]): void
+  /** replace this engine's named formulas (entries with params are ignored) */
+  setNamedFormulas(defs: FxNamedFormula[]): void
+  /** parse App.Formulas and replace both sets; returns the parse errors */
+  setFormulas(source: string): FxDiagnostic[]
+  userFunctions(): FxNamedFormula[]
+  namedFormulas(): FxNamedFormula[]
 }
 
 export interface FxNamedFormula {

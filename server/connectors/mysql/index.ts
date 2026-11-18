@@ -1,4 +1,8 @@
-/** MySQL / MariaDB connector (SPEC3 7.1). SQL generation lives in sql.ts (pure), the pool in db.ts. */
+/**
+ * MySQL / MariaDB connector for EXTERNAL databases (link a customer's tables, or create tables in a customer's MySQL).
+ * The system store and the default connection are PostgreSQL (connectors/postgres). SQL generation lives in sql.ts
+ * (pure), the pool in db.ts.
+ */
 import mysql from 'mysql2/promise'
 import type { ColumnDef, ColumnType, TableDef } from '../../../src/platform/contracts.ts'
 import type { Condition, Query } from '../../../src/platform/http.ts'
@@ -12,17 +16,6 @@ import {
   createTableSql, fromDb, indexName, physicalName, quoteId, sqlType, tableId, wantedIndex,
 } from './sql.ts'
 import { rowUid } from '../../core/util.ts'
-
-/** MySQL connectors only: adds the missing system columns to a linked table (with the maker's consent) */
-export interface MySqlSystemColumns {
-  ensureSystemColumns(source: string): Promise<{ added: string[]; filled: number }>
-}
-
-export function ensureMySqlSystemColumns(connector: Connector, source: string): Promise<{ added: string[]; filled: number }> {
-  const c = connector as Connector & Partial<MySqlSystemColumns>
-  if (typeof c.ensureSystemColumns !== 'function') throw new Error('Adding system columns is only available on MySQL connections.')
-  return c.ensureSystemColumns(source)
-}
 
 export { createSqlDb }
 
@@ -241,7 +234,7 @@ export const createMySqlConnector: ConnectorFactory = (conn: ConnectionRecord, e
     }
   }
 
-  const connector: Connector & MySqlSystemColumns = {
+  const connector: Connector = {
     kind: 'mysql',
     capabilities: { ddl: true, write: true, pushdown: true, transactions: true },
 

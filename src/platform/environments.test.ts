@@ -69,7 +69,7 @@ describe('server backend', () => {
       calls.push(`${method} ${p}`)
       const s = { ...session, user: { ...session.user, name } }
       if (p === '/status') return json({ app: 'appbuilder', apiVersion: 1, backend: 'node', setup: { needsDatabase: false, needsAdmin: false }, ok: true, session: s })
-      if (p === '/workspace') return json({ apps: [], tables: [], roles: [], users: [s.user], connections: [], solutions: [], dataFiles: [], session: s, storage: { kind: 'mysql', location: 'Server database' }, environments: [DEF] })
+      if (p === '/workspace') return json({ apps: [], tables: [], roles: [], users: [s.user], connections: [], solutions: [], dataFiles: [], session: s, storage: { kind: 'postgres', location: 'Server database' }, environments: [DEF] })
       if (p === '/environments') return json({ items: [DEF] })
       if (p === '/auth/profile' && method === 'PATCH') {
         name = (JSON.parse(String(init.body)) as { name: string }).name

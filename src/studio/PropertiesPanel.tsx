@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Copy, Trash2, SlidersHorizontal } from 'lucide-react'
-import type { ControlNode, FxValue, PropMeta } from '@/contracts'
+import type { ControlNode, FxDiagnostic, FxValue, PropMeta } from '@/contracts'
 import { controls } from '@/controls'
 import { fx } from '@/fx'
 import { type Evaluator } from '@/runtime/evaluator'
@@ -126,10 +126,11 @@ function NodePanel({ node, ev }: { node: ControlNode; ev: Evaluator }) {
                     label={m.name}
                     stored={node.props[m.name] ?? m.default}
                     error={nodeEval.errors[m.name]}
+                    check={ev.engine.check}
                     onCommit={(f) => useStore.getState().setProp(node.id, m.name, f, `adv:${node.id}:${m.name}`)}
                   />
                 ))}
-              {isScreen && 'onstart'.includes(search.toLowerCase()) && <AppPropRow />}
+              {isScreen && 'onstart'.includes(search.toLowerCase()) && <AppPropRow ev={ev} />}
               {isScreen && 'formulas'.includes(search.toLowerCase()) && <AppFormulasRow />}
             </div>
           </ScrollArea>
@@ -139,9 +140,9 @@ function NodePanel({ node, ev }: { node: ControlNode; ev: Evaluator }) {
   )
 }
 
-function AppPropRow() {
+function AppPropRow({ ev }: { ev: Evaluator }) {
   const f = useStore((s) => s.app.appProps.OnStart ?? '=')
-  return <AdvancedRow label="App.OnStart" stored={f} onCommit={(v) => useStore.getState().setAppProp('OnStart', v)} />
+  return <AdvancedRow label="App.OnStart" stored={f} check={ev.engine.check} onCommit={(v) => useStore.getState().setAppProp('OnStart', v)} />
 }
 
 function AppFormulasRow() {
@@ -492,7 +493,8 @@ function TextEditor({ value, onChange, testId }: { value: string; onChange: (v: 
 
 /* ------------------------------------------------------------------ advanced rows */
 
-function AdvancedRow({ label, stored, error, onCommit }: { label: string; stored: string; error?: string; onCommit: (f: string) => void }) {
+/** `check`: the app's engine check (knows its user-defined functions); defaults to the built-ins only */
+function AdvancedRow({ label, stored, error, onCommit, check = fx.check }: { label: string; stored: string; error?: string; onCommit: (f: string) => void; check?: (f: string) => FxDiagnostic[] }) {
   const body = (f: string) => (f.startsWith('=') ? f.slice(1) : f)
   const [v, setV] = useState(body(stored))
   const [syntax, setSyntax] = useState<string | null>(null)
@@ -528,7 +530,7 @@ function AdvancedRow({ label, stored, error, onCommit }: { label: string; stored
           onChange={(e) => {
             const text = e.target.value
             setV(text)
-            const d = fx.check('=' + text)
+            const d = check('=' + text)
             if (d.length === 0) {
               setSyntax(null)
               sent.current = '=' + text

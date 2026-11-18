@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { fx } from './index'
-import { contacts, err, fakeHost, run, val } from './testutil'
+import { fx } from './index.ts'
+import { contacts, err, fakeHost, run, val } from './testutil.ts'
 
 afterEach(() => fx.setUserFunctions([]))
 

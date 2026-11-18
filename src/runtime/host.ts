@@ -1,5 +1,4 @@
 import type { AppDef, ControlNode, FxHost, FxRecord, FxValue } from '@/contracts'
-import { fx } from '@/fx'
 import { Evaluator, ROOT_CTX, enumName, type Env, type NodeCtx, type RuntimeView } from './evaluator'
 import { uid, isRecord } from './util'
 import { currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableRows, tables } from './data'
@@ -372,10 +371,9 @@ export function runFormula(input: RunInput): RunResult {
   }
 
   try {
-    evr.useUdfs()
     if (input.action) input.action(host)
     else {
-      const r = fx.evaluate(formula ?? '=', evr.scopeFor(node, ctx), host)
+      const r = evr.engine.evaluate(formula ?? '=', evr.scopeFor(node, ctx), host)
       if (!r.ok) res.failed = r.error.message
     }
   } catch (e) {

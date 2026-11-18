@@ -83,10 +83,14 @@ async function audit(services: CoreServices, user: UserContext, action: string, 
 
 /** remove every attachment of a table (call when a table is deleted) */
 export async function removeTableAttachments(services: CoreServices, tableId: string): Promise<number> {
-  const rows = await services.meta.db.query<{ id: string }>('SELECT id FROM ab_attachments WHERE table_id = ?', [tableId])
-  const recs = await services.meta.attachments.many(rows.map((r) => r.id))
-  await services.data.internals.removeAttachments(recs)
-  return recs.length
+  const ids = await services.meta.attachments.idsForTable(tableId)
+  let n = 0
+  for (let i = 0; i < ids.length; i += 1000) {
+    const recs = await services.meta.attachments.many(ids.slice(i, i + 1000))
+    await services.data.internals.removeAttachments(recs)
+    n += recs.length
+  }
+  return n
 }
 
 /**
@@ -96,8 +100,7 @@ export async function removeTableAttachments(services: CoreServices, tableId: st
 export async function sweepOrphanAttachments(services: CoreServices, graceMs = 60 * 60 * 1000): Promise<number> {
   const meta = services.meta
   const cutoff = new Date(Date.now() - graceMs)
-  const rows = await meta.db.query<{ id: string }>('SELECT id FROM ab_attachments WHERE created_on < ? ORDER BY table_id LIMIT 5000', [cutoff])
-  const recs = await meta.attachments.many(rows.map((r) => r.id))
+  const recs = await meta.attachments.many(await meta.attachments.idsCreatedBefore(cutoff, 5000))
   const byTable = new Map<string, AttachmentRecord[]>()
   for (const a of recs) byTable.set(a.tableId, [...(byTable.get(a.tableId) ?? []), a])
   const orphans: AttachmentRecord[] = []

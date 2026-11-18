@@ -1,33 +1,29 @@
 /**
- * Regression tests (docs review fixes) over HTTP against the sandbox MariaDB/MySQL:
- *   APPBUILDER_TEST_DB=mysql://abdev:abdev-sandbox-only@127.0.0.1:3306/appbuilder_test npx vitest run server/core
+ * Regression tests (docs review fixes) over HTTP against the sandbox PostgreSQL:
+ *   APPBUILDER_TEST_DB=postgres://abdev:abdev-sandbox-only@127.0.0.1:5433/appbuilder_test npx vitest run server/core
  * body limits per route, RLS WITH CHECK on create/update, all-or-nothing deletes and imports, attachment size limits,
- * insertion order of reads, distinct throttle codes, lowercase emails (migration v2). Creates and drops its own database.
+ * insertion order of reads, distinct throttle codes, lowercase emails. Creates and drops its own database.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
-import { randomBytes } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
-import mysql from 'mysql2/promise'
+import { PG_URL, SKIP_PG, dropDatabase, pgQuery, pgServer, testDatabaseName } from './testdb.ts'
 import { createApp } from './app.ts'
 import type { AppServer } from './app.ts'
 import { hashPassword } from './password.ts'
 import { setQuiet } from './util.ts'
-import { DDL, normaliseUserEmails } from './meta-store.ts'
+import { SCHEMA_VERSION } from './meta-store.ts'
 import type { RoleDef, TableDef } from '../../src/platform/contracts.ts'
 
 setQuiet(true)
 
-const URL_ENV = process.env.APPBUILDER_TEST_DB
-const parsed = URL_ENV ? new URL(URL_ENV) : null
-const conn = parsed
-  ? { host: parsed.hostname, port: Number(parsed.port) || 3306, user: decodeURIComponent(parsed.username), password: decodeURIComponent(parsed.password) }
-  : null
-const dbName = `appbuilder_test_fx_${randomBytes(4).toString('hex')}`
-if (!URL_ENV) process.stderr.write('[server/core fixes integration] skipped: set APPBUILDER_TEST_DB to run\n')
+const URL_ENV = PG_URL
+const conn = pgServer
+const dbName = testDatabaseName('fx')
+if (!URL_ENV) process.stderr.write(`[server/core fixes integration] ${SKIP_PG}\n`)
 
 class Client {
   cookie = ''
@@ -70,7 +66,7 @@ const sys = [
   { name: 'owner', displayName: 'Owner', type: 'text', system: true },
 ] as TableDef['columns']
 
-describe.skipIf(!URL_ENV)('docs review fixes (MariaDB/MySQL)', () => {
+describe.skipIf(!URL_ENV)('docs review fixes (PostgreSQL)', () => {
   let app: AppServer
   let server: http.Server
   let tmp = ''
@@ -118,11 +114,7 @@ describe.skipIf(!URL_ENV)('docs review fixes (MariaDB/MySQL)', () => {
   afterAll(async () => {
     await new Promise<void>((r) => (server ? server.close(() => r()) : r()))
     await app?.close()
-    if (conn) {
-      const c = await mysql.createConnection(conn)
-      await c.query(`DROP DATABASE IF EXISTS \`${dbName}\``)
-      await c.end()
-    }
+    if (conn) await dropDatabase(dbName)
     if (tmp) fs.rmSync(tmp, { recursive: true, force: true })
   }, 60000)
 
@@ -319,17 +311,22 @@ describe.skipIf(!URL_ENV)('docs review fixes (MariaDB/MySQL)', () => {
     expect(t.data.error.code).toBe('rate_limited')
   }, 60000)
 
-  it('migration v2 lowercases stored emails; the write path keeps them lowercase', async () => {
-    const db = app.services.meta.db
-    await db.exec("INSERT INTO ab_users (id, name, email, status, created_on) VALUES ('user_mixed', 'Mixed', ' Mixed.Case@Example.COM ', 'active', NOW(3))")
-    await db.exec("UPDATE ab_meta SET v = '1' WHERE k = 'schemaVersion'")
-    await app.services.meta.migrate()
-    expect((await db.query<{ email: string }>("SELECT email FROM ab_users WHERE id = 'user_mixed'"))[0].email).toBe('mixed.case@example.com')
-    expect((await db.query<{ v: string }>("SELECT v FROM ab_meta WHERE k = 'schemaVersion'"))[0].v).toBe('3')
-    expect((await app.services.meta.users.byEmail('MIXED.case@example.com'))?.id).toBe('user_mixed')
-    await app.services.meta.users.update('user_mixed', { email: 'New.Address@Example.com' })
-    expect((await app.services.meta.users.get('user_mixed'))?.email).toBe('new.address@example.com')
-    expect(await normaliseUserEmails(db)).toEqual({ changed: 0, skipped: [] })
-    expect(DDL.some((d) => d.includes('ux_ab_users_email'))).toBe(true)
+  it('emails are stored lowercase by the write path; schema versions of the MySQL era are refused', async () => {
+    const meta = app.services.meta
+    await meta.users.insert({ id: 'user_mixed', name: 'Mixed', email: ' Mixed.Case@Example.COM ', roleIds: [], status: 'active', passwordHash: null })
+    expect((await pgQuery<{ email: string }>(dbName, "SELECT email FROM ab.users WHERE id = 'user_mixed'"))[0].email).toBe('mixed.case@example.com')
+    expect((await meta.users.byEmail('MIXED.case@example.com'))?.id).toBe('user_mixed')
+    await meta.users.update('user_mixed', { email: 'New.Address@Example.com' })
+    expect((await meta.users.get('user_mixed'))?.email).toBe('new.address@example.com')
+    // the unique index on ab.users.email refuses a second row with the same address
+    await expect(meta.users.insert({ id: 'user_dup', name: 'Dup', email: 'NEW.address@example.com', roleIds: [], status: 'active', passwordHash: null })).rejects.toMatchObject({ code: '23505' })
+    // versions 1-3 were the MySQL system store: there is no upgrade path, the database is refused untouched
+    await pgQuery(dbName, "UPDATE ab.settings SET v = '3' WHERE k = 'schemaVersion'")
+    try {
+      await expect(meta.migrate()).rejects.toThrow(/not supported on PostgreSQL/)
+    } finally {
+      await pgQuery(dbName, "UPDATE ab.settings SET v = $1 WHERE k = 'schemaVersion'", [String(SCHEMA_VERSION)])
+    }
+    expect(await meta.migrate()).toMatchObject({ from: SCHEMA_VERSION, to: SCHEMA_VERSION })
   }, 60000)
 })

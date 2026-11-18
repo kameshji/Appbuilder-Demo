@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import catalog from 'react-useanimations/catalog.json'
-import { enums } from './index'
-import { ANIMATED_ICON_IDS } from './animatedIcons'
-import { animatedIconMember } from './enums'
-import { err, val } from './testutil'
+import { enums } from './index.ts'
+import { ANIMATED_ICON_IDS } from './animatedIcons.ts'
+import { animatedIconMember } from './enums.ts'
+import { err, val } from './testutil.ts'
 
 const exportsOf = (catalog as { export: string; id: string }[]).map((c) => c.export)
 
