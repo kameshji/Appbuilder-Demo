@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "licences": "node scripts/check-licences.mjs",
     "notices": "node scripts/gen-notices.mjs",
     "preview": "vite preview",
     "start": "node server/main.ts",

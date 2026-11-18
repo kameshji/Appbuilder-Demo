@@ -42,6 +42,7 @@ Opening `dist/index.html` without the server runs **demo mode** (browser-only si
 | `npm run typecheck:server` | the server half only |
 | `npm run lint` | oxlint (`react/rules-of-hooks` is an error) |
 | `npm run docs:gen` | regenerate `docs/reference/*.md` from the code |
+| `npm run licences` | licence allow-list gate for production dependencies; also run in CI (see [testing](docs/dev/testing.md)) |
 | `npm run notices` | regenerate `THIRD-PARTY-NOTICES.md` (needs `node_modules`) |
 | `node scripts/gen-animated-icons.mjs` | regenerate `src/fx/animatedIcons.ts` after upgrading `react-useanimations` |
 
@@ -57,6 +58,22 @@ Opening `dist/index.html` without the server runs **demo mode** (browser-only si
   component and call it security.
 - Never log or return passwords, secret keys, SQL text or stack traces. Error messages are written for makers (plain English).
 - Keep SQL portable (MySQL 5.7+/8, MariaDB 10.4+): see [schema](docs/dev/schema.md).
+
+## Dependency rule
+
+Appbuilder is sold, so every production dependency must be **permissive**: MIT, ISC, BSD-2/3-Clause, 0BSD, Apache-2.0, BlueOak-1.0.0,
+CC0-1.0, Unlicense, Python-2.0/PSF-2.0 or Zlib (CC-BY-4.0 for data and fonts only). `npm run licences` enforces this in CI.
+
+- No GPL, LGPL, AGPL, SSPL, BUSL, Elastic, Commons Clause, Sustainable Use ("fair-code") or unlicensed code in the product, and nothing
+  from `/ee/` or `/enterprise/` folders or `@univerjs-pro`. Packages such as n8n, NocoDB, Directus, Handsontable, tldraw and pm2 are
+  blocked by name.
+- AGPL tools are allowed only as **separate, unmodified, optional add-ons** that the user installs themselves and that we talk to
+  over a network or process boundary. Never import them, bundle them or ship a modified copy.
+- **Ask before adding an MPL-2.0 package.** It is allowed by the gate, but it is file-level copyleft: we may use it unmodified, never
+  patch it in place.
+- Dual-licensed packages are fine when one side is on the list; the gate records which side we rely on.
+- If the gate fails, replace the package. An entry in `scripts/licence-exceptions.json` needs a written reason and a named
+  approver, and is reviewed like code. Run `npm run notices` and commit `THIRD-PARTY-NOTICES.md` when production dependencies change.
 
 ## Branches and commits
 

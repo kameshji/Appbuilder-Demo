@@ -21,6 +21,7 @@ src/**/*.test.ts   server/**/*.test.ts   scripts/**/*.test.ts
 | Connectors | `server/connectors/mysql/sql.test.ts` (pure SQL builder), `files/files.test.ts` (temp directory), `gsheets/gsheets.test.ts` (injected fake Google API) | Each connector in isolation | no |
 | Integration | `server/connectors/mysql/mysql.integration.test.ts`, `server/core/integration.test.ts`, `server/routes/meta/meta.integration.test.ts` | The MySQL connector against a real server including SQL-versus-reference **parity**, the whole HTTP API end to end (cookie jars per user, RBAC/RLS/CLS, attachments), the metadata API | **yes** |
 | Generated docs | `scripts/docs/generate.test.ts` | Staleness of `docs/reference/*.md` (below) | no |
+| Licence classifier | `scripts/licences.test.ts` | The licence allow-list logic used by `npm run licences` and `npm run notices` (SPDX expressions, arrays, missing, exceptions, forbidden imports) | no |
 
 Test data: `server/routes/meta/fixtures.ts` is the legacy sample fixture; seed data is in `server/routes/meta/seed.ts` with
 `sample-app.json` (a test checks that it matches `src/runtime/sample.ts`).
@@ -99,6 +100,46 @@ been run; see `schema.md` for the compatibility rules. If you can run the suite 
 Write fakes for external systems and inject them (`ConnectorEnv.fetch`, temp directories, `FakeMetaStore`); tests must not use the
 network except the sandbox database, and must not depend on the clock or random values unless seeded or injected.
 
+## Licence gate
+
+`npm run licences` (`scripts/check-licences.mjs`) runs in CI right after `npm ci`. It reads the installed `node_modules` tree and exits 1 when:
+
+1. A **production** dependency (direct or transitive, everything reachable from `dependencies`) has a licence outside the allow-list:
+   MIT, ISC, BSD-2-Clause, BSD-3-Clause, 0BSD, Apache-2.0, BlueOak-1.0.0, CC0-1.0, Unlicense, Python-2.0, PSF-2.0, Zlib,
+   CC-BY-4.0 (data and fonts only) and MPL-2.0 (allowed, reported as "file-level copyleft: do not modify in place").
+   `A OR B` passes when one side is allowed and the report records which side we rely on (for example `jszip` -> MIT);
+   `A AND B` needs both sides; `X WITH exception` is judged on `X`.
+2. The licence is on the explicit deny list: AGPL, GPL, LGPL (unless one side of a dual licence is allowed), SSPL, BUSL, Elastic,
+   Commons Clause, Sustainable Use, fair-code, UNLICENSED, or missing. Anything else that is not on the allow-list, such as
+   `SEE LICENSE IN ...`, fails too, because nobody has reviewed it.
+3. A production dependency is on the do-not-embed list in `DENIED_PACKAGES` (`n8n*`, `nocodb*`, `@directus/*`, `handsontable`,
+   `tldraw`, `pm2`, `@univerjs-pro/*`, each with a one-line reason). Exceptions do not apply to this list.
+4. Our own source (`src/`, `server/`, `scripts/`, test files excluded) imports from a path containing `/ee/` or `/enterprise/`, or from
+   `@univerjs-pro`.
+
+Development dependencies are **reported, never failed**, because they are not shipped. AGPL dev tools and do-not-embed names get a
+warning: keep them separate, unmodified tools and never bundle or import them into the product.
+
+Licence detection lives in `scripts/lib/licences.mjs` and is shared with `npm run notices` (`scripts/gen-notices.mjs`, which
+regenerates `THIRD-PARTY-NOTICES.md`), so the two cannot disagree. Run `npm run notices` after changing production dependencies.
+
+### Adding an exception
+
+Prefer replacing the package. If it is genuinely needed and someone with authority has read the licence, add an entry to
+`scripts/licence-exceptions.json` in the same change:
+
+```json
+{ "exceptions": [
+  { "name": "some-package", "versions": "^2.1.0", "reason": "Licence text is MIT in LICENSE but package.json only says SEE LICENSE IN LICENSE; checked 2026-11-18",
+    "approvedBy": "name of the reviewer" }
+] }
+```
+
+`versions` is a range (`*`, `1.2.3`, `1.x`, `^1.2.0`, `~1.2.0`, `>=1 <2`, `a || b`), so a new major version is checked again. All four fields
+are required. The reason must say why the licence is acceptable, not just that it is needed. An exception that no production
+package uses any more is reported; delete it. The file starts empty and an exception is a visible, reviewed decision, never a way to
+get a build green. A real denied licence (AGPL, GPL, and so on) is not a candidate for an exception: remove or replace the dependency.
+
 ## Generated documentation and staleness tests
 
 Reference pages that can come from the code are generated, and a test fails when they are out of date:
@@ -143,7 +184,7 @@ allowed by `engines`, needed for native type stripping). Steps, in order:
    (`appbuilder_test_s1_<hex>` in `server/core/integration.test.ts`, `appbuilder_test_s2_<hex>` in
    `server/routes/meta/meta.integration.test.ts`) and drop it afterwards, so the user needs rights on every database with that prefix,
    not only on `appbuilder_test`. It has no rights anywhere else.
-3. `npm ci`, then `npm run typecheck` (client and server projects).
+3. `npm ci`, then `npm run licences` (the licence gate, above), then `npm run typecheck` (client and server projects).
 4. `npm test` with `APPBUILDER_TEST_DB=mysql://abci:...@127.0.0.1:3306/appbuilder_test`. This runs the whole suite: unit tests,
    the docs staleness tests and the MariaDB integration tests (which are skipped when that variable is unset).
 5. `npm run build`.

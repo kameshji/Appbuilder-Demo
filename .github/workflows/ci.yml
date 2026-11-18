@@ -50,6 +50,8 @@ jobs:
 
       - run: npm ci
 
+      - run: npm run licences
+
       - run: npm run typecheck
 
       - name: Tests (unit, docs staleness and MariaDB integration)

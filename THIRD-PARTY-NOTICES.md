@@ -6,9 +6,9 @@ Production packages: 201 (unique name@version, from the `dependencies` tree; dev
 
 ## Needs review
 
-These packages use a license that is not on the accepted list (MIT, ISC, Apache-2.0, BSD-2-Clause, BSD-3-Clause, 0BSD, BlueOak-1.0.0, CC0-1.0, Unlicense, Python-2.0, PSF-2.0, Zlib). Check each one before release.
+These packages use a license that is not on the allowed list (MIT, ISC, BSD-2-Clause, BSD-3-Clause, 0BSD, Apache-2.0, BlueOak-1.0.0, CC0-1.0, Unlicense, Python-2.0, PSF-2.0, Zlib, CC-BY-4.0, MPL-2.0). Check each one before release.
 
-- jszip@3.10.2: (MIT OR GPL-3.0-or-later) (accepted here only through the option on the list)
+- jszip@3.10.2: (MIT OR GPL-3.0-or-later) (relying on MIT)
 
 ## Summary
 
