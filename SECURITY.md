@@ -37,8 +37,8 @@ do not. There are no numbered releases yet.
 
 In scope:
 
-- The Appbuilder server (`server/`): authentication, sessions, roles and privileges (including row and column
-  restrictions), request checks, secret storage, connection handling, file and attachment handling, audit logging.
+- The Appbuilder server (`server/`): authentication, two-step verification, password reset and invitation tokens,
+  sessions, API keys, outbound email, roles and privileges (including row and column restrictions), request checks, secret storage, connection handling, file and attachment handling, audit logging.
 - The web portal and runtime (`src/`): for example cross-site scripting, or any way to see or change data that the signed-in
   user's roles do not allow.
 - The install and setup scripts (`scripts/`) and the documentation in `docs/admin/` where they lead to an insecure setup.

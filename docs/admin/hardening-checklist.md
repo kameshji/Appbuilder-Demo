@@ -56,9 +56,30 @@ A short list for a new installation. Details are in the other pages; read the
   ([limits](users-and-roles.md#known-limits-of-row-filters)).
 - [ ] Disable accounts when people leave (**Ban** button). Review the user list regularly.
 - [ ] Passwords you set for users are temporary: Appbuilder makes them choose their own at the next sign-in. Hand them
-  over by a different channel than the email address.
+  over (and one-time reset codes) by a different channel than the email address.
 - [ ] After linking tables that existed before, use **Assign to me** (table settings) if roles with *Own* scope must see
   the old rows; otherwise those rows have no owner.
+
+## Sign-in and identity
+
+See [Sign-in and identity](sign-in-and-identity.md).
+
+- [ ] **Turn on two-step verification yourself** (Settings > Profile) and store the recovery codes offline. Then require it
+  for administrators at least (Admin console > Sign-in and security > Required for: Administrators), with a short grace
+  period. Keep a second install administrator who can reset your two-step verification if you lose your phone.
+- [ ] **Set up email** (Admin console > Email) with STARTTLS or TLS and certificate verification on, and send a test email.
+  Without it, people who forget their password depend on an administrator's one-time reset code.
+- [ ] Set the **public address** in Admin console > Email to the address people really use (`https://...` behind a TLS
+  proxy), so links in emails point there.
+- [ ] Prefer **invitations** to temporary passwords: the administrator never knows the password.
+- [ ] Review the **sign-in log** (Admin console > Sign-in and security) now and then for failures from unknown addresses.
+- [ ] Shorten the session lifetime on shared PCs (for example 60 minutes idle, 12 hours absolute), and tell people not to
+  tick "Remember this device" there.
+- [ ] One **service account per integration**, with a role that grants only the tables it needs; give each key an expiry
+  and, for the LAN agent, an IP allow-list. Revoke keys that are not used any more (Admin console > Service accounts shows
+  when each was last used).
+- [ ] When someone loses their phone: Admin console > Users > the person's menu > **Reset two-step verification** (it also
+  signs them out everywhere); they set it up again at the next sign-in.
 
 ## Data and connections
 
@@ -81,8 +102,18 @@ A short list for a new installation. Details are in the other pages; read the
 
 ## Backups, monitoring, updates
 
-- [ ] **Back up regularly**: there is no built-in backup. `pg_dump` plus the workspace folder including
-  `.secret-key`, stored separately and encrypted ([Backup and restore](backup-and-restore.md)). Do a test restore.
+- [ ] **Backups on and checked**: Admin console > Backups shows green (the nightly install backup ran and was verified).
+  Point the **backup folder** at a second disk and set an **off-site** folder or an rclone/restic job; a backup on the same
+  disk does not survive a disk failure ([Backup and restore](backup-and-restore.md)).
+- [ ] **Encrypt backups that leave the machine**: save a passphrase (scheduled backups are then encrypted) and keep a copy
+  of the passphrase apart. Do not include the encryption key in backups unless they are encrypted.
+- [ ] **Keep `.secret-key` apart** from the backups (a password manager or a safe): without it a restore on a new machine
+  loses the saved secrets; with it next to an unencrypted backup, anyone with both reads them.
+- [ ] **The backup folder is only readable by the server's account** (archives hold password hashes and all data); it is
+  outside the web folder by default; do not share it on the network without access control.
+- [ ] **Turn on the restore test** (Backups > Schedule) and run the [restore drill](backup-and-restore.md#restore-drill) on a
+  spare machine once a year ([Disaster recovery](disaster-recovery.md)).
+- [ ] Downloading a backup asks for a recent sign-in; review `backup.download` entries in the install audit log.
 - [ ] **Review the audit log** weekly for user, role and connection changes, failed sign-ins and rejected setup codes
   ([Audit log](audit-log.md)); it is only readable through SQL, and it is not tamper-proof.
 - [ ] Watch the server console for `ERROR audit write failed` lines (an entry was lost) and for `DATABASE NOT USED`

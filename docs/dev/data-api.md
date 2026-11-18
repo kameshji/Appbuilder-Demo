@@ -41,6 +41,9 @@ cookie only). Filtering, sorting, search, keyset paging, exact counts and aggreg
   | 401 | `unauthenticated` | No valid session (also a wrong login) |
   | 403 | `denied` | Signed in but not allowed (including a row filter a new or changed row would not match); also CSRF header missing, wrong setup code, setup from another computer |
   | 403 | `password_change_required` | The signed-in user must change the password an administrator set; only `GET /auth/session`, `POST /auth/password`, `POST /auth/logout` and `GET /status` work |
+  | 401 | `mfa_required` | `POST /auth/login`: the password was right; the body also has `mfa: { methods, rememberDays }`; finish with `POST /auth/login/verify` ([auth.md](auth.md)) |
+  | 403 | `reauth_required` | A sensitive action needs `POST /auth/reauth` first |
+  | 403 | `mfa_enrolment_required` | The policy requires two-step verification: only the enrolment routes work |
   | 404 | `not-found` | Unknown route, or the object does not exist **or the caller may not know it exists** |
   | 405 | `method_not_allowed` | Known path, wrong method |
   | 409 | `conflict` | Duplicate name or key, object in use, setup already done |
@@ -92,6 +95,7 @@ Every later example uses `-b $JAR` (and `-c $JAR` where the cookie changes).
 | `POST /setup/database` | none + loopback + setup code, or an admin from loopback; see below | `{ host, port, database, user, password, createDatabase?, ssl?, setupCode? }` | `{ ok: true }` |
 | `POST /setup/admin` | none + loopback + setup code, only while there are no users | `{ name, email, password, setupCode? }` | `Session` and sets the cookie |
 | `POST /auth/login` | none | `{ email, password }` | `Session` and sets the cookie |
+| `POST /auth/login/verify` | none (pending cookie `ab_mfa`) | `{ code, method?: 'totp'\|'recovery_code'\|'email_code', remember? }` | `Session` and sets the cookie. Every other identity route (reset, invitations, MFA, sessions, policy, email, service accounts): list in `server/core/identity/routes.ts`, design in [auth.md](auth.md) |
 | `POST /auth/logout` | none | none | `{ ok: true }` and clears the cookie |
 | `GET /auth/session` | user | none | `Session` |
 | `POST /auth/password` | user | `{ current, next }` | `Session` (a new cookie; every other session of that user is removed) |
@@ -135,6 +139,33 @@ curl -sS -c $JAR -H "$H" -H "$JSON" -d '{"name":"Admin","email":"admin@example.t
 curl -sS -b $JAR $BASE/auth/session
 curl -sS -b $JAR -c $JAR -H "$H" -H "$JSON" -d '{"current":"a-long-password","next":"another-long-password"}' $BASE/auth/password
 curl -sS -b $JAR -H "$H" -X POST $BASE/auth/logout
+```
+
+## API keys (bearer authentication)
+
+Service accounts (Admin console > Service accounts, [admin guide](../admin/sign-in-and-identity.md#service-accounts-and-api-keys))
+call the Data API with `Authorization: Bearer abk_<prefix>_<secret>`:
+
+- Reachable: `POST /query`, `/data/...`, `/attachments...`, `GET /tables` and `GET /tables/:id`, `GET /auth/session`.
+  Anything else: 403.
+- No `X-Appbuilder` header needed (a bearer token is never attached by a browser on its own, so there is no CSRF risk).
+  Cookies are ignored when the header is present: the request is the service account's, never the browser user's.
+- The environment is the key's; `X-Appbuilder-Environment` naming another one is 403.
+- 401 for an unknown, revoked or expired key (same message), 403 outside the allow-list, 429 with `Retry-After` past the
+  key's rate (default 600 a minute), 429 after 30 invalid keys from one address in 5 minutes.
+
+```bash
+KEY=abk_XXXXXXXX_...           # shown once when the key was created
+BASE=http://localhost:5174/api/v1
+# who am I
+curl -sS -H "Authorization: Bearer $KEY" $BASE/auth/session
+# read rows (Query v2)
+curl -sS -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"plan":{"version":2,"table":"Readings","sort":[{"col":"createdOn","dir":"desc"}],"page":{"size":50}}}' \
+  $BASE/query
+# add a row (needs Create on the table through the account's roles)
+curl -sS -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"values":{"Value":42}}' $BASE/data/Readings/rows
 ```
 
 ## Workspace
@@ -513,8 +544,11 @@ Applying runs in **one transaction** (`Services.transaction`; PostgreSQL DDL inc
 package only into them), changed tables get their columns dropped, added (with defaults and autonumbers filled), and converted
 (every value is checked first; one that does not convert stops everything, 422), apps are replaced, roles get their privileges on
 the solution's tables and their apps replaced (others kept, the admin flag never imported), removed apps, roles and tables are
-deleted. Before it, `backup.snapshot(environment)` is called (`server/core/backup.ts`): today it takes no backup and the plan and
-the result say so. Audited as `solution.install` / `solution.upgrade` in the environment and, for a deployment, `solution.deploy`
+deleted. Before it, `backup.snapshot(environment, reason, { trigger: 'pre-upgrade' })` takes a backup of the target
+(`server/core/backup/service.ts`); `result.backup` is `{ taken, message, id?, failed? }`. When that backup **fails** the
+import answers **409 with `field: "backup"`** and nothing changes; sending `proceedWithoutBackup: true` (import and deploy
+bodies) goes on without it. With automatic backups off, `plan.backup.available` is false and the import goes on with the
+message as a warning. Audited as `solution.install` / `solution.upgrade` in the environment and, for a deployment, `solution.deploy`
 in `ab.audit`.
 
 `asCopy: true`, and packages without a solution id (exported before 0.5), keep the old behaviour: new instances only (new ids, unique
@@ -641,10 +675,82 @@ curl -sS -b $JAR -H "$H" -H "$JSON" -X POST -d '{"to":"bea@example.com","title":
 curl -sS -b $JAR $BASE/notifications?unread=1
 ```
 
+## Core data model (collab)
+
+The system tables (`docs/dev/core-data-model.md`) are ordinary tables for the data routes: comments, activities,
+documents, tags and the rest are read through `POST /query` and written through `/data/:table/rows` with
+`regardingId` (and optionally `regardingTable`) naming the record. A `regardingId` the caller cannot read is answered like
+a missing record (422 "There is no record with the id ..."). Projections (Users, Roles, the logs ...) answer 403 to
+writes. NextNumber defaults are filled by the server. These routes add what is not a plain table read (every signed-in
+user; security is the engine's):
+
+| Route | Answer |
+| --- | --- |
+| `GET /collab/timeline?row=<id>&table=&cursor=&limit=30` | `{ table, row, title, items, nextCursor, following, followers, tags, canComment }`; items `{ kind: comment \| activity \| file \| event, id, at, by, byName, data }` newest first. 404 when the caller cannot read the record (or it does not exist). `table` is optional (row ids are unique). |
+| `GET /collab/mentionable?table=&row=&q=` | `{ users: [{ id, name, email }] }`: people who can read the record (at most 20) |
+| `POST /collab/follow` `{ row, table?, on }` | `{ following }` |
+| `POST /collab/tags` `{ row, table?, tag, on }` | `{ tagged, tag? }`; a new tag name creates the tag |
+| `GET /collab/my-tasks?status=open\|all&limit=` | `{ items }`: tasks assigned to me or my teams, and my own unassigned ones, by due date, with the record's label |
+| `GET /collab/mentions?limit=` | `{ items }`: mentions of me, newest first, with the comment, its author and the record's label |
+| `GET /templates/business-model` (maker) | `{ yaml, id, version }`: the common business model solution package |
+
+```bash
+curl -sS -b $JAR -H "$H" -H "$JSON" -X POST -d '{"values":{"Body":"<p>Call back</p>","regardingId":"<order id>"}}' $BASE/data/Comments/rows
+curl -sS -b $JAR "$BASE/collab/timeline?row=<order id>&limit=30"
+```
+
 ## Realtime (WebSocket)
 
 `GET /api/v1/live` with `Upgrade: websocket` (same origin, the session cookie, an `Origin` header naming this origin). The protocol,
 topics, limits and security rules are in `live.md`.
+
+## Data model (maker)
+
+The data model designer (`docs/dev/data-model.md`). Types in `src/model/types.ts`. Writes are design routes.
+
+| Route | Body / answer |
+| --- | --- |
+| `GET /model` | `ModelResponse`: `model` (tables + relationships, lookups without a record shown with their default), `layout` (shared), `myLayout?`, `draft` (the caller's), `locked`, `version` |
+| `PUT /model/draft` | `{ draft: { base, model, past?, future?, layout? } }` (16 MB) |
+| `DELETE /model/draft` | discards the caller's draft |
+| `PUT /model/layout` | `{ layout, scope: 'shared' \| 'mine' }`; `DELETE /model/layout` forgets the caller's own |
+| `POST /model/plan` | `{ ops: ModelOp[] }` -> `ModelPlan` (`items` with rows, conversion pre-checks, destructive flags; `problems`, `warnings`, `backup`, `token`) |
+| `POST /model/apply` | `{ ops, token, layout?, layoutScope?, clearDraft? }` -> `{ ids, plan, backup }`; 422 with `plan` while there are problems, 409 with `plan` when the schema changed since |
+| `POST /model/introspect` | `{ connectionId, mode: 'link' \| 'copy', into?, tables? }` -> `{ model, tables, warnings, found }` (PostgreSQL / MySQL connections) |
+| `POST /model/sheets?name=` | raw `.xlsx` or `.csv` body -> `{ sheets: [{ name, headers, rows }] }` (2,000 rows per sheet; nothing stored) |
+| `GET /model/stats` | text columns with how many values look numeric or like dates (first 5,000 rows per table), for the checks |
+| `GET /model/views` | the reporting views registry: `{ items: [{ id, name, role, base, baseName, columns }] }` |
+| `POST /model/package` | `{ tables?, displayName?, version? }` -> `{ fileName, yaml }`: a solution package of the tables (no rows) |
+
+Data routes: deleting rows now applies the relationships' delete behaviours (409 for restrict with
+`relationship: { table, column, rows, onDelete }` in the body; 403 when a cascade reaches rows the caller may not delete),
+and a self lookup with loop prevention answers 422 on a loop. Reporting views answer reads only.
+
+## Backups (install administrators)
+
+P0 package J; shapes in `src/platform/backup.ts` (which also lists every route), design in `docs/dev/backup.md`. All routes
+need an install administrator (403 otherwise). Backups and restores run in the background; poll `GET /backups/ops/:id` or
+`GET /backups/:id`, or listen on the user topic (live event `backup` with `backup` / `op`).
+
+| Route | Body | Answer |
+| --- | --- | --- |
+| `GET /backups` | | `{ items: BackupInfo[], health, ops }` (items with `retention`: why kept / pruned next) |
+| `POST /backups` | `{ scope: 'install' \| <environment id>, passphrase?, includeKey?, note? }` | `BackupInfo` (queued as a `backup.run` job in Default) |
+| `GET /backups/health`, `GET\|PUT /backups/settings` | `BackupSettingsInput` | `BackupHealth`, `BackupSettings` |
+| `GET\|PATCH\|DELETE /backups/:id` | `{ pinned?, note? }` | `BackupInfo` / `{ ok }` |
+| `POST /backups/:id/verify` | `{ passphrase? }` | `BackupOp` |
+| `POST /backups/:id/contents` | `{ passphrase? }` | `BackupContents` (422 field `passphrase` when it is needed or wrong) |
+| `POST /backups/:id/browse` | `{ environment, table, offset?, limit? (≤500), passphrase? }` | `BackupRowsPage` (COPY text decoded, strings) |
+| `POST /backups/:id/restore` | `RestoreRequest` (`mode: 'new' \| 'in-place'`, `confirmName` for in place) | `BackupOp`; 409 for a backup of a newer version |
+| `POST /backups/:id/restore-tables/plan` | `{ environment, tables, mode: 'new' \| 'replace' }` (into the request's environment) | `TableRestorePlan` with `token` |
+| `POST /backups/:id/restore-tables` | same + `confirm: token` | `BackupOp` (409 on a stale token) |
+| `POST /backups/:id/download-ticket` | | `{ ticket, url }` after `requireRecentAuth` (403 `reauth_required`) |
+| `GET /backups/:id/download?ticket=` | | the archive, streamed (without a ticket: needs a recent sign-in) |
+| `POST /backups/upload?name=` | raw body, streamed to disk (limit `APPBUILDER_BACKUP_MAX_UPLOAD_GB`, 50) | `BackupInfo` (`uploaded`; checked in the background) |
+| `POST /backups/restore-test`, `GET /backups/ops/:id` | | `BackupOp` |
+
+`DELETE /environments/:id` takes a backup first: its answer is `{ ok, backup? }`; a failed backup answers 409 field `backup`
+unless the body has `proceedWithoutBackup: true`. `GET /environments/:id` has `lastBackup` for install administrators.
 
 ## Implementing the contract in another backend
 

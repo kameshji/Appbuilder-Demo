@@ -258,8 +258,55 @@ export function createTableSql(d: Dialect, def: TableDef, trgmSchema?: string | 
   }
   const nat = naturalIndexSql(d, def)
   if (nat) out.push(nat)
+  out.push(...uniqueTogetherSql(d, def))
   return out
 }
+
+/* ------------------------------------------------------------------ data model designer (package K) */
+
+/** composite unique indexes of TableDef.uniqueTogether (e.g. the pair of a many-to-many junction table) */
+export function uniqueTogetherSql(d: Dialect, def: TableDef): string[] {
+  const cols = allColumns(def)
+  return (def.uniqueTogether ?? []).filter((set) => set.length > 1).map((set) => {
+    const parts = set.map((name) => {
+      const c = cols.find((x) => x.name === name)
+      if (!c) throw new HttpError(422, 'invalid', `The unique pair names a missing column "${name}".`)
+      return kindOf(c.type) === 'text' && c.type !== 'lookup' ? `(${fold(d, quoteId(c.name))})` : quoteId(c.name)
+    })
+    return `CREATE UNIQUE INDEX IF NOT EXISTS ${quoteId(uniqueTogetherIndexName(def, set))} ON ${tableId(d, def)} (${parts.join(', ')})`
+  })
+}
+export const uniqueTogetherIndexName = (def: Pick<TableDef, 'name' | 'source'>, set: string[]): string => indexName(physicalName(def), 'unique', `pair_${set.join('_')}`)
+
+const VIEW_EXPR: Record<string, (col: string) => string> = {
+  value: (c) => c,
+  dateKey: (c) => `(to_char(${c}, 'YYYYMMDD'))::bigint`,
+  year: (c) => `(EXTRACT(YEAR FROM ${c}))::bigint`,
+  month: (c) => `(EXTRACT(MONTH FROM ${c}))::bigint`,
+  quarter: (c) => `(EXTRACT(QUARTER FROM ${c}))::bigint`,
+}
+
+/**
+ * CREATE VIEW of a reporting view (TableDef.reporting kind 'view'): generated from the lineage only (base source,
+ * column mapping, a fixed set of expressions), never from SQL text. The base table's system columns pass through, so
+ * the view's `id` is the base row's id (security applies the base table's row predicate to it).
+ */
+export function createViewSql(d: Dialect, def: TableDef): string[] {
+  const r = def.reporting
+  if (r?.kind !== 'view' || !r.baseSource) throw new HttpError(422, 'invalid', `"${def.displayName}" is not a reporting view with a source.`)
+  const base = tableId(d, { name: r.baseSource, source: r.baseSource })
+  const sel = ['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner'].map((c) => `b.${quoteId(c)}`)
+  const seen = new Set(['id', 'createdon', 'modifiedon', 'createdby', 'owner'])
+  for (const c of r.columns) {
+    if (seen.has(c.name.toLowerCase())) throw new HttpError(422, 'invalid', `Duplicate view column "${c.name}"`)
+    seen.add(c.name.toLowerCase())
+    const fn = VIEW_EXPR[c.expr ?? 'value']
+    if (!fn) throw new HttpError(422, 'invalid', `Unknown view expression "${String(c.expr)}"`)
+    sel.push(`${fn(`b.${quoteId(c.source)}`)} AS ${quoteId(c.name)}`)
+  }
+  return [`CREATE VIEW ${tableId(d, def)} AS SELECT ${sel.join(', ')} FROM ${base} AS b`]
+}
+export const dropViewSql = (d: Dialect, def: TableDef): string => `DROP VIEW IF EXISTS ${tableId(d, def)}`
 
 /* ------------------------------------------------------------------ value conversion */
 
@@ -395,7 +442,18 @@ const F = 'FALSE'
 /** pg date range we write as ISO text (the reference accepts any JS date) */
 const inSqlRange = (d: Date): boolean => d.getUTCFullYear() >= 1 && d.getUTCFullYear() <= 9999
 
-interface LeafCtx { d: Dialect; p: Params; managed: boolean }
+interface LeafCtx {
+  d: Dialect
+  p: Params
+  managed: boolean
+  /** the statement's table as SQL (correlated semi-joins name the outer row through it) */
+  outer?: string
+  /** columns compared exactly (no case folding): the platform-written regarding link of the core data model */
+  exact?: Set<string>
+}
+
+/** the regarding columns (core data model) hold table ids and row ids the platform writes: compared as stored */
+const exactCols = (def: TableDef): Set<string> | undefined => (def.regarding ? new Set([def.regarding.table, def.regarding.id]) : undefined)
 
 /**
  * The comparison of a non-blank cell with one value, per the reference cmp():
@@ -522,7 +580,7 @@ function leaf(c: { col: string; op: string; value?: QueryValue | QueryValue[] },
   }
 
   // the managed id column holds lowercase UUIDs: compare exactly (uses the primary key)
-  const fastId = ctx.managed && col.name === 'id'
+  const fastId = (ctx.managed && col.name === 'id') || !!ctx.exact?.has(col.name)
 
   if (op === 'in') {
     if (!Array.isArray(v)) return F
@@ -532,7 +590,7 @@ function leaf(c: { col: string; op: string; value?: QueryValue | QueryValue[] },
   if (Array.isArray(v)) return F
   const scalar = v as QueryValue
   if (fastId && typeof scalar === 'string' && (op === 'eq' || op === 'ne')) {
-    const r = ctx.p.add(scalar.toLowerCase(), 'text')
+    const r = ctx.p.add(ctx.exact?.has(col.name) ? scalar : scalar.toLowerCase(), 'text')
     return op === 'eq' ? `(${q} = ${r})` : `(${q} IS NULL OR ${q} <> ${r})`
   }
   if (kind === 'text' && typeof scalar === 'string' && scalar === '') {
@@ -615,26 +673,37 @@ function translate(c: Condition | undefined, cols: Cols, ctx: LeafCtx, negated: 
  * are built: text kinds lowercased (the lookup index is on the folded value), the managed id column as stored.
  * PostgreSQL plans it as a (hashed) semi-join; the inner WHERE uses the target's own indexes.
  */
-function semiJoin(s: { col: string; table: TableDef; key: string; where: Condition }, cols: Cols, ctx: LeafCtx): string {
+function semiJoin(s: { col: string; table: TableDef; key: string; where: Condition; correlated?: boolean }, cols: Cols, ctx: LeafCtx): string {
   const outer = cols.get(s.col)
   const target = s.table
   const tcols = new Cols(target)
   const inner = tcols.get(s.key)
   const expr = (col: ColumnDef, managed: boolean, q: string, asText: boolean): string => {
     if (managed && col.name === 'id') return q
+    if (col === outer && ctx.exact?.has(col.name)) return q
     if (kindOf(col.type) === 'text') return fold(ctx.d, q)
     return asText ? `lower(CAST(${q} AS text))` : q
   }
   const mixed = kindOf(outer.type) !== kindOf(inner.type)
   const left = expr(outer, ctx.managed, quoteId(outer.name), mixed)
   const right = expr(inner, target.managed === true, quoteId(inner.name), mixed)
-  const where = translate(s.where, tcols, { d: ctx.d, p: ctx.p, managed: target.managed === true }, false)
+  if (s.correlated && ctx.outer) {
+    // EXISTS with a primary-key probe per outer row (core data model "regarding" rule): the inner table gets an alias, so
+    // the outer table's qualified name refers to the outer row; the inner WHERE's unqualified columns are the inner row's
+    const alias = `"__s${ctx.p.list.length}_${++aliasSeq % 100000}"`
+    const outerRef = expr(outer, ctx.managed, `${ctx.outer}.${quoteId(outer.name)}`, mixed)
+    const innerRef = expr(inner, target.managed === true, `${alias}.${quoteId(inner.name)}`, mixed)
+    const w = translate(s.where, tcols, { d: ctx.d, p: ctx.p, managed: target.managed === true, outer: alias, exact: exactCols(target) }, false)
+    return `EXISTS (SELECT 1 FROM ${tableId(ctx.d, target)} AS ${alias} WHERE ${innerRef} = ${outerRef} AND ${w})`
+  }
+  const where = translate(s.where, tcols, { d: ctx.d, p: ctx.p, managed: target.managed === true, outer: tableId(ctx.d, target), exact: exactCols(target) }, false)
   return `(${left} IN (SELECT ${right} FROM ${tableId(ctx.d, target)} WHERE ${right} IS NOT NULL AND ${where}))`
 }
+let aliasSeq = 0
 
 /** WHERE fragment; parameters continue after `offset` existing ones */
 export function buildWhere(d: Dialect, def: TableDef, cond: Condition | undefined, params: Params = new Params()): Built {
-  const sql = translate(cond, new Cols(def), { d, p: params, managed: def.managed === true }, false)
+  const sql = translate(cond, new Cols(def), { d, p: params, managed: def.managed === true, outer: tableId(d, def), exact: exactCols(def) }, false)
   return { sql, params: params.list }
 }
 

@@ -9,7 +9,7 @@ Decision D14 in `/home/claude/appbuilder-demo/docs/decisions.md` records the mov
    (at most `APPBUILDER_MAX_ENVIRONMENTS`, default 5). Each holds the environment's metadata tables (`ab_roles`, `ab_tables`,
    `ab_apps`, `ab_audit`, ...) **and** the data tables of its default connection (`t_orders`, `t_contacts`, ...).
 
-Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 6`),
+Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 7`),
 `/home/claude/appbuilder-demo/server/core/install-store.ts` (the `ab` registry, access and install audit)
 and, for data tables, `/home/claude/appbuilder-demo/server/connectors/postgres/sql.ts` (`createTableSql`, `sqlType`).
 
@@ -117,6 +117,10 @@ The summary `{ from, to, steps, environments: [{ id, from, to, ok, error? }] }` 
 an `ab.environment_access` row for `default` (`is_env_admin` = holds an admin role there); existing environments get
 `schema_version = 4`. At the first start after it, `services.ts` moves `workspace/attachments/*` and `workspace/files/*` into
 `workspace/env/default/` (`moveLegacyWorkspace`: only entries not there yet; nothing is overwritten or deleted).
+
+**6 to 7, package K** (environment step `upgradeEnvironmentTo7Model`, independent of the other version 7 steps): checks
+that `ab_relationships`, `ab_model_layouts` and `ab_model_drafts` exist, then records every existing lookup column (not the
+system columns) as a relationship: required lookups `restrict`, optional ones `setBlank` (`docs/dev/data-model.md`).
 
 ## Types and conventions
 
@@ -235,6 +239,42 @@ Install administrators enter every environment without a row. Assigning a role t
 `action text NOT NULL` (index `ab_ix_install_audit_action`), `environment_id text` (the environment the action was about),
 `details jsonb` (same size and NUL rules as `ab_audit`). Actions: `docs/admin/audit-log.md`.
 
+### Identity (P0 package I)
+
+Install-wide, from `IDENTITY_INSTALL_DDL` in `/home/claude/appbuilder-demo/server/core/identity/ddl.ts` (appended to
+`INSTALL_DDL`). Version 7's install step `upgradeInstallTo7Identity` checks they exist before the database is stamped 7
+(other wave 4 packages add their own independent steps under the same number). Design: [auth.md](auth.md).
+
+Added columns: `ab.users.kind text NOT NULL DEFAULT 'person'` (`service` for service accounts), `ab.users.password_changed_on
+timestamptz`; `ab.sessions.ip`, `public_id` (index `ab_ix_sessions_public`), `absolute_expires_on timestamptz`, `auth_on
+timestamptz` (last password or code proof), `mfa boolean NOT NULL DEFAULT false`, `restricted text` (`mfa_enrol`).
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `ab.user_mfa` | `user_id` PK FK users ON DELETE CASCADE, `totp_secret_sealed`, `totp_enabled_on`, `totp_last_step bigint`, `totp_pending_sealed`, `totp_pending_on`, `email_enabled boolean`, `recovery jsonb` (`[{h, used}]`, SHA-256), `recovery_created_on`, `modified_on` | secrets sealed with the secret box |
+| `ab.auth_tokens` | `id` PK, `kind` (`reset`, `invite`, `email_change`, `mfa_pending`, `email_code`, `email_setup`), `user_id` FK CASCADE, `token_hash` (unique `ab_ux_auth_tokens_hash`; SHA-256 of `kind:token`), `created_on`, `expires_on` (index), `used_on`, `created_by`, `attempts int`, `data jsonb` | single use: `UPDATE ... SET used_on = now() WHERE used_on IS NULL` |
+| `ab.trusted_devices` | `id` PK, `user_id` FK CASCADE (index), `created_on`, `expires_on`, `last_used_on`, `user_agent`, `ip` | "remember this device" |
+| `ab.password_history` | `user_id` FK CASCADE, `hash`, `created_on`; index `(user_id, created_on DESC)` | at most 24 per user |
+| `ab.signin_log` | `id bigint identity` PK, `at` (index DESC), `user_id` (no FK; index `(user_id, at DESC)`), `email`, `outcome` (`success`/`failure`), `reason`, `method`, `ip`, `user_agent`, `session_id` (public id), `device_hash`, `new_device boolean` | no retention yet |
+| `ab.mail_log` | `id` PK, `created_on` (index DESC), `sent_on`, `status` (`queued`/`sent`/`retrying`/`failed`), `attempts`, `to_address`, `subject`, `template`, `user_id`, `job_id`, `message_id`, `last_error` | never the body |
+| `ab.api_keys` | `id` PK, `user_id` FK CASCADE (index), `environment_id`, `name`, `prefix` (unique), `secret_hash`, `created_on`, `created_by`, `expires_on`, `last_used_on`, `last_used_ip`, `revoked_on`, `revoked_by`, `ip_allow jsonb`, `rate_per_minute int` | |
+
+Settings rows (`ab.settings`): `identity.policy` (JSON `SecurityPolicy`), `identity.smtp` (JSON; `passwordSealed`).
+
+### `ab.backups`, `ab.backup_ops`: the backup catalogue (P0 package J, version 7)
+
+Written by `server/core/backup/service.ts` (DDL in `backup/ddl.ts`, appended to `INSTALL_DDL`; step `upgradeInstallTo7Backup`).
+Their rows are never part of a backup: the archives in the backup folder are the source of truth, and the folder scan at start
+adds archives it does not know (reading their manifests) and marks rows whose file is gone `missing`. See `backup.md`.
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `ab.backups` | `id` PK (`bk_...`), `file_name` (unique), `kind` (`install`, `environment`), `environment_id`, `environment_name`, `trigger` (`manual`, `schedule`, `pre-upgrade`, `pre-delete`, `pre-restore`, `pre-migration`, `upload`), `state` (`queued`, `running`, `verifying`, `ok`, `failed`, `missing`, `uploaded`), `method` (`pg_dump`, `builtin`), `encrypted`, `includes_key`, `size_bytes`, `sha256` (of the file), `manifest_sha256`, `created_on`, `finished_on`, `created_by`, `app_version`, `schema_version`, `summary` jsonb (environments with tables, rows, attachments; warnings), `error`, `verified_on`, `verify_error`, `restore_tested_on`, `restore_test_error`, `offsite` jsonb, `pinned`, `note`, `job_id`, `progress` jsonb | indexes on `created_on` and `(kind, environment_id, created_on)` |
+| `ab.backup_ops` | `id` PK (`bop_...`), `kind` (`restore`, `restore-tables`, `restore-test`, `verify`), `backup_id`, `mode`, `source_environment`, `target_environment`, `state` (`running`, `succeeded`, `failed`), `phase`, `progress` jsonb, `started_on`, `finished_on`, `created_by`, `error`, `result` jsonb | interrupted operations are closed at the next start (an in-place restore's folder swap is finished when its database part had committed) |
+
+The backup settings are the `ab.settings` row `backup.config` (JSON; a saved passphrase sealed with the SecretBox). The
+environment state `restoring` (in `ab.environments.state`) marks an in-place restore; a server start resets it to `ready`.
+
 ### `ab.licence`
 
 Placeholder for the signed licence file (`docs/plan/master-plan.md` section 9): at most one row (`id smallint` primary key,
@@ -344,6 +384,23 @@ created on first use). Losing the key makes stored secrets unreadable; there is 
 `k text` primary key (`<tableId>:<column>` for autonumber), `v bigint NOT NULL` (last number issued). `nextCounter` is one atomic
 statement: `INSERT ... ON CONFLICT (k) DO UPDATE SET v = c.v + 1 RETURNING v`.
 
+Also `sys.seed.<table id>` (core data model, P0 package N): set once when the reference data of that system table was
+seeded, so deleted seed rows are not put back. `v` is 1.
+
+### System tables `sys_*` (core data model, P0 package N)
+
+Every environment schema also holds the 34 system tables of `docs/dev/core-data-model.md`, registered in `ab_tables` with
+stable ids `sys_*` (`system: true`). Real tables (Activities, Comments, Mentions, Follows, Tags, Tag links, Documents,
+Document versions, Attachment links, the communication placeholders, Flow runs and the reference tables) are ordinary
+managed tables created with the platform DDL (system columns, `text` uuids, the same index rules), plus the indexes
+`ix_<table>_timeline (regardingId, createdOn DESC, id DESC)`, `(AssignedTo, Status)` on Activities and
+`(MentionedUser, IsRead, createdOn DESC)` on Mentions. Projections (Users, Departments, Teams, Team members, Roles, Role
+assignments, Shares, Notifications, Audit entries, Sign-in log, Job runs, Event runs) are **views** over `ab.*` and the
+environment's metadata tables. Views hold no data and are dropped and created again by every provisioning run;
+migration steps therefore start with `dropSystemViews` (a migration that alters a table under a view must not fail on
+the dependency). Provisioning (`server/core/system-tables.ts`) runs in the environment's migration transaction after
+the steps, on every start, and is idempotent. It is not a numbered step: the schema version stays 7.
+
 ### `ab_audit`
 
 | Column | Type | Notes |
@@ -375,6 +432,21 @@ Formula and rollup columns are ordinary physical columns; their definition is `C
 They arrived with schema version 6 (with F's organisation and `ab_shares` and H's notifications): the tables are
 `CREATE ... IF NOT EXISTS` statements of `environmentDdl()` / `INSTALL_DDL`, and the version 6 step checks they all exist
 before the schema is stamped 6, so an older server (version 5) refuses a database that has them (downgrade guard).
+
+### Data model designer: `ab_relationships`, `ab_model_layouts`, `ab_model_drafts` (P0 package K, version 7)
+
+Created by `modelEnvironmentDdl()` (`server/core/model/store.ts`). Copied with an environment copy (drafts are not).
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `ab_relationships` | `id text` PK, `from_table`, `from_column`, `to_table text NOT NULL`, `kind` (`oneToMany`, `oneToOne`, `self`), `on_delete` (`restrict`, `cascade`, `setBlank`), `def jsonb` (`preventCycles`, `junction.group`), `created_on`, `modified_on` | unique `ab_ux_relationships_from (from_table, from_column)` (one relationship per lookup column); index `ab_ix_relationships_to` (the delete path reads by parent) |
+| `ab_model_layouts` | `user_id text` PK (`''` = the shared layout), `layout jsonb`, `modified_on` | `{ positions, areas }` |
+| `ab_model_drafts` | `user_id text` PK, `draft jsonb`, `modified_on` | one draft per user: `{ base, model, past, future, layout }` |
+
+Reporting settings live in the table definition: `TableDef.reporting` (a view's lineage, a summary table's source,
+groups, measures and schedule, a date dimension's range and fiscal start) and `TableDef.uniqueTogether` (composite
+unique indexes `uq_<table>_pair_<cols>`, created by `createTableSql` and by the designer). A reporting view's physical
+object is a PostgreSQL `VIEW` named `v_<name>` in the environment schema.
 
 **Rule for every package:** a change that adds or alters tables or columns of `ab` or of the environment schemas bumps
 `SCHEMA_VERSION` to the next number and adds an upgrade step (install: phase 1 of `migrate()`; environment:

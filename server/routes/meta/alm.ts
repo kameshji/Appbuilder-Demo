@@ -8,11 +8,14 @@
  *     and confirmed by its token; one transaction (schema changes included), with a pre-upgrade backup.snapshot() first.
  * Old packages without a solution id, and `asCopy`, keep the old behaviour: new instances (solutions.ts).
  */
+import { SYSTEM_TABLES } from '../../../src/platform/system-tables.ts'
+import { relationshipPlanLines, restorePkgRelationships } from '../../core/model/packages.ts'
 import { createHash } from 'node:crypto'
 import type { AppDef } from '../../../src/contracts.ts'
 import type { AccessScope, AppMeta, ColumnDef, ConnectorKind, RoleDef, SolutionDef, TableDef, TablePrivilege } from '../../../src/platform/contracts.ts'
 import type { PlanColumnChange, PlanItem, SolutionImportResult, SolutionPlan } from '../../../src/platform/http.ts'
 import type { ConnectionRecord, Ctx, Services, UserContext } from '../../core/contracts.ts'
+import { HttpError } from '../../core/contracts.ts'
 import type { CoreServices } from '../../core/services.ts'
 import { removeTableAttachments } from '../../core/attachments.ts'
 import { NO_BACKUP_MESSAGE } from '../../core/backup.ts'
@@ -113,8 +116,9 @@ const same = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === 
 
 function columnChanges(before: TableDef, after: TableDef): PlanColumnChange[] {
   const out: PlanColumnChange[] = []
-  const b = new Map(before.columns.filter((c) => !c.system).map((c) => [c.name, c]))
-  const a = new Map(after.columns.filter((c) => !c.system).map((c) => [c.name, c]))
+  // the platform columns of a system table (locked) are never part of an upgrade: only columns makers added
+  const b = new Map(before.columns.filter((c) => !c.system && !c.locked).map((c) => [c.name, c]))
+  const a = new Map(after.columns.filter((c) => !c.system && !c.locked).map((c) => [c.name, c]))
   for (const [name, col] of b) if (!a.has(name)) out.push({ name, change: 'removed', from: col.type, destructive: true })
   for (const [name, col] of a) {
     const old = b.get(name)
@@ -182,8 +186,8 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
       matched = true
       ops.tableMap.set(p.def.id, byId.id)
       const columns = columnChanges(byId, p.def)
-      const props = TABLE_PROPS.filter((k) => !same(byId[k], p.def[k]))
-      const nameChanged = byId.name !== p.def.name
+      const props = byId.system ? [] : TABLE_PROPS.filter((k) => !same(byId[k], p.def[k]))
+      const nameChanged = !byId.system && byId.name !== p.def.name
       if (nameChanged) problems.push(`Table "${byId.displayName}" is called ${byId.name} here and ${p.def.name} in the package; renaming tables is not part of an upgrade.`)
       if (!columns.length && !props.length) {
         items.push({ kind: 'table', id: byId.id, name: byId.displayName, change: 'unchanged' })
@@ -204,6 +208,10 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
       ops.changedTables.push({ existing: byId, pkg: p.def, columns })
       continue
     }
+    if (p.def.system) {
+      problems.push(`The system table "${p.def.displayName}" is missing here; upgrade this environment first.`)
+      continue
+    }
     const byName = tables.find((t) => t.name.toLowerCase() === p.def.name.toLowerCase())
     if (byName) {
       // a table of the same name but another identity: used as it is (never changed), like older imports did
@@ -220,13 +228,15 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
   for (const c of old.filter((x) => x.kind === 'table')) {
     if (pkgTableIds.has(c.id)) continue
     const t = tables.find((x) => x.id === c.id)
-    if (!t || t.origin?.kind === 'file') continue
+    if (!t || t.origin?.kind === 'file' || t.system) continue
     ops.removedTables.push(t)
     items.push({ kind: 'table', id: t.id, name: t.displayName, change: 'removed', destructive: true, note: (t.connectionId === 'conn_default' && t.managed) ? 'the table and all its rows are deleted' : 'the table is removed from the platform (its source is left alone)' })
   }
   // lookups must resolve once the upgrade is done
   const finalNames = new Set([...tables.filter((t) => !ops.removedTables.includes(t)).map((t) => t.name.toLowerCase()), ...ops.newTables.map((t) => t.def.name.toLowerCase())])
-  for (const p of pkg.tables) for (const c of p.def.columns) if (c.type === 'lookup' && c.lookupTable && !finalNames.has(c.lookupTable.toLowerCase())) problems.push(`${p.def.displayName}.${c.displayName} looks up "${c.lookupTable}", which is neither here nor in the package.`)
+  // the core data model's tables (Users, Teams ...) are in every environment
+  for (const n of SYSTEM_TABLES.map((t) => t.name.toLowerCase())) finalNames.add(n)
+  for (const p of pkg.tables) for (const c of p.def.columns) if (c.type === 'lookup' && c.lookupTable && !c.system && !finalNames.has(c.lookupTable.toLowerCase())) problems.push(`${p.def.displayName}.${c.displayName} looks up "${c.lookupTable}", which is neither here nor in the package.`)
 
   // table events and validation rules of the solution's tables (package G): matched by id within the table
   const systemEvents: string[] = []
@@ -371,7 +381,7 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
     mode: planMode,
     solution: { id: pkg.head.id, name: pkg.head.name, displayName: pkg.head.displayName, version: pkg.head.version, ...(existingSolution ? { fromVersion: existingSolution.version } : {}) },
     target: { id: s.environment().id, name: env?.name ?? 'Default', type: env?.type ?? 'production', ...(env?.locked ? { locked: true } : {}) },
-    items, destructive: items.some((i) => i.destructive), problems, warnings: [...new Set(warnings)],
+    items, destructive: items.some((i) => i.destructive), problems, warnings: [...new Set([...warnings, ...(await relationshipPlanLines(s, pkg.tables, ops.tableMap))])],
     backup: planMode === 'upgrade'
       ? (backup?.available() ? { available: true, message: 'A backup of this environment is taken before anything changes.' } : { available: false, message: NO_BACKUP_MESSAGE })
       : { available: !!backup?.available(), message: 'Nothing here is changed: everything in the package is new.' },
@@ -474,12 +484,16 @@ async function changeTable(s: Services, existing: TableDef, pkg: TableDef, colum
  * Applies a plan computed by planSolution in the current environment, inside one transaction (s.transaction):
  * PostgreSQL DDL is transactional, so a failure anywhere leaves the environment exactly as it was.
  */
-export async function applySolution(s: Services, ctx: Ctx, pkg: SolutionPkg, res: PlanResult, filesAs: 'database' | 'file'): Promise<SolutionImportResult> {
+export async function applySolution(s: Services, ctx: Ctx, pkg: SolutionPkg, res: PlanResult, filesAs: 'database' | 'file', opts: { proceedWithoutBackup?: boolean } = {}): Promise<SolutionImportResult> {
   const { plan, ops } = res
   const u = me(ctx)
-  let backup: { taken: boolean; message: string } | undefined
+  let backup: { taken: boolean; message: string; id?: string; failed?: boolean } | undefined
   if (plan.mode === 'upgrade') {
-    backup = s.backup ? await s.backup.snapshot(s.environment(), `upgrade of solution ${pkg.head.displayName} to ${pkg.head.version}`) : { taken: false, message: NO_BACKUP_MESSAGE }
+    backup = s.backup ? await s.backup.snapshot(s.environment(), `before upgrading solution ${pkg.head.displayName} to ${pkg.head.version}`, { trigger: 'pre-upgrade', by: u.user.id }) : { taken: false, message: NO_BACKUP_MESSAGE }
+    // the backup failed (not: switched off): nothing changes unless the administrator chose to go on without it (package J)
+    if (backup.failed && !opts.proceedWithoutBackup) {
+      throw new HttpError(409, 'conflict', `${backup.message} Nothing was changed. Upgrade without a backup, or cancel.`, 'backup')
+    }
   }
   const removedTables: TableDef[] = []
   const undo: (() => Promise<void>)[] = []
@@ -501,6 +515,8 @@ export async function applySolution(s: Services, ctx: Ctx, pkg: SolutionPkg, res
       if (rows.length) await importRowsSystem(s, rows, u.user.id)
       for (const p of ops.newTables) for (const col of p.def.columns) if (col.computed) await s.kernel?.columnChanged(p.def, null, col)
       for (const c of ops.changedTables) await changeTable(s, c.existing, c.pkg, c.columns)
+      // relationships and their delete behaviours (package K)
+      await restorePkgRelationships(s, pkg.tables, ops.tableMap)
       // table events and validation rules (checked against this environment; run-as-system ones were confirmed)
       if (s.kernel && ops.eventOps.length) {
         s.kernel.invalidate()
@@ -649,7 +665,7 @@ function dedupe(list: SolutionDef['components']): SolutionDef['components'] {
  * The import route for a package with stable ids: plans in the current environment; an upgrade needs `confirm` equal
  * to the plan's token (409 otherwise: the client shows the plan first); problems refuse it (422).
  */
-export async function importStable(s: Services, ctx: Ctx, pkg: SolutionPkg, o: { confirm?: unknown; filesAs: 'database' | 'file' }): Promise<SolutionImportResult> {
+export async function importStable(s: Services, ctx: Ctx, pkg: SolutionPkg, o: { confirm?: unknown; filesAs: 'database' | 'file'; proceedWithoutBackup?: boolean }): Promise<SolutionImportResult> {
   const res = await planSolution(s, me(ctx), pkg)
   if (res.plan.problems.length) throw invalid(`The solution cannot be imported here: ${res.plan.problems.join(' ')}`)
   // an upgrade, and any import with events that run as the system, needs the administrator's explicit confirmation
@@ -661,5 +677,5 @@ export async function importStable(s: Services, ctx: Ctx, pkg: SolutionPkg, o: {
       ? `"${pkg.head.displayName}" already exists in this environment: review the upgrade plan and confirm it.`
       : 'This environment or the package changed since the plan was made. Review the new plan and confirm it again.')
   }
-  return applySolution(s, ctx, pkg, res, o.filesAs)
+  return applySolution(s, ctx, pkg, res, o.filesAs, { proceedWithoutBackup: o.proceedWithoutBackup })
 }

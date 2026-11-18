@@ -1,7 +1,7 @@
 import type { AppDef, ControlNode, FxHost, FxRecord, FxValue } from '@/contracts'
 import { Evaluator, ROOT_CTX, enumName, type Env, type NodeCtx, type RuntimeView } from './evaluator'
 import { uid, isRecord } from './util'
-import { changeShare, sendNotification, currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableRows, tables } from './data'
+import { changeShare, collabAction, sendNotification, currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableRows, tables } from './data'
 import { pendingFilesOf } from './attachments'
 import { finishSubmit } from './submit'
 import { chainItems, prepareAction } from './delegation'
@@ -427,6 +427,10 @@ function beginRun(input: RunInput): Run {
     sendNotification(to, title, body, link) {
       if (input.dryData) return
       void sendNotification({ to, title, ...(body ? { body } : {}), ...(link ? { link } : {}) })
+    },
+    collab(action, args) {
+      if (input.dryData) return action === 'nextNumber' ? '' : true
+      return collabAction(action, args)
     },
   }
 

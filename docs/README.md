@@ -14,6 +14,7 @@ filters and column security. ("Appbuilder" is a working name.)
 | [Security model](admin/security-model.md) | Admins and buyers evaluating it | planned |
 | [Controls reference](reference/controls.md) | Makers (generated from the code) | planned |
 | [Formula reference](reference/formulas.md) | Makers (generated from the code) | planned |
+| [Signing in, two-step verification, forgotten password](guide/signing-in.md) | Everyone using the server | current (P0 package I) |
 | [Troubleshooting](guide/troubleshooting.md) | Everyone | planned |
 
 ## For developers
@@ -24,6 +25,9 @@ filters and column security. ("Appbuilder" is a working name.)
 | [Data API v1 reference](dev/data-api.md) | planned |
 | [Query v2: formula-to-query translation](dev/query-v2.md) | current (library; the endpoint is P0 package D) |
 | [Realtime: live data refresh, presence, notifications](dev/live.md) | current (P0 package H) |
+| [Authentication and identity design](dev/auth.md) | current (P0 package I) |
+| [Data model designer: relationships, plans, reporting views and their security](dev/data-model.md) | current (P0 package K) |
+| [Core data model: system tables, the regarding rule, NextNumber](dev/core-data-model.md) | current (P0 package N) |
 | [Database schema](dev/schema.md) | planned |
 | [Writing a connector](dev/connectors.md) | planned |
 | [Testing](dev/testing.md) | planned |

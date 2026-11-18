@@ -232,3 +232,125 @@ co-editing of app definitions needs operational transforms or CRDTs over the who
 architecture limits). A reverse proxy must pass WebSocket upgrades (documented for Caddy and nginx). Measured in the sandbox:
 300 sockets, 50 changes a second for 30 s, every message delivered, p95 37 ms, under half a CPU core. A "table changed" tick
 tells a reader that something in a table changed and when. See `docs/dev/live.md`.
+
+## D20. Identity basics: our own TOTP and SMTP code, hashed single-use tokens, policy in the database (P0 package I, Nov 2026)
+**Decision.** Two-step verification is TOTP (RFC 6238, SHA-1, 6 digits, 30 s, one step of drift) implemented with Node's
+`crypto`, plus single-use recovery codes and optional email codes; a used time step is stored so a code works once. Outbound
+email uses our own minimal SMTP client (STARTTLS / TLS, AUTH PLAIN / LOGIN), queued as `mail.send` jobs with the message
+sealed in the payload and a delivery log without bodies. Every one-time secret (reset links, invitations, email-change
+links, pending second steps, email codes, recovery codes, API keys) is stored as SHA-256 only and consumed by one atomic
+update. Sign-in policy (MFA requirement, sessions, passwords, lockout) is a JSON setting in `ab.settings`, install-wide with
+per-environment MFA rules. Service accounts are `ab.users` rows of kind `service` with roles, so the security engine applies
+to API keys unchanged; bearer requests skip the CSRF header and ignore cookies, and reach only the Data API.
+**Why.** nodemailer is MIT-0 (not on our licence allow-list); TOTP and SMTP are small, well specified and testable against
+RFC vectors and a fake server. Hash-only storage means a database copy contains no usable token. Reusing users and roles
+for integrations avoids a second permission system. QR encoding uses `qrcode-generator` (MIT); the SVG is drawn by us.
+**Consequences.** Counters for lockouts and rate limits are per process (a restart clears them). Email codes are weaker than
+an app and can be turned off. "Forgot password" does its account work after answering, so its answer and timing do not
+reveal accounts. Rotation after an MFA change replaces the session token in place (live sockets follow it). Schema
+version 7. Single sign-on and passkeys remain P3.5.
+**Status.** Accepted, 18 Nov 2026.
+
+## D21. Data model designer: drafts of ops, one-transaction apply through the table routes, explicit relationships, views secured by lineage (P0 package K, Nov 2026)
+
+**Context.** Makers need one diagram of the schema, relationships with defined delete behaviour, schema patterns and
+reporting structures (star schema), without a second schema-change path that could drift from the table designer's
+rules, and without a way around row and column security.
+**Decision.**
+- Edits go into a per-user draft; changes are the diff of the draft against the snapshot it started from (ModelOps), so a
+  stale draft never reverts someone else's change. Patterns, imports and future data model templates produce the same ops.
+- A plan (row counts, destructive items, conversion pre-checks, token) precedes every apply; apply re-plans, takes the
+  pre-change backup and runs every op in ONE transaction by calling the existing table and connection route handlers
+  in-process, so validation, audit and kernel jobs are those of the table designer.
+- Relationships are stored explicitly (`ab_relationships`) with restrict / cascade / set blank, enforced by the
+  DataService. Existing lookups were recorded at the upgrade as restrict (required) or set blank (optional), which makes
+  the old dangling-id behaviour explicit. Cascade runs with the deleting user's permissions, all or nothing, with events
+  and outbox rows; set blank is a system write.
+- Reporting views are PostgreSQL views generated only from a registered lineage (one base table, column mapping, fixed
+  expressions). Because security is in the application layer, a read of a view applies the base table's row predicate
+  (semi-join on id) and hides a view column whose source column is hidden. Summary tables are computed as the system and
+  readable only by roles that read every source row.
+- The canvas is our own SVG (no diagram library).
+**Consequences.** Deleting a parent can now be refused (restrict) where it used to orphan rows; cascades can be refused
+for rows the user cannot see. Views over views, and views over other connections, are not supported. Schema version 7
+(shared number). Demo mode applies drafts step by step without a transaction; server-only features are explained there.
+**Status.** Accepted, 18 Nov 2026.
+
+## D22. Backups: one archive per backup from one database snapshot, verified; pg_dump with a built-in fallback; restore under any schema name (P0 package J, Nov 2026)
+
+**Context.** P0 needs backup, wipe and restore by script (exit check 4), restores of one environment or one table into a
+running install, and automatic backups before risky changes. Customers' machines differ: pg_dump may be missing, on no
+`PATH`, or older than the server.
+
+**Decision.**
+- **One archive file per backup** (`.abbak`, a standard tar): the database part, the environment folders (attachments, data
+  files), optionally the key file, and a manifest with versions, row counts and a sha256 per member. Optional passphrase
+  encryption of the whole file as a chunked AES-256-GCM container (scrypt), so encrypted archives can still be read in
+  parts. Node built-ins only for tar and crypto; one dependency, `pg-copy-streams` (MIT), for COPY.
+- **One consistent snapshot**: a REPEATABLE READ transaction whose exported snapshot pg_dump uses (`--snapshot`); counts and
+  catalogue come from the same transaction. The built-in exporter (catalogue DDL + `COPY TO STDOUT` per table) runs inside it
+  when pg_dump is unusable, and is always available.
+- **Restore under any schema name**, from our own SQL execution (pg_restore output with the schema renamed, or DDL from the
+  stored catalogue) inside our own transaction, instead of letting pg_restore write to the database: one code path gives
+  in place (one transaction), as a new environment, scratch schemas for the restore test and table restores, and the
+  install restore CLI; every table's rows are checked against the manifest.
+- **Verify every backup** (re-read, checksums, rows counted again) and every archive before it is restored.
+- **Catalogue in the database, archives as the source of truth**: `ab.backups` / `ab.backup_ops` (schema version 7,
+  shared), rebuilt from manifests found in the folder; never part of a backup. Schedules are built-in job schedules of
+  Default synced from the settings; retention is grandfather-father-son as a pure function.
+- **Snapshots before risky changes** (solution upgrade in place, environment delete, in-place restore, server schema
+  upgrade) through the existing `BackupService.snapshot` hook; a failed one stops the change unless the administrator
+  explicitly proceeds (409, field `backup`; `proceedWithoutBackup`).
+- **No cloud uploads**: an off-site *folder* with a verified copy, and rclone/restic documented.
+
+**Alternatives considered.** pg_dump directory format per schema (several snapshots, more files; custom format with
+`--snapshot` is one file and one instant). Letting pg_restore restore directly (cannot rename schemas, cannot share our
+transaction). A zip library (random access is nice, but tar plus an index read from headers is enough and dependency-free).
+Encrypting with a stream cipher and one tag at the end (cannot authenticate before plaintext is released, no random
+access). WAL archiving / PITR (right for larger installs; out of scope, documented).
+
+**Consequences.** Restoring a pg_dump archive needs `pg_restore` of the same or a newer major version on the restoring
+machine (the built-in format needs nothing). The built-in exporter does not copy database functions, triggers or types of
+one's own in an environment schema (Appbuilder creates none; warned). A restored environment's pending jobs and events are
+cancelled. Sessions and one-time sign-in links are not restored. Measured: 1M rows + 500 MB attachments backed up and
+checked in about 8 s with the server's memory growing by about 10 MB.
+**Status.** Accepted, 18 Nov 2026.
+
+## D23. Core data model: system tables per environment, views for what the platform already stores, a polymorphic "regarding" rule compiled into SQL, gap-free numbers by row lock (P0 package N, Nov 2026)
+
+**Context.** Every business app needs people, comments, tasks, files, notifications and reference data (currencies,
+Indian states and GST codes, units, numbering). Building them per app duplicates data and, worse, security: a comment
+table per app either leaks the existence of records or needs a role per table. The platform already stores users,
+organisation, roles, shares, notifications and logs in its own tables.
+
+**Decision.**
+- **Fixed system tables in every environment** (stable ids `sys_*`, `TableDef.system`), provisioned idempotently at
+  every start inside the migration transaction, not as a numbered migration step (schema version 7 is shared).
+- **Projections, not copies**: what the platform already stores (users, departments, teams, roles, shares,
+  notifications, audit, sign-in log, jobs, event runs) is a PostgreSQL VIEW selecting only safe columns, read-only. No
+  synchronisation, nothing to drift.
+- **One polymorphic link** (`regardingTable`, `regardingId`) on every collaboration and files table, and **one rule**: a
+  row is readable iff its record is. Compiled as `IN (fully readable tables) OR` one correlated `EXISTS` per table with a
+  row predicate in the same store; nothing for other stores (fail closed). Built-in policies instead of roles for all
+  system tables. Writes about an unreadable record are answered like a missing record.
+- **NextNumber by `SELECT ... FOR UPDATE` of the sequence row inside the save's transaction**: gap-free and unique; writers
+  of one sequence serialise. Chosen over PostgreSQL sequences (gaps on rollback; GST numbering wants none).
+- **Formula table functions are macros** over the system tables (`Comments(r)` is a `Filter`), so they delegate with no
+  new query machinery; lookup paths (`createdBy.FullName`) became a Query v2 `via` node with the target's own security.
+- The common business model is an **optional solution package**, not provisioned: most apps do not want Accounts.
+- Reference data from **CLDR** (Node's ICU, generated once, no runtime dependency) and the GST state code list of a state
+  tax department, checked by hand; seeded once per table (markers), then owned by the administrator.
+
+**Alternatives considered.** One comments table per user table (N tables, N role rows, no cross-record inbox). Copying
+users into each environment (drift, two sources of truth). A `regarding` check in application code after the query
+(breaks counts, aggregates, paging and search). Row-level security policies in PostgreSQL (our security is in the
+application layer; would need per-request roles). PostgreSQL sequences for NextNumber (gaps).
+
+**Consequences.** Reads of collaboration tables by users with row-level access on many tables carry a predicate with one
+branch per table: measured on 1M collaboration rows over 50 tables, a record's timeline 25 ms, My tasks 89 ms, an
+unfiltered count over everything visible 0.6 s; it needed exact comparison of the link columns and **`jit=off`** on
+every connection (JIT compile of the large expression took ~22 s). Makers' tables named like a system table keep the
+name; the system table becomes `Sys<Name>`. System tables never travel in solutions; their custom columns do.
+Collaboration about rows of a linked MySQL table or a data file is not readable by people with row-level access to that table (fail closed).
+**Status.** Accepted, 18 Nov 2026.
+

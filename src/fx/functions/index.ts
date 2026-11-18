@@ -1,5 +1,6 @@
 import type { FxFunctionDoc, FxNamedFormula } from '../../contracts.ts'
 import { behaviourFns } from './behaviour.ts'
+import { collabFns } from './collab.ts'
 import { colorFns } from './color.ts'
 import { dateFns } from './dates.ts'
 import { logicFns } from './logic.ts'
@@ -9,7 +10,7 @@ import { textFns } from './text.ts'
 import type { FnDef } from './types.ts'
 import { buildUserFunctions, EMPTY_USER_FUNCTIONS, userFunctionNoCase, type UserFunctionSet } from './user.ts'
 
-const ALL: FnDef[] = [...logicFns, ...textFns, ...mathFns, ...dateFns, ...tableFns, ...colorFns, ...behaviourFns]
+const ALL: FnDef[] = [...logicFns, ...textFns, ...mathFns, ...dateFns, ...tableFns, ...colorFns, ...behaviourFns, ...collabFns]
 
 const BY_NAME = new Map<string, FnDef>()
 const BY_LOWER = new Map<string, FnDef>()

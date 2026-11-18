@@ -207,6 +207,7 @@ Routing (`/home/claude/appbuilder-demo/src/router.ts`, hash routes) decides the 
 | `#chat` | `src/chat/ChatWindow.tsx` | chat popped out into its own window |
 | `#settings`, `#settings-<section>` | `SettingsPage` (`src/portal/Settings.tsx`) inside `Portal` | full window in front of the shell, in the current mode |
 | `#admin`, `#admin-<section>` | `AdminConsole` (`src/portal/Admin.tsx`) as a Dev mode page | administrators only |
+| `#datamodel` | `DataModel` (`src/portal/model/DataModel.tsx`) as a full-bleed Dev mode page | makers; the data model designer (`data-model.md`) |
 | everything else | `Portal` (`/home/claude/appbuilder-demo/src/portal/Portal.tsx`) | the shell: Dev mode, User mode, the Studio, the chat dock |
 
 `Portal` renders a `Frame`: the shell (`Shell.tsx`) plus, for `#studio-<appId>`, the Studio in front of it, and the chat dock

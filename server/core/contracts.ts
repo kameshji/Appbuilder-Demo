@@ -25,6 +25,9 @@ export type ApiErrorCode =
   | 'method_not_allowed'
   /** 403: the signed-in user must change the password an administrator set before doing anything else */
   | 'password_change_required'
+  /** package I: 401 the password was right, the second step is needed (POST /auth/login/verify); 403 the action needs a
+   *  fresh proof of identity (POST /auth/reauth); 403 two-step verification must be set up before anything else */
+  | 'mfa_required' | 'reauth_required' | 'mfa_enrolment_required'
 
 /** Throw from anywhere in a request; the router turns it into { error: { code, message, field? } }. */
 export class HttpError extends Error {
@@ -106,6 +109,8 @@ export interface RouteOptions {
   design?: boolean
   /** usable by a signed-in user who has no environment to enter (own session, password, environment list) */
   noEnvironment?: boolean
+  /** package I: reachable by a session that must set up two-step verification first (otherwise 403 mfa_enrolment_required) */
+  allowPendingMfaEnrolment?: boolean
 }
 
 export interface Router {
@@ -171,6 +176,8 @@ export interface Connector {
   readonly capabilities: ConnectorCapabilities
   test(): Promise<{ ok: true; message: string } | { ok: false; message: string }>
   listSourceTables(): Promise<{ source: string; columns: SourceColumn[]; rowCount?: number }[]>
+  /** SQL connectors (data model designer import): the source's foreign keys, single-column ones */
+  foreignKeys?(): Promise<{ table: string; column: string; refTable: string; refColumn: string; onDelete?: string }[]>
   describe(source: string): Promise<SourceColumn[]>
   createTable(def: TableDef): Promise<void>
   addColumn(def: TableDef, col: ColumnDef): Promise<void>
@@ -207,6 +214,8 @@ export interface QueryV2Input {
   plan: QueryPlan
   /** the caller's row filter (v1 Condition); undefined = every row */
   rowFilter?: Condition
+  /** lookup paths of the plan: the tables they read, with the caller's row filter on each (core data model, P0-N) */
+  related?: Record<string, { def: TableDef; rowFilter?: Condition }>
   /** columns returned when the plan has no select */
   visible: string[]
   maxUnpagedRows: number
@@ -255,7 +264,7 @@ export type ConnectorFactory = (conn: ConnectionRecord, env: ConnectorEnv) => Co
 export interface EnvironmentRef { id: string; schema: string }
 
 export type EnvironmentType = 'production' | 'sandbox' | 'developer'
-export type EnvironmentState = 'ready' | 'creating' | 'deleting' | 'failed'
+export type EnvironmentState = 'ready' | 'creating' | 'deleting' | 'failed' | 'restoring'
 /** a row of ab.environments */
 export interface EnvironmentRecord extends EnvironmentRef {
   name: string
@@ -312,6 +321,25 @@ export interface InstallStore {
 
 export interface UserRecord extends UserDef { passwordHash: string | null }
 
+/** one row of ab.sessions as the server reads it (the token itself is never stored, only its SHA-256) */
+export interface SessionRecord {
+  userId: string
+  expiresOn: Date
+  createdOn?: Date
+  lastSeen?: Date
+  /** package I: the session's end however active it is (null: none) */
+  absoluteExpiresOn?: Date | null
+  /** package I: last proof of identity (sign-in or re-authentication) */
+  authOn?: Date | null
+  /** package I: the id shown in session lists (never the hash) */
+  publicId?: string | null
+  /** package I: 'mfa_enrol' = may only set up two-step verification */
+  restricted?: string | null
+  mfa?: boolean
+  ip?: string | null
+  userAgent?: string | null
+}
+
 /** result of MetaStore.migrate(): the schema version before and after, and what each upgrade step did */
 export interface MigrationSummary {
   from: number
@@ -343,6 +371,8 @@ export interface MetaStore {
   db: SqlDb
   /** organisation (departments, teams, user organisation fields) and record shares; absent in older fakes */
   org?: import('./org-store.ts').OrgStore
+  /** data model designer (package K): relationships, diagram layouts, drafts; absent in older fakes */
+  relationships?: import('./model/store.ts').RelationshipStore
   /**
    * create/upgrade schema `ab` and every registered environment schema; idempotent. Throws SchemaTooNewError when the
    * database was upgraded by a newer server (ab.settings schemaVersion above SCHEMA_VERSION); nothing is changed then.
@@ -368,8 +398,9 @@ export interface MetaStore {
     remove(id: string): Promise<void>
   }
   sessions: {
-    insert(s: { idHash: string; userId: string; expiresOn: Date; userAgent: string }): Promise<void>
-    get(idHash: string): Promise<{ userId: string; expiresOn: Date } | null>
+    /** ip, publicId, absoluteExpiresOn, mfa, restricted: package I (identity) */
+    insert(s: { idHash: string; userId: string; expiresOn: Date; userAgent: string; ip?: string | null; publicId?: string; absoluteExpiresOn?: Date | null; mfa?: boolean; restricted?: string | null }): Promise<void>
+    get(idHash: string): Promise<SessionRecord | null>
     touch(idHash: string, expiresOn: Date): Promise<void>
     remove(idHash: string): Promise<void>
     removeForUser(userId: string): Promise<void>
@@ -650,13 +681,16 @@ export interface EnvironmentManager {
   max(): number
 }
 
-/** result of a snapshot: package J (backup/restore) will take real ones; until then nothing is taken and the plan says so */
-export interface SnapshotResult { taken: boolean; message: string; id?: string }
+/**
+ * result of a snapshot (backup/service.ts): taken, or not taken because automatic backups are off (failed absent), or
+ * because the backup failed (failed true: the caller refuses to go on unless the administrator chose to proceed)
+ */
+export interface SnapshotResult { taken: boolean; message: string; id?: string; failed?: boolean }
 export interface BackupService {
   /** can snapshot() take a backup now? */
   available(): boolean
   /** called before an in-place solution upgrade (and other destructive environment operations) */
-  snapshot(env: EnvironmentRef, reason: string): Promise<SnapshotResult>
+  snapshot(env: EnvironmentRef, reason: string, o?: { trigger?: 'pre-upgrade' | 'pre-delete' | 'pre-restore'; by?: string | null }): Promise<SnapshotResult>
 }
 
 /* ------------------------------------------------------------------ notifications (package H) */

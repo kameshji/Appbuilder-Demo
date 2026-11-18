@@ -65,6 +65,8 @@ export interface ColumnDef {
   prefix?: string
   /** system columns cannot be edited or removed: id, createdOn, modifiedOn, createdBy, owner */
   system?: boolean
+  /** a platform column of a system table (core data model): its definition cannot be changed or removed; values follow the table's policy */
+  locked?: boolean
   /** type 'file' / 'image': allow several attachments (cell = JSON array of attachment ids) */
   multiple?: boolean
   /** type 'file' / 'image': accepted MIME patterns, e.g. ["image/*", "application/pdf"]; empty = any */
@@ -111,7 +113,42 @@ export interface TableDef {
   teamOwnership?: boolean
   /** record sharing is on: owners (and roles with the share privilege) may share single rows */
   sharing?: boolean
+  /**
+   * Data model designer (P0-K, src/model/types.ts): a reporting view (read-only, lineage to one base table; security is the
+   * base table's), a summary table refreshed by a job, or a date dimension.
+   */
+  reporting?: import('../model/types.ts').ReportingDef
+  /** column sets that must be unique together (a composite unique index; e.g. the pair of a many-to-many junction table) */
+  uniqueTogether?: string[][]
+  /**
+   * Core data model (P0-N, src/platform/system-tables.ts): a system table present in every environment. It cannot be
+   * deleted or renamed; its platform columns are `locked`; makers may add columns when `extensible`. Security is
+   * built in (`systemPolicy`), not taken from roles.
+   */
+  system?: boolean
+  /** the group shown in the table list ("People and organisation", "Collaboration", ...) */
+  systemGroup?: SystemTableGroup
+  /** projection: read-only view over install or security data; table: a real table; placeholder: final shape, filled later */
+  systemKind?: 'projection' | 'table' | 'placeholder'
+  /** makers may add their own columns */
+  extensible?: boolean
+  /** built-in row security of a system table (src/platform/system-tables.ts systemPredicate) */
+  systemPolicy?: SystemPolicy
+  /**
+   * polymorphic "regarding" link: the row is about one row of any table (table id in `table`, row id in `id`). Activities,
+   * comments, mentions, follows, tag links, attachment links, documents. Visible only to users who can read that row.
+   */
+  regarding?: { table: string; id: string }
 }
+
+export type SystemTableGroup = 'people' | 'collaboration' | 'files' | 'communication' | 'logging' | 'reference'
+/**
+ * directory: Users/Departments/Teams (directory rule); own: own rows (owner = me); adminOrOwn: admins all, others own rows;
+ * admin: administrators only; reference: everyone reads, administrators write; regarding: rows about a record the user can
+ * read; shared: everyone reads and creates, owners and administrators change (tags); members: channel members only;
+ * parent: follows the read rule of the row a lookup column points at (document versions, channel messages).
+ */
+export type SystemPolicy = 'directory' | 'own' | 'adminOrOwn' | 'admin' | 'reference' | 'shared' | 'regarding' | 'members' | 'parent'
 
 /**
  * A row as formulas see it. Typed values: number/decimal/currency -> number, boolean -> boolean,
@@ -234,6 +271,16 @@ export interface UserDef {
   employeeCode?: string
   /** resolved organisation facts for User() (computed, read-only; present on the session user) */
   org?: UserOrgInfo
+  /** server mode (package I): a service account (API keys only, never signs in); people have no kind */
+  kind?: 'service'
+  /** server mode: when the password was last set */
+  passwordChangedOn?: string
+  /** session user only (package I): two-step verification is set up */
+  mfaEnabled?: boolean
+  /** session user only: policy requires two-step verification; enrolBy = the end of the grace period (ISO) */
+  mfaRequired?: { enrolBy: string | null }
+  /** session user only: the grace period is over; the session may only set up two-step verification */
+  mfaEnrolmentRequired?: boolean
 }
 
 /** what User() exposes about the organisation (computed from the directory) */
@@ -311,7 +358,7 @@ export interface EffectivePrivileges {
  */
 export type EnvironmentType = 'production' | 'sandbox' | 'developer'
 /** ready: usable. creating / deleting: an operation is running. failed: creation, deletion or its migration failed */
-export type EnvironmentState = 'ready' | 'creating' | 'deleting' | 'failed'
+export type EnvironmentState = 'ready' | 'creating' | 'deleting' | 'failed' | 'restoring'
 export interface EnvironmentDef {
   /** slug, also the schema suffix (env_<id>); never changes */
   id: string
@@ -464,6 +511,8 @@ export type { QueryOptions, QueryState } from './query-cache.ts'
 export class PlatformError extends Error {
   /** rate_limited = 429 (login / password throttle), method_not_allowed = 405, password_change_required = 403 (the account must set a new password first) */
   code: 'not-found' | 'denied' | 'invalid' | 'conflict' | 'storage' | 'unauthenticated' | 'unavailable' | 'rate_limited' | 'method_not_allowed' | 'password_change_required'
+    /** package I: sign-in needs the second step; the action needs a fresh password or code; two-step verification must be set up first */
+    | 'mfa_required' | 'reauth_required' | 'mfa_enrolment_required'
   constructor(code: PlatformError['code'], message: string) {
     super(message)
     this.code = code
@@ -590,6 +639,8 @@ export interface PlatformApi {
    */
   auth: {
     login(email: string, password: string): Promise<Session>
+    /** server mode (package I): finish a sign-in that returned a session another way (second step, invitation, enrolment) */
+    completeSignIn?(session: Session): Promise<Session>
     logout(): Promise<void>
     changePassword(current: string, next: string): Promise<void>
     /** self-service: change the signed-in user's own display name (nothing else). Demo mode: the run-as user. */
@@ -622,6 +673,8 @@ export interface PlatformApi {
   live: LiveApi
   /** in-app notifications of the signed-in user (package H) */
   notifications: NotificationsApi
+  /** core data model (P0-N): timelines, comments, activities, follows, tags, tasks, mentions (src/platform/collab-api.ts) */
+  collab?: import('./collab-api.ts').CollabApi
 
   attachments: {
     /** upload a file for a 'file'/'image' column of a row (the row must exist; uploading needs update access to that column) */
@@ -713,7 +766,7 @@ export interface PlatformApi {
      * server mode: a package whose solution or components (same ids) exist here is an in-place upgrade and needs
      * `confirm` = the token of the reviewed plan (src/portal/environmentApi.ts planImport); asCopy: new instances
      */
-    importPackage(yamlText: string, opts?: { filesAs?: 'database' | 'file'; confirm?: string; asCopy?: boolean }): Promise<SolutionDef & { warnings?: string[] }>
+    importPackage(yamlText: string, opts?: { filesAs?: 'database' | 'file'; confirm?: string; asCopy?: boolean; proceedWithoutBackup?: boolean }): Promise<SolutionDef & { warnings?: string[] }>
   }
 }
 

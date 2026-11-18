@@ -9,6 +9,7 @@
  * still in flight; `rows` = confirmed with the ops replayed on top. Success folds the server's answer into
  * `confirmed`, failure just drops the op, so a rollback can never clobber a later write.
  */
+import { remoteCollab } from './remote-collab.ts'
 import type { AppDef, FxRecord, FxValue } from '@/contracts'
 import { PlatformError } from './contracts'
 import type {
@@ -602,7 +603,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     try {
       ws = await call<WorkspaceResponse>('GET', '/workspace')
     } catch (e) {
-      if (e instanceof PlatformError && e.code === 'password_change_required') {
+      if (e instanceof PlatformError && (e.code === 'password_change_required' || e.code === 'mfa_enrolment_required')) {
         applyPendingSession(await call<Session>('GET', '/auth/session'))
         return
       }
@@ -646,7 +647,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     if (!initPromise) {
       initPromise = (async () => {
         const st = await refreshStatus()
-        if (st.session?.user.mustChangePassword) applyPendingSession(st.session)
+        if (st.session?.user.mustChangePassword || st.session?.user.mfaEnrolmentRequired) applyPendingSession(st.session)
         else if (st.session && !st.setup.needsDatabase) {
           try {
             await loadWorkspace(true)
@@ -1021,7 +1022,11 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
   const authApi: PlatformApi['auth'] = {
     async login(email, password) {
       const session = await call<Session>('POST', '/auth/login', { json: { email, password } })
-      if (session.user.mustChangePassword) applyPendingSession(session)
+      return authApi.completeSignIn!(session)
+    },
+    /** a session from another sign-in path (second step, invitation): load the workspace, or only the pending screen */
+    async completeSignIn(session) {
+      if (session.user.mustChangePassword || session.user.mfaEnrolmentRequired) applyPendingSession(session)
       else await loadWorkspace(true)
       return state.session ?? session
     },
@@ -1319,7 +1324,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     },
     async importPackage(yamlText, opts) {
       const sol = await call<SolutionDef & { warnings?: string[] }>('POST', '/solutions/import', { json: {
-        yaml: yamlText, ...(opts?.filesAs ? { filesAs: opts.filesAs } : {}), ...(opts?.confirm ? { confirm: opts.confirm } : {}), ...(opts?.asCopy ? { asCopy: true } : {}),
+        yaml: yamlText, ...(opts?.filesAs ? { filesAs: opts.filesAs } : {}), ...(opts?.confirm ? { confirm: opts.confirm } : {}), ...(opts?.asCopy ? { asCopy: true } : {}), ...(opts?.proceedWithoutBackup ? { proceedWithoutBackup: true } : {}),
       } })
       await refresh()
       return { ...(state.solutions.find((s) => s.id === sol.id) ?? sol), ...(sol.warnings ? { warnings: sol.warnings } : {}) }
@@ -1397,6 +1402,15 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     environments: environmentsApi,
     live: rl ? rl.live : offlineLive(),
     notifications: rl ? rl.notifications : offlineNotifications(),
+    // core data model (P0-N): timeline, comments, activities, follow, tags, my tasks, mentions
+    collab: remoteCollab(call, {
+      invalidate: (tableId) => {
+        const e = entries.get(tableId)
+        if (e) invalidateFromRemote(tableId)
+        else queries.invalidateTable(tableId)
+      },
+      upload: (tableId, column, rowId, file) => attachmentsApi.upload(tableId, column, rowId, file),
+    }),
   }
 }
 

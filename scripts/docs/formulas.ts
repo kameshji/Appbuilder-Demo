@@ -7,7 +7,7 @@ import { GENERATED_NOTICE, anchor, cell, code, page, table } from './markdown'
  * function, the enum notes and the prose live here. When you add a function, add it to CATEGORY_OF.
  * ---------------------------------------------------------------------------------------------- */
 
-export type CategoryId = 'logic' | 'text' | 'math' | 'datetime' | 'table' | 'colour' | 'behaviour' | 'data' | 'context' | 'other'
+export type CategoryId = 'logic' | 'text' | 'math' | 'datetime' | 'table' | 'colour' | 'behaviour' | 'data' | 'context' | 'collab' | 'other'
 
 export const CATEGORIES: { id: CategoryId; title: string; intro: string }[] = [
   { id: 'logic', title: 'Logic and errors', intro: 'Choosing between values, testing for blank, catching errors and converting to true/false.' },
@@ -19,6 +19,7 @@ export const CATEGORIES: { id: CategoryId; title: string; intro: string }[] = [
   { id: 'behaviour', title: 'Behaviour', intro: 'Functions with side effects. They work only in behaviour properties such as OnSelect and OnChange; anywhere else they are an error.' },
   { id: 'data', title: 'JSON and regular expressions', intro: 'Reading and writing JSON text, and matching text against patterns. Patterns are regular expressions; the Match and MatchOptions enums help build them.' },
   { id: 'context', title: 'Context and environment', intro: 'Facts about the signed-in user, the address the app was opened with, and generated identifiers.' },
+  { id: 'collab', title: 'Core data model', intro: 'Comments, activities and mentions of records, settings and unit conversion over the system tables every environment has (docs/guide/maker/core-data-model.md). They delegate like the Filter or LookUp they stand for. The write functions (AddComment, AddActivity, Follow, Tag ...) are listed under Behaviour.' },
   { id: 'other', title: 'Other', intro: 'Functions that are not yet assigned to a category in scripts/docs/formulas.ts.' },
 ]
 
@@ -53,6 +54,8 @@ export const CATEGORY_OF: Record<string, CategoryId> = {
   JSON: 'data', ParseJSON: 'data', IsMatch: 'data', Match: 'data', MatchAll: 'data',
   // context
   Language: 'context', User: 'context', Param: 'context', GUID: 'context', SharedWith: 'context',
+  // core data model (P0-N)
+  RecordId: 'collab', Comments: 'collab', Activities: 'collab', MyTasks: 'collab', Mentions: 'collab', Setting: 'collab', Convert: 'collab',
 }
 
 /** One-line notes for enums. The "Used by" line is generated from the control registry. */

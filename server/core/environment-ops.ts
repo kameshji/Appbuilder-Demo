@@ -6,7 +6,7 @@
  */
 import fs from 'node:fs'
 import { HttpError } from './contracts.ts'
-import type { EnvironmentRecord, EnvironmentType, SqlDb, UserContext } from './contracts.ts'
+import type { EnvironmentRecord, EnvironmentType, SnapshotResult, SqlDb, UserContext } from './contracts.ts'
 import type { EnvironmentCreateRequest } from '../../src/platform/http.ts'
 import type { CoreServices } from './services.ts'
 import { DEFAULT_ENVIRONMENT_ID, ENV_ID, environmentSchema, runInEnvironment } from './env-context.ts'
@@ -15,6 +15,7 @@ import { DEFAULT_CONNECTION_ID, FILES_CONNECTION_ID } from './connections.ts'
 import { ROLE_ADMIN, ensureBuiltinRoles } from './auth.ts'
 import { flushFiles, forgetFilesFolder } from '../connectors/files/index.ts'
 import { seedSample } from '../routes/meta/seed.ts'
+import { copySystemData, provisionSystemTables } from './system-tables.ts'
 import { assertAdminRemains } from '../routes/meta/security.ts'
 import { errText, log } from './util.ts'
 
@@ -104,6 +105,9 @@ export async function createEnvironment(s: CoreServices, actor: UserContext, b: 
     await s.transaction(() => runInEnvironment(id, async () => {
       for (const stmt of environmentDdl(schema)) await db.exec(stmt)
       if (source) await copyContent(s, source, { id, schema }, copy)
+      // P0-N core data model: system tables (views, real tables, reference data); a copy with data takes their rows along
+      await provisionSystemTables(db, schema, id)
+      if (source && copy === 'data') await copySystemData(db, source.schema, schema)
       await ensureBuiltinRoles(s)
       await s.ensureBuiltinConnections()
       // the creator administers it (an Administrator role there also records the access)
@@ -132,7 +136,7 @@ export async function createEnvironment(s: CoreServices, actor: UserContext, b: 
 }
 
 /** metadata tables copied by every copy; the data-only ones follow */
-const COPY_META = ['ab_roles', 'ab_role_tables', 'ab_tables', 'ab_apps', 'ab_solutions', 'ab_connections', 'ab_table_events']
+const COPY_META = ['ab_roles', 'ab_role_tables', 'ab_tables', 'ab_apps', 'ab_solutions', 'ab_connections', 'ab_table_events', 'ab_relationships', 'ab_model_layouts']
 const COPY_DATA_META = ['ab_data_files', 'ab_attachments', 'ab_counters', 'ab_shares']
 
 async function columnsOf(db: SqlDb, schema: string, table: string): Promise<string[]> {
@@ -181,12 +185,16 @@ async function copyContent(s: CoreServices, src: EnvironmentRecord, dst: { id: s
   // as any table the platform creates), rows copied with INSERT ... SELECT
   const defs = await runInEnvironment(dst.id, () => s.meta.tables.list())
   const connector = await runInEnvironment(dst.id, () => s.connections.get(DEFAULT_CONNECTION_ID))
+  // reporting views (package K) after the tables they read; they hold no rows of their own
+  defs.sort((a, b) => Number(a.reporting?.kind === 'view') - Number(b.reporting?.kind === 'view'))
   for (const def of defs) {
     if (def.connectionId !== DEFAULT_CONNECTION_ID || !def.source) continue
+    // system tables are provisioned by provisionSystemTables (views and tables of the core data model)
+    if (def.system) continue
     const exists = await db.query(`SELECT to_regclass($1) IS NOT NULL AS ok`, [`${q(src.schema)}.${q(def.source)}`])
     if (!(exists[0] as { ok?: boolean })?.ok) continue
     await runInEnvironment(dst.id, () => connector.createTable(def))
-    if (mode === 'data') {
+    if (mode === 'data' && def.reporting?.kind !== 'view') {
       await copyRows(db, src.schema, dst.schema, def.source)
       // planner statistics for the copied rows (also what the admin console's row estimate reads)
       await db.exec(`ANALYZE ${q(dst.schema)}.${q(def.source)}`)
@@ -240,7 +248,7 @@ export async function updateEnvironment(
     if (b.locked !== e.locked && changes.locked === undefined) { patch.locked = b.locked; changes.locked = { before: e.locked, after: b.locked } }
   }
   if (!Object.keys(patch).length) return e
-  if (e.state === 'creating' || e.state === 'deleting') throw conflict(`"${e.name}" is being ${e.state === 'creating' ? 'created' : 'deleted'}.`)
+  if (e.state === 'creating' || e.state === 'deleting' || e.state === 'restoring') throw conflict(`"${e.name}" is being ${e.state === 'creating' ? 'created' : e.state === 'restoring' ? 'restored' : 'deleted'}.`)
   await s.install.environments.update(id, patch)
   s.environments.invalidate()
   const action = changes.locked && Object.keys(changes).length === 1 ? (patch.locked ? 'environment.lock' : 'environment.unlock') : 'environment.update'
@@ -250,17 +258,25 @@ export async function updateEnvironment(
 
 /* ------------------------------------------------------------------ delete */
 
-export async function deleteEnvironment(s: CoreServices, actor: UserContext, id: string, confirmName: unknown): Promise<void> {
+export async function deleteEnvironment(s: CoreServices, actor: UserContext, id: string, confirmName: unknown, opts: { proceedWithoutBackup?: boolean } = {}): Promise<{ backup?: SnapshotResult }> {
   const e = await s.install.environments.get(id)
   if (!e) throw new HttpError(404, 'not-found', `There is no environment "${id}".`)
   if (e.builtIn || e.id === DEFAULT_ENVIRONMENT_ID) throw conflict('The Default environment cannot be deleted.')
   if (typeof confirmName !== 'string' || confirmName.trim() !== e.name) throw invalid(`Type the name of the environment ("${e.name}") to confirm.`, 'confirmName')
   const all = await s.install.environments.list()
   if (e.type === 'production' && !all.some((x) => x.id !== id && x.type === 'production')) throw conflict(`"${e.name}" is the last production environment and cannot be deleted.`)
-  if (e.state === 'creating' || e.state === 'deleting') throw conflict(`"${e.name}" is being ${e.state === 'creating' ? 'created' : 'deleted'}.`)
+  if (e.state === 'creating' || e.state === 'deleting' || e.state === 'restoring') throw conflict(`"${e.name}" is being ${e.state === 'creating' ? 'created' : e.state === 'restoring' ? 'restored' : 'deleted'}.`)
   if (id === actor.environmentId) {
     // the request itself works in it; the client switches away first
     throw conflict('Switch to another environment before deleting this one.')
+  }
+  // a backup of it first (package J): it can be restored as a new environment later
+  let backup: SnapshotResult | undefined
+  if (e.state === 'ready' && s.backup) {
+    backup = await s.backup.snapshot({ id: e.id, schema: e.schema }, `before deleting environment ${e.name}`, { trigger: 'pre-delete', by: actor.user.id })
+    if (backup.failed && !opts.proceedWithoutBackup) {
+      throw new HttpError(409, 'conflict', `${backup.message} Nothing was deleted. Delete it without a backup, or cancel.`, 'backup')
+    }
   }
   await s.install.environments.update(id, { state: 'deleting' })
   s.environments.invalidate()
@@ -289,7 +305,8 @@ export async function deleteEnvironment(s: CoreServices, actor: UserContext, id:
     folder = `left on disk: ${errText(err)}`
     log('warn', `environment ${id}: its folder ${dirs.root} could not be removed: ${errText(err)}`)
   }
-  await installAudit(s, actor.user.id, 'environment.delete', id, { id, name: e.name, type: e.type, schema: e.schema, folder })
+  await installAudit(s, actor.user.id, 'environment.delete', id, { id, name: e.name, type: e.type, schema: e.schema, folder, ...(backup ? { backup: backup.taken ? backup.id : backup.failed ? 'failed' : 'off' } : {}) })
+  return backup ? { backup } : {}
 }
 
 /* ------------------------------------------------------------------ access */

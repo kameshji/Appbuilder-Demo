@@ -9,9 +9,9 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { CodeDialog, Empty, Field, Segmented, slugName, useToast } from './kit'
+import { CodeDialog, Empty, Field, Segmented, errMsg, slugName, useToast } from './kit'
 import { createAppWithData } from './actions'
-import { PlanView, useConfirmable } from './SolutionPlan'
+import { BackupRefusal, PlanView, isBackupRefusal, useConfirmable } from './SolutionPlan'
 import { planImport } from './environmentApi'
 import type { SolutionPlan } from '@/platform/http'
 import { SizePicker } from './SizePicker'
@@ -186,10 +186,11 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
   // server mode, solutions: the plan comes first (an existing solution is upgraded in place after confirmation)
   const planned = kind === 'solution' && server
   const [plan, setPlan] = useState<SolutionPlan | null>(null)
+  const [refused, setRefused] = useState('')
   const { ok: confirmable, box } = useConfirmable(plan)
   const fileRef = useRef<HTMLInputElement>(null)
   useEffect(() => { if (open) { setText(''); setFileName(''); setFilesAs('database'); setAsCopy(false); setPlan(null) } }, [open])
-  useEffect(() => { setPlan(null) }, [text, asCopy])
+  useEffect(() => { setPlan(null); setRefused('') }, [text, asCopy])
 
   const pick = async (f: File | undefined) => {
     if (!f) return
@@ -200,7 +201,7 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
       fail(e)
     }
   }
-  const run = async () => {
+  const run = async (proceedWithoutBackup = false) => {
     setBusy(true)
     try {
       if (planned && !plan) {
@@ -209,12 +210,13 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
       }
       const res = kind === 'app'
         ? await platform.apps.importPackage(text)
-        : await platform.solutions.importPackage(text, server ? { filesAs, ...(asCopy ? { asCopy: true } : {}), ...(plan && (plan.mode === 'upgrade' || plan.systemEvents?.length) ? { confirm: plan.token } : {}) } : undefined)
+        : await platform.solutions.importPackage(text, server ? { filesAs, ...(asCopy ? { asCopy: true } : {}), ...(plan && (plan.mode === 'upgrade' || plan.systemEvents?.length) ? { confirm: plan.token } : {}), ...(proceedWithoutBackup ? { proceedWithoutBackup: true } : {}) } : undefined)
       const warn = 'warnings' in res && Array.isArray(res.warnings) && res.warnings.length ? ` ${res.warnings.join(' ')}` : ''
       toast(`Imported ${kind} "${'displayName' in res ? res.displayName : res.name}".${warn}`, 'success')
       onOpenChange(false)
       onDone?.(res)
     } catch (e) {
+      if (isBackupRefusal(e)) { setRefused(errMsg(e)); return }
       fail(e)
     } finally {
       setBusy(false)
@@ -252,6 +254,7 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
           )}
           {plan && <PlanView plan={plan} />}
           {box}
+          {refused && <BackupRefusal message={refused} busy={busy} onProceed={() => void run(true)} />}
           {kind === 'solution' && server && (
             <Field label="Data files in the package" hint="Only applies to solutions that contain data files. Database tables are the default.">
               <select value={filesAs} onChange={(e) => setFilesAs(e.target.value as 'database' | 'file')} data-testid="import-files-as" className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm">

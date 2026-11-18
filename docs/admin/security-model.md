@@ -45,8 +45,11 @@ run. Forms wait for the server before reporting success. (decision D9 in [decisi
   `scrypt$32768$8$1$<salt>$<hash>` in `ab_users.password_hash` (`server/core/password.ts`).
 - Comparison is constant-time. An unknown email, a wrong password and a disabled account all return the same message
   ("Invalid email or password.") and take about the same time (a dummy hash is computed).
-- Policy: 10 to 1024 characters, not equal to the email. Nothing else (see
-  [Users and roles](users-and-roles.md#passwords-and-policy)).
+- Policy (Admin console > Sign-in and security, [details](sign-in-and-identity.md#password-policy)): a minimum length
+  (default 10, 8 to 64; at most 1024), not equal to the email, not on a bundled list of about 2,000 common passwords
+  (also a listed word followed by digits or symbols, or one repeated character), optionally not one of the last N
+  passwords (scrypt hashes kept in `ab.password_history`, at most 24) and optionally a maximum age after which the
+  password must be changed at the next sign-in. Defaults: history and maximum age off.
 - No password is written to the audit log or to server logs.
 
 ### Sessions
@@ -63,8 +66,9 @@ run. Forms wait for the server before reporting success. (decision D9 in [decisi
     `APPBUILDER_TRUST_PROXY=1` and the request carries `X-Forwarded-Proto: https` (an HTTPS reverse proxy in front). The
     built-in server speaks plain HTTP, so on a plain loopback install the cookie is not marked `Secure`
     (`cookieIsSecure` in `server/core/router.ts`).
-- **Lifetime 7 days, sliding**: each use extends the expiry to 7 days from now, but the database and cookie are updated
-  at most every 10 minutes.
+- **Lifetime from the policy** (Admin console > Sign-in and security): an **idle timeout** (default 7 days; each use
+  extends the expiry, the database and cookie are updated at most every 10 minutes or every quarter of the timeout) and
+  an **absolute lifetime** counted from sign-in however active the session is (default 30 days; 0 = none).
 - A session ends on: sign-out, expiry, the user being disabled or deleted (sessions removed at once and the user is
   re-checked on every request), a password change by the user (all *other* sessions are removed), an administrator
   resetting the user's password (all the user's sessions removed). Signing in replaces the old session token of that
@@ -76,12 +80,45 @@ run. Forms wait for the server before reporting success. (decision D9 in [decisi
   `server/core/router.ts`). Changing the password clears the mark.
 - Sessions survive a server restart (they are in the database). Expired sessions are deleted at start and then every
   hour.
-- A session is not tied to an IP address or browser. There is no limit on the number of sessions per user and no screen
-  to list them.
+- Each session row also keeps the address and browser it was created from and a random public id. People see and end
+  their sessions in Settings > Profile ("Sign out everywhere else"); install administrators see and end anyone's in
+  Admin console > Users. Ending a session closes its live sockets at once. A session is not *bound* to its address.
+- **Rotation on privilege change**: changing the password gives this browser a new token and ends every other session;
+  turning two-step verification on or off gives the session a new token in place (the old cookie stops working).
+- A session whose user must set up two-step verification (policy, grace period over) is **restricted**: like the forced
+  password change, every route except the enrolment ones answers 403 `mfa_enrolment_required`, and it gets no live
+  connection.
+
+### Two-step verification, reset, invitations, API keys
+
+The full description is [Sign-in and identity](sign-in-and-identity.md). In short:
+
+- **TOTP** (RFC 6238: HMAC-SHA1, 6 digits, 30-second steps, one step of drift either way), 160-bit secret sealed with the
+  secret box (AES-256-GCM) in `ab.user_mfa`. A code is accepted once: the last used time step is stored atomically and a
+  code of the same or an earlier step is refused (replay). **Recovery codes**: 10, 16 characters each (about 79 bits),
+  stored as SHA-256 hashes, single use (row lock). **Email codes** (6 digits, 10 minutes, hashed) as an alternative
+  second step when email is set up and allowed. "Remember this device" sets an `ab_td` cookie sealed with the secret box
+  (user, device id, expiry; tampering makes it unreadable) backed by a revocable row in `ab.trusted_devices`.
+- The second step: a correct password with two-step verification on gives no session, only a 5-minute pending cookie
+  (`ab_mfa`, hashed at rest) for `POST /auth/login/verify`. 5 wrong codes end the pending sign-in; 10 wrong codes in 15
+  minutes lock the account's second step (policy values). Resetting the password never skips it.
+- **One-time tokens** (`ab.auth_tokens`, SHA-256 at rest, single use by an atomic update): reset links (32 random bytes,
+  15 minutes), administrator reset codes (12 characters, 24 hours), invitations (7 days), email change confirmations
+  (24 hours). "Forgot password" answers the same whether or not the account exists, and does the per-account work after
+  the answer has been sent, so timing does not tell either. A reset ends every session and remembered device.
+- **Re-authentication**: changing the sign-in email, turning a second-step method off, new recovery codes, creating API
+  keys and deleting an environment need a password or authenticator code from the last 10 minutes (`POST /auth/reauth`;
+  403 `reauth_required` otherwise). Exporting all data (package J) uses the same check.
+- **API keys** for service accounts: `abk_<prefix>_<secret>` (256-bit secret, SHA-256 at rest), Data API only, cookies
+  ignored when a bearer token is present, no CSRF header needed (a bearer token is not sent by browsers on their own),
+  optional expiry and IP allow-list, a rate limit per key, last use recorded.
+- **Sign-in log** (`ab.signin_log`): every sign-in, failed attempt, second step and API key failure, with reason, method,
+  address and browser. Users see their own; install administrators everybody's.
 
 ### Sign-in throttle
 
-(`LoginThrottle` and `EmailBackoff` in `server/core/auth.ts`)
+(`LoginThrottle` and `EmailBackoff` in `server/core/auth.ts`; the numbers below are the defaults of the lockout policy in
+Admin console > Sign-in and security)
 
 - **Per email + client address: 8 failed sign-ins within 15 minutes** block further attempts for that pair with "Too many
   attempts. Try again in a few minutes." (429 `rate_limited`), even if the next password is correct. The block ends 15
@@ -335,7 +372,12 @@ beyond their role. Web pages the user visits are not trusted.
 | A malicious web page making the browser call the local server (CSRF, DNS rebinding, cross-site cookie use) | `SameSite=Strict`, `X-Appbuilder` header, Host and Origin checks |
 | Script injected into the portal page | CSP `script-src` with hashes, no `'unsafe-inline'` |
 | Another computer, or a local program without access to the server console, taking over the first-run setup | Loopback-only setup routes (TCP peer address), one-time setup code, setup locked once an administrator exists |
-| Guessing passwords through the sign-in form | scrypt, uniform errors, 8-per-15-minutes throttle per email and address, exponential per-email backoff |
+| Guessing passwords through the sign-in form | scrypt, uniform errors, 8-per-15-minutes throttle per email and address, exponential per-email backoff, common-password list, optional two-step verification |
+| A stolen password | Two-step verification (TOTP or email codes), required by policy for administrators or everyone; new-device email; sign-in log |
+| Guessing or replaying second-step codes | 5 wrong codes per pending sign-in, account second-step lock, a TOTP step used once, recovery codes single use |
+| Learning which emails have accounts | Same answer and timing for "forgot password" and sign-in whether or not the account exists |
+| Reusing a reset, invitation or confirmation link | Single use (atomic), short expiry, hashed at rest, newer links revoke older ones |
+| A leaked API key | Only the Data API, its environment and its roles; expiry, IP allow-list, rate limit, revocation, last use visible |
 | Spreadsheet formulas planted in data and opened from a CSV export | Leading `'` on formula-like text cells |
 | An older server corrupting a database upgraded by a newer one | Downgrade guard: the database is not used at all |
 | Theft of a database dump | Password hashes, hashed session tokens, encrypted connection secrets (key kept elsewhere) |
@@ -356,7 +398,9 @@ beyond their role. Web pages the user visits are not trusted.
 - **Physical access** to the PC or to unencrypted backups. Use disk encryption (BitLocker) and protect backups.
 - **A compromised maker.** A maker can list and link every not-yet-linked table in a connected database and so read it,
   drop tables Appbuilder created, and change columns of writable linked tables.
-- **Weak passwords.** Only the length rule exists.
+- **Weak passwords** beyond the length rule and the common-password list (no breach-corpus lookup: the list is small and
+  offline). Turn on two-step verification for administrators at least.
+- **Email as a second factor** is only as strong as the mailbox: anyone who reads the user's email can use the code.
 - **The Google service-account key** is stored encrypted, but with a key on the same machine; whoever gets both can use
   the key against Google (it grants access to the sheets shared with it).
 
@@ -364,10 +408,11 @@ beyond their role. Web pages the user visits are not trusted.
 
 - Single machine; no network, multi-server or high-availability use.
 - No TLS by default on localhost, and none at all in the built-in server.
-- No multi-factor sign-in, no single sign-on, no password reset by email (administrators reset passwords; the user must
-  then choose a new one).
-- **No rate limiting other than the sign-in throttles, the setup-code limit, SendNotification and the realtime
-  connection limits**: other API calls are not limited; a
+- No single sign-on and no passkeys (P3.5). Two-step verification is TOTP or email codes. Password reset by email needs
+  the SMTP relay (Admin console > Email); without it administrators create one-time reset codes.
+- Login, second-step and reset counters are in memory (per server process, cleared by a restart).
+- **No rate limiting other than the sign-in, second-step, reset and invitation throttles, the API key limit, the
+  setup-code limit, SendNotification and the realtime connection limits**: other API calls are not limited; a
   signed-in user can send as many requests as the PC can handle. The per-email sign-in brake can be triggered by anyone
   who knows an email (see [Sign-in throttle](#sign-in-throttle)).
 - Row filters are checked on writes too: a new row must match the filter of a role that grants Create, and a changed

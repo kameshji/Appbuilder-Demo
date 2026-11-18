@@ -131,15 +131,17 @@ describe.skipIf(!PG_URL)('events in solutions and environment copies (PostgreSQL
 
   it('schema version 6: a version 5 database is upgraded (kernel tables created, version stamped); a newer one is refused', async () => {
     const { SCHEMA_VERSION } = await import('./meta-store.ts')
-    expect(SCHEMA_VERSION).toBe(6)
+    // 6 brought the kernel tables; later versions (7: wave 4) upgrade from 5 straight through
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(6)
     await h.q("UPDATE ab.settings SET v = '5' WHERE k = 'schemaVersion'")
     await h.q(`UPDATE ab.environments SET schema_version = 5 WHERE id = $1`, [target])
-    await h.q(`DROP TABLE env_${target}.ab_event_runs`)
+    // CASCADE: the core data model's Event runs view reads it (provisioning creates the view again)
+    await h.q(`DROP TABLE env_${target}.ab_event_runs CASCADE`)
     const sum = await h.app.services.meta.migrate()
-    expect(sum).toMatchObject({ from: 5, to: 6 })
+    expect(sum).toMatchObject({ from: 5, to: SCHEMA_VERSION })
     expect((sum as { steps: string[] }).steps.join(' ')).toMatch(/version 6/)
     expect((await h.q(`SELECT to_regclass('env_${target}.ab_event_runs') IS NOT NULL AS ok`))[0]).toEqual({ ok: true })
-    expect((await h.q(`SELECT schema_version FROM ab.environments WHERE id = $1`, [target]))[0]).toEqual({ schema_version: 6 })
+    expect((await h.q(`SELECT schema_version FROM ab.environments WHERE id = $1`, [target]))[0]).toEqual({ schema_version: SCHEMA_VERSION })
   }, 60000)
 
   it('an import as a copy brings events, run-as-system ones disabled; an environment copy keeps them', async () => {

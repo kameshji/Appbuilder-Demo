@@ -6,8 +6,10 @@ history) of what you pull before you apply it.
 
 ## Before you upgrade
 
-1. **Back up** the database and the workspace folder ([Backup and restore](backup-and-restore.md)). This matters more
-   than usual: there is **no downgrade guard** (see below), so the only reliable way back is a restore.
+1. **Back up**: Admin console > Backups > Back up now (whole install), and download it or check the off-site copy
+   ([Backup and restore](backup-and-restore.md)). The server also takes an install backup by itself before it changes the
+   database schema (below), but a backup you made and moved off the machine is the reliable way back: an older version
+   refuses a database a newer one has upgraded.
 2. **Keep the workspace outside the source folder.** The default `workspace/` folder is inside the repository. It is
    ignored by version control, but commands such as `git clean -x` or deleting and re-cloning the folder would delete it,
    including `.secret-key`. Set `APPBUILDER_WORKSPACE` to a folder elsewhere (for example `C:\AppbuilderData\workspace`)
@@ -47,7 +49,14 @@ On every start the server runs its schema step (`migrate()` in `server/core/meta
    (`ERROR ENVIRONMENT <id> NOT AVAILABLE` on the console, `environment.migrate_failed` in the install audit log); the
    others, and the server, keep working. The next start tries it again. See [Environments](environments.md#when-an-environment-is-not-available).
 
-Current version: **6**.
+Current version: **7**.
+
+**Before the first step** of an upgrade that changes the schema (the database is at version 4 or later but below the
+server's), the server writes an **install backup** of the database as it is into the backup folder (trigger "Before a
+server upgrade"; [Backup and restore](backup-and-restore.md#automatic-backups-before-risky-changes)). If that backup fails,
+the server does **not** upgrade the database: it logs `DATABASE NOT UPGRADED: the backup before the schema upgrade failed`,
+data routes answer 503 with the reason, and it does not retry. Fix the cause (disk space, the backup folder), or start once
+with `APPBUILDER_MIGRATION_BACKUP=skip` to upgrade without it. Switch it off in Admin console > Backups > Settings.
 
 | Version | Step |
 | --- | --- |
@@ -55,6 +64,7 @@ Current version: **6**.
 | 4 | The PostgreSQL layout: schema `ab` (settings, users, sessions, environments, licence) and the environment schema `env_default` (see [schema](../dev/schema.md)). |
 | 5 | Real environments: `ab.environments` gets state, schema version, lock, description, creator; new tables `ab.environment_access` (who may enter which environment) and `ab.audit` (install-level audit); `ab.users` gets `is_install_admin` and `last_environment_id`. Data: every user who held an Administrator role becomes an **install administrator**; every user keeps access to Default (environment administrators: the Administrator role holders). Files: `workspace/attachments/` and `workspace/files/` move into `workspace/env/default/` (only what is not there yet; nothing is overwritten or deleted). |
 | 6 | P0 wave 3: organisation (`ab.departments`, `ab.teams`, `ab.team_members`, new user fields), in-app notifications (`ab.notifications`, `ab.user_settings`); in every environment record sharing (`ab_shares`) and the event and job kernel (`ab_outbox`, `ab_jobs`, `ab_schedules`, `ab_table_events`, `ab_event_runs`). Only new tables and columns: nothing existing changes. After the upgrade the built-in maintenance schedules appear on the Jobs page of each environment. A version 5 server refuses a version 6 database. |
+| 7 (backups) | The backup catalogue in schema `ab` (`ab.backups`, `ab.backup_ops`; package J). Only new tables. After the upgrade a nightly install backup at 02:00 (server time) is scheduled; the first start writes an install backup before migrating. |
 
 - **Moving from 0.4 (MySQL) to 0.5 (PostgreSQL).** Since there are no customer installations yet, there is no conversion. Install
   PostgreSQL ([Installation](installation.md#prepare-the-database)), point the new version at an empty database and start fresh.
@@ -90,10 +100,11 @@ plan that lists every new, changed and removed app, table, column and role, with
 column loses its data) in red. The whole upgrade runs in one transaction: if any step fails (for example a value that does not
 convert to a column's new type), nothing changes. See [Solutions](../guide/maker/solutions.md#deploy-to-another-environment).
 
-Before it changes anything, the upgrade calls the backup hook (`backup.snapshot()` in `server/core/backup.ts`). In this version
-the hook **takes no backup** and says so in the plan and in the result ("No backup was taken"); the automatic pre-upgrade
-backup arrives with the backup package. Until then: export the solution with data from the target first, or back up the
-database ([Backup and restore](backup-and-restore.md)).
+Before it changes anything, the upgrade takes a **backup of the target environment** (the plan says "A backup of this
+environment is taken before anything changes"; the result names the backup). If that backup fails, nothing changes: the
+dialog explains why and offers **Upgrade without a backup** or Cancel. With automatic backups switched off (Admin console >
+Backups > Settings) the plan says so in amber and no backup is taken. To undo an upgrade, restore that backup in place
+or as a new environment ([Backup and restore](backup-and-restore.md#restore)).
 
 ## Roll back
 
@@ -102,8 +113,9 @@ If the new version misbehaves:
 1. Stop the server.
 2. In the source folder, return to the previous commit you noted before upgrading (`git checkout <commit>`; note it
    with `git rev-parse HEAD` before you pull), then `npm ci` and `npm run build`.
-3. If the new version had run (and might have changed the database), drop the database, recreate it and restore your
-   pre-upgrade dump, and restore the workspace folder copy as well ([Backup and restore](backup-and-restore.md)).
+3. If the new version had run (and might have changed the database), restore the install backup taken before the upgrade
+   (yours, or the automatic one, "Before a server upgrade", in the backup folder) onto an emptied database with
+   `node server/main.ts restore <archive> --force` ([Disaster recovery](disaster-recovery.md)).
    Rolling back the code alone does not work once the new version upgraded the schema: the old code refuses the newer
    database (downgrade guard above). Restore the dump.
 4. Start the server.

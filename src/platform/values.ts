@@ -91,8 +91,9 @@ export const SYSTEM_COLUMNS: ColumnDef[] = [
   { name: 'id', displayName: 'Id', type: 'text', system: true },
   { name: 'createdOn', displayName: 'Created on', type: 'datetime', system: true },
   { name: 'modifiedOn', displayName: 'Modified on', type: 'datetime', system: true },
-  { name: 'createdBy', displayName: 'Created by', type: 'text', system: true },
-  { name: 'owner', displayName: 'Owner', type: 'text', system: true },
+  // core data model (P0-N): the people columns are lookups to the Users system table (ThisRecord.createdBy.FullName)
+  { name: 'createdBy', displayName: 'Created by', type: 'lookup', lookupTable: 'Users', system: true },
+  { name: 'owner', displayName: 'Owner', type: 'lookup', lookupTable: 'Users', system: true },
 ]
 export const SYSTEM_NAMES = new Set(SYSTEM_COLUMNS.map((c) => c.name))
 

@@ -2,6 +2,7 @@
 /**
  * Appbuilder local server: `node server/main.ts` (Node 22.18+ type stripping).
  * Serves the Data API v1 under /api/v1 and the built app from dist/ (SPA fallback).
+ * `node server/main.ts restore <archive.abbak> [options]` restores an install from a backup instead (backup/cli.ts).
  *   PORT (5174)   APPBUILDER_HOST (127.0.0.1)   APPBUILDER_WORKSPACE (./workspace)   APPBUILDER_SECRET_KEY
  *   APPBUILDER_DB_HOST / _PORT (5432) / _NAME / _USER / _PASSWORD / _SSL  (optional PostgreSQL bootstrap, skips the setup screen)
  *   APPBUILDER_ALLOWED_HOSTS (extra Host names)  APPBUILDER_SECURE_COOKIE=1  APPBUILDER_TRUST_PROXY=1
@@ -10,6 +11,12 @@ import http from 'node:http'
 import { createApp } from './core/app.ts'
 import { serveStatic } from './core/static.ts'
 import { log } from './core/util.ts'
+
+// `node server/main.ts restore <archive>`: install restore from a backup (docs/admin/disaster-recovery.md), no server
+if (process.argv[2] === 'restore') {
+  const { runCli } = await import('./core/backup/cli.ts')
+  process.exit(await runCli(process.argv.slice(2)))
+}
 
 const app = await createApp()
 const { host, port, distDir, workspaceDir } = app.config

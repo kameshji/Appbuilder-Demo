@@ -87,9 +87,16 @@ Read-only tables (for example linked read-only) never grant write access by defa
 1. **Admin console** > **Users** > **Add user** (install administrators). Enter name, email and the role(s) in the
    environment you are in; tick **Install administrator** for someone who should manage the install. A new user with a
    role may enter the current environment; give access to others in Admin console > Environments > Access.
-2. After adding, use the key button on the user's row to **Set password**. Give the password to the person. It is
-   temporary: at their first sign-in Appbuilder shows only *Choose a new password* (no way around it except signing
-   out) until they have set their own.
+2. The first password, one of two ways:
+   - **Send an invitation email** (offered when email is set up, Admin console > Email; the default then). The person
+     gets a link valid for **7 days** and chooses their own password; they are signed in right after. The Users list
+     shows "Invited, until ..."; the row's menu (three dots) can **Resend invitation** (the old link stops working) or
+     **Revoke invitation**. An expired invitation shows "Invitation expired".
+   - **Set a temporary password** (the only way without email): the key button on the row, **Set password**. Give the
+     password to the person by another channel. It is temporary: at their first sign-in Appbuilder shows only *Choose a
+     new password* (no way around it except signing out) until they have set their own.
+
+![Add user with an invitation](../images/identity-add-user-invite.png)
 
 A user with no password cannot sign in. Users created without a role can sign in but see nothing: a user with no roles
 has no apps and gets "table does not exist" for every table (confirmed by running the server).
@@ -105,9 +112,13 @@ Rules (`server/routes/meta/security.ts`):
 
 From `server/core/password.ts`:
 
-- At least **10** characters, at most **1024**.
+- At least **10** characters (the install's minimum, 8 to 64, set in Admin console > Sign-in and security), at most
+  **1024**.
 - Must not be the same as the user's email address (compared without case and surrounding spaces).
-- That is all: there is no complexity rule, no check against common or leaked passwords, no expiry and no history.
+- Must not be on the bundled list of about 2,000 common passwords (or such a word followed by digits and symbols).
+- Optional, off by default: not one of the last N passwords; a maximum age after which the password must be changed at
+  the next sign-in. There is no complexity rule (length and the common-password list matter more).
+  [Password policy](sign-in-and-identity.md#password-policy).
 - Stored as an scrypt hash (see [Security model](security-model.md#passwords)). Nobody, including administrators, can
   read a password.
 
@@ -123,8 +134,25 @@ Password changes:
   every other request answers 403 with the code `password_change_required`, and the portal shows the change dialog
   without a *Cancel* button. Changing it clears the mark. An administrator setting their **own** password this way is not
   marked.
-- **No self-service reset.** There is no "forgot password" link and no email is sent. An administrator resets it. If the
-  only administrator forgets the password, see [Locked out](#locked-out).
+- **Forgot password** on the sign-in screen: with email set up, a link valid for 15 minutes is emailed; without email
+  an install administrator creates a **one-time reset code** (row menu > *Create one-time reset code*, valid 24 hours,
+  shown once) that the person types on the sign-in screen ("I have a reset code"). Either way every session ends and
+  two-step verification still applies at the next sign-in. If the only administrator forgets the password and email is
+  not set up, see [Locked out](#locked-out).
+
+## Sessions, two-step verification and the sign-in menu
+
+The three-dots menu on a user's row (install administrators; [details](sign-in-and-identity.md)):
+
+- **Sessions**: where the account is signed in (browser, address, signed in, last seen); end one, or **Sign out
+  everywhere**. Open pages of an ended session lose their live connection at once.
+- **Create one-time reset code**: see above. Audited (`user.reset_code_created`).
+- **Reset two-step verification** (shown when it is on): removes the authenticator app, email codes, recovery codes and
+  remembered devices and signs the person out everywhere. For a lost phone. Audited (`user.mfa_reset`).
+- **Send / Resend / Revoke invitation** for accounts without a password.
+
+The Sign-in column shows **2-step** for accounts with two-step verification. Service accounts are not listed here; they
+have their own page (Admin console > Service accounts).
 
 ### Locked out by the login throttle
 
@@ -138,7 +166,8 @@ per-account wait for a known email; see [Security model](security-model.md#sign-
 ### Locked out
 
 There is no command-line password reset. If the only administrator cannot sign in, restore access by one of:
-asking another administrator (create at least two administrators), or, as an advanced step, updating the
+"Forgot your password?" on the sign-in screen (when email is set up), asking another administrator for a one-time reset
+code (create at least two install administrators), or, as an advanced step, updating the
 `password_hash` of an install administrator in the `ab.users` table with a hash made by the server's own code. Treat the second
 as a support task; we have not documented a tested procedure for it.
 
@@ -427,9 +456,8 @@ with their account, or a test account that has the same roles.
 - Denying access that another role grants (roles only add).
 - Sharing with a whole department or role (share with a team instead), time-limited shares, and an "assign" privilege
   separate from Update (giving a row to a team needs Update rules that still cover the row afterwards).
-- Sign-in by anything other than email and password: no multi-factor, no single sign-on, no directory (Active
-  Directory, Google, Microsoft) integration.
-- Password expiry, complexity rules, account lockout other than the throttles described above.
-- Seeing or ending other people's active sessions.
+- Sign-in by anything other than email and password plus a second step (TOTP or email codes): no single sign-on, no
+  passkeys, no directory (Active Directory, Google, Microsoft) integration (P3.5).
+- Complexity rules; account lockout other than the throttles described above.
 - Permissions on individual apps beyond "may open", or on individual columns of a linked Google Sheet beyond what the
   table definition shows (Appbuilder, not Google, enforces access to the sheet's data).

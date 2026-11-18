@@ -88,7 +88,7 @@ export interface LiveHub {
   /** a user's own topic (notifications, unread counts); install-wide */
   pushUser(userId: string, ev: UserEvent): void
   /** environment state / metadata / security changed */
-  emitEnv(env: string, kind: 'metadata' | 'security' | 'state' | 'deleted', extra?: { locked?: boolean; by?: LiveActor; origin?: string }): void
+  emitEnv(env: string, kind: 'metadata' | 'security' | 'state' | 'deleted', extra?: { locked?: boolean; restoring?: boolean; by?: LiveActor; origin?: string }): void
   /** an app definition changed */
   emitApp(env: string, appId: string, kind: 'saved' | 'renamed' | 'deleted', by: LiveActor, extra?: { modifiedOn?: string; origin?: string }): void
   /** user ids with at least one open socket (install-wide), minus users hiding their presence */
@@ -582,6 +582,10 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
   }
 
   const offSession = onSessionEvent((e) => {
+    if (e.kind === 'rotated') {
+      for (const c of conns.values()) if (c.sessionHash === e.from) c.sessionHash = e.to
+      return
+    }
     if (e.kind === 'session') {
       for (const c of [...conns.values()]) if (c.sessionHash === e.idHash) endUser(c.userId, 'signed_out', e.idHash)
       return
@@ -761,6 +765,8 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
           const rec = await services.meta.users.get(s.userId)
           if (!rec || rec.status === 'disabled') return acceptAndClose(req, socket, head, LIVE_CLOSE.unauthenticated, 'sign in first')
           if (rec.mustChangePassword) return acceptAndClose(req, socket, head, LIVE_CLOSE.passwordChange, 'password change required')
+          // package I: a session that may only set up two-step verification gets no live data either
+          if (s.restricted) return acceptAndClose(req, socket, head, LIVE_CLOSE.passwordChange, 'two-step verification setup required')
           const user = toUserDef(rec)
           wss.handleUpgrade(req, socket, head, (ws) => accept(ws, { id: user.id, name: user.name }, idHash))
         } catch (e) {
@@ -780,7 +786,7 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
       if (kind === 'security') for (const c of conns.values()) c.ctx.delete(env)
       if (subs) {
         for (const c of subs) {
-          enqueue(c, () => send(c, { t: 'env', env, topic: 'env', kind, ...(extra.locked !== undefined ? { locked: extra.locked } : {}), ...(extra.by ? { by: extra.by } : {}), at, ...(extra.origin === c.id ? { self: true as const } : {}) }))
+          enqueue(c, () => send(c, { t: 'env', env, topic: 'env', kind, ...(extra.locked !== undefined ? { locked: extra.locked } : {}), ...(extra.restoring !== undefined ? { restoring: extra.restoring } : {}), ...(extra.by ? { by: extra.by } : {}), at, ...(extra.origin === c.id ? { self: true as const } : {}) }))
         }
       }
       if (kind === 'deleted') {

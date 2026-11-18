@@ -55,7 +55,8 @@ function ColumnEditor({ table, mode, onClose }: { table: TableDef; mode: Mode; o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode.kind, mode.kind === 'edit' ? mode.name : '', table.id])
 
-  const locked = !!existing?.system
+  // system columns, and the platform's own columns of a system table (core data model), cannot be changed
+  const locked = !!existing?.system || !!existing?.locked
   const finalName = mode.kind === 'edit' ? mode.name : nameTouched ? name : slugName(displayName)
   const nameClash = mode.kind === 'new' && !!finalName && table.columns.some((c) => c.name.toLowerCase() === finalName.toLowerCase())
   const attach = type === 'file' || type === 'image'
@@ -114,7 +115,7 @@ function ColumnEditor({ table, mode, onClose }: { table: TableDef; mode: Mode; o
         <Button variant="ghost" size="icon-sm" className="ml-auto" onClick={onClose} aria-label="Close panel"><X /></Button>
       </div>
       <form className="grid flex-1 content-start gap-4 overflow-auto p-4" onSubmit={(e) => { e.preventDefault(); if (valid && !locked) void save() }}>
-        {locked && <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">System columns are managed by the platform and cannot be changed or removed.</p>}
+        {locked && <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">{existing?.locked ? 'This column belongs to a system table: the platform manages its definition, so it cannot be changed or removed.' : 'System columns are managed by the platform and cannot be changed or removed.'}</p>}
         <Field label="Display name" htmlFor="col-display">
           <Input id="col-display" autoFocus={mode.kind === 'new'} disabled={locked} value={displayName} onChange={(e) => setDisplayName(e.target.value)} data-testid="col-display-name" placeholder="e.g. Due date" />
         </Field>
@@ -225,8 +226,8 @@ export function ColumnsPanel({ table }: { table: TableDef }) {
     <div className={cn('grid gap-4', mode ? 'grid-cols-[minmax(0,1fr)_380px]' : 'grid-cols-1')} data-testid="columns-tab">
       <div className="min-w-0">
         <div className="mb-3 flex items-center">
-          <p className="text-sm text-muted-foreground">{table.columns.filter((c) => !c.system).length} columns · system columns are locked</p>
-          <Button size="sm" className="ml-auto" onClick={() => setMode({ kind: 'new' })} data-testid="add-column-button"><Plus /> New column</Button>
+          <p className="text-sm text-muted-foreground">{table.columns.filter((c) => !c.system).length} columns · {table.system ? (table.extensible && !table.readOnly ? 'the platform columns of this system table are locked; you can add your own' : 'a system table: its columns are managed by the platform') : 'system columns are locked'}</p>
+          {(!table.system || (table.extensible && !table.readOnly)) && <Button size="sm" className="ml-auto" onClick={() => setMode({ kind: 'new' })} data-testid="add-column-button"><Plus /> New column</Button>}
         </div>
         {table.columns.length === 0 ? (
           <Empty icon={Rows3} title="No columns" description="Add a column to define what this table stores." />

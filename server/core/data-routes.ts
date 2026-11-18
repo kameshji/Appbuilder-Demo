@@ -129,7 +129,8 @@ export function dataRoutes(router: ApiRouter, services: CoreServices): void {
     }))
     return {
       apps: isMaker ? apps : apps.filter((a) => user.canRunApp(a.id)),
-      tables: tables.filter((t) => isMaker || hasAnyTableAccess(user, t)).map((t) => user.visibleDef(t)),
+      // a session without any environment sees no tables (system tables are readable by every member of one)
+      tables: environments.length === 0 && !user.privileges.isInstallAdmin ? [] : tables.filter((t) => isMaker || hasAnyTableAccess(user, t)).map((t) => user.visibleDef(t)),
       roles,
       users: users ? users.map(toUserDef) : [user.user],
       connections: conns.map(toConnectionRef),

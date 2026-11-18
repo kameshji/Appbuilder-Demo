@@ -19,6 +19,10 @@ import { DEFAULT_ENVIRONMENT_ID, INSTALL_SCHEMA, currentEnvironment, environment
 import { ORG_INSTALL_DDL, createOrgStore, orgEnvironmentDdl } from './org-store.ts'
 import { KERNEL_TABLES, kernelDdl } from './kernel-ddl.ts'
 import { NOTIFICATION_INSTALL_DDL, NOTIFICATION_TABLES } from './notifications-ddl.ts'
+import { IDENTITY_INSTALL_DDL, IDENTITY_TABLES, upgradeInstallTo7Identity } from './identity/ddl.ts'
+import { BACKUP_INSTALL_DDL, BACKUP_TABLES, upgradeInstallTo7Backup } from './backup/ddl.ts'
+import { MODEL_TABLES, createRelationshipStore, modelEnvironmentDdl, upgradeEnvironmentTo7Model } from './model/store.ts'
+import { dropSystemViews, provisionSystemTables } from './system-tables.ts'
 
 /**
  * 1-3: the MySQL system store (no longer supported, never upgraded: there is no migration path from MySQL).
@@ -28,8 +32,16 @@ import { NOTIFICATION_INSTALL_DDL, NOTIFICATION_TABLES } from './notifications-d
  * 6: P0 wave 3: organisation (ab.departments, ab.teams, ab.team_members; F), in-app notifications (ab.notifications,
  *    ab.user_settings; H), per environment ab_shares (F) and the event and job kernel (ab_outbox, ab_jobs, ab_schedules,
  *    ab_table_events, ab_event_runs; G). Rule: a package that adds or changes tables bumps this number and adds a step.
+ * 7: P0 wave 4 (shared number). I: identity (ab.user_mfa, auth_tokens, trusted_devices, password_history, signin_log,
+ *    mail_log, api_keys; users.kind / password_changed_on; sessions.ip / public_id / absolute_expires_on / auth_on / mfa /
+ *    restricted), step upgradeInstallTo7Identity (identity/ddl.ts).
+ *    J: backup catalogue (ab.backups, ab.backup_ops), step upgradeInstallTo7Backup (backup/ddl.ts).
+ *    K: data model designer, per environment ab_relationships, ab_model_layouts, ab_model_drafts; environment step
+ *    upgradeEnvironmentTo7Model (model/store.ts) records the existing lookups as explicit relationships.
+ *    N: core data model, per environment system tables sys_* (views over ab.* and real tables), registered in ab_tables
+ *    with stable ids; provisionSystemTables (system-tables.ts) runs after the steps and at every start (idempotent).
  */
-export const SCHEMA_VERSION = 6
+export const SCHEMA_VERSION = 7
 
 /** the database was upgraded by a newer server: this one must not touch it (downgrade guard) */
 export class SchemaTooNewError extends Error {
@@ -129,6 +141,10 @@ export const INSTALL_DDL: string[] = [
   ...ORG_INSTALL_DDL,
   // P0-H in-app notifications and per-user settings (idempotent)
   ...NOTIFICATION_INSTALL_DDL,
+  // P0-I identity (idempotent): two-step verification, tokens, devices, sign-in and mail logs, API keys
+  ...IDENTITY_INSTALL_DDL,
+  // P0-J backup catalogue (idempotent)
+  ...BACKUP_INSTALL_DDL,
 ]
 
 /** the metadata tables of one environment schema */
@@ -258,16 +274,18 @@ export function environmentDdl(schema: string): string[] {
     ...kernelDdl(schema),
     // P0-F record sharing (idempotent)
     ...orgEnvironmentDdl(schema),
+    // P0-K data model designer: relationships, diagram layouts, drafts (idempotent)
+    ...modelEnvironmentDdl(schema),
   ]
 }
 
 /** names of the metadata tables inside an environment schema (never reachable through a connector: prefix ab_) */
 export const ENVIRONMENT_TABLES = [
   'ab_roles', 'ab_user_roles', 'ab_role_tables', 'ab_tables', 'ab_apps', 'ab_connections', 'ab_solutions', 'ab_data_files',
-  'ab_attachments', 'ab_counters', 'ab_audit', ...KERNEL_TABLES, 'ab_shares',
+  'ab_attachments', 'ab_counters', 'ab_audit', ...KERNEL_TABLES, 'ab_shares', ...MODEL_TABLES,
 ]
 /** names of the tables in schema ab */
-export const INSTALL_TABLES = ['settings', 'users', 'sessions', 'environments', 'environment_access', 'audit', 'licence', 'departments', 'teams', 'team_members', ...NOTIFICATION_TABLES]
+export const INSTALL_TABLES = ['settings', 'users', 'sessions', 'environments', 'environment_access', 'audit', 'licence', 'departments', 'teams', 'team_members', ...NOTIFICATION_TABLES, ...IDENTITY_TABLES, ...BACKUP_TABLES]
 
 /**
  * Creates (or completes) the metadata tables of an environment schema and registers it (state ready, schema_version
@@ -305,6 +323,21 @@ export const ENVIRONMENT_STEPS: { to: number; describe: string; run(db: SqlDb, s
       }
     },
   },
+  {
+    // P0-K (independent of the other version 7 steps): the designer's tables, and today's lookups as explicit relationships
+    to: 7,
+    describe: 'data model designer (ab_relationships, ab_model_layouts, ab_model_drafts); existing lookups recorded as relationships',
+    run: upgradeEnvironmentTo7Model,
+  },
+  {
+    // P0-N (independent of the other version 7 steps): the core data model's system tables are provisioned right after
+    // the steps (provisionSystemTables, also at every start); this step only checks the registrations exist
+    to: 7,
+    describe: 'core data model: system tables (people, collaboration, files, communication, logging, reference data)',
+    async run() {
+      // nothing to do before provisioning; kept so the summary lists the change
+    },
+  },
 ]
 
 /** the outcome of migrating one environment at boot */
@@ -323,10 +356,15 @@ export async function migrateEnvironmentSchema(db: SqlDb, env: { id: string; sch
     if (from === SCHEMA_VERSION) {
       // still complete it (idempotent): a table added by a fix keeps every environment whole
       for (const stmt of environmentDdl(env.schema)) await tx.exec(stmt)
+      // P0-N core data model: system tables and their views are completed (and the views refreshed) at every start
+      await provisionSystemTables(tx, env.schema, env.id)
       return { from, to: from }
     }
+    // the system views read metadata tables a step may change: dropped first, created again by provisionSystemTables
+    await dropSystemViews(tx, env.schema)
     for (const stmt of environmentDdl(env.schema)) await tx.exec(stmt)
     for (const step of ENVIRONMENT_STEPS) if (step.to > from && step.to <= SCHEMA_VERSION) await step.run(tx, env.schema)
+    await provisionSystemTables(tx, env.schema, env.id)
     await tx.exec(`UPDATE ${A('environments')} SET schema_version = $1 WHERE id = $2`, [SCHEMA_VERSION, env.id])
     return { from, to: SCHEMA_VERSION }
   })
@@ -449,11 +487,13 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
       ...(optStr(r.job_title) ? { jobTitle: str(r.job_title) } : {}),
       ...(optStr(r.phone) ? { phone: str(r.phone) } : {}),
       ...(optStr(r.employee_code) ? { employeeCode: str(r.employee_code) } : {}),
+      ...(r.kind === 'service' ? { kind: 'service' as const } : {}),
+      ...(r.password_changed_on ? { passwordChangedOn: toIso(r.password_changed_on) } : {}),
       passwordHash: hash,
     }
   }
   async function usersWhere(where: string, params: unknown[]): Promise<UserRecord[]> {
-    const rows = await db.query<Row>(`SELECT id, name, email, password_hash, status, must_change_password, created_on, last_login, is_install_admin, last_environment_id, department_id, manager_id, job_title, phone, employee_code FROM ${A('users')} ${where}`, params)
+    const rows = await db.query<Row>(`SELECT id, name, email, password_hash, status, must_change_password, created_on, last_login, is_install_admin, last_environment_id, department_id, manager_id, job_title, phone, employee_code, kind, password_changed_on FROM ${A('users')} ${where}`, params)
     const roles = await userRoles(rows.map((r) => str(r.id)))
     return rows.map((r) => toUser(r, roles))
   }
@@ -612,6 +652,7 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
   const store: MetaStore = {
     db,
     org: createOrgStore(db, () => envOf().schema),
+    relationships: createRelationshipStore(db, () => envOf().schema),
 
     tableName(name) {
       return INSTALL_TABLES.includes(name) ? A(name) : E(name)
@@ -630,12 +671,19 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
       // phase 1: schema ab, in one transaction (one migration at a time per database: two servers starting together)
       await db.tx(async (tx) => {
         await tx.query("SELECT pg_advisory_xact_lock(hashtext('appbuilder.migrate'))")
+        // P0-N: the system views read tables of schema ab; an upgrade step may change those (the views come back with
+        // each environment's migration below)
+        if (current > 0 && current < SCHEMA_VERSION) await dropSystemViews(tx)
         for (const stmt of INSTALL_DDL) await tx.exec(stmt)
         const hasDefault = (await tx.query<Row>(`SELECT 1 FROM ${A('environments')} WHERE id = $1`, [DEFAULT_ENVIRONMENT_ID])).length > 0
         if (!hasDefault) await migrateEnvironment(tx, { id: DEFAULT_ENVIRONMENT_ID, name: 'Default', type: 'production', builtIn: true })
         if (current === 4) steps.push(...(await upgradeInstallTo5(tx)))
         // 6: organisation (F) and notifications (H) in schema ab; their tables come from INSTALL_DDL above
         if (current >= 4 && current < 6) steps.push('version 6: organisation (departments, teams, team members) and in-app notifications; environments get record sharing and the event and job kernel')
+        // 7 (package I, independent of the other version 7 steps): identity tables in schema ab
+        if (current < 7) { const d = await upgradeInstallTo7Identity(tx); if (current >= 4) steps.push(d) }
+        // 7 (package J, independent): the backup catalogue in schema ab
+        if (current < 7) { const d = await upgradeInstallTo7Backup(tx); if (current >= 4) steps.push(d) }
         // an operation that was running when the server stopped cannot be resumed: the environment is marked failed
         const stuck = await tx.query<Row>(`UPDATE ${A('environments')} SET state = 'failed', last_error = CASE state WHEN 'creating' THEN 'Creating it was interrupted (the server stopped). Delete it and create it again.' ELSE 'Deleting it was interrupted (the server stopped). Delete it again.' END WHERE state IN ('creating', 'deleting') RETURNING id`)
         for (const r of stuck) steps.push(`environment ${str(r.id)}: interrupted operation, marked failed`)
@@ -697,8 +745,8 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
       async insert(u) {
         await db.tx(async (tx) => {
           await tx.exec(
-            `INSERT INTO ${A('users')} (id, name, email, password_hash, status, must_change_password, created_on, last_login, is_install_admin) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-            [u.id, u.name, u.email.trim().toLowerCase(), u.passwordHash ?? null, u.status ?? 'active', !!u.mustChangePassword, new Date(), toDate(u.lastLogin), !!u.isInstallAdmin],
+            `INSERT INTO ${A('users')} (id, name, email, password_hash, status, must_change_password, created_on, last_login, is_install_admin, kind, password_changed_on) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            [u.id, u.name, u.email.trim().toLowerCase(), u.passwordHash ?? null, u.status ?? 'active', !!u.mustChangePassword, new Date(), toDate(u.lastLogin), !!u.isInstallAdmin, u.kind === 'service' ? 'service' : 'person', u.passwordHash ? new Date() : null],
           )
           await setUserRoles(tx, u.id, u.roleIds ?? [])
         })
@@ -710,7 +758,7 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
           const set = (col: string, v: unknown) => { params.push(v); sets.push(`${col} = $${params.length}`) }
           if (patch.name !== undefined) set('name', patch.name)
           if (patch.email !== undefined) set('email', patch.email.trim().toLowerCase())
-          if (patch.passwordHash !== undefined) set('password_hash', patch.passwordHash)
+          if (patch.passwordHash !== undefined) { set('password_hash', patch.passwordHash); set('password_changed_on', patch.passwordHash ? new Date() : null) }
           if (patch.status !== undefined) set('status', patch.status)
           if (patch.mustChangePassword !== undefined) set('must_change_password', !!patch.mustChangePassword)
           if (patch.lastLogin !== undefined) set('last_login', toDate(patch.lastLogin))
@@ -735,15 +783,21 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
       async insert(s) {
         const now = new Date()
         await db.exec(
-          `INSERT INTO ${A('sessions')} (id_hash, user_id, created_on, expires_on, last_seen, user_agent) VALUES ($1, $2, $3, $4, $5, $6)`,
-          [s.idHash, s.userId, now, s.expiresOn, now, (s.userAgent ?? '').slice(0, 255)],
+          `INSERT INTO ${A('sessions')} (id_hash, user_id, created_on, expires_on, last_seen, user_agent, ip, public_id, absolute_expires_on, auth_on, mfa, restricted)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          [s.idHash, s.userId, now, s.expiresOn, now, (s.userAgent ?? '').slice(0, 255), s.ip ?? null, s.publicId ?? null, s.absoluteExpiresOn ?? null, now, !!s.mfa, s.restricted ?? null],
         )
       },
       async get(idHash) {
-        const rows = await db.query<Row>(`SELECT user_id, expires_on FROM ${A('sessions')} WHERE id_hash = $1`, [idHash])
+        const rows = await db.query<Row>(`SELECT user_id, expires_on, created_on, last_seen, absolute_expires_on, auth_on, public_id, restricted, mfa, ip, user_agent FROM ${A('sessions')} WHERE id_hash = $1`, [idHash])
         if (!rows.length) return null
-        const expiresOn = new Date(toIso(rows[0].expires_on))
-        return { userId: str(rows[0].user_id), expiresOn }
+        const r = rows[0]
+        const d = (v: unknown) => (v === null || v === undefined ? null : new Date(toIso(v)))
+        return {
+          userId: str(r.user_id), expiresOn: new Date(toIso(r.expires_on)), createdOn: d(r.created_on) ?? undefined, lastSeen: d(r.last_seen) ?? undefined,
+          absoluteExpiresOn: d(r.absolute_expires_on), authOn: d(r.auth_on), publicId: r.public_id === null ? null : str(r.public_id),
+          restricted: r.restricted === null ? null : str(r.restricted), mfa: bool(r.mfa), ip: r.ip === null ? null : str(r.ip), userAgent: r.user_agent === null ? null : str(r.user_agent),
+        }
       },
       async touch(idHash, expiresOn) {
         await db.exec(`UPDATE ${A('sessions')} SET expires_on = $1, last_seen = $2 WHERE id_hash = $3`, [expiresOn, new Date(), idHash])

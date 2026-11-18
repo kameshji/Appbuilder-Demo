@@ -4,6 +4,8 @@
  * Importing always creates NEW instances: new ids, unique names; tables that already exist by name are reused,
  * rows are only ever loaded into tables created by the import.
  */
+import type { RelationshipDef } from '../../../src/model/types.ts'
+import { pkgRelationshipsOf, prepareViewDef, readPkgRelationships, restorePkgRelationships } from '../../core/model/packages.ts'
 import type { AppDef } from '../../../src/contracts.ts'
 import type { AppMeta, TableDef } from '../../../src/platform/contracts.ts'
 import type { TableEventInput } from '../../../src/platform/events.ts'
@@ -90,7 +92,8 @@ export function tablesUsedBy(def: AppDef, tables: TableDef[]): TableDef[] {
       }
     }
   }
-  return [...names].map((n) => byLower.get(n.toLowerCase())!).filter(Boolean)
+  // system tables (Users through createdBy / owner) are in every environment: never part of an app package
+  return [...names].map((n) => byLower.get(n.toLowerCase())!).filter((t) => t && !t.system)
 }
 
 /* ------------------------------------------------------------------ export */
@@ -106,14 +109,22 @@ async function eventsOf(s: Services, tableId: string): Promise<PkgEvent[]> {
 }
 
 export async function tableEntry(s: Services, user: UserContext | null, def: TableDef, includeData: boolean): Promise<Record<string, unknown>> {
+  // core data model: a system table is never exported as schema, only the columns makers added (and never its rows:
+  // collaboration data stays in the environment)
+  if (def.system) {
+    const custom = plainTableDef({ ...def, columns: def.columns.filter((c) => !c.locked) })
+    return { schema: { id: custom.id, name: custom.name, displayName: custom.displayName, primaryColumn: custom.primaryColumn, columns: custom.columns, system: true }, events: await eventsOf(s, def.id) }
+  }
   const schema = plainTableDef(def)
   const events = await eventsOf(s, def.id)
   // events always travel (an empty list removes the target's events on an upgrade; old packages have no key)
-  if (!includeData) return { schema, events }
+  // relationships (package K) travel with their child table
+  const relationships = await pkgRelationshipsOf(s, def.id)
+  if (!includeData) return { schema, events, ...(relationships.length ? { relationships } : {}) }
   const visible = user ? user.visibleDef(def) : def
   const rows = await queryAll(s, user, def)
   const csv = unparseCsv(visible.columns.map((c) => c.name), rows.map((r) => visible.columns.map((c) => jsonCellToCsv(r[c.name]))))
-  return { schema, csv, events }
+  return { schema, csv, events, ...(relationships.length ? { relationships } : {}) }
 }
 
 export async function appEntry(s: Services, id: string): Promise<{ id: string; name: string; description?: string; definition: AppDef }> {
@@ -147,7 +158,7 @@ export function parsePackage(text: unknown, kind: 'appbuilder/app' | 'appbuilder
 
 /** a table event in a package (TableEventDef without table and times) */
 export type PkgEvent = TableEventInput & { id?: string }
-export interface PkgTable { def: TableDef; csv?: string; events?: PkgEvent[] }
+export interface PkgTable { def: TableDef; csv?: string; events?: PkgEvent[]; relationships?: RelationshipDef[] }
 
 const EVENT_KEYS = ['name', 'kind', 'timing', 'operations', 'order', 'enabled', 'condition', 'actions', 'message', 'field', 'runAs', 'description'] as const
 function readPkgEvents(v: unknown): PkgEvent[] | undefined {
@@ -187,8 +198,11 @@ export function readPkgTables(v: unknown, now: string): PkgTable[] {
   return v.map((e) => {
     if (!isObj(e) || !isObj(e.schema)) throw invalid('A table entry in the package has no schema.')
     const events = readPkgEvents(e.events)
-    return { def: sanitizeTableDef(e.schema, now), ...(typeof e.csv === 'string' ? { csv: e.csv } : {}), ...(events ? { events } : {}) }
+    const relationships = readPkgRelationships(e.relationships)
+    return { def: sanitizeTableDef(e.schema, now), ...(typeof e.csv === 'string' ? { csv: e.csv } : {}), ...(events ? { events } : {}), ...(relationships?.length ? { relationships } : {}) }
   })
+    // reporting views after the tables they read (package K)
+    .sort((a, b) => Number(a.def.reporting?.kind === 'view') - Number(b.def.reporting?.kind === 'view'))
 }
 
 export interface PkgApp { oldId?: string; name: string; description?: string; def: AppDef }
@@ -226,11 +240,15 @@ export async function ensurePkgTables(s: Services, list: PkgTable[], actorId?: s
       const now = s.now()
       const def: TableDef = { ...p.def, id, createdOn: now, modifiedOn: now, connectionId: record.id }
       def.source = await pickSource(s, record, connector, def.name)
+      // reporting settings name tables by package id (package K)
+      if (def.reporting?.kind === 'view') await prepareViewDef(s, def, map)
+      if (def.reporting?.kind === 'summary') def.reporting = { ...def.reporting, source: map.get(def.reporting.source) ?? def.reporting.source }
       await createPhysical(s, record, connector, def)
       created.push(def)
       if (p.csv) items.push({ def, rows: csvToRows(def, p.csv) })
     }
     if (items.length) await importRowsSystem(s, items, actorId)
+    await restorePkgRelationships(s, todo, map)
   } catch (e) {
     await rollbackTables(s, connector, created)
     throw e

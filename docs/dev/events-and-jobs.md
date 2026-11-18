@@ -115,6 +115,8 @@ backoff 2 s doubling to 10 min with jitter in [50 %, 100 %], timeout 5 min, 4 at
 worker at once. Graceful stop (`services.close()`): no new claims, 10 s for running jobs (`APPBUILDER_JOBS_STOP_GRACE_MS`),
 the rest released as queued with the attempt not counted. `APPBUILDER_JOBS=off` does not start the worker.
 
+The data model designer registers `model.summary.refresh` (payload `{ tableId }`; one schedule per summary table, see `data-model.md`).
+
 Built-in types: `table-event.after`, `rollup.recompute`, `rollup.reconcile`, `formula.backfill`, `index.sync` (key indexes of
 a column marked `indexed`, `CREATE INDEX CONCURRENTLY`, an invalid leftover is dropped first; the column PATCH route no longer
 builds them inline on the default database), `attachments.delete-files`, `attachments.sweep`, `outbox.retention` (outbox 14 days,

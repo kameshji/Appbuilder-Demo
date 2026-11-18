@@ -2,7 +2,7 @@ import type { AppDef, ControlNode, FxDiagnostic, FxEngine, FxNamedFormula, FxRec
 import { createEngine, splitFormulas } from '@/fx'
 import { controls } from '@/controls'
 import { isRecord, walk } from './util'
-import { currentUserRecord, isTable, queryDepsSince, sharedWithRows, tableRows } from './data'
+import { currentUserRecord, isTable, queryDepsSince, recordById, sharedWithRows, tableRows } from './data'
 import { deriveList, evaluateDelegated, type DelegationInfo, type ListView } from './delegation'
 
 /**
@@ -723,7 +723,14 @@ export class Evaluator {
   }
 
   scopeFor(node: ControlNode | null, ctx: NodeCtx): FxScope {
-    return { resolve: (name) => this.resolveName(node, ctx, name) }
+    return {
+      resolve: (name) => this.resolveName(node, ctx, name),
+      // lookup columns (createdBy, owner, a lookup to Users ...): `.Field` reads the row the id points at
+      recordById: (id) => {
+        this.record('t:Users')
+        return recordById(id)
+      },
+    }
   }
 
   screenIdOf(node: ControlNode | null): string | undefined {
@@ -773,7 +780,10 @@ export class Evaluator {
     if (name.startsWith('Param:')) {
       try {
         const v = new URLSearchParams(typeof location === 'undefined' ? '' : location.search).get(name.slice(6))
-        return v ?? undefined
+        if (v !== null) return v
+        // a deep link inside Appbuilder carries its parameters after the route: #u-<appId>?record=<id> (notifications)
+        const hq = typeof location === 'undefined' ? '' : (location.hash.split('?')[1] ?? '')
+        return new URLSearchParams(hq).get(name.slice(6)) ?? undefined
       } catch {
         return undefined
       }

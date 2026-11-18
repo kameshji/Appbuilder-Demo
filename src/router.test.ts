@@ -16,6 +16,7 @@ describe('router', () => {
       ['#settings-appearance', { page: 'settings', id: 'appearance' }],
       ['#admin', { page: 'admin' }],
       ['#admin-audit', { page: 'admin', id: 'audit' }],
+      ['#datamodel', { page: 'datamodel' }],
     ]
     for (const [hash, route] of cases) {
       expect(parseRoute(hash)).toEqual(route)

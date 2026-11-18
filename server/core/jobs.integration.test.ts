@@ -123,7 +123,8 @@ describe.skipIf(!PG_URL)('job queue and kernel guarantees (PostgreSQL)', () => {
     expect(off.data).toMatchObject({ enabled: false })
     expect(off.data.nextRunAt).toBeUndefined()
     const list = (await A().get('/admin/schedules')).data.items
-    expect(list.filter((x: any) => x.builtIn).map((x: any) => x.jobType).sort()).toEqual(['attachments.sweep', 'audit.retention', 'outbox.retention', 'rollup.reconcile'])
+    // the backup schedules (package J) are managed on the Backups page; they live in Default's schedules too
+    expect(list.filter((x: any) => x.builtIn && !x.jobType.startsWith('backup.')).map((x: any) => x.jobType).sort()).toEqual(['attachments.sweep', 'audit.retention', 'collab.orphan-sweep', 'outbox.retention', 'rollup.reconcile'])
     expect((await A().post('/admin/schedules', { name: 'bad', cron: '61 * * * *', jobType: 'test.noop' })).status).toBe(422)
   }, 60000)
 

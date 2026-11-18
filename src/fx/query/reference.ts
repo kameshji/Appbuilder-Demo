@@ -23,6 +23,8 @@ export interface ExecuteOptions {
    * of (createdOn, id); cursors then seek by the position of their row id
    */
   inputOrder?: boolean
+  /** lookup paths (`via`): the rows of the tables they read (only those the caller may read) */
+  related?: RelatedRows
 }
 
 /** a well-formed plan whose evaluation fails, as the engine's formula would (division by zero, overflow) */
@@ -138,11 +140,26 @@ function kindOf(schema: TableSchemaInfo, col: string): ColumnKind {
 
 const isNullCell = (v: FxValue): boolean => v === null || v === undefined
 
-export function evaluateConditionV2(c: ConditionV2, row: FxRecord, schema: TableSchemaInfo): boolean {
+/** rows and schema of the tables lookup paths (`via`) read: only rows the caller may read */
+export interface RelatedRows {
+  rows(table: string): FxRecord[] | undefined
+  schema(table: string): TableSchemaInfo | undefined
+}
+
+export function evaluateConditionV2(c: ConditionV2, row: FxRecord, schema: TableSchemaInfo, related?: RelatedRows): boolean {
   if ('const' in c) return c.const
-  if ('and' in c) return c.and.every((x) => evaluateConditionV2(x, row, schema))
-  if ('or' in c) return c.or.some((x) => evaluateConditionV2(x, row, schema))
-  if ('not' in c) return !evaluateConditionV2(c.not, row, schema)
+  if ('and' in c) return c.and.every((x) => evaluateConditionV2(x, row, schema, related))
+  if ('or' in c) return c.or.some((x) => evaluateConditionV2(x, row, schema, related))
+  if ('not' in c) return !evaluateConditionV2(c.not, row, schema, related)
+  if ('via' in c) {
+    const v = cell(row, c.via.col)
+    const ts = related?.schema(c.via.table)
+    const trows = related?.rows(c.via.table)
+    if (!ts || !trows) throw new PlanError(`the lookup table ${c.via.table} is not available`)
+    const id = v === null || v === undefined ? '' : String(v).toLowerCase()
+    const target = id ? trows.find((r) => String(r.__id ?? r.id ?? '').toLowerCase() === id) : undefined
+    return target ? evaluateConditionV2(c.via.where, target, ts, related) : !!c.via.orMissing
+  }
   if (c.op === 'cmpExpr') return cmp(c.cmp, evaluateNumExpr(c.left, row, schema), evaluateNumExpr(c.right, row, schema), 'number')
   const kind = kindOf(schema, c.col)
   const v = cell(row, c.col)
@@ -275,7 +292,7 @@ export function executePlan(plan: QueryPlan, allRows: FxRecord[], schema: TableS
     rows = [...allRows]
     rows.forEach((r, i) => { position.set(r, i); idPosition.set(String(cell(r, 'id') ?? ''), i) })
   } else rows = [...allRows].sort(naturalCompare)
-  if (plan.filter) rows = rows.filter((r) => evaluateConditionV2(plan.filter!, r, schema))
+  if (plan.filter) rows = rows.filter((r) => evaluateConditionV2(plan.filter!, r, schema, opts.related))
   if (plan.search && plan.search.text !== '') {
     const needle = plan.search.text.toLowerCase()
     for (const c of plan.search.columns) if (kindOf(schema, c) !== 'text') throw new PlanError('search needs text columns')

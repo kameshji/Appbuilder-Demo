@@ -23,6 +23,8 @@ export type ColumnKind = 'text' | 'number' | 'boolean' | 'date' | 'datetime' | '
 export interface TableSchemaInfo {
   /** column name -> kind; must list every column a row carries (system columns included) */
   columns: Record<string, ColumnKind>
+  /** lookup columns -> the table they point at (createdBy and owner -> Users): `createdBy.FullName = "Asha"` translates */
+  lookups?: Record<string, string>
   /**
    * The client holds every row of this table and there are at most `rowCount` of them. When true and
    * rowCount <= the caller's threshold, a formula that cannot be pushed down may run in the browser (warning,
@@ -38,6 +40,16 @@ export interface SchemaInfo {
 }
 
 /** ColumnType (platform) -> ColumnKind (formulas). */
+/** schema info of a table for the translator: column kinds and lookup targets */
+export function tableSchemaInfo(columns: { name: string; type: ColumnType; lookupTable?: string }[]): TableSchemaInfo {
+  const out: TableSchemaInfo = { columns: {} }
+  for (const c of columns) {
+    out.columns[c.name] = columnKind(c.type)
+    if (c.type === 'lookup' && c.lookupTable) (out.lookups ??= {})[c.name] = c.lookupTable
+  }
+  return out
+}
+
 export function columnKind(type: ColumnType): ColumnKind {
   switch (type) {
     case 'text': case 'multiline': case 'email': case 'url': case 'phone': case 'choice': case 'lookup': case 'autonumber':
@@ -101,6 +113,12 @@ export type ConditionV2 =
    * leaves the double range, as the formula engine fails the formula.
    */
   | { op: 'cmpExpr'; cmp: CompareOpV2; left: NumExprV2; right: NumExprV2 }
+  /**
+   * Lookup path (P0-N): the row of `table` whose id is in the lookup column `col` exists, is readable by the caller and
+   * matches `where` (a condition over `table`'s columns). `orMissing`: also true when `col` is blank or its row is
+   * missing or unreadable (the engine then reads the field as blank and `where` holds for blank). SQL: one sub-select.
+   */
+  | { via: { col: string; table: string; where: ConditionV2; orMissing?: true } }
 
 /* ------------------------------------------------------------------ numeric expressions */
 

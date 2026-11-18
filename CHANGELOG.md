@@ -9,6 +9,79 @@ migration from a MySQL installation: install PostgreSQL, run `scripts/setup-post
 database; carry apps and tables over as solution packages with data.
 
 ### Added
+- **Core data model** (P0 package N, decision D23; docs/guide/maker/core-data-model.md, docs/admin/reference-data.md,
+  docs/dev/core-data-model.md). Every environment now has **34 system tables**, listed under Dev mode > Tables >
+  **System tables**: people and organisation (Users, Departments, Teams, Team members, Roles, Role assignments, as
+  read-only views with a directory rule), collaboration (Activities, Comments, Mentions, Follows, Tags, Tag links, and
+  Shares / Notifications views), files (Documents, Document versions, Attachment links; every existing attachment is
+  linked at the upgrade), communication placeholders (Channels, Channel members, Messages, Message reactions), logging
+  views (Audit entries, Sign-in log, Job runs, Event runs; Flow runs placeholder) and reference data (Currencies with
+  INR as default, Units of measure, Countries, States with the Indian GST state codes, Calendars, Holidays, Number
+  sequences, Settings with an April financial year). Collaboration rows follow the **regarding rule**: visible only
+  to people who can read the record they are about, compiled into the SQL of every read (leak tests). Makers can add
+  columns to most system tables; they cannot rename or delete them. New UI components **Record timeline**, **Person
+  picker**, **Tag input** and **Activity list**; **Avatar** takes a `User`, **Avatar group** `Users`. User mode pages
+  **Tasks** (list and board, quick add) and **Mentions**; @mentions notify (bell, click-through to the record with
+  `?record=`, read by `Param("record")`). Formula functions `Comments`, `Activities`, `MyTasks`, `Mentions`, `Setting`,
+  `Convert` (delegated), `NextNumber` (gap-free, in the save's transaction), `AddComment`, `AddActivity`, `Follow`,
+  `Unfollow`, `Tag`, `Untag`, `RecordId`; lookup paths such as `createdBy.FullName` in formulas and Query v2 (`via`).
+  A column default `=NextNumber("Invoices")` numbers new rows. The **common business model** (Accounts, Contacts,
+  Addresses, Tax codes, Products, Price lists) is an optional solution package (`GET /api/v1/templates/business-model`).
+  Routes `/collab/timeline`, `/collab/mentionable`, `/collab/follow`, `/collab/tags`, `/collab/my-tasks`,
+  `/collab/mentions`; job `collab.notify`, nightly schedule "Collaboration orphan sweep". Solutions export custom columns
+  of system tables, never the tables or the collaboration rows; environment copies with data include them. Demo mode
+  has the same tables, components and pages. Schema version stays 7 (provisioning is idempotent and runs at every start).
+- **Backup and restore** (P0 package J, decision D22; docs/admin/backup-and-restore.md, docs/admin/disaster-recovery.md,
+  docs/dev/backup.md). **Admin console > Backups** (no longer "Soon"): install backups (accounts, settings, every
+  environment, attachments, data files) and environment backups, each one archive (`.abbak`, tar) from **one consistent
+  database snapshot** (pg_dump with an exported snapshot, or the **built-in exporter** when pg_dump is missing or older than
+  the server), with a manifest of row counts and sha256 checksums, **verified after every backup**. Optional **passphrase
+  encryption** (AES-256-GCM, scrypt) and an explicit "include the encryption key" option. **Schedules** (nightly install
+  backup at 02:00, per-environment schedules, misfire run once) as jobs; **grandfather-father-son retention** (7 daily,
+  4 weekly, 3 monthly; automatic backups 30 days; pinning); **off-site folder** copy with verification. **Restore** an
+  environment as a new environment (default) or in place (typed confirmation, safety backup, environment "Restoring",
+  one transaction: a failure keeps the old data), or **selected tables** (as new tables or replacing rows, with a plan);
+  **browse** a table of a backup read-only; older backups are migrated, newer ones refused. **Automatic backups before**
+  solution upgrades in place, environment deletes, in-place restores and server schema upgrades (the amber "No backup was
+  taken" warnings are gone; a failed backup stops the change unless the administrator proceeds). **Restore test** job,
+  backup **health** on every Admin console page and in environment details, notifications when a backup fails or is older
+  than 36 hours. **Download** (recent sign-in) and **upload** of archives; every action in the install audit log.
+  **Install restore** from the command line: `node server/main.ts restore <archive>` (checks, one transaction, key
+  handling, migration). **Restore drill** `scripts/drill/restore-drill.mjs` (seed, backup, wipe, restore, compare).
+  Schema version 7 adds `ab.backups` and `ab.backup_ops`. New dependency: `pg-copy-streams` (MIT).
+- **Data model designer** (P0 package K, decision D21; docs/guide/maker/data-model.md, docs/dev/data-model.md): Dev mode >
+  Data model is live. A diagram of every table (type icons; badges for required, unique, indexed, lookup, formula,
+  rollup) with crow's-foot relationship lines, pan, zoom, minimap, layered auto-layout, coloured areas, search, filter by
+  solution, system tables shown read-only on request, shared or personal positions. Edits go into a **draft** per user
+  and environment with undo and redo: tables, columns (inline rename, retype, flags, delete), and relationships drawn by
+  dragging one table onto another (one-to-many, one-to-one, many-to-many with a junction table and unique pair,
+  hierarchy with loop prevention, required parent). **Review changes** shows the plan (row counts, destructive items in
+  red, data conversion pre-checks, index builds) and applies it in one transaction after the pre-change backup.
+  **Delete behaviours** (restrict, cascade, set blank) are enforced by the server; cascades respect the deleting user's
+  permissions and write events and outbox rows. **Patterns**: master-detail, reference data, hierarchy, many-to-many,
+  party model, status workflow, document numbering, audit trail, approval-ready; star schema and snowflake (reporting
+  views secured through the source table), date dimension (fiscal year, India April-March by default), summary table
+  refreshed by a job; manufacturing, CRM and inventory starters. **Model checks** panel. **Import** from Excel/CSV
+  (inferred keys and relationships), from a PostgreSQL/MySQL connection (tables and foreign keys, link or copy) and from
+  DBML; **export** PNG, SVG, DBML and a solution "data model" package. Relationships travel in solutions and environment
+  copies. Schema version 7: `ab_relationships`, `ab_model_layouts`, `ab_model_drafts`; existing lookups become explicit
+  relationships.
+- **Identity basics** (P0 package I, decision D20; docs/admin/sign-in-and-identity.md, docs/guide/signing-in.md,
+  docs/dev/auth.md). **Two-step verification**: authenticator apps (TOTP, RFC 6238; QR code and key), 10 single-use
+  recovery codes, email codes, "remember this device for 30 days", a code used once only. **Policy** in Admin console >
+  Sign-in and security: two-step verification required for administrators or everyone (install-wide or per environment)
+  with a grace period and forced setup at sign-in; session idle timeout and absolute lifetime; password minimum length,
+  a common-password list, history and maximum age; the lockout values; the **sign-in log**. **Email** (Admin console >
+  Email): SMTP relay (STARTTLS / TLS, AUTH PLAIN / LOGIN, password encrypted), test email, delivery log, queued delivery
+  with retries; branded system emails. **Forgot password** (emailed link, 15 minutes; or an administrator's one-time reset
+  code without email), **invitations** (7-day link instead of a temporary password; resend, revoke), **email change**
+  confirmed by the new address. **Sessions**: list and end your own (Settings > Profile, "Sign out everywhere else");
+  administrators see and end anyone's; new-device sign-in email; session rotation on password and two-step changes.
+  **Re-authentication** before changing the sign-in email, turning two-step verification off, new recovery codes,
+  creating API keys and deleting an environment. **Service accounts and API keys** (Admin console > Service accounts):
+  `Authorization: Bearer` on the Data API, keys shown once and hashed, expiry, IP allow-list, rate limit, last use.
+  Schema version 7 (tables `ab.user_mfa`, `auth_tokens`, `trusted_devices`, `password_history`, `signin_log`, `mail_log`,
+  `api_keys`). New dependency: `qrcode-generator` (MIT).
 - **Live updates, presence and in-app notifications** (P0 package H, decision D19). One WebSocket per tab
   (`/api/v1/live`, docs/dev/live.md): data tables, galleries, charts and labels refresh within a moment when someone else
   changes a table (from package G's outbox, after the commit), without flicker and keeping the scroll position; forms keep
@@ -144,6 +217,18 @@ database; carry apps and tables over as solution packages with data.
 - README links to the documentation, and run instructions that match the current start-up steps (PostgreSQL and the first-run setup screen).
 
 ### Changed
+- PostgreSQL connections start with `jit=off`: row-security predicates over many tables made JIT compilation take
+  seconds per statement (core data model, P0 package N).
+- `createdBy` and `owner` of every table are lookups to the Users system table (were plain text ids).
+- Deleting a row now applies the delete behaviour of every relationship pointing at its table. Lookups that existed
+  before version 7: a **required** lookup now refuses the parent's delete while children exist (409); an **optional**
+  lookup is cleared on the children (before, children kept the id of a row that no longer existed). Change either in
+  the data model designer.
+- Settings > Profile: Active sessions, two-step verification, email change and sign-in history are real (were "Soon");
+  passkeys and single sign-on stay "Soon" (P3.5). Admin console > Users: invitations, reset codes, sessions and two-step
+  reset in the row menu; service accounts are listed on their own page.
+- Passwords on a list of common passwords are refused (`server/core/identity/common-passwords.txt`, from SecLists, MIT).
+- Deleting an environment needs a recent password or authenticator code (`reauth_required`).
 - Every data write on the default database is one transaction with its outbox row; updates of tables with formula columns
   or before-events lock the row. Marking a column **Indexed** builds its indexes in the background (no write lock).
 - Forms show a refusal from the server (validation rule, event) under the field it names; calculated columns are read-only in

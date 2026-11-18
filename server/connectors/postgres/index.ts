@@ -19,7 +19,7 @@ import { isPgError } from './db.ts'
 import type { PgError } from './db.ts'
 import {
   SYSTEM_COLUMNS, buildCountById, buildDeletes, buildInserts, buildSelect, buildUpdate, checkSource, columnSql, columnTypesByName,
-  createIndexSql, createTableSql, dropIndexesSql, fromDb, indexName, jsNumberText, keyIndexesSql, kindOf, mapSqlType, naturalIndexSql,
+  createIndexSql, createTableSql, createViewSql, dropIndexesSql, dropViewSql, fromDb, indexName, jsNumberText, keyIndexesSql, kindOf, mapSqlType, naturalIndexSql,
   physicalName, quoteId, sqlType, tableId, wantedIndex,
 } from './sql.ts'
 import type { Dialect } from './sql.ts'
@@ -338,6 +338,8 @@ export const createPostgresConnector: ConnectorFactory = (conn: ConnectionRecord
   function ddlOps(bound: SqlDb | undefined): Pick<Connector, 'createTable' | 'addColumn' | 'alterColumn' | 'dropColumn' | 'dropTable' | 'ensureSystemColumns'> {
     return {
       async createTable(def) {
+        // a reporting view (data model designer): CREATE VIEW from its lineage
+        if (def.reporting?.kind === 'view') return ddl(async (t, dl) => { for (const s of createViewSql(dl, def)) await t.exec(s) }, bound)
         await ddl(async (t, dl) => {
           const wantsTrgm = def.columns.some((c) => c.indexed && kindOf(c.type) === 'text')
           for (const s of createTableSql(dl, def, wantsTrgm ? await trigramSchema(t) : null)) await t.exec(s)
@@ -373,7 +375,7 @@ export const createPostgresConnector: ConnectorFactory = (conn: ConnectionRecord
 
       async dropTable(def) {
         await ddl(async (t, dl) => {
-          await t.exec(`DROP TABLE IF EXISTS ${tableId(dl, def)}`)
+          await t.exec(def.reporting?.kind === 'view' ? dropViewSql(dl, def) : `DROP TABLE IF EXISTS ${tableId(dl, def)}`)
         }, bound)
       },
 
@@ -456,7 +458,7 @@ export const createPostgresConnector: ConnectorFactory = (conn: ConnectionRecord
            FROM information_schema.tables t
            LEFT JOIN pg_catalog.pg_namespace n ON n.nspname = t.table_schema
            LEFT JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relname = t.table_name
-           WHERE t.table_schema = $1 AND t.table_type = 'BASE TABLE' AND t.table_name NOT LIKE 'ab\\_%'
+           WHERE t.table_schema = $1 AND t.table_type = 'BASE TABLE' AND t.table_name NOT LIKE 'ab\\_%'${system ? " AND t.table_name NOT LIKE 'sys\\_%'" : ''}
            ORDER BY t.table_name`, [schema])
         const cols = await columnRows(d)
         const byTable = new Map<string, SourceColumn[]>()
@@ -476,6 +478,23 @@ export const createPostgresConnector: ConnectorFactory = (conn: ConnectionRecord
           out.push({ source: t.name, columns: byTable.get(t.name) ?? [], rowCount })
         }
         return out
+      })
+    },
+
+    async foreignKeys() {
+      return run(async (d) => {
+        // single-column foreign keys between tables of this schema (data model designer import)
+        const rows = await d.query<{ tbl: string; col: string; ref: string; refcol: string; del: string }>(
+          `SELECT c.conrelid::regclass::text AS tbl, a.attname AS col, c.confrelid::regclass::text AS ref, af.attname AS refcol, c.confdeltype AS del
+             FROM pg_catalog.pg_constraint c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.connamespace
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+             JOIN pg_catalog.pg_attribute af ON af.attrelid = c.confrelid AND af.attnum = c.confkey[1]
+            WHERE c.contype = 'f' AND n.nspname = $1 AND array_length(c.conkey, 1) = 1
+            ORDER BY 1, 2`, [schema])
+        const bare = (x: string) => x.replace(/^.*\./, '').replace(/^"|"$/g, '')
+        const del: Record<string, string> = { c: 'cascade', n: 'set null', r: 'restrict', a: 'no action', d: 'set default' }
+        return rows.map((r) => ({ table: bare(r.tbl), column: r.col, refTable: bare(r.ref), refColumn: r.refcol, onDelete: del[r.del] ?? 'no action' }))
       })
     },
 

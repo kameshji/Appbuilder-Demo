@@ -5,6 +5,7 @@ import {
   Heading, RichText, BadgeControl, Avatar, AvatarGroup, IconControl, Shape, TagList, StatCard, Timeline,
 } from '../display/basics'
 import { DataTable, ListControl } from '../display/data'
+import { ActivityList, RecordTimeline } from '../display/collab'
 import { CalendarControl, Video, Audio } from '../display/media'
 import { Breadcrumb, Pagination, NavMenu, TopBar, Steps } from '../display/nav'
 import { ProgressControl, CircularProgress, Spinner, Skeleton, Alert, EmptyState } from '../display/feedback'
@@ -18,7 +19,7 @@ export const displayControls: ControlType[] = [
   // Display
   Heading, RichText, BadgeControl, Avatar, AvatarGroup, IconControl, Shape, TagList, StatCard, Timeline,
   // Data
-  DataTable, ListControl, CalendarControl,
+  DataTable, ListControl, CalendarControl, RecordTimeline, ActivityList,
   // Navigation
   Tabs, Breadcrumb, Pagination, NavMenu, TopBar, Steps,
   // Feedback

@@ -24,6 +24,9 @@ import { localQueryState } from './query-local'
 import { csvToRows, parseCsvText, rowsToCsv } from './csv'
 import { Persister } from './persister'
 import { createDemoLive } from './demo-live'
+import { DEMO_SYSTEM_TABLES, createDemoCollab, demoPeopleRows, demoSeedRows, demoSystemDef } from './demo-collab'
+import { SYS } from './system-tables'
+import { hiddenSystemColumns, nextNumberDefault, systemCanCreate } from './system-tables'
 import { applyFormulaColumns } from './demo-formulas'
 import { DEFAULT_ENVIRONMENT_ID, pickEnvironment, readSelectedEnvironment, selectEnvironment } from './environments'
 import { MemoryStorage } from './storage'
@@ -120,6 +123,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
   const setState = (patch: Partial<WorkspaceState>, bumpData = false) => {
     state = { ...state, ...patch, dataVersion: bumpData ? state.dataVersion + 1 : state.dataVersion }
     // the run-as user, roles or tables changed: recompute what that user sees (CLS) and their effective privileges
+    if (patch.users || patch.roles || patch.departments || patch.teams) refreshPeople()
     if (patch.users || patch.roles || patch.tables || patch.currentUserId !== undefined || patch.departments || patch.teams) {
       if (!patch.tables) state = { ...state, tables: visibleTables() }
       state = { ...state, session: computeSession() }
@@ -174,6 +178,8 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
   const tableKey = (name: string) => `tbl:${name}`
   const tableWriter = (name: string): (() => Promise<void>) => async () => {
     const t = findTableByName(name)
+    // the people projections are computed from the workspace (users, organisation, roles): never stored
+    if (t?.def.systemKind === 'projection') return
     if (t) {
       await st().writeText(`tables/${name}.schema.yaml`, toYaml(t.def))
       await st().writeText(`tables/${name}.csv`, rowsToCsv(t.def.columns, t.rows))
@@ -276,6 +282,20 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
   function grantFor(u: UserDef | undefined, def: TableDef): Grant {
     if (!u) return NO_GRANT()
     const rs = rolesOf(u)
+    // core data model: system tables carry a built-in policy (src/platform/system-tables.ts), not role privileges
+    if (def.system) {
+      const admin = rs.some((r) => r.isAdmin)
+      const env = predicateEnv(u)
+      const scope = (op: SecOp): AccessScope => {
+        const p = rowPredicateFor(rs, def, op, env, admin)
+        return 'const' in p && !p.const ? 'none' : 'all'
+      }
+      const read = rowPredicateFor(rs, def, 'read', env, admin)
+      const columns: Record<string, ColumnAccess> = {}
+      for (const c of hiddenSystemColumns(def, admin)) columns[c] = 'none'
+      if (def.readOnly) for (const c of def.columns) if (!columns[c.name]) columns[c.name] = 'read'
+      return { create: systemCanCreate(def, admin), read: scope('read'), update: scope('update'), delete: scope('delete'), columns, filtered: !('const' in read && read.const) }
+    }
     if (rs.some((r) => r.isAdmin)) return { create: true, read: 'all', update: 'all', delete: 'all', columns: {}, filtered: false }
     const out = NO_GRANT()
     const readers: (TablePrivilege | undefined)[] = []
@@ -324,7 +344,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       ;(read[sh.tableId] ??= []).push(sh.rowId)
       if (sh.access === 'update') (update[sh.tableId] ??= []).push(sh.rowId)
     }
-    return { user: { id: u.id, email: u.email }, org, tables: [...tablesRt.values()].map((t) => t.def), sameStore: () => true, shares: { read, update } }
+    return { user: { id: u.id, email: u.email, roleIds: u.roleIds } as PredicateEnv['user'], org, tables: [...tablesRt.values()].map((t) => t.def), sameStore: () => true, shares: { read, update } }
   }
   const leafOf = (c: Parameters<typeof matchesLeaf>[0], row: Record<string, unknown>) => matchesLeaf(c, row)
   const demoEval = { leaf: leafOf, semi: memorySemi((t) => (tablesRt.get(t.id)?.rows ?? []) as Record<string, unknown>[], leafOf) }
@@ -684,6 +704,77 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     return def
   }
 
+  /* ------------------------------------------------------------------ core data model (P0-N, demo-collab.ts) */
+
+  /** the system tables of demo mode: registered (seeded once), stored definitions merged with the platform's */
+  async function ensureSystemTables() {
+    const now = iso()
+    const toSave: string[] = []
+    for (const id of DEMO_SYSTEM_TABLES) {
+      const existing = tablesRt.get(id)
+      let name = existing?.def.name
+      if (!name) {
+        const base = demoSystemDef(id, now, null)!.name
+        name = base
+        for (let i = 1; findTableByName(name) && findTableByName(name)!.def.id !== id; i++) name = i === 1 ? `Sys${base}` : `Sys${base}${i}`
+      }
+      const def = demoSystemDef(id, now, existing?.def ?? null, name)!
+      const people = demoPeopleRows(id, peopleSource, nowFn())
+      if (existing) {
+        existing.def = def
+        if (people) existing.rows = people
+      } else {
+        registerTable(def, people ?? demoSeedRows(id, nowFn()))
+        if (!people) toSave.push(def.name)
+      }
+    }
+    // createdBy / owner of every table are lookups to Users (stored definitions of older workspaces)
+    for (const rt of tablesRt.values()) {
+      if (rt.def.system) continue
+      if (rt.def.columns.some((c) => (c.name === 'owner' || c.name === 'createdBy') && c.type !== 'lookup')) {
+        rt.def = { ...rt.def, columns: rt.def.columns.map((c) => (c.system && (c.name === 'owner' || c.name === 'createdBy') ? { ...c, type: 'lookup', lookupTable: 'Users' } : c)) }
+      }
+    }
+    syncTables(false)
+    for (const n of toSave) await saveTable(n)
+  }
+  const peopleSource = {
+    users: () => state.users,
+    departments: () => state.departments ?? [],
+    teams: () => state.teams ?? [],
+    roles: () => state.roles,
+  }
+  /** the people projections follow the workspace's users, organisation and roles */
+  function refreshPeople() {
+    for (const id of [SYS.users, SYS.departments, SYS.teams, SYS.teamMembers, SYS.roles, SYS.roleAssignments]) {
+      const rt = tablesRt.get(id)
+      const rows = demoPeopleRows(id, peopleSource, nowFn())
+      if (rt && rows) rt.rows = rows
+    }
+  }
+
+  const collab = createDemoCollab({
+    tables: () => [...tablesRt.values()].map((t) => t.def),
+    rows: (id) => tablesRt.get(id)?.rows ?? findTable(id)?.rows ?? [],
+    can: (userId, table, op, row) => {
+      const u = state.users.find((x) => x.id === userId)
+      if (!u) return false
+      const g = grantFor(u, table)
+      if (op === 'create') return g.create && rowTester(table, 'create', u)(row as Row)
+      if (g[op] === 'none') return false
+      return rowTester(table, op, u)(row as Row)
+    },
+    currentUserId: () => state.currentUserId,
+    users: () => state.users,
+    departments: () => state.departments ?? [],
+    teams: () => state.teams ?? [],
+    roles: () => state.roles,
+    insert: (table, values, secure) => tablesApi.insert(table, values, { secure }),
+    update: (table, id, changes, secure) => tablesApi.update(table, id, changes, { secure }),
+    remove: (table, ids, secure) => tablesApi.delete(table, ids, { secure }),
+    now: nowFn,
+  })
+
   /* ------------------------------------------------------------------ app helpers */
 
   function checkSize(width: number, height: number) {
@@ -916,6 +1007,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     const appFiles = (await st().list('apps')).filter((f) => f.endsWith('.app.yaml'))
     if (wsText === null && tableFiles.length === 0 && appFiles.length === 0) await seed()
     else await loadExisting(wsText, tableFiles, appFiles)
+    await ensureSystemTables()
     try {
       for (const f of (await st().list('attachments')).filter((x) => x.endsWith('.json'))) {
         const text = await st().readText(`attachments/${f}`)
@@ -991,7 +1083,8 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
         }
       }
     }
-    return [...names].map((n) => findTableByName(n)!).filter(Boolean)
+    // system tables (core data model) exist in every workspace: never part of a package
+    return [...names].map((n) => findTableByName(n)!).filter((t) => t && !t.def.system)
   }
 
   const tableEntry = (rt: TableRt, includeData: boolean) => ({
@@ -1183,7 +1276,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       if (g.update === 'none' || !rowTester(rt.def, 'update')(existing!)) deny('update', rt)
       assertWritable(rt, g, writtenKeys(rt.def, changes))
     }
-    const next = applyChanges(rt.def, rt.rows, existing!, changes, ctx())
+    const next = applyChanges(rt.def, rt.rows, existing!, secure ? collab.hooks.beforeUpdate(rt.def, existing!, changes) : changes, ctx())
     if (next === existing) return secure ? stripColumns(existing!, hiddenColumns(g)) : existing!
     // RLS WITH CHECK (server parity): the changed row must still match the update predicate; leaving read visibility is fine
     if (secure && !rowTester(rt.def, 'update')(next)) {
@@ -1213,7 +1306,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     if (hit && hit.version === state.dataVersion) return hit.state
     const def = tablesApi.get(plan.table)
     const st = def
-      ? localQueryState(plan, tablesApi.rows(plan.table), def, state.dataVersion)
+      ? localQueryState(plan, tablesApi.rows(plan.table), def, state.dataVersion, { rows: (t) => (findTable(t) ? tablesApi.rows(t) : undefined), def: (t) => tablesApi.get(t) })
       : { key, plan, status: 'error' as const, rows: [], hasMore: false, refreshing: false, loadingMore: false, version: state.dataVersion, error: new PlatformError('not-found', `Table "${plan.table}" was not found.`) }
     queryMemo.set(key, { version: state.dataVersion, state: st })
     if (queryMemo.size > 300) queryMemo.delete(queryMemo.keys().next().value!)
@@ -1431,12 +1524,19 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
         if (!g.create) deny('create', rt)
         assertWritable(rt, g, writtenKeys(rt.def, values))
       }
-      const row = buildRow(rt.def, rt.rows, rt.counters, values, ctx())
+      const prepared = secure ? collab.hooks.beforeInsert(rt.def, values) : values
+      const row = buildRow(rt.def, rt.rows, rt.counters, prepared, ctx(), rt.def.system && !secure ? { preserve: true } : {})
+      // column default =NextNumber("name"): drawn when the row is saved (core data model)
+      for (const col of rt.def.columns) {
+        const seq = nextNumberDefault(col.default)
+        if (seq && !col.system && (isBlankValue(values[col.name]) || row[col.name] === col.default)) row[col.name] = collab.nextNumber(seq)
+      }
       // RLS WITH CHECK (server parity): the new row must match the row filter of a role that grants create
       if (secure && !rowTester(rt.def, 'create')(row)) {
         fail('denied', `${currentUser()?.name ?? 'This user'} is not allowed to add this row to "${rt.def.displayName}": it does not match the rows their role may create.`)
       }
       rt.rows = [...rt.rows, row]
+      collab.hooks.afterInsert(rt.def, row)
       markFileModified(rt.def)
       setState({}, true)
       saveTableLater(rt.def.name)
@@ -1453,6 +1553,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
         if (victims.some((r) => !test(r))) deny('delete', rt)
       }
       rt.rows = rt.rows.filter((r) => !kill.has(r.id as string))
+      collab.hooks.afterDelete(rt.def, victims.map((r) => String(r.id)))
       markFileModified(rt.def)
       setState({}, true)
       saveTableLater(rt.def.name)
@@ -2388,6 +2489,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     onDataError: () => () => {},
     live: demoLive.live,
     notifications: demoLive.notifications,
+    collab: collab.api,
   }
 }
 

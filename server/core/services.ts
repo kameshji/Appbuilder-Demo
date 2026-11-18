@@ -10,11 +10,11 @@ import type {
 import { createPgDb, friendlyConnectionError, isPgError, withClient } from '../connectors/postgres/db.ts'
 import { flushAllFiles } from '../connectors/files/index.ts'
 import { createSecretBox, loadSecretKey } from './secrets.ts'
-import { SchemaTooNewError, UnsuitableDatabaseError, createMetaStore } from './meta-store.ts'
+import { SCHEMA_VERSION, SchemaTooNewError, UnsuitableDatabaseError, createMetaStore } from './meta-store.ts'
 import { DEFAULT_ENVIRONMENT_ID, currentEnvironment, runInEnvironment } from './env-context.ts'
 import { createInstallStore } from './install-store.ts'
 import { createEnvironmentManager, maxEnvironments, moveLegacyWorkspace } from './environments.ts'
-import { createNoBackupService } from './backup.ts'
+import { createBackupService, type BackupServiceImpl } from './backup/service.ts'
 import { createSecurityEngine } from './security.ts'
 import { createConnectionManager, DEFAULT_CONNECTION_ID, FILES_CONNECTION_ID } from './connections.ts'
 import { createDataService } from './data.ts'
@@ -24,6 +24,9 @@ import { errText, log, nowIso, uid } from './util.ts'
 import { createKernel } from './kernel.ts'
 import type { Kernel } from './kernel.ts'
 import { watchSessions } from './live/session-events.ts'
+import { createCollab, registerCollabJobs } from './collab.ts'
+import { setNextNumberProvider } from './event-fx.ts'
+import type { Collab } from './collab.ts'
 
 export type SqlDbFactory = (settings: DatabaseSettings, password: string) => SqlDb
 
@@ -99,7 +102,8 @@ function createSetupCode(port: number): SetupCode {
 export type CoreServices = Services & {
   state: CoreState
   environments: ReturnType<typeof createEnvironmentManager>
-  backup: NonNullable<Services['backup']>
+  /** backups and restores (backup/service.ts; package J) */
+  backup: BackupServiceImpl
   /** the install store (503 while no database is configured) */
   install: InstallStore
   /** (re)writes the built-in connections (default database, data files) of the current environment */
@@ -108,6 +112,8 @@ export type CoreServices = Services & {
   data: ReturnType<typeof createDataService>
   /** event and job kernel: job queue and worker, schedules, outbox, table events (kernel.ts) */
   kernel: Kernel
+  /** core data model at run time: system-table hooks, timeline, number sequences (collab.ts) */
+  collab: Collab
   connections: ReturnType<typeof createConnectionManager>
   /** test + connect + migrate the default store; persist=true seals the password into server.json */
   configureDatabase(settings: DatabaseSettings, password: string, opts: { createDatabase?: boolean; persist: boolean }): Promise<void>
@@ -164,7 +170,6 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   }
 
   const environments = createEnvironmentManager({ install: () => state.install, workspaceDir: config.workspaceDir, max: maxEnvironments(procEnv) })
-  const backup = createNoBackupService()
   // the data files folder is the current environment's (workspace/env/<id>/files); the ConnectionManager copies this
   // object per environment and connection, so each connector instance keeps the folder of its own environment
   const env: ConnectorEnv = {
@@ -189,7 +194,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   let kernelRef: { invalidate(): void } | null = null
   const connections = createConnectionManager(getMeta, env)
   const attachments = createAttachmentStore(() => environments.dirs(currentEnvironment().id).attachments, () => currentEnvironment().id)
-  const data = createDataService({ meta: getMeta, connections, attachments, log: env.log, hooks: () => (state.db ? kernel.hooks : null) })
+  const data = createDataService({ meta: getMeta, connections, attachments, log: env.log, hooks: () => (state.db ? kernel.hooks : null), system: () => (state.db ? collab.hooks : null) })
   const kernel = createKernel({
     db: () => state.db,
     listenSettings: () => (state.settings ? { settings: state.settings, password: state.password ?? '' } : null),
@@ -202,6 +207,20 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     log: (level, msg) => log(level, msg),
   })
   kernelRef = kernel
+  // backups and restores (package J): registers its job types on the kernel before the worker starts
+  const backup = createBackupService({ get: () => services, kernel, env: procEnv })
+  // core data model (P0-N): system-table hooks, polymorphic cascade, number sequences, timeline and notification jobs
+  const collab = createCollab({
+    db: () => state.db,
+    meta: getMeta,
+    data: () => data,
+    forUser: (u) => security.forUser(u),
+    notifications: () => services.notifications,
+    enqueue: async (type, payload, o) => { await kernel.jobs.enqueue(type, payload, { priority: 1, ...(o?.delayMs ? { delayMs: o.delayMs } : {}) }) },
+    log: (level, msg) => log(level, msg),
+  })
+  registerCollabJobs(kernel, collab)
+  setNextNumberProvider((name) => collab.nextNumber(name))
 
   /** every environment's conn_default points at the system database (its tables live in that environment's schema) */
   async function ensureBuiltinConnections(meta: MetaStore, settings: DatabaseSettings, password: string): Promise<void> {
@@ -269,6 +288,17 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     const meta = watchSessions(createMetaStore(db, secrets))
     const install = createInstallStore(db)
     let migration: MigrationSummary | undefined
+    // a server upgrade: an install backup of the database as it is, before the first migration step (package J)
+    try {
+      const has = await db.query<{ ok: boolean }>(`SELECT to_regclass('ab.settings') IS NOT NULL AS ok`)
+      const v = has[0]?.ok ? await db.query<{ v: string | null }>(`SELECT v FROM "ab"."settings" WHERE k = 'schemaVersion'`) : []
+      const from = Number(v[0]?.v) || 0
+      if (from >= 4 && from < SCHEMA_VERSION) await backup.beforeMigration(db, { settings, password }, from)
+    } catch (e) {
+      await db.close().catch(() => {})
+      log('error', `DATABASE NOT UPGRADED: the backup before the schema upgrade failed: ${errText(e)}`)
+      throw Object.assign(new HttpError(503, 'unavailable', `The database needs an upgrade, and the backup taken before upgrading failed: ${errText(e)}. Fix the cause (disk space, the backup folder), or start once with APPBUILDER_MIGRATION_BACKUP=skip to upgrade without that backup.`), { permanent: true })
+    }
     try {
       migration = (await meta.migrate()) ?? undefined
       // the built-in connections of every usable environment (password or host may have changed)
@@ -343,6 +373,8 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     } catch {
       /* decided again on the next start */
     }
+    // backups: settings, interrupted backups and restores, the backup folder, schedules (package J)
+    await backup.onDatabaseReady().catch((e) => log('warn', `backups: ${errText(e)}`))
   }
 
   let completeCache: boolean | null = null
@@ -477,6 +509,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     connections,
     attachments,
     kernel,
+    collab,
     env,
     environment: currentEnvironment,
     environments,

@@ -28,6 +28,8 @@ const F = 'FALSE'
 export interface V2Options {
   /** the caller's row filter (v1 semantics); undefined = every row (system / administrators) */
   rowFilter?: Condition
+  /** lookup paths (`via` conditions): the tables they read and the caller's row filter on each (same schema) */
+  related?: Record<string, { def: TableDef; rowFilter?: Condition }>
   /** columns returned when the plan has no select (the caller's visible columns) */
   visible: string[]
   maxUnpagedRows: number
@@ -69,13 +71,15 @@ export class V2Builder {
   readonly d: Dialect
   readonly def: TableDef
   readonly cols: Cols
-  readonly p = new Params()
+  readonly p: Params
   readonly hasCreatedOn: boolean
   readonly hasId: boolean
+  related: V2Options['related'] = {}
 
-  constructor(d: Dialect, def: TableDef) {
+  constructor(d: Dialect, def: TableDef, p?: Params) {
     this.d = d
     this.def = def
+    this.p = p ?? new Params()
     this.cols = new Cols(def)
     const missing = new Set(def.missingSystem ?? [])
     this.hasCreatedOn = !missing.has('createdOn') && this.cols.has('createdOn')
@@ -179,6 +183,7 @@ export class V2Builder {
     if ('and' in c) return c.and.length ? '(' + c.and.map((x) => this.cond(x)).join(' AND ') + ')' : T
     if ('or' in c) return c.or.length ? '(' + c.or.map((x) => this.cond(x)).join(' OR ') + ')' : F
     if ('not' in c) return `(NOT ${this.cond(c.not)})`
+    if ('via' in c) return this.via(c.via)
     if (c.op === 'cmpExpr') return `(${this.expr(c.left)} ${CMP_SQL[c.cmp]} ${this.expr(c.right)})`
     const col = this.cols.get(c.col)
     const exact = 'exact' in c && c.exact === true
@@ -196,6 +201,24 @@ export class V2Builder {
       }
       default: return this.compare(col, c.op, c.value, exact)
     }
+  }
+
+  /**
+   * Lookup path: `col IN (SELECT id FROM target WHERE <where> AND <caller's row filter on target>)`, one uncorrelated
+   * sub-select over the target's primary key; with orMissing also the rows whose lookup is blank or points at a row
+   * that is missing or unreadable.
+   */
+  via(v: { col: string; table: string; where: ConditionV2; orMissing?: true }): string {
+    const rel = this.related?.[v.table]
+    if (!rel) return bad(`The lookup table ${v.table.slice(0, 64)} cannot be read in this query`)
+    const col = this.cols.get(v.col)
+    const sub = new V2Builder(this.d, rel.def, this.p)
+    const t = tableId(this.d, rel.def)
+    const rf = rel.rowFilter && !('const' in rel.rowFilter && rel.rowFilter.const) ? `(${buildWhere(this.d, rel.def, rel.rowFilter, this.p).sql})` : T
+    const q = quoteId(col.name)
+    const hit = `(${q} IS NOT NULL AND ${q} IN (SELECT "id" FROM ${t} WHERE "id" IS NOT NULL AND ${sub.cond(v.where)} AND ${rf}))`
+    if (!v.orMissing) return hit
+    return `(${hit} OR ${q} IS NULL OR ${q} NOT IN (SELECT "id" FROM ${t} WHERE "id" IS NOT NULL AND ${rf}))`
   }
 
   /* -------------------------------------------------------------- numeric expressions (float8, like the engine) */
@@ -544,6 +567,7 @@ function scanOnly(plan: QueryPlan): boolean {
     if ('and' in c) return c.and.some(visit)
     if ('or' in c) return c.or.some(visit)
     if ('not' in c) return visit(c.not)
+    if ('via' in c) return false
     return c.op === 'contains' || c.op === 'endsWith' || c.op === 'cmpExpr' || ('exact' in c && c.exact === true)
   }
   return !!plan.filter && visit(plan.filter)
@@ -551,6 +575,8 @@ function scanOnly(plan: QueryPlan): boolean {
 
 /** build the statement for a validated plan */
 export function buildV2(d: Dialect, def: TableDef, plan: QueryPlan, o: V2Options): V2Statement {
-  return new V2Builder(d, def).build(plan, o)
+  const b = new V2Builder(d, def)
+  b.related = o.related ?? {}
+  return b.build(plan, o)
 }
 

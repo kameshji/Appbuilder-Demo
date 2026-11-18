@@ -117,7 +117,7 @@ Gross(net: Number): Number = net * (1 + TaxRate);
 
 ## Functions
 
-155 built-in functions. A signature in square brackets means the argument is optional; "..." means more of the same may follow. A function marked as behaviour works only in behaviour properties.
+169 built-in functions. A signature in square brackets means the argument is optional; "..." means more of the same may follow. A function marked as behaviour works only in behaviour properties.
 
 - [Logic and errors](#logic-and-errors) (16)
 - [Text](#text) (23)
@@ -125,9 +125,10 @@ Gross(net: Number): Number = net * (1 + TaxRate);
 - [Date and time](#date-and-time) (20)
 - [Table](#table) (25)
 - [Colour](#colour) (3)
-- [Behaviour](#behaviour) (30)
+- [Behaviour](#behaviour) (37)
 - [JSON and regular expressions](#json-and-regular-expressions) (5)
 - [Context and environment](#context-and-environment) (5)
+- [Core data model](#core-data-model) (7)
 
 ### Logic and errors
 
@@ -292,6 +293,8 @@ Functions with side effects. They work only in behaviour properties such as OnSe
 
 | Function | What it does |
 | --- | --- |
+| `AddActivity(record, subject [, type [, dueOn [, assignedTo]]])` | Adds an activity about a record: type Task (default), Call, Meeting, Email, Note or Custom; assignedTo a user id or a record of Users. Blank record: a personal task. Asynchronous. |
+| `AddComment(record, text)` | Adds a comment about a record (people you @mention in the text with <span data-mention="userId"> are notified). Asynchronous. |
 | `Back()` | Returns to the previous screen. |
 | `Clear(collection)` | Removes every row from a collection. |
 | `ClearCollect(collection, table)` | Replaces the contents of a collection. |
@@ -301,9 +304,11 @@ Functions with side effects. They work only in behaviour properties such as OnSe
 | `Download(url)` | Starts a download from a web address. |
 | `EditForm(Form)` | Switches a form to Edit mode. |
 | `Exit()` | Closes the running app. |
+| `Follow(record)` | Follows a record: you are notified of new comments about it. Asynchronous. |
 | `Launch(url)` | Opens a web address. |
 | `Navigate(Screen)` | Goes to another screen. |
 | `NewForm(Form)` | Switches a form to New mode with empty fields. |
+| `NextNumber(sequence)` | The next number of a number sequence, formatted with its prefix and padding. Gap-free on the server in a column default (=NextNumber("Invoices")) or a before-event; in apps it works in demo mode only. |
 | `Notify(message [, NotificationType])` | Shows a message to the user. |
 | `Patch(collection, base, changes) or Patch(record, changes)` | Changes a record, or creates a new one when base is Defaults(collection). Returns the stored record. With a record as the first argument it only merges the records and returns the result. |
 | `Refresh(table)` | Reloads a table from storage. |
@@ -317,8 +322,11 @@ Functions with side effects. They work only in behaviour properties such as OnSe
 | `SetFocus(control)` | Moves the keyboard focus to a control. |
 | `Share(record, userOrTeam [, access])` | Shares one row with a person (email, or a record such as User()) or a team (its code) for "Read" (default) or "Edit". You must own the row or have the Share privilege; sharing must be on for the table. |
 | `SubmitForm(Form)` | Saves the data entered in a form. |
+| `Tag(record, name)` | Puts a tag on a record (the tag is created when it is new). Asynchronous. |
 | `Trace(message [, data])` | Writes a line to the debug console. |
+| `Unfollow(record)` | Stops following a record. Asynchronous. |
 | `Unshare(record, userOrTeam)` | Stops sharing one row with a person or a team. |
+| `Untag(record, name)` | Takes a tag off a record. Asynchronous. |
 | `UpdateContext({ name: value, ... })` | Sets context variables for the current screen. |
 | `UpdateIf(collection, condition, changes)` | Changes every row where the condition is true. |
 | `ViewForm(Form)` | Switches a form to View mode. |
@@ -347,6 +355,20 @@ Facts about the signed-in user, the address the app was opened with, and generat
 | `SharedWith(record)` | The people and teams a row is shared with: a table of Name, Email (blank for teams), Id, Type ("User" or "Team") and Access ("Read" or "Edit"). Empty while loading, for rows of tables without sharing and for rows you cannot read. |
 | `User()` | The signed-in user: a record with FullName, Email, Id, Roles, Department, DepartmentCode, Manager (a record with FullName, Email and Id), JobTitle and Teams (a table of Name, Code and Id). |
 
+### Core data model
+
+Comments, activities and mentions of records, settings and unit conversion over the system tables every environment has (docs/guide/maker/core-data-model.md). They delegate like the Filter or LookUp they stand for. The write functions (AddComment, AddActivity, Follow, Tag ...) are listed under Behaviour.
+
+| Function | What it does |
+| --- | --- |
+| `Activities(record)` | The activities (tasks, calls, meetings, notes) about a record, newest first. Delegates like Filter. |
+| `Comments(record)` | The comments about a record (core data model), newest first. Delegates: Filter(Comments, regardingId = RecordId(record)). |
+| `Convert(value, fromUnit, toUnit)` | Converts a quantity between units of the same dimension using the factors in Units of measure, such as Convert(2.5, "KG", "G"). Blank when a unit is unknown or the dimensions differ. |
+| `Mentions()` | Where the signed-in user was @mentioned, newest first. Delegates like Filter. |
+| `MyTasks()` | Open tasks assigned to the signed-in user, by due date. Delegates like Filter. |
+| `RecordId(record)` | The id of a record (row) of a table; with text, the text itself. Blank for blank. |
+| `Setting(key)` | The value (text) of a setting of this environment from the Settings table, such as Setting("FinancialYearStartMonth"). Blank when missing. |
+
 ## Enums
 
 24 built-in lists of named values, written `EnumName.Member`, for example `Align.Center` or `Color.Red`.
@@ -359,13 +381,13 @@ Used by: `Heading.Align`, `Label.Align`, `LinkButton.Align`, `RichText.Align`.
 
 ### AlignItems
 
-Used by: 83 properties on 75 controls (for example `Accordion.AlignSelf`, `Alert.AlignSelf`, `AnimatedIcon.AlignSelf`).
+Used by: 87 properties on 79 controls (for example `Accordion.AlignSelf`, `ActivityList.AlignSelf`, `Alert.AlignSelf`).
 
 5 members: `Auto`, `Start`, `Center`, `End`, `Stretch`.
 
 ### Anchor
 
-Used by: 148 properties on 74 controls (for example `Accordion.AnchorH`, `Accordion.AnchorV`, `Alert.AnchorH`).
+Used by: 156 properties on 78 controls (for example `Accordion.AnchorH`, `Accordion.AnchorV`, `ActivityList.AnchorH`).
 
 5 members: `Start`, `End`, `Stretch`, `Center`, `Scale`.
 

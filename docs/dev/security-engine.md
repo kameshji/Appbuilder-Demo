@@ -227,6 +227,22 @@ does not trust the small estimate); it is the slowest form, still under half a s
 `server/core/orgsec.integration.test.ts` checks with `EXPLAIN` that the owner list uses `ix_<table>_owner` and that rules become
 one statement with sub-selects over the lookup index.
 
+## System tables: built-in policies (P0 package N)
+
+Roles never govern the system tables (`sys_*`; `ab_role_tables` rows for them are removed). `rowPredicateFor` asks
+`systemPredicate` (`src/platform/system-tables.ts`) instead, by the table's `systemPolicy`: `directory` (Users,
+Departments, Teams: read-only, active members of the environment), `own` (Notifications), `adminOrOwn` (Team members,
+Roles, Role assignments, Sign-in log), `admin` (the other logs; invisible to others), `reference` (read by all, written
+by administrators), `shared` (Tags), `regarding` (the collaboration and files tables), `members` (Channels) and `parent`
+(rows readable through their parent row). Column security: `adminColumns` (for example Users' phone and manager) are
+`none` for non-administrators. `share` is refused on every system table; projections are never writable.
+
+The **regarding** predicate makes a collaboration row readable exactly when its record is: an `IN` list of the tables
+the user reads entirely, OR one correlated semi-join per table with a row-level predicate (`regardingTable = T AND
+EXISTS (SELECT 1 FROM T WHERE T.id = regardingId AND <T's read predicate>)`). Tables in another store contribute nothing
+(fail closed). The predicate reasons (`predicateReasons`) report it as kind `system`. Details, leak tests and measured
+cost: `docs/dev/core-data-model.md`.
+
 ## Where the engine is enforced (`data.ts`)
 
 All data routes call `DataService`, which receives the `UserContext`.

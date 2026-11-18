@@ -177,7 +177,7 @@ export function createRemoteLive(deps: RemoteLiveDeps): RemoteLive {
 
   function start() {
     const s = deps.getState().session
-    if (!s || s.user.mustChangePassword || !client.enabled()) return
+    if (!s || s.user.mustChangePassword || s.user.mfaEnrolmentRequired || !client.enabled()) return
     if (started) return
     started = true
     subscribeBase()

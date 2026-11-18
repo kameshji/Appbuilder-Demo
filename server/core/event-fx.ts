@@ -36,8 +36,8 @@ export const ALLOWED_ACTIONS: Record<FormulaRole, string[]> = {
   condition: [],
   validation: [],
   formulaColumn: [],
-  before: ['Set', 'SetField', 'Reject', 'Trace', 'Concurrent'],
-  after: ['Set', 'Patch', 'Collect', 'Remove', 'NotifyUser', 'RunConnector', 'EnqueueJob', 'Trace', 'Concurrent'],
+  before: ['Set', 'SetField', 'Reject', 'Trace', 'Concurrent', 'NextNumber'],
+  after: ['Set', 'Patch', 'Collect', 'Remove', 'NotifyUser', 'RunConnector', 'EnqueueJob', 'Trace', 'Concurrent', 'NextNumber'],
 }
 
 const WHY: Record<string, string> = {
@@ -103,6 +103,21 @@ const ENQUEUE_JOB: FnDef = def('EnqueueJob', 'EnqueueJob(type [, payload [, dela
 
 export const EVENT_NATIVES: FnDef[] = [SET_FIELD, REJECT, NOTIFY_USER, RUN_CONNECTOR, ENQUEUE_JOB]
 
+/**
+ * NextNumber in table events (core data model, P0-N): the numbers a formula names are drawn before it runs, in the
+ * write's transaction (gap-free on rollback). Set by the collaboration service (collab.ts) at start.
+ */
+let nextNumberProvider: ((name: string) => Promise<string>) | null = null
+export function setNextNumberProvider(fn: ((name: string) => Promise<string>) | null): void {
+  nextNumberProvider = fn
+}
+/** NextNumber("name") calls with a literal name, in source order */
+function nextNumberCalls(n: Node, out: string[] = []): string[] {
+  if (n.t === 'call' && n.name === 'NextNumber' && n.args.length === 1 && n.args[0]!.t === 'str') out.push((n.args[0] as { value: string }).value)
+  for (const c of childrenOf(n)) nextNumberCalls(c, out)
+  return out
+}
+
 /** a fresh engine with the event natives (one per evaluation context: never shared across environments) */
 export function eventEngine(): FxEngine {
   return createEngine({}, EVENT_NATIVES)
@@ -167,8 +182,12 @@ export function schemaOf(tables: TableDef[]): SchemaInfo {
   const out: SchemaInfo = { tables: {} }
   for (const t of tables) {
     const columns: Record<string, ReturnType<typeof columnKind>> = { id: 'text', createdOn: 'datetime', modifiedOn: 'datetime', createdBy: 'text', owner: 'text' }
-    for (const c of t.columns) columns[c.name] = columnKind(c.type)
-    out.tables[t.name] = { columns }
+    const lookups: Record<string, string> = {}
+    for (const c of t.columns) {
+      columns[c.name] = columnKind(c.type)
+      if (c.type === 'lookup' && c.lookupTable) lookups[c.name] = c.lookupTable
+    }
+    out.tables[t.name] = Object.keys(lookups).length ? { columns, lookups } : { columns }
   }
   return out
 }
@@ -391,6 +410,20 @@ export async function evaluateFormula(i: EvalInput): Promise<EvalOutcome> {
   if (allowed.has('NotifyUser')) host.notifyUser = (to, message) => { out.notifications.push({ to, message }) }
   if (allowed.has('RunConnector')) host.runConnector = (connection, action, input) => { out.connectorCalls.push({ connection, action, input }) }
   if (allowed.has('EnqueueJob')) host.enqueueJob = (type, payload, delaySeconds) => { out.jobs.push({ type, payload, delaySeconds }) }
+  if (allowed.has('NextNumber')) {
+    // the sequences a formula draws from are allocated now (inside the write's transaction), one per call written
+    const p = parse(formula)
+    const names = p.ast ? nextNumberCalls(p.ast) : []
+    const drawn = new Map<string, string[]>()
+    if (names.length && !nextNumberProvider) return { ...out, ok: false, error: 'NextNumber is not available here.' }
+    for (const n of names) (drawn.get(n) ?? drawn.set(n, []).get(n)!).push(await nextNumberProvider!(n))
+    host.collab = (action, args) => {
+      if (action !== 'nextNumber') return refuse(action)
+      const v = drawn.get(String(args.name ?? ''))?.shift()
+      if (v === undefined) throw new Error('NextNumber needs the sequence name as text written in the formula, like NextNumber("Invoices").')
+      return v
+    }
+  }
   const pure = allowed.size === 0
   const r = engine.evaluate(formula, scope, pure ? undefined : host)
   checkDeadline(i.limits, 'The event')

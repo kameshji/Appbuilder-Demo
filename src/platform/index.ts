@@ -202,6 +202,20 @@ export function createPlatformFacade(deps: {
     }),
     notifications: group('notifications', ['list', 'markRead', 'remove', 'settings', 'saveSettings', 'send'], { onNotification: () => () => {} }),
     solutions: group('solutions', ['create', 'update', 'remove', 'addComponent', 'removeComponent', 'exportPackage', 'importPackage'], {}),
+    // core data model (P0-N): every method is asynchronous, so before init they wait for it
+    collab: new Proxy({} as NonNullable<PlatformApi['collab']>, {
+      get(_t, prop) {
+        if (typeof prop !== 'string') return undefined
+        if (prop === 'topics') return () => (impl?.collab ? impl.collab.topics() : [])
+        if (prop === 'nextNumberNow') return impl?.collab?.nextNumberNow ? impl.collab.nextNumberNow.bind(impl.collab) : undefined
+        return async (...args: unknown[]) => {
+          const p = impl ?? (await choose())
+          await p.init()
+          if (!p.collab) throw new PlatformError('unavailable', 'Comments, activities and tasks are not available here.')
+          return ((p.collab as unknown) as Record<string, (...a: unknown[]) => unknown>)[prop](...args)
+        }
+      },
+    }),
   }
   return facade
 }

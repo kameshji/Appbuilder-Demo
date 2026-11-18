@@ -11,6 +11,8 @@
  *   app:<appId>        an app definition was saved, renamed or deleted
  */
 
+import type { BackupLiveEvent } from './backup.ts'
+
 export const LIVE_PROTOCOL_VERSION = 1
 /** the endpoint (same origin, same port as the API); ws:// or wss:// as the page */
 export const LIVE_PATH = '/api/v1/live'
@@ -124,6 +126,8 @@ export type UserEvent =
   | { event: 'unread'; unread: number }
   /** the session ended or must change; the socket closes right after */
   | { event: 'session'; reason: SessionEndReason }
+  /** install administrators: progress of a backup or restore (P0 package J, src/platform/backup.ts) */
+  | ({ event: 'backup' } & BackupLiveEvent)
 
 export type SessionEndReason = 'signed_out' | 'password_changed' | 'password_change_required' | 'disabled' | 'removed' | 'expired'
 
@@ -146,6 +150,8 @@ export interface EnvMessage {
   /** metadata: tables, columns, apps, solutions changed -> reload metadata; security: roles or access changed; state: locked/unlocked/renamed; deleted */
   kind: 'metadata' | 'security' | 'state' | 'deleted'
   locked?: boolean
+  /** state: the environment is being restored from a backup (true), or the restore ended (false) (package J) */
+  restoring?: boolean
   by?: LivePerson
   at: string
   self?: true

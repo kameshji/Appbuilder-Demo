@@ -88,6 +88,7 @@ export function TableDesigner({ tableId }: { tableId: string }) {
         <div className="min-w-0 flex-1">
           <input
             value={name}
+            readOnly={table.system}
             onChange={(e) => setName(e.target.value)}
             onBlur={() => { const v = name.trim(); if (v && v !== table.displayName) void commit({ displayName: v }); else setName(table.displayName) }}
             onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { setName(table.displayName); (e.target as HTMLInputElement).blur() } }}
@@ -101,6 +102,7 @@ export function TableDesigner({ tableId }: { tableId: string }) {
             onBlur={() => { if (desc.trim() !== (table.description ?? '')) void commit({ description: desc.trim() }) }}
             onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
             placeholder="Add a description"
+            readOnly={table.system}
             aria-label="Table description"
             className="mt-0.5 block h-7 w-full max-w-xl rounded-md border border-transparent bg-transparent px-1.5 text-sm text-muted-foreground outline-none placeholder:text-muted-foreground/60 hover:border-border focus:border-ring focus:bg-background"
           />
@@ -112,6 +114,7 @@ export function TableDesigner({ tableId }: { tableId: string }) {
             {table.origin?.kind === 'file' && <Badge variant="secondary" title={`From file ${table.origin.fileName}`}>File</Badge>}
             {linked && <Badge variant="secondary" title="This table existed in the database before; Appbuilder never deletes it there"><Link2 /> Linked</Badge>}
             {table.readOnly && <Badge variant="outline"><Lock /> Read-only</Badge>}
+            {table.system && <Badge variant="secondary" data-testid="system-table-badge" title="Part of the core data model: in every environment, cannot be deleted or renamed"><Lock /> System table</Badge>}
           </div>
           <div className="font-mono">{table.name}</div>
           <div>Modified {fmtDate(table.modifiedOn)}</div>
@@ -176,6 +179,12 @@ export function TableDesigner({ tableId }: { tableId: string }) {
                 <Button variant="outline" size="sm" onClick={() => void assignOwners()} disabled={assigning} data-testid="assign-owner-button"><UserCheck /> Assign to me</Button>
               </Panel>
             )}
+            {table.system ? (
+              <Panel className="p-5 text-sm text-muted-foreground" data-testid="system-table-note">
+                <div className="font-semibold text-foreground">System table</div>
+                <p className="mt-0.5">Part of the core data model: it exists in every environment and cannot be deleted or renamed, and its own columns cannot be changed.{table.extensible ? ' You can add your own columns; they travel with solutions.' : ''}{table.systemKind === 'projection' ? ' Its rows come from the Admin console and the platform (read-only).' : ''}</p>
+              </Panel>
+            ) : (
             <Panel className="flex items-center gap-4 border-destructive/30 p-5">
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-semibold">Delete this table</div>
@@ -185,6 +194,7 @@ export function TableDesigner({ tableId }: { tableId: string }) {
               </div>
               <Button variant="destructive" size="sm" onClick={() => { setDropSource(false); setDel(true) }} data-testid="delete-table-button"><Trash2 /> Delete table</Button>
             </Panel>
+            )}
           </div>
         </TabsContent>
       </Tabs>

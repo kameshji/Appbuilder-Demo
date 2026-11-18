@@ -14,6 +14,9 @@ import {
 } from '../../src/platform/orgsec.ts'
 import type { OrgContext, OrgDirectory, PredicateEnv, SecOp } from '../../src/platform/orgsec.ts'
 import { DEFAULT_CONNECTION_ID } from './connections.ts'
+import { hiddenSystemColumns, systemCanCreate, systemTableVisible } from '../../src/platform/system-tables.ts'
+
+const isConstTrue = (c: Condition): boolean => 'const' in c && c.const
 
 export const SYSTEM_COLUMN_NAMES = new Set(['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner'])
 export const SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000
@@ -58,6 +61,16 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
   const privFor = (r: RoleDef, table: TableDef): TablePrivilege | undefined => r.privileges.find((p) => p.table === table.id)
 
   function scopeOf(table: TableDef, op: 'read' | 'update' | 'delete'): AccessScope {
+    // reporting views (package K): the base table's read scope; never written
+    if (table.reporting?.kind === 'view') {
+      const b = viewBase(table)
+      return op === 'read' && b ? scopeOf(b, 'read') : 'none'
+    }
+    // system tables (core data model): the built-in policy decides rows; reported as all-or-nothing, `filtered`
+    if (table.system) {
+      const p = rowPredicate(table, op)
+      return 'const' in p && !p.const ? 'none' : 'all'
+    }
     if (isAdmin) return 'all'
     let s: AccessScope = 'none'
     for (const r of roles) {
@@ -68,6 +81,8 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
   }
 
   function canCreate(table: TableDef): boolean {
+    if (table.reporting?.kind === 'view') return false
+    if (table.system) return systemCanCreate(table, isAdmin)
     if (isAdmin) return true
     return roles.some((r) => !!privFor(r, table)?.create)
   }
@@ -86,8 +101,50 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
    * new row is always owned by its creator. share: roles with the share privilege, plus the user's own rows.
    * The rules live in src/platform/orgsec.ts (shared with demo mode).
    */
+  // per-context memo: system tables' regarding predicates read every other table's predicate
+  const memo = new Map<string, Condition>()
+  const loaded = new Set(tables)
   function rowPredicate(table: TableDef, op: SecOp): Condition {
-    return rowPredicateFor(roles, table, op, env, isAdmin)
+    if (table.reporting?.kind === 'view') return viewPredicate(table, op)
+    if (!loaded.has(table)) return rowPredicateFor(roles, table, op, env, isAdmin)
+    const key = `${op}\u0000${table.id}`
+    let p = memo.get(key)
+    if (!p) memo.set(key, (p = rowPredicateFor(roles, table, op, env, isAdmin)))
+    return p
+  }
+
+  /*
+   * Reporting views (package K, docs/dev/data-model.md "Security through reporting views"). Our security lives in the
+   * application layer, so a database view cannot enforce it; instead the view is registered with its lineage (one base
+   * table, each view column mapped to a source column) and every read applies the BASE table's rules: the view's rows
+   * are the base rows the reader may read (semi-join on id: the view's id is the base row's id), and a view column is
+   * hidden when its source column is hidden for the reader. Views are never written. A view over another view, or one
+   * whose base is gone, shows nothing.
+   */
+  const tablesById = new Map(tables.map((t) => [t.id, t]))
+  function viewBase(v: TableDef): TableDef | null {
+    if (v.reporting?.kind !== 'view') return null
+    const b = tablesById.get(v.reporting.base)
+    return b && b.reporting?.kind !== 'view' ? b : null
+  }
+  function viewPredicate(v: TableDef, op: SecOp): Condition {
+    const base = viewBase(v)
+    if (op !== 'read' || !base) return { const: false }
+    const p = rowPredicate(base, 'read')
+    if ('const' in p) return p
+    return { semi: { col: 'id', table: base, key: 'id', where: p } }
+  }
+  function viewColumnAccess(v: TableDef, column: string): ColumnAccess {
+    const base = viewBase(v)
+    if (!base || v.reporting?.kind !== 'view') return 'none'
+    let source: string
+    if (SYSTEM_COLUMN_NAMES.has(column)) source = column
+    else {
+      const c = v.reporting.columns.find((x) => x.name === column)
+      if (!c) return 'none'
+      source = c.source
+    }
+    return columnAccess(base, source) === 'none' ? 'none' : 'read'
   }
 
   /** roles whose read scope on the table is not none (CLS is the union over these) */
@@ -108,7 +165,13 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
 
   function columnAccess(table: TableDef, column: string): ColumnAccess {
     if (column === 'id') return 'read'
+    if (table.reporting?.kind === 'view') return viewColumnAccess(table, column)
     const isSystem = SYSTEM_COLUMN_NAMES.has(column) || !!table.columns.find((c) => c.name === column)?.system
+    if (table.system) {
+      if (hiddenSystemColumns(table, isAdmin).has(column)) return 'none'
+      if (!systemTableVisible(table, isAdmin)) return 'none'
+      return isSystem || table.readOnly ? 'read' : 'update'
+    }
     if (isAdmin) return isSystem ? 'read' : 'update'
     let access: ColumnAccess = 'none'
     for (const { priv } of grantingRoles(table)) {
@@ -140,7 +203,7 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
       if (a !== 'update') columns[c.name] = a
     }
     // the client cannot mirror row filters, relationship rules, organisation scopes or shares: the server decides
-    const filtered = !isAdmin && (roles.some((r) => {
+    const filtered = t.system || t.reporting?.kind === 'view' ? !isConstTrue(rowPredicate(t, 'read')) : !isAdmin && (roles.some((r) => {
       const p = privFor(r, t)
       return !!p && p.read !== 'none' && (!!p.rowFilter?.length || isOrgScope(p.read) || isOrgScope(p.update) || isOrgScope(p.delete))
     }) || (!!t.sharing && !!extras.shares?.read[t.id]?.length))
@@ -152,7 +215,7 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
       columns,
       filtered,
     }
-    const share = isAdmin ? (t.sharing ? 'all' : 'none') : roles.reduce<AccessScope>((acc, r) => maxScope(acc, privFor(r, t)?.share ?? 'none'), 'none')
+    const share = t.system || t.reporting?.kind === 'view' ? 'none' : isAdmin ? (t.sharing ? 'all' : 'none') : roles.reduce<AccessScope>((acc, r) => maxScope(acc, privFor(r, t)?.share ?? 'none'), 'none')
     if (share !== 'none') privileges.tables[t.id].share = share
   }
 

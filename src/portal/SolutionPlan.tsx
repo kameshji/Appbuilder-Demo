@@ -98,6 +98,18 @@ export function PlanView({ plan }: { plan: SolutionPlan }) {
   )
 }
 
+/** the backup before an upgrade failed (409, field "backup"): the administrator may go on without it, or cancel */
+export function BackupRefusal({ message, busy, onProceed, label = 'Upgrade without a backup' }: { message: string; busy?: boolean; onProceed(): void; label?: string }) {
+  return (
+    <div className="grid gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-2.5 text-xs text-amber-900 dark:text-amber-100" role="alert" data-testid="backup-refusal">
+      <span className="flex items-start gap-1.5"><TriangleAlert className="mt-px size-3.5 shrink-0" /> {message}</span>
+      <span><Button size="sm" variant="destructive" disabled={busy} onClick={onProceed} data-testid="backup-refusal-proceed">{label}</Button></span>
+    </div>
+  )
+}
+
+export const isBackupRefusal = (e: unknown): boolean => (e as { field?: string } | null)?.field === 'backup'
+
 /** what the admin must tick before confirming a plan that loses data */
 export function useConfirmable(plan: SolutionPlan | null): { ok: boolean; box: React.ReactNode } {
   const [ack, setAck] = useState(false)
@@ -135,10 +147,11 @@ export function DeployDialog({ open, onOpenChange, solution }: { open: boolean; 
   const [plan, setPlan] = useState<SolutionPlan | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [refused, setRefused] = useState('')
   const { ok, box } = useConfirmable(plan)
   useEffect(() => {
     if (!open) return
-    setPlan(null); setError(''); setIncludeData(false)
+    setPlan(null); setError(''); setRefused(''); setIncludeData(false)
     setTarget((targets.find((e) => e.type === 'production') ?? targets[0])?.id ?? '')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
@@ -155,15 +168,17 @@ export function DeployDialog({ open, onOpenChange, solution }: { open: boolean; 
       setBusy(false)
     }
   }
-  const run = async () => {
+  const run = async (proceedWithoutBackup = false) => {
     if (!plan) return
     setBusy(true)
     try {
-      const res = await deploy(solution.id, target, plan.token, includeData)
+      const res = await deploy(solution.id, target, plan.token, includeData, { proceedWithoutBackup })
       const t = list.find((e) => e.id === target)
       toast(`Deployed "${solution.displayName}" v${res.version} to ${t?.name ?? target}${res.backup && !res.backup.taken ? ' (no backup was taken)' : ''}`, 'success')
       onOpenChange(false)
     } catch (e) {
+      // the backup before the upgrade failed: nothing changed; the plan stays, the administrator decides
+      if (isBackupRefusal(e)) { setRefused(errMsg(e)); return }
       fail(e)
       // the target may have changed meanwhile: plan again
       setPlan(null)
@@ -197,6 +212,7 @@ export function DeployDialog({ open, onOpenChange, solution }: { open: boolean; 
               <p className="rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">Review the plan first: you see every app, table, column and role that will be added, changed or removed before anything happens.</p>
             )}
             {box}
+            {refused && <BackupRefusal message={refused} busy={busy} onProceed={() => void run(true)} />}
           </div>
         )}
         <DialogFooter>
@@ -204,7 +220,7 @@ export function DeployDialog({ open, onOpenChange, solution }: { open: boolean; 
           {!plan ? (
             <Button onClick={review} disabled={!target || busy} data-testid="deploy-review">{busy ? <Spinner /> : null} Review plan</Button>
           ) : (
-            <Button onClick={run} disabled={!ok || busy} variant={plan.destructive ? 'destructive' : 'default'} data-testid="deploy-confirm">{busy ? <Spinner /> : <Rocket />} {plan.mode === 'upgrade' ? 'Upgrade' : 'Install'} in {list.find((e) => e.id === target)?.name ?? target}</Button>
+            <Button onClick={() => void run()} disabled={!ok || busy} variant={plan.destructive ? 'destructive' : 'default'} data-testid="deploy-confirm">{busy ? <Spinner /> : <Rocket />} {plan.mode === 'upgrade' ? 'Upgrade' : 'Install'} in {list.find((e) => e.id === target)?.name ?? target}</Button>
           )}
         </DialogFooter>
       </DialogContent>

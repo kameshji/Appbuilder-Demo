@@ -50,9 +50,10 @@ export async function updateEnvironment(id: string, patch: { name?: string; desc
 }
 
 /** confirmName: the environment's name, typed by the administrator */
-export async function deleteEnvironment(id: string, confirmName: string): Promise<void> {
-  await send('DELETE', `/environments/${enc(id)}`, { confirmName })
+export async function deleteEnvironment(id: string, confirmName: string, opts: { proceedWithoutBackup?: boolean } = {}): Promise<{ backup?: { taken: boolean; message: string; id?: string } }> {
+  const r = await send<{ backup?: { taken: boolean; message: string; id?: string } }>('DELETE', `/environments/${enc(id)}`, { confirmName, ...(opts.proceedWithoutBackup ? { proceedWithoutBackup: true } : {}) })
   await refreshList()
+  return r
 }
 
 export const fetchAccess = async (id: string): Promise<EnvironmentAccessEntry[]> => (await getJson<{ items: EnvironmentAccessEntry[] }>(`/environments/${enc(id)}/access`)).items
@@ -74,5 +75,5 @@ export const importWithPlan = (yaml: string, opts: { confirm?: string; asCopy?: 
 export const planDeploy = (solutionId: string, target: string, includeData = false): Promise<SolutionPlan> =>
   send<SolutionPlan>('POST', `/solutions/${enc(solutionId)}/deploy`, { target, plan: true, includeData })
 
-export const deploy = (solutionId: string, target: string, confirm: string, includeData = false): Promise<SolutionImportResult> =>
-  send<SolutionImportResult>('POST', `/solutions/${enc(solutionId)}/deploy`, { target, confirm, includeData })
+export const deploy = (solutionId: string, target: string, confirm: string, includeData = false, opts: { proceedWithoutBackup?: boolean } = {}): Promise<SolutionImportResult> =>
+  send<SolutionImportResult>('POST', `/solutions/${enc(solutionId)}/deploy`, { target, confirm, includeData, ...(opts.proceedWithoutBackup ? { proceedWithoutBackup: true } : {}) })

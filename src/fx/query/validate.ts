@@ -33,16 +33,25 @@ export interface CheckedPlan {
   plan: QueryPlan
   /** columns of the table the plan reads (for column-level security) */
   columns: Set<string>
+  /** lookup paths: table -> the columns of it the plan reads (column-level security of those tables) */
+  via: Map<string, Set<string>>
 }
+
+/** the schema of a table a lookup path reads, when `col` is a lookup to it (undefined: not allowed) */
+export type RelatedSchema = (table: string, col: string) => TableSchemaInfo | undefined
 
 class Checker {
   nodes = 0
   readonly cols = new Set<string>()
   readonly schema: TableSchemaInfo
   readonly table: string
-  constructor(schema: TableSchemaInfo, table: string) {
+  related?: RelatedSchema
+  inVia = false
+  readonly via = new Map<string, Set<string>>()
+  constructor(schema: TableSchemaInfo, table: string, related?: RelatedSchema) {
     this.schema = schema
     this.table = table
+    this.related = related
   }
 
   kind(col: unknown, what: string): ColumnKind {
@@ -112,6 +121,25 @@ class Checker {
       return 'and' in c ? { and: items } : { or: items }
     }
     if ('not' in c) return { not: this.cond(c.not, depth + 1) }
+    if ('via' in c) {
+      const v = c.via
+      if (!isObj(v) || typeof v.col !== 'string' || typeof v.table !== 'string') bad('via is { col, table, where, orMissing? }')
+      const via = v as { col: string; table: string; where: unknown; orMissing?: unknown }
+      if (this.kind(via.col, 'lookup path') !== 'text') bad(`${via.col} is not a lookup column`)
+      const target = this.related?.(via.table, via.col)
+      if (!target) bad(`${via.col} does not point at a table ${via.table.slice(0, 64)}`)
+      if (depth > 0 && this.inVia) bad('A lookup path can go one step (lookup.Column)')
+      const sub = new Checker(target!, via.table)
+      sub.inVia = true
+      sub.nodes = this.nodes
+      const where = sub.cond(via.where, depth + 1)
+      this.nodes = sub.nodes
+      const used = this.via.get(via.table) ?? new Set<string>()
+      for (const x of sub.cols) used.add(x)
+      this.via.set(via.table, used)
+      if (via.orMissing !== undefined && via.orMissing !== true) bad('orMissing must be true when present')
+      return { via: { col: via.col, table: via.table, where, ...(via.orMissing === true ? { orMissing: true as const } : {}) } }
+    }
     const op = c.op
     if (op === 'cmpExpr') {
       if (typeof c.cmp !== 'string' || !CMP.has(c.cmp as CompareOpV2)) bad('cmpExpr needs cmp: eq, ne, lt, le, gt or ge')
@@ -216,13 +244,13 @@ class Checker {
 const MAX_PAGE_SIZE = 500
 
 /** validate `input` as a plan over `schema` (the caller's visible columns); throws PlanError */
-export function checkPlan(input: unknown, schema: TableSchemaInfo, tableName: string, opts: { maxPageSize?: number } = {}): CheckedPlan {
+export function checkPlan(input: unknown, schema: TableSchemaInfo, tableName: string, opts: { maxPageSize?: number; related?: RelatedSchema } = {}): CheckedPlan {
   const maxPage = opts.maxPageSize ?? MAX_PAGE_SIZE
   if (!isObj(input)) bad('The plan must be an object')
   const p = input as Record<string, unknown>
   if (p.version !== 2) bad('Only version 2 plans are supported')
   if (typeof p.table !== 'string' || !p.table) bad('The plan needs a table')
-  const ch = new Checker(schema, tableName)
+  const ch = new Checker(schema, tableName, opts.related)
   const plan: QueryPlan = { version: 2, table: p.table as string }
   if (p.filter !== undefined) plan.filter = ch.cond(p.filter, 0)
   if (p.search !== undefined) {
@@ -271,7 +299,7 @@ export function checkPlan(input: unknown, schema: TableSchemaInfo, tableName: st
     plan.page = { size: (pg as { size: number }).size }
     if (typeof pg.cursor === 'string' && pg.cursor) plan.page.cursor = pg.cursor
   }
-  return { plan, columns: ch.cols }
+  return { plan, columns: ch.cols, via: ch.via }
 }
 
 /** kinds of the output columns of an aggregate plan (group columns under their output names, measures are numbers) */

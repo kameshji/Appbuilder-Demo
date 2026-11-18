@@ -147,6 +147,12 @@ class Evaluator {
       }
       return null
     }
+    // a lookup column holds the id of the row it points at: .Field reads that row (core data model, P0-N)
+    if (typeof o === 'string' && this.session.scope.recordById) {
+      const r = this.session.scope.recordById(o)
+      if (r === null) return null
+      if (r) return hasOwn(r, n.name) ? r[n.name]! : null
+    }
     return fail({ start: n.nameStart, end: n.nameEnd }, `Can't read .${n.name} from ${describe(o)}: only records have fields`)
   }
 

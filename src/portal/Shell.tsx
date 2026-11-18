@@ -11,6 +11,7 @@ import { ChatButton } from '@/chat/ChatDock'
 import { useChatDock } from '@/chat/dock'
 import { ProfileAvatar, SettingsEntry } from './Profile'
 import { EnvironmentPicker, EnvironmentStripe } from './EnvironmentPicker'
+import { RestoreNotice } from './RestoreNotice'
 import { useCaps } from './security'
 import { useTheme } from './theme'
 import { modulesFor, moduleRoute, type ModuleEntry, type ShellMode } from './modules'
@@ -63,12 +64,12 @@ function activeNav(route: PortalRoute): string {
 /** may the signed-in user open this page? (UX only; the server enforces) */
 export function pageAllowed(page: PortalRoute['page'], caps: { isAdmin: boolean; isMaker: boolean }): boolean {
   if (page === 'roles' || page === 'admin') return caps.isAdmin
-  if (['tables', 'table', 'datafiles', 'solutions', 'solution', 'connections'].includes(page)) return caps.isMaker
+  if (['tables', 'table', 'datafiles', 'solutions', 'solution', 'connections', 'datamodel'].includes(page)) return caps.isMaker
   return true
 }
 
 /** pages that belong to Dev mode (the maker portal) */
-export const DEV_PAGES: ReadonlySet<PortalRoute['page']> = new Set(['home', 'apps', 'tables', 'table', 'datafiles', 'roles', 'solutions', 'solution', 'connections', 'studio', 'admin'])
+export const DEV_PAGES: ReadonlySet<PortalRoute['page']> = new Set(['home', 'apps', 'tables', 'table', 'datafiles', 'roles', 'solutions', 'solution', 'connections', 'studio', 'admin', 'datamodel'])
 
 const allowedEntry = (m: ModuleEntry, caps: { isAdmin: boolean; isMaker: boolean }) => !m.need || (m.need === 'admin' ? caps.isAdmin : caps.isMaker)
 
@@ -222,6 +223,7 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
         </div>
       </header>
       <EnvironmentStripe />
+      <RestoreNotice />
       {user && <TabStrip activeId={activeTab} />}
       <div className="flex min-h-0 flex-1">
         {!appTab && (
@@ -251,7 +253,8 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
         )}
         <main className="relative min-w-0 flex-1 bg-canvas">
           <div className={cn('absolute inset-0 overflow-auto', appTab && 'hidden')}>
-            <div className="mx-auto w-full max-w-[1500px] px-8 py-6">{children}</div>
+            {/* full-bleed pages (the data model designer's canvas) fill the area themselves */}
+            <div className={route.page === 'datamodel' ? 'h-full w-full' : 'mx-auto w-full max-w-[1500px] px-8 py-6'}>{children}</div>
           </div>
           <AppTabPanes activeId={user ? activeTab : null} />
         </main>

@@ -40,8 +40,9 @@ access). The table lists every environment with its type, state and schema; sele
 ![Admin console, Environments](../images/environments-admin.png)
 
 - **Details**: name (rename), type, **Locked** switch (production only), when and by whom it was created, the database and
-  schema (`env_<id>`), the schema version, and its size: tables, an estimate of the rows, the space it takes in the database,
-  attachments and data files on disk, and how many people have access.
+  schema (`env_<id>`), the schema version, its size (tables, an estimate of the rows, the space it takes in the database,
+  attachments and data files on disk, how many people have access), and its **last backup** (install administrators;
+  amber when no backup contains it yet).
 - **Access**: the people who may enter it. *Give access* adds someone (optionally as environment administrator); the switch
   makes or unmakes them environment administrator (it gives or takes the Administrator role there); *Remove* takes them out
   **and removes every role they held there**. Install administrators are listed as *Always*. Giving someone a role in an
@@ -85,8 +86,9 @@ away from production unlocks it.
 ### Delete one
 
 **Delete** asks you to type the environment's name. It removes its database schema with every table and row, its apps,
-roles, connections, solutions, audit log, attachments and data files (its folder), and everybody's access to it. There is no
-undo: export the solutions you want to keep (with data) first, and see [Backup and restore](backup-and-restore.md). The
+roles, connections, solutions, audit log, attachments and data files (its folder), and everybody's access to it. A
+**backup of it is taken first** (when automatic backups are on): Admin console > Backups can restore it later as a new
+environment. If that backup fails, nothing is deleted and you choose **Delete without a backup** or Cancel. The
 Default environment and the last production environment cannot be deleted. If you are working in the environment you delete,
 you are switched to another one first. Deleting is written to the install-level audit log.
 
@@ -118,10 +120,17 @@ logs `ENVIRONMENT <id> NOT AVAILABLE`, and everything else works. Requests to it
 shows it greyed out. The next successful start clears it. An environment that was being created or deleted when the server
 stopped is marked failed too: delete it (again).
 
+## Back up and restore an environment
+
+Admin console > Backups ([Backup and restore](backup-and-restore.md)): back up one environment on its own (now, or on its
+own schedule; the nightly install backup contains every environment), restore a backup **as a new environment**
+(recommended), **in place** over an existing one (typed confirmation, a safety backup first, one transaction), or
+**selected tables** into the current one. While an environment is restored in place its state is **Restoring**: requests to
+it answer "being restored", the picker greys it out, open pages show a notice, and people working in it are moved to
+another environment they may enter until it is back. Solution upgrades in place take a backup of the target first.
+
 ## Not supported yet
 
-- Restoring a backup into an environment, and the automatic backup before an upgrade: they arrive with the backup package.
-  Until then an upgrade says *No backup was taken* (see [Upgrades](upgrades.md#solution-upgrades-in-an-environment)).
 - Environment variables, connector policies per environment, copying an existing environment over another one, moving
   people's roles along with a copy.
 - Pausing flows and outgoing email in a copy (there are no flows yet).

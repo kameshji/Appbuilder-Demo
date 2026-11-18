@@ -27,7 +27,13 @@ export async function tableResolver(s: Services) {
 }
 
 function needWritable(def: TableDef, what: string): void {
+  if (def.system && def.readOnly) throw denied(`"${def.displayName}" is a system table that shows data managed elsewhere, so ${what} is not possible.`)
   if (def.readOnly) throw invalid(`"${def.displayName}" is linked read-only, so ${what} is not possible.`)
+}
+
+/** core data model: system tables keep their name, definition and platform columns (docs/guide/maker/core-data-model.md) */
+function systemGuard(def: TableDef, what: string): void {
+  if (def.system) throw denied(`"${def.displayName}" is a system table: ${what} is not possible. You can add your own columns to it${def.extensible ? '' : ' when it allows that'}.`)
 }
 
 async function connectorOf(s: Services, def: TableDef): Promise<{ connector: Connector; name: string }> {
@@ -233,6 +239,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
   /* update */
   router.add('PATCH', '/api/v1/tables/:id', (ctx) => s.transaction(async () => {
     const def = await requireTable(s, ctx.params.id)
+    systemGuard(def, 'renaming or changing its settings')
     const b = bodyObj(ctx)
     const next = clone(def)
     if (b.displayName !== undefined) next.displayName = reqString(b, 'displayName', 'The display name', 200)
@@ -263,6 +270,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
   /* delete */
   router.add('DELETE', '/api/v1/tables/:id', (ctx) => s.transaction(async () => {
     const def = await requireTable(s, ctx.params.id)
+    systemGuard(def, 'deleting it')
     const refs = await lookupReferrers(s, def)
     if (refs.length) throw conflict(`"${def.displayName}" is used by lookup columns in: ${refs.map((t) => t.displayName).join(', ')}. Remove those columns first.`)
     const rollups = rollupReaders(await s.meta.tables.list(), def)
@@ -282,6 +290,8 @@ export function registerTableRoutes(router: Router, s: Services): void {
     }
     await unregisterTable(s, def)
     await s.kernel?.tableRemoved(def.id)
+    // polymorphic integrity: comments, activities, follows, tags and file links about its rows go with it
+    await (s as Partial<CoreServices>).collab?.tableRemoved(def.id)
     // attachment records go in this unit of work; their files are deleted by a job after it commits
     if ('internals' in s.data) await removeTableAttachments(s as CoreServices, def.id)
     await audit(s, ctx, 'table.delete', { name: def.name, dropSource: drop }, def.id)
@@ -292,6 +302,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
   router.add('POST', '/api/v1/tables/:id/columns', (ctx) => s.transaction(async () => {
     const def = await requireTable(s, ctx.params.id)
     needWritable(def, 'adding columns')
+    if (def.system && !def.extensible) throw denied(`"${def.displayName}" is a system table that does not take extra columns.`)
     if (def.columns.length >= MAX_COLUMNS + 5) throw invalid(`A table can have at most ${MAX_COLUMNS} columns.`)
     const connector = await connectorForDdl(s, def)
     const col = buildColumn(bodyObj(ctx) as Partial<ColumnDef>, {
@@ -328,6 +339,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
     if (idx < 0) throw new HttpError(404, 'not-found', `Column "${ctx.params.name}" was not found.`)
     const old = def.columns[idx]
     if (old.system) throw invalid(`"${old.displayName}" is a system column and cannot be changed.`)
+    if (old.locked || (def.system && !def.extensible)) throw denied(`"${old.displayName}" is a column of the system table "${def.displayName}" and cannot be changed.`)
     const p = bodyObj(ctx) as Partial<ColumnDef>
     if (p.name !== undefined && p.name !== old.name) throw invalid('Columns can only be renamed through their display name.', 'name')
     if (p.system !== undefined && p.system !== old.system) throw invalid('The system flag cannot be changed.', 'system')
@@ -429,6 +441,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
     const col = def.columns.find((c) => c.name === ctx.params.name)
     if (!col) throw new HttpError(404, 'not-found', `Column "${ctx.params.name}" was not found.`)
     if (col.system) throw invalid(`"${col.displayName}" is a system column and cannot be removed.`)
+    if (col.locked || (def.system && !def.extensible)) throw denied(`"${col.displayName}" is a column of the system table "${def.displayName}" and cannot be removed.`)
     const users = calculatedUsers(await s.meta.tables.list(), def, col)
     if (users.length) throw conflict(`"${col.displayName}" is used by ${users.join(', ')}. Change or remove those first.`)
     const columns = def.columns.filter((c) => c.name !== col.name)
@@ -457,6 +470,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
   /* admin: rows without an owner (linked rows that existed before) get one, so Own-scope roles can see them */
   router.add('POST', '/api/v1/tables/:id/assign-owner', async (ctx) => {
     const def = await requireTable(s, ctx.params.id)
+    systemGuard(def, 'assigning owners')
     needWritable(def, 'assigning owners')
     if ((def.missingSystem ?? []).includes('owner')) throw invalid(`"${def.displayName}" has no owner column.`)
     const b = ctx.body === undefined ? {} : bodyObj(ctx)
@@ -483,6 +497,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
   router.add('POST', '/api/v1/tables/:id/move', (ctx) => s.transaction(async () => {
     const def = await requireTable(s, ctx.params.id)
     const target = reqString(bodyObj(ctx), 'connectionId', 'The target connection')
+    systemGuard(def, 'moving it')
     needWritable(def, 'moving it')
     if (target === (def.connectionId ?? (await s.connections.defaultId()))) throw invalid('The table is already stored in that connection.', 'connectionId')
     const { record, connector } = await resolveConnection(s, target)

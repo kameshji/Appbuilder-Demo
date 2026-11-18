@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { FileUp, HardDrive, Lock, Plus, Table2, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileUp, HardDrive, Lock, Plus, Table2, X } from 'lucide-react'
+import { SYSTEM_GROUP_LABELS } from '@/platform/system-tables'
 import { platform, usePlatform, type ColumnDef, type ColumnType, type TableDef } from '@/platform'
 import { go } from '@/router'
 import { Button } from '@/components/ui/button'
@@ -199,7 +200,9 @@ export function Tables() {
   const q = useSearch()
   const [dlg, setDlg] = useState<'new' | 'csv' | null>(null)
   const close = (o: boolean) => { if (!o) setDlg(null) }
-  const list = tables.filter((t) => matches(q, t.displayName, t.name, t.description))
+  // core data model: system tables are listed apart, grouped (they exist in every environment)
+  const list = tables.filter((t) => !t.system && matches(q, t.displayName, t.name, t.description))
+  const system = tables.filter((t) => t.system && matches(q, t.displayName, t.name, t.description))
 
   return (
     <div data-testid="page-tables">
@@ -214,7 +217,7 @@ export function Tables() {
           </>
         }
       />
-      {tables.length === 0 ? (
+      {tables.filter((t) => !t.system).length === 0 && !q ? (
         <Empty icon={Table2} title="No tables yet" description="Create a table or import a CSV file to get started." action={<Button onClick={() => setDlg('new')}><Plus /> New table</Button>} />
       ) : list.length === 0 ? (
         <Empty icon={Table2} title="No matching tables" description={`Nothing matches "${q}".`} />
@@ -261,8 +264,42 @@ export function Tables() {
           </table>
         </Panel>
       )}
+      {system.length > 0 && <SystemTables tables={system} open={!!q} />}
       <NewTableDialog open={dlg === 'new'} onOpenChange={close} />
       <CsvNewTableDialog open={dlg === 'csv'} onOpenChange={close} />
+    </div>
+  )
+}
+
+/** the core data model's system tables, by group: readable, extensible, never deleted or renamed */
+function SystemTables({ tables, open: forceOpen }: { tables: TableDef[]; open: boolean }) {
+  const [open, setOpen] = useState(false)
+  const shown = open || forceOpen
+  const groups = Object.entries(SYSTEM_GROUP_LABELS).map(([g, label]) => ({ g, label, list: tables.filter((t) => t.systemGroup === g) })).filter((x) => x.list.length)
+  return (
+    <div className="mt-6" data-testid="system-tables">
+      <button type="button" className="mb-2 flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground" onClick={() => setOpen(!open)} aria-expanded={shown} data-testid="system-tables-toggle">
+        {shown ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+        <Lock className="size-3.5" /> System tables <Badge variant="secondary" className="font-normal">{tables.length}</Badge>
+        <span className="font-normal">In every environment: people, collaboration, files, logs and reference data.</span>
+      </button>
+      {shown && (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {groups.map(({ g, label, list }) => (
+            <Panel key={g} className="overflow-hidden" data-testid={`system-group-${g}`}>
+              <div className="border-b border-border bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">{label}</div>
+              {list.map((t) => (
+                <button key={t.id} type="button" onClick={() => go({ page: 'table', id: t.id })} data-testid={`table-row-${t.id}`}
+                  className="flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-sm last:border-0 hover:bg-accent/40">
+                  <span className="min-w-0 flex-1 truncate">{t.displayName}</span>
+                  <span className="font-mono text-[11px] text-muted-foreground">{t.name}</span>
+                  {t.systemKind === 'projection' ? <Badge variant="outline" className="font-normal">Read-only</Badge> : t.extensible ? <Badge variant="secondary" className="font-normal">Extensible</Badge> : null}
+                </button>
+              ))}
+            </Panel>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

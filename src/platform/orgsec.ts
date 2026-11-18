@@ -11,6 +11,7 @@
  * connector and the in-memory evaluators understand them; lookup paths and junction tables become `semi` nodes that the
  * SQL connectors translate to `col IN (SELECT key FROM table WHERE ...)` inside the one statement.
  */
+import { systemPredicate, type SystemPredicateEnv } from './system-tables.ts'
 import type {
   AccessScope, DepartmentDef, RoleDef, RowCompare, RowCondition, TableDef, TablePrivilege, TeamDef, UserOrgInfo,
 } from './contracts.ts'
@@ -486,6 +487,8 @@ export function shareTerm(roles: RoleDef[], table: TableDef, op: SecOp, env: Pre
  * has sharing on).
  */
 export function rowPredicateFor(roles: RoleDef[], table: TableDef, op: SecOp, env: PredicateEnv, isAdmin: boolean): Condition {
+  // core data model: system tables carry a built-in policy instead of role privileges (src/platform/system-tables.ts)
+  if (table.system) return systemPredicate(table, op, systemEnvOf(roles, env, isAdmin))
   if (op === 'share' && !table.sharing) return FALSE
   if (isAdmin) return TRUE
   const terms: Condition[] = []
@@ -511,7 +514,7 @@ export function rowPredicateFor(roles: RoleDef[], table: TableDef, op: SecOp, en
 
 /** the reasons (per role, share, ownership) that make up a predicate, for the "who can see this row?" explainer */
 export interface PredicateReason {
-  kind: 'admin' | 'role' | 'share' | 'owner'
+  kind: 'admin' | 'role' | 'share' | 'owner' | 'system'
   roleId?: string
   roleName?: string
   scope?: AccessScope
@@ -520,7 +523,19 @@ export interface PredicateReason {
   term: Condition
 }
 
+/** the environment of a system-table predicate (the user's teams; other tables' read predicates for "regarding") */
+export function systemEnvOf(roles: RoleDef[], env: PredicateEnv, isAdmin: boolean): SystemPredicateEnv {
+  return {
+    user: env.user as SystemPredicateEnv['user'], teams: env.org.teams, tables: env.tables, sameStore: env.sameStore, isAdmin,
+    readOf: (t) => rowPredicateFor(roles, t, 'read', env, isAdmin),
+  }
+}
+
 export function predicateReasons(roles: RoleDef[], table: TableDef, op: SecOp, env: PredicateEnv, isAdmin: boolean): PredicateReason[] {
+  if (table.system) {
+    const term = systemPredicate(table, op, systemEnvOf(roles, env, isAdmin))
+    return 'const' in term && !term.const ? [] : [{ kind: isAdmin ? 'admin' : 'system', term }]
+  }
   if (op === 'share' && !table.sharing) return []
   if (isAdmin) return [{ kind: 'admin', term: TRUE }]
   const out: PredicateReason[] = []

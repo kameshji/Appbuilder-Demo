@@ -141,7 +141,7 @@ export function registerSolutionRoutes(router: Router, s: Services): void {
     const pkg = readSolutionPkg(b.yaml, s)
     // an old package (no solution id) or "import as a copy": new instances of everything, as before
     if (!pkg || b.asCopy === true) return s.transaction(() => importSolutionPackage(s, ctx, b.yaml, filesAs))
-    return importStable(s, ctx, pkg, { confirm: b.confirm, filesAs })
+    return importStable(s, ctx, pkg, { confirm: b.confirm, filesAs, proceedWithoutBackup: b.proceedWithoutBackup === true })
   }, { auth: 'maker', maxBodyMB: 40 })
 
   /**
@@ -166,7 +166,7 @@ export function registerSolutionRoutes(router: Router, s: Services): void {
     const tctx: Ctx = { ...ctx, user: there, environmentId: target }
     const out = await runInEnvironment(target, async () => {
       if (b.plan === true) return (await planSolution(s, there, pkg)).plan
-      return importStable(s, tctx, pkg, { confirm: b.confirm, filesAs: b.filesAs === 'file' ? 'file' : 'database' })
+      return importStable(s, tctx, pkg, { confirm: b.confirm, filesAs: b.filesAs === 'file' ? 'file' : 'database', proceedWithoutBackup: b.proceedWithoutBackup === true })
     })
     if (b.plan !== true) {
       await core.install.audit({ userId: rec.id, action: 'solution.deploy', environmentId: target, details: { solution: sol.id, name: sol.name, version: sol.version, from: ctx.environmentId, to: target, includeData: b.includeData === true } }).catch(() => {})

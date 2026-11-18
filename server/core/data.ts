@@ -28,6 +28,9 @@ import { currentWork } from './work-context.ts'
 import { executePlan, PlanError } from '../../src/fx/query/reference.ts'
 import type { WriteHooks } from './kernel.ts'
 import { CursorError } from '../../src/fx/query/cursor.ts'
+import type { SystemDataHooks } from './collab.ts'
+import { nextNumberDefault } from '../../src/platform/system-tables.ts'
+import { childRelationships, MAX_CASCADE_DEPTH, selfCycleColumns } from './model/delete-rules.ts'
 
 type JsonRow = Record<string, QueryValue>
 type Cell = RawRow[string]
@@ -36,8 +39,8 @@ const SYSTEM_DEFS: ColumnDef[] = [
   { name: 'id', displayName: 'Id', type: 'text', system: true },
   { name: 'createdOn', displayName: 'Created on', type: 'datetime', system: true },
   { name: 'modifiedOn', displayName: 'Modified on', type: 'datetime', system: true },
-  { name: 'createdBy', displayName: 'Created by', type: 'text', system: true },
-  { name: 'owner', displayName: 'Owner', type: 'text', system: true },
+  { name: 'createdBy', displayName: 'Created by', type: 'lookup', lookupTable: 'Users', system: true },
+  { name: 'owner', displayName: 'Owner', type: 'lookup', lookupTable: 'Users', system: true },
 ]
 
 const OPS = new Set(['eq', 'ne', 'lt', 'le', 'gt', 'ge', 'in', 'contains', 'startsWith', 'endsWith', 'isBlank', 'notBlank'])
@@ -56,6 +59,8 @@ export interface DataDeps {
    * validation rules, outbox rows, post-commit file deletion. Absent (null) in the metadata test harness.
    */
   hooks?: () => WriteHooks | null
+  /** core data model (collab.ts): system-table write hooks, polymorphic cascade, NextNumber column defaults */
+  system?: () => SystemDataHooks | null
 }
 
 /** extra helpers for the attachment routes (same module boundary as the service) */
@@ -450,6 +455,9 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     // team-owned rows (docs/admin/security-model.md): the creator may hand the new row to a team they belong to
     if (ctx && def.teamOwnership && !isBlank(values.owner as Cell)) raw.owner = await assignableOwner(ctx, values.owner)
     for (const name of def.missingSystem ?? []) if (name !== 'id') delete raw[name]
+    // core data model (collab.ts): the regarding link is resolved and checked, rich text sanitised, mentions extracted
+    const sys = deps.system?.()
+    if (sys && def.system) Object.assign(raw, await sys.beforeWrite(ctx, def, 'create', raw, null, null))
     // table events, formula columns and validation rules (kernel.ts): they may set columns or refuse the row; the
     // permission and value checks below see the row as the events left it
     const hooks = deps.hooks?.()
@@ -462,6 +470,13 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
       if (col.type !== 'autonumber' || isSystem(col)) continue
       if (raw[col.name] === null || raw[col.name] === undefined || raw[col.name] === '') {
         raw[col.name] = `${col.prefix ?? ''}${pad4(await meta().nextCounter(`${def.id}:${col.name}`))}`
+      }
+    }
+    // column default =NextNumber("name"): the number is drawn in this write's transaction (gap-free)
+    if (sys) {
+      for (const col of def.columns) {
+        const seq = nextNumberDefault(col.default)
+        if (seq && !isSystem(col) && (!(col.name in given) || isBlank(given[col.name]))) raw[col.name] = await sys.nextNumber(seq)
       }
     }
     for (const col of def.columns) {
@@ -479,6 +494,9 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
       }
       await checkUnique(def, col, v, undefined, opts.conn, opts.replacing)
       await checkLookup(def, col, v, opts.conn, ctx)
+      if (col.type === 'lookup' && v !== null && v !== '' && String(v) === id && col.lookupTable?.toLowerCase() === def.name.toLowerCase()) {
+        throw new HttpError(422, 'invalid', `${col.displayName || col.name}: a row cannot be its own parent.`, col.name)
+      }
       if (ctx) await checkAttachments(def, col, v, id, [])
     }
     return raw
@@ -497,6 +515,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     const connector = await writableConnector(def)
     const raw = await buildRow(ctx, def, values, { ...opts, conn: connector })
     await connector.insert(def, [raw])
+    await deps.system?.()?.afterWrite(ctx, def, 'create', raw, null)
     await markFileModified(def)
     await audit(ctx, 'row.insert', def, String(raw.id))
     changed(ctx, def, 'insert', [String(raw.id)], Object.keys(raw))
@@ -546,6 +565,9 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
       writableColumn(ctx, def, col)
       raw[col.name] = coerceIn(col, v)
     }
+    // core data model: regarding links stay, comments only by their author, completion stamps (collab.ts)
+    const sys = def.system ? deps.system?.() : null
+    if (sys) Object.assign(raw, await sys.beforeWrite(ctx, def, 'update', { ...existing, ...raw }, existing, new Set(Object.keys(raw))))
     // permission before the (I/O heavy) validation, so a denied user learns nothing about other rows
     const guard = ctx ? ctx.rowPredicate(def, 'update') : undefined
     if (guard && 'const' in guard && !guard.const) {
@@ -570,6 +592,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
       if (col.required && isBlank(v)) throw new HttpError(422, 'invalid', `${col.displayName || col.name} is required.`, col.name)
       await checkUnique(def, col, v, id)
       await checkLookup(def, col, v, undefined, ctx)
+      if (col.type === 'lookup') await checkNoCycle(def, col, v, id)
       if (col.type === 'file' || col.type === 'image') {
         const before = attachmentIds(existing[col.name])
         if (ctx) await checkAttachments(def, col, v, id, before)
@@ -604,6 +627,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
       const recs = (await meta().attachments.many(removed)).filter((a) => a.tableId === def.id && a.rowId === id)
       await removeAttachments(recs)
     }
+    if (sys) await sys.afterWrite(ctx, def, 'update', { ...existing, ...raw }, existing)
     await markFileModified(def)
     await audit(ctx, 'row.update', def, id, { columns: Object.keys(raw).filter((k) => k !== 'modifiedOn') })
     changed(ctx, def, 'update', [id], Object.keys(raw))
@@ -613,6 +637,74 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
   }
 
   /* ---------------------------------------------------------------- delete */
+
+  /* ---------------------------------------------------------------- relationships (package K, docs/dev/data-model.md) */
+
+  /** ids of the rows of `child` whose `column` points at one of `parents` (every row: integrity ignores security) */
+  async function childIds(conn: Connector, child: TableDef, column: string, parents: string[]): Promise<string[]> {
+    const out: string[] = []
+    for (let i = 0; i < parents.length; i += ID_CHUNK) {
+      const res = await runSelect(conn, child, { where: { col: column, op: 'in', value: parents.slice(i, i + ID_CHUNK) }, select: ['id'] })
+      for (const r of res.rows) out.push(String(r.id))
+    }
+    return [...new Set(out)]
+  }
+
+  /**
+   * The delete behaviour of every relationship whose parent is `def`, before the parent rows go:
+   *  - restrict: 409 while any child row (readable or not) points at a parent being deleted;
+   *  - cascade: the child rows are deleted with the caller's permissions (all or nothing: 403 when one of them may not be
+   *    deleted by the caller, even an unreadable one), their own events, outbox rows and behaviours, depth at most 8;
+   *  - setBlank: the lookup of the child rows is cleared as a system write (events and outbox rows as any update).
+   * Rows of the same table that are being deleted together are not counted as children.
+   */
+  async function onParentDelete(ctx: UserContext | null, def: TableDef, targets: string[], cascade: { depth: number; seen: Set<string> }): Promise<void> {
+    const store = meta().relationships
+    const rels = await childRelationships(def, () => meta().tables.list(), store ? (id) => store.toTable(id) : null)
+    if (!rels.length) return
+    const deleting = new Set(targets)
+    for (const t of targets) cascade.seen.add(`${def.id}:${t}`)
+    for (const r of rels) {
+      const child = physical(r.child)
+      const conn = await connectorFor(child)
+      let ids = await childIds(conn, child, r.column.name, targets)
+      if (child.id === def.id) ids = ids.filter((x) => !deleting.has(x))
+      ids = ids.filter((x) => !cascade.seen.has(`${child.id}:${x}`))
+      if (!ids.length) continue
+      const what = `${ids.length} row${ids.length === 1 ? '' : 's'} in "${child.displayName || child.name}"`
+      if (r.onDelete === 'restrict') {
+        throw new HttpError(409, 'conflict', `This cannot be deleted: ${what} still ${ids.length === 1 ? 'refers' : 'refer'} to it (${r.column.displayName || r.column.name}). Delete or change ${ids.length === 1 ? 'that row' : 'those rows'} first.`, r.column.name, { relationship: { table: child.id, column: r.column.name, rows: ids.length, onDelete: 'restrict' } })
+      }
+      if (r.onDelete === 'cascade') {
+        if (cascade.depth + 1 > MAX_CASCADE_DEPTH) throw new HttpError(409, 'conflict', `Deleting this would cascade through more than ${MAX_CASCADE_DEPTH} levels of related tables. Delete the deepest rows first.`)
+        if (ctx) {
+          const allowed = new Set(await matchingIds(conn, child, ids, ctx.rowPredicate(child, 'delete')))
+          const refused = ids.filter((x) => !allowed.has(x)).length
+          if (refused) throw new HttpError(403, 'denied', `Deleting this also deletes ${what} (${r.column.displayName || r.column.name}), and you are not allowed to delete ${refused === ids.length ? (ids.length === 1 ? 'it' : 'them') : `${refused} of them`}. Nothing was deleted.`)
+        }
+        await del(ctx, child, ids, { depth: cascade.depth + 1, seen: cascade.seen })
+        continue
+      }
+      // set blank: a system write, the child rows stay without their parent
+      for (const id of ids) await update(null, child, id, { [r.column.name]: null })
+    }
+  }
+
+  /** a self relationship with cycle prevention: the new parent's ancestors must not include the row itself */
+  async function checkNoCycle(def: TableDef, col: ColumnDef, v: Cell, id: string): Promise<void> {
+    if (v === null || v === '' || col.lookupTable?.toLowerCase() !== def.name.toLowerCase()) return
+    const store = meta().relationships
+    if (!store) return
+    const guarded = await selfCycleColumns(def, () => store.list())
+    if (!guarded.has(col.name)) return
+    let cur: string | null = String(v)
+    for (let i = 0; cur && i < 1000; i++) {
+      if (cur === id) throw new HttpError(422, 'invalid', `${col.displayName || col.name}: this would make the row its own ancestor (a loop in the hierarchy).`, col.name)
+      const row = await findRow(def, cur)
+      const next = row?.[col.name]
+      cur = next === null || next === undefined || next === '' ? null : String(next)
+    }
+  }
 
   /** ids (of `ids`) that match `where`; queried in chunks */
   async function matchingIds(connector: Connector, def: TableDef, ids: string[], where: Condition | undefined): Promise<string[]> {
@@ -630,7 +722,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
    * All or nothing: the permission of EVERY target row is checked before anything is deleted (403 and no change when
    * one readable row may not be deleted), then the rows go in one connector call (PostgreSQL and MySQL: one transaction).
    */
-  async function del(ctx: UserContext | null, table: TableDef, idsIn: string[]): Promise<number> {
+  async function del(ctx: UserContext | null, table: TableDef, idsIn: string[], cascade: { depth: number; seen: Set<string> } = { depth: 0, seen: new Set() }): Promise<number> {
     const def = physical(table)
     checkWritableTable(def)
     if (!Array.isArray(idsIn) || !idsIn.every((x) => typeof x === 'string')) throw new HttpError(422, 'invalid', 'ids must be a list of row ids.')
@@ -666,9 +758,13 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
         }
       }
     }
+    // relationships (package K): restrict, cascade or set blank the child rows first (same unit of work)
+    if (targets.length) await onParentDelete(ctx, def, targets, cascade)
     const total = targets.length ? await connector.delete(def, targets, guard) : 0
     if (targets.length) await removeAttachments(await meta().attachments.forRows(def.id, targets))
     if (targets.length && def.sharing) await meta().org?.shares.removeForRows(def.id, targets).catch((e) => deps.log('warn', `share cleanup failed: ${errText(e)}`))
+    // polymorphic integrity: comments, activities, follows, tags, mentions and file links about these rows go too
+    if (targets.length) await deps.system?.()?.afterDelete(def, targets)
     if (total === 0 && ids.length === 1) throw new HttpError(404, 'not-found', 'Row not found.')
     if (total > 0) {
       await markFileModified(def)
@@ -767,6 +863,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     else await write(connector)
     if (targets.length) {
       await removeAttachments(await meta().attachments.forRows(def.id, targets))
+      await deps.system?.()?.afterDelete(def, targets)
       await audit(ctx, 'row.delete', def, undefined, { ...auditIds(targets), import: true })
     }
     if (targets.length || rows.length) await markFileModified(def)
@@ -819,8 +916,12 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
   /** every column of the physical table by formula kind (the plan is validated against all, CLS is checked after) */
   function schemaOf(def: TableDef): TableSchemaInfo {
     const columns: Record<string, ColumnKind> = {}
-    for (const c of allColumns(def)) columns[c.name] = columnKind(c.type)
-    return { columns }
+    const lookups: Record<string, string> = {}
+    for (const c of allColumns(def)) {
+      columns[c.name] = columnKind(c.type)
+      if (c.type === 'lookup' && c.lookupTable) lookups[c.name] = c.lookupTable
+    }
+    return Object.keys(lookups).length ? { columns, lookups } : { columns }
   }
 
   const pad2 = (n: number, w = 2) => String(n).padStart(w, '0')
@@ -894,13 +995,38 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     const def = physical(table)
     let plan: QueryPlan
     let referenced: Set<string>
+    let via: Map<string, Set<string>>
+    // lookup paths (createdBy.FullName = "Asha"): only through a lookup column of this table to that table
+    const all = await meta().tables.list()
+    const targetOf = (name: string) => all.find((t) => t.name.toLowerCase() === name.toLowerCase() || t.id === name)
+    const relatedDefs = new Map<string, TableDef>()
     try {
-      const checked = checkPlan(input, schemaOf(def), def.displayName || def.name)
+      const own = schemaOf(def)
+      const checked = checkPlan(input, own, def.displayName || def.name, {
+        related: (tname, col) => {
+          if (own.lookups?.[col]?.toLowerCase() !== tname.toLowerCase()) return undefined
+          const t = targetOf(tname)
+          if (!t) return undefined
+          relatedDefs.set(tname, physical(t))
+          return schemaOf(physical(t))
+        },
+      })
       plan = checked.plan
       referenced = checked.columns
+      via = checked.via
     } catch (e) {
       if (e instanceof PlanError) throw new HttpError(422, 'invalid', e.message)
       throw e
+    }
+    let related: Record<string, { def: TableDef; rowFilter?: Condition }> | undefined
+    for (const [tname, cols] of via) {
+      const t = relatedDefs.get(tname)!
+      if ((t.connectionId || DEFAULT_CONNECTION_ID) !== (def.connectionId || DEFAULT_CONNECTION_ID)) throw new HttpError(422, 'invalid', `${tname} is stored in another connection, so a condition through it cannot run in the database.`)
+      if (ctx) {
+        for (const name of cols) if (name !== 'id' && ctx.columnAccess(t, name) === 'none') throw new HttpError(403, 'denied', `You do not have access to the column "${tname}.${name}".`, name)
+      }
+      const pred = ctx ? ctx.rowPredicate(t, 'read') : undefined
+      ;(related ??= {})[tname] = { def: t, ...(pred && !('const' in pred && pred.const) ? { rowFilter: pred } : {}) }
     }
     // column-level security: a hidden column may not be selected, filtered, sorted, searched, grouped or aggregated
     if (ctx) {
@@ -915,8 +1041,11 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
       if (!('const' in pred && pred.const)) rowFilter = pred
     }
     const connector = await connectorFor(def)
-    if (!connector.queryV2) return fallbackV2(connector, def, plan, rowFilter, visible)
-    const raw = await connector.queryV2(def, { plan, rowFilter, visible, maxUnpagedRows: QUERY_MAX_UNPAGED_ROWS, maxGroups: QUERY_MAX_GROUPS, timeoutMs: queryTimeoutMs })
+    if (!connector.queryV2) {
+      if (related) throw new HttpError(422, 'invalid', 'Conditions through a lookup column (Lookup.Column) need a table in a database connection.')
+      return fallbackV2(connector, def, plan, rowFilter, visible)
+    }
+    const raw = await connector.queryV2(def, { plan, rowFilter, ...(related ? { related } : {}), visible, maxUnpagedRows: QUERY_MAX_UNPAGED_ROWS, maxGroups: QUERY_MAX_GROUPS, timeoutMs: queryTimeoutMs })
     const types = new Map(raw.columns.map((c) => [c.name, c.type]))
     const out: QueryV2Response = {
       rows: raw.rows.map((r) => {

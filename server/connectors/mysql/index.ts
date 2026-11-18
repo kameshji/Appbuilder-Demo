@@ -282,6 +282,20 @@ export const createMySqlConnector: ConnectorFactory = (conn: ConnectionRecord, e
       })
     },
 
+    async foreignKeys() {
+      return run(async (d) => {
+        // single-column foreign keys between tables of this database (data model designer import)
+        const rows = await d.query<{ tbl: string; col: string; ref: string; refcol: string; del: string; n: number }>(
+          `SELECT k.TABLE_NAME AS tbl, k.COLUMN_NAME AS col, k.REFERENCED_TABLE_NAME AS ref, k.REFERENCED_COLUMN_NAME AS refcol, r.DELETE_RULE AS del,
+                  (SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE k2 WHERE k2.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA AND k2.CONSTRAINT_NAME = k.CONSTRAINT_NAME AND k2.TABLE_NAME = k.TABLE_NAME) AS n
+             FROM information_schema.KEY_COLUMN_USAGE k
+             JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME AND r.TABLE_NAME = k.TABLE_NAME
+            WHERE k.TABLE_SCHEMA = DATABASE() AND k.REFERENCED_TABLE_NAME IS NOT NULL AND k.REFERENCED_TABLE_SCHEMA = DATABASE()
+            ORDER BY k.TABLE_NAME, k.COLUMN_NAME`)
+        return rows.filter((r) => Number(r.n) === 1).map((r) => ({ table: String(r.tbl), column: String(r.col), refTable: String(r.ref), refColumn: String(r.refcol), onDelete: String(r.del ?? 'NO ACTION').toLowerCase() }))
+      })
+    },
+
     async describe(source) {
       checkSource(source)
       return run(async (d) => {

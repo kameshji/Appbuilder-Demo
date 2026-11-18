@@ -9,6 +9,8 @@ import type { MetaStore } from '../contracts.ts'
 export type SessionEvent =
   | { kind: 'session'; idHash: string }
   | { kind: 'user'; userId: string; reason: 'sessions' | 'removed' }
+  /** package I: the session got a new token (privilege change); its sockets stay open and follow the new id */
+  | { kind: 'rotated'; from: string; to: string }
 
 type Listener = (e: SessionEvent) => void
 const listeners = new Set<Listener>()

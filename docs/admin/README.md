@@ -13,10 +13,13 @@ The browser-only demo mode has no server, no real security and is not covered (s
 | --- | --- |
 | [Installation](installation.md) | You are setting Appbuilder up for the first time, or moving it to another PC |
 | [Users and roles](users-and-roles.md) | You add people, decide who can build, and control which rows and columns each person sees |
+| [Sign-in and identity](sign-in-and-identity.md) | You set up email, two-step verification, password and session rules, invitations, reset codes, service accounts and API keys |
 | [Organisation](organisation.md) | You set up departments, managers and teams, import people from a CSV file, or look at the org chart |
+| [Reference data, number sequences and the financial year](reference-data.md) | You maintain currencies, Indian states and GST codes, units, holidays and settings, set up invoice numbering, or change the financial year |
 | [Environments](environments.md) | You want a sandbox next to production, move solutions between them, lock production, or give people access to an environment |
 | [Connections](connections.md) | You change the database, link existing PostgreSQL or MySQL tables, use data files or Google Sheets |
 | [Backup and restore](backup-and-restore.md) | You need to protect the data, or recover it |
+| [Disaster recovery](disaster-recovery.md) | The machine or the database is gone and you have a backup |
 | [Upgrades](upgrades.md) | You are installing a newer version |
 | [Audit log](audit-log.md) | You need to know who did what |
 | [Jobs](jobs.md) | You check background work, retry failed jobs, change retention, or read the events run log |
@@ -29,7 +32,9 @@ The browser-only demo mode has no server, no real security and is not covered (s
   over Remote Desktop. Serving other PCs on your network is **not supported**, and changing the listening address makes
   the server less safe, not more usable. See [Installation](installation.md#changing-the-listening-address-is-not-supported).
 - **Two things hold your data.** The PostgreSQL database, and the *workspace folder* (data files, attachments, the
-  encryption key and the saved database login). You must back up both. There is **no built-in backup feature yet**.
+  encryption key and the saved database login). Admin console > Backups backs up both, nightly by default, and restores
+  an environment, tables or the whole install ([Backup and restore](backup-and-restore.md)). Keep copies off the machine,
+  and keep the encryption key apart from them.
 - **Environments.** Default (production) plus up to four more (sandbox, developer), each with its own tables, apps, roles
   and files. Accounts are shared; install administrators manage environments and accounts, environment administrators
   their environment. See [Environments](environments.md).
@@ -41,7 +46,6 @@ The browser-only demo mode has no server, no real security and is not covered (s
 
 These are missing in this version and are listed again, with detail, where they matter:
 
-- Backup and restore inside the product (use the manual steps in [Backup and restore](backup-and-restore.md)).
 - TLS/HTTPS, multi-factor sign-in, single sign-on, password reset by email, and any rate limit other than the login
   throttle.
 - Serving other computers on a network.

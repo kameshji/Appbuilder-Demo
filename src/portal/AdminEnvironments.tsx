@@ -18,7 +18,9 @@ import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TypeBadge, switchEnvironment } from './EnvironmentPicker'
-import { Field, Panel, Segmented, fmtDate, useToast } from './kit'
+import { Field, Panel, Segmented, errMsg, fmtDate, useToast } from './kit'
+import { BackupRefusal, isBackupRefusal } from './SolutionPlan'
+import { go } from '@/router'
 import { useCaps } from './security'
 import {
   createEnvironment, deleteEnvironment, fetchAccess, fetchEnvironment, fetchEnvironments, grantAccess, revokeAccess, updateEnvironment,
@@ -51,7 +53,7 @@ function Fact({ label, children, testId }: { label: string; children: ReactNode;
 
 function StateBadge({ e }: { e: EnvironmentDef }) {
   if (!e.state || e.state === 'ready') return null
-  return <Badge variant={e.state === 'failed' ? 'destructive' : 'secondary'} data-testid={`env-state-${e.id}`}>{e.state === 'failed' ? 'Failed' : e.state === 'creating' ? 'Creating' : 'Deleting'}</Badge>
+  return <Badge variant={e.state === 'failed' ? 'destructive' : 'secondary'} data-testid={`env-state-${e.id}`}>{e.state === 'failed' ? 'Failed' : e.state === 'creating' ? 'Creating' : e.state === 'restoring' ? 'Restoring' : 'Deleting'}</Badge>
 }
 
 export function EnvironmentsSection({ title }: { title: (t: string, sub?: ReactNode, actions?: ReactNode) => ReactNode }) {
@@ -295,6 +297,13 @@ function EnvironmentDetailsPanel({ env, server, onChanged }: { env: EnvironmentD
             <Fact label="Database" testId="env-detail-database">{env.details?.database ?? '-'}</Fact>
             {env.details?.schema && <Fact label="Schema"><code className="font-mono text-xs">{env.details.schema}</code></Fact>}
             {env.details?.schemaVersion !== undefined && <Fact label="Schema version" testId="env-detail-schema">{env.details.schemaVersion}</Fact>}
+            {manage && caps.isInstallAdmin && details && 'lastBackup' in details && (
+              <Fact label="Last backup" testId="env-detail-backup">
+                {details.lastBackup
+                  ? <span className="flex items-center gap-2">{fmtDate(details.lastBackup.at)} <span className="text-xs text-muted-foreground">({details.lastBackup.kind === 'install' ? 'install backup' : 'its own backup'})</span><Button size="xs" variant="ghost" onClick={() => go({ page: 'admin', id: 'backups' })}>Backups</Button></span>
+                  : <span className="flex items-center gap-2 text-amber-700 dark:text-amber-300"><TriangleAlert className="size-3.5" /> No backup contains it yet. <Button size="xs" variant="ghost" onClick={() => go({ page: 'admin', id: 'backups' })}>Back it up</Button></span>}
+              </Fact>
+            )}
             {manage && (
               <Fact label="Size" testId="env-detail-sizes">
                 {sizes ? (
@@ -343,9 +352,10 @@ function DeleteEnvironmentDialog({ open, onOpenChange, env, onDeleted }: { open:
   const list = usePlatform((s) => s.environments)
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
-  useEffect(() => { if (open) setTyped('') }, [open])
+  const [refused, setRefused] = useState('')
+  useEffect(() => { if (open) { setTyped(''); setRefused('') } }, [open])
   const ok = typed === env.name
-  const go = async () => {
+  const run = async (proceedWithoutBackup = false) => {
     if (!ok) return
     setBusy(true)
     try {
@@ -354,12 +364,14 @@ function DeleteEnvironmentDialog({ open, onOpenChange, env, onDeleted }: { open:
         const other = list.find((e) => e.id !== env.id && (!e.state || e.state === 'ready'))
         if (other) await switchEnvironment(other.id, null)
       }
-      await deleteEnvironment(env.id, typed)
-      toast(`Deleted "${env.name}"`, 'success')
+      const r = await deleteEnvironment(env.id, typed, { proceedWithoutBackup })
+      toast(`Deleted "${env.name}"${r.backup?.taken ? ': a backup of it is in Admin console > Backups' : ''}`, 'success')
       onOpenChange(false)
       onDeleted()
     } catch (e) {
-      fail(e)
+      // the backup before deleting failed: nothing was deleted; the administrator decides
+      if (isBackupRefusal(e)) setRefused(errMsg(e))
+      else fail(e)
     } finally {
       setBusy(false)
     }
@@ -372,16 +384,17 @@ function DeleteEnvironmentDialog({ open, onOpenChange, env, onDeleted }: { open:
           <DialogDescription asChild>
             <div className="grid gap-2">
               <p>Its database schema with every table and row, its apps, roles, connections, solutions, audit log, attachments and data files are removed for good. Nobody can enter it afterwards.</p>
-              <p>There is no undo{env.type === 'production' ? ' (and it is a production environment)' : ''}. Export the solutions you want to keep first.</p>
+              <p>A backup of it is taken first (unless automatic backups are switched off in Admin console &gt; Backups): it can be restored later as a new environment. Otherwise there is no undo{env.type === 'production' ? ' (and it is a production environment)' : ''}.</p>
             </div>
           </DialogDescription>
         </DialogHeader>
         <Field label={`Type the name of the environment (${env.name}) to confirm`} htmlFor="env-confirm-name">
           <Input id="env-confirm-name" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" data-testid="env-confirm-name" />
         </Field>
+        {refused && <BackupRefusal message={refused} busy={busy} label="Delete without a backup" onProceed={() => void run(true)} />}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>Cancel</Button>
-          <Button variant="destructive" onClick={go} disabled={!ok || busy} data-testid="env-delete-confirm">{busy ? <Spinner /> : <Trash2 />} Delete environment</Button>
+          <Button variant="destructive" onClick={() => void run()} disabled={!ok || busy} data-testid="env-delete-confirm">{busy ? <Spinner /> : <Trash2 />} Delete environment</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

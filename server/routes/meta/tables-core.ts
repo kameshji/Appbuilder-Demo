@@ -3,6 +3,7 @@
  * connection resolution, physical source names, default privileges, registering and unregistering tables,
  * row import/export through the DataService (system context).
  */
+import { prepareViewDef } from '../../core/model/packages.ts'
 import type { ColumnDef, ConnectionRef, TableDef, TablePrivilege } from '../../../src/platform/contracts.ts'
 import { DEFAULT_ROW_CAP } from '../../../src/platform/http.ts'
 import type { QueryValue } from '../../../src/platform/http.ts'
@@ -130,6 +131,8 @@ export const isPlatformManaged = (def: TableDef): boolean => def.managed === tru
 export async function createPhysical(s: Services, record: ConnectionRecord, connector: Connector, def: TableDef): Promise<void> {
   if (!connector.capabilities.ddl) throw invalid(`The connection "${record.name}" cannot create tables.`)
   def.managed = true
+  // a reporting view (package K): its base must exist here; CREATE VIEW from the lineage
+  if (def.reporting?.kind === 'view' && !def.reporting.baseSource) await prepareViewDef(s, def)
   try {
     await connector.createTable(def)
   } catch (e) {
@@ -284,6 +287,8 @@ export function plainTableDef(def: TableDef): TableDef {
   delete c.origin
   delete c.managed
   delete c.missingSystem
+  // the physical name of a view's base belongs to this environment (package K)
+  if (c.reporting?.kind === 'view') delete c.reporting.baseSource
   return c
 }
 

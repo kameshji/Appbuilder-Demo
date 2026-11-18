@@ -196,7 +196,11 @@ export function useCaps(): { server: boolean; isAdmin: boolean; isMaker: boolean
 
 /* ------------------------------------------------------------------ passwords */
 
-export const MIN_PASSWORD = 10
+/** the install's minimum password length (GET /auth/identity-info sets it; 10 until then and in demo mode) */
+export let MIN_PASSWORD = 10
+export function setMinPassword(n: number): void {
+  if (Number.isInteger(n) && n >= 8 && n <= 64) MIN_PASSWORD = n
+}
 
 export interface Strength { score: 0 | 1 | 2 | 3 | 4; label: string; ok: boolean; hint: string }
 

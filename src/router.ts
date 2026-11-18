@@ -1,6 +1,6 @@
 /**
  * Tiny hash router. Routes are plain ASCII names with hyphens (safe for sandboxed hosts):
- *   #home  #apps  #tables  #datafiles  #table-<tableId>  #roles  #solutions  #solution-<id>  #connections
+ *   #home  #apps  #tables  #datafiles  #table-<tableId>  #roles  #solutions  #solution-<id>  #connections  #datamodel
  *   #studio-<appId>   the editor
  *   #run-<appId>      the running app (debug window / player, standalone window)
  *   #u                User mode: the app launcher ("My apps")
@@ -14,14 +14,15 @@
 import { useSyncExternalStore } from 'react'
 
 export type Route =
-  | { page: 'home' | 'apps' | 'tables' | 'roles' | 'solutions' | 'connections' | 'datafiles' | 'u' | 'chat' | 'settings' | 'admin' }
+  | { page: 'home' | 'apps' | 'tables' | 'roles' | 'solutions' | 'connections' | 'datafiles' | 'u' | 'chat' | 'settings' | 'admin' | 'datamodel' }
   | { page: 'table' | 'solution' | 'studio' | 'run' | 'u' | 'soon' | 'settings' | 'admin'; id: string }
 
-const SIMPLE = ['home', 'apps', 'tables', 'roles', 'solutions', 'connections', 'datafiles', 'u', 'chat', 'settings', 'admin'] as const
+const SIMPLE = ['home', 'apps', 'tables', 'roles', 'solutions', 'connections', 'datafiles', 'u', 'chat', 'settings', 'admin', 'datamodel'] as const
 const WITH_ID = ['table', 'solution', 'studio', 'run', 'u', 'soon', 'settings', 'admin'] as const
 
 export function parseRoute(hash: string): Route {
-  const h = hash.replace(/^#/, '')
+  // a query after the route (#u-<appId>?record=<id>) is for the app (Param("record")), not part of the id
+  const h = hash.replace(/^#/, '').replace(/\?.*$/, '')
   for (const p of WITH_ID) if (h.startsWith(p + '-') && h.length > p.length + 1) return { page: p, id: h.slice(p.length + 1) }
   for (const p of SIMPLE) if (h === p) return { page: p }
   return { page: 'home' }

@@ -12,6 +12,7 @@
  *   GET    /api/v1/install/audit                  install admin -> AuditPageResponse (+ environmentId per entry)
  */
 import type { EnvironmentAccessEntry, EnvironmentDetails, EnvironmentsResponse } from '../../../src/platform/http.ts'
+import { requireRecentAuth } from '../../core/identity/index.ts'
 import type { EnvironmentDef } from '../../../src/platform/contracts.ts'
 import { HttpError } from '../../core/contracts.ts'
 import type { Ctx, Router, Services, UserContext } from '../../core/contracts.ts'
@@ -81,6 +82,8 @@ export function registerEnvironmentRoutes(router: Router, services: Services): v
       const [db, att, files] = await Promise.all([s.install.schemaSizes(e.schema), folderSize(dirs.attachments), folderSize(dirs.files)])
       def.sizes = { tables: db.tables, rowEstimate: db.rowEstimate, databaseBytes: db.databaseBytes, attachmentBytes: att.bytes, attachments: att.files, files: files.files }
     }
+    // the newest good backup containing it (package J), for install administrators
+    if (u.privileges.isInstallAdmin && s.backup?.lastBackupOf) def.lastBackup = await s.backup.lastBackupOf(e.id).catch(() => null)
     return def
   }, { auth: 'user', noEnvironment: true })
 
@@ -97,9 +100,11 @@ export function registerEnvironmentRoutes(router: Router, services: Services): v
   router.add('DELETE', '/api/v1/environments/:id', async (ctx) => {
     const s = core(services)
     const u = installAdmin(ctx)
+    // package I: deleting an environment needs a recent proof of identity (password or authenticator code)
+    requireRecentAuth(ctx)
     const b = ctx.body === undefined ? {} : bodyObj(ctx)
-    await deleteEnvironment(s, u, ctx.params.id, b.confirmName ?? ctx.query.get('confirmName'))
-    return { ok: true }
+    const r = await deleteEnvironment(s, u, ctx.params.id, b.confirmName ?? ctx.query.get('confirmName'), { proceedWithoutBackup: b.proceedWithoutBackup === true })
+    return { ok: true, ...r }
   }, { auth: 'user' })
 
   router.add('GET', '/api/v1/environments/:id/access', async (ctx): Promise<{ items: EnvironmentAccessEntry[] }> => {

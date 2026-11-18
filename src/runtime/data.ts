@@ -306,3 +306,81 @@ export async function sendNotification(input: { to: string; title: string; body?
     for (const l of [...shareErrorListeners]) l(message)
   }
 }
+
+/* ------------------------------------------------------------------ collaboration functions (core data model, P0-N) */
+
+/**
+ * AddComment, AddActivity, Follow, Unfollow, Tag, Untag: asynchronous writes through platform.collab (failures are
+ * reported like SendNotification's). NextNumber: demo mode draws the number now; server mode refuses with the reason.
+ */
+export function collabAction(action: string, args: Record<string, FxValue>): FxValue {
+  const c = platform.collab
+  if (!c) throw new PlatformError('unavailable', 'Comments, activities and tasks are not available here.')
+  if (action === 'nextNumber') {
+    if (c.nextNumberNow) return c.nextNumberNow(String(args.name ?? ''))
+    throw new PlatformError('invalid', 'NextNumber is assigned by the server when a row is saved: put =NextNumber("' + String(args.name ?? '') + '") in the column\'s default, or use it in a table event that runs before the write.')
+  }
+  const rec = String(args.record ?? '')
+  const run = async () => {
+    switch (action) {
+      case 'addComment': {
+        const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        const text = String(args.text ?? '')
+        // rich text as given (it may carry mention spans); plain text is escaped
+        const body = /<[a-z][^>]*>/i.test(text) ? text : esc(text).split(/\r?\n/).map((l) => `<p>${l}</p>`).join('')
+        await c.addComment({ rowId: rec, body })
+        return
+      }
+      case 'addActivity': {
+        const d = args.dueOn
+        await c.addActivity({ rowId: rec || null, subject: String(args.subject ?? ''), type: String(args.type ?? 'Task'), dueOn: d instanceof Date ? d.toISOString() : d ? String(d) : null, assignedTo: args.assignedTo ? String(args.assignedTo) : null })
+        return
+      }
+      case 'follow': return c.follow(rec, true)
+      case 'unfollow': return c.follow(rec, false)
+      case 'tag': return c.tag(rec, String(args.tag ?? ''), true)
+      case 'untag': return c.tag(rec, String(args.tag ?? ''), false)
+    }
+  }
+  void run().catch((e) => {
+    const name = action.charAt(0).toUpperCase() + action.slice(1)
+    for (const l of [...shareErrorListeners]) l(`${name}: ${errorMessage(e)}`)
+  })
+  return true
+}
+
+/* ------------------------------------------------------------------ lookups by id (core data model, P0-N) */
+
+/** ids the platform hands out: row UUIDs, users, teams, departments */
+const ID_LIKE = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?:user|team|dept)_[A-Za-z0-9_]{1,60})$/i
+let idIndex: { version: number; tables: string; map: Map<string, Row> } | null = null
+
+/**
+ * The row a lookup id points at, from the loaded tables (Users first: createdBy / owner). undefined when the text does
+ * not look like an id; null when it does but its row is not loaded (Users is then loaded and the formula re-evaluates).
+ */
+export function recordById(id: string): FxRecord | null | undefined {
+  if (!ID_LIKE.test(id)) return undefined
+  const st = platformState()
+  if (!st) return undefined
+  const names = st.tables.map((t) => t.name)
+  const key = names.join('\u0000')
+  if (!idIndex || idIndex.version !== st.dataVersion || idIndex.tables !== key) {
+    const map = new Map<string, Row>()
+    // people first (createdBy, owner, AssignedTo); server mode reads only them, so no other table is loaded for this
+    const people = ['sys_users', 'sys_teams', 'sys_departments']
+    const order = [...st.tables].filter((t) => st.mode !== 'server' || people.includes(t.id)).sort((a, b) => (people.indexOf(b.id) >>> 0) < (people.indexOf(a.id) >>> 0) ? 1 : -1)
+    for (const t of order) {
+      for (const r of tableRows(t.name)) {
+        const rid = typeof r.__id === 'string' ? r.__id : typeof r.id === 'string' ? r.id : ''
+        if (rid && !map.has(rid.toLowerCase())) map.set(rid.toLowerCase(), r)
+      }
+    }
+    idIndex = { version: st.dataVersion, tables: key, map }
+  }
+  const hit = idIndex.map.get(id.toLowerCase())
+  if (hit) return hit
+  const users = st.tables.find((t) => t.id === 'sys_users')
+  if (users) ensureTablesLoaded([users.name])
+  return null
+}

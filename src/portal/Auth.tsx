@@ -2,9 +2,9 @@
  * Server-mode startup gates (setup wizard, login) and the change-password dialog.
  * The account menu is the avatar menu in Profile.tsx. Exported for reuse: AuthGate (see index.ts), ChangePasswordDialog.
  */
-import { useState, type FormEvent, type ReactNode } from 'react'
-import { ArrowRight, Check, CircleAlert, Database, KeyRound, LogOut, Moon, ShieldCheck, Shapes, Sun } from 'lucide-react'
-import { PlatformError, platform, usePlatform } from '@/platform'
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { ArrowLeft, ArrowRight, Check, CircleAlert, Database, KeyRound, LogOut, Mail, Moon, ShieldCheck, Shapes, Sun } from 'lucide-react'
+import { PlatformError, platform, usePlatform, type Session } from '@/platform'
 import { CODE_MESSAGES } from '@/platform/errorMessages'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,27 @@ import { Spinner } from '@/components/ui/spinner'
 import { Field, ToastProvider, errMsg, useToast } from './kit'
 import { NewPasswordFields, PasswordInput, passwordsValid } from './PasswordFields'
 import { useTheme } from './theme'
+import { setMinPassword } from './security'
+import { CodeInput, RecoveryCodes, TotpEnrolment } from './Identity'
+import {
+  acceptInvitation, checkInvitation, checkResetToken, confirmEmail, forgotPassword, identityInfo, linkFromHash, resetPassword, sendSignInCode,
+  verifySecondStep, type IdentityInfo, type MfaChallenge, type SecondStepMethod,
+} from './identityApi'
+
+/** finishes a sign-in that returned a session (second step, invitation): loads the workspace */
+async function signedIn(session: Session): Promise<void> {
+  if (platform.auth.completeSignIn) await platform.auth.completeSignIn(session)
+  else window.location.reload()
+}
+
+/** what the server offers before sign-in (email set up, password rules); also sets the minimum length for the meters */
+function useIdentityInfo(): IdentityInfo | null {
+  const [info, setInfo] = useState<IdentityInfo | null>(null)
+  useEffect(() => {
+    identityInfo().then((i) => { setMinPassword(i.passwordMinLength); setInfo(i) }).catch(() => setInfo({ email: false, emailCodes: false, passwordMinLength: 10, rememberDays: 0 }))
+  }, [])
+  return info
+}
 
 /* ------------------------------------------------------------------ shared bits */
 
@@ -255,10 +276,13 @@ export function loginMessage(e: unknown): string {
 
 export function LoginScreen() {
   const { fail } = useToast()
+  const info = useIdentityInfo()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [challenge, setChallenge] = useState<MfaChallenge | null>(null)
+  const [forgot, setForgot] = useState(false)
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     if (busy || !email.trim() || !password) return
@@ -268,13 +292,20 @@ export function LoginScreen() {
       await platform.auth.login(email.trim(), password)
       setPassword('')
     } catch (err) {
+      setPassword('')
+      if (err instanceof PlatformError && err.code === 'mfa_required') {
+        const m = (err as PlatformError & { mfa?: MfaChallenge }).mfa
+        setChallenge(m ?? { methods: ['totp', 'recovery_code'], rememberDays: 30 })
+        return
+      }
       setError(loginMessage(err))
       fail(new PlatformError(err instanceof PlatformError ? err.code : 'denied', loginMessage(err)))
-      setPassword('')
     } finally {
       setBusy(false)
     }
   }
+  if (challenge) return <SecondStep challenge={challenge} onRestart={() => setChallenge(null)} />
+  if (forgot) return <ForgotPassword info={info} initialEmail={email} onBack={() => setForgot(false)} />
   return (
     <GateFrame title="Sign in" subtitle="Use the account an administrator created for you.">
       <form onSubmit={(e) => void submit(e)} className="grid gap-4" data-testid="login-form">
@@ -284,8 +315,233 @@ export function LoginScreen() {
         <Button type="submit" disabled={busy || !email.trim() || !password} data-testid="login-submit">
           {busy ? <Spinner /> : <KeyRound />} {busy ? 'Signing in...' : 'Sign in'}
         </Button>
-        <p className="text-center text-xs text-muted-foreground">Forgot your password? Ask an administrator to set a new one for you.</p>
+        <button type="button" className="text-center text-xs text-primary hover:underline" onClick={() => setForgot(true)} data-testid="forgot-password">Forgot your password?</button>
       </form>
+    </GateFrame>
+  )
+}
+
+/** the second step after a correct password: authenticator code, recovery code or email code */
+function SecondStep({ challenge, onRestart }: { challenge: MfaChallenge; onRestart(): void }) {
+  const [method, setMethod] = useState<SecondStepMethod>(challenge.methods[0] ?? 'totp')
+  const [code, setCode] = useState('')
+  const [remember, setRemember] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [sent, setSent] = useState('')
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      const session = await verifySecondStep(code, method, remember)
+      await signedIn(session)
+    } catch (err) {
+      setCode('')
+      if (err instanceof PlatformError && err.code === 'unauthenticated') {
+        setError(errMsg(err))
+        setTimeout(onRestart, 1500)
+        return
+      }
+      setError(errMsg(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const sendCode = async () => {
+    setError('')
+    try {
+      const r = await sendSignInCode()
+      setSent(r.sentTo)
+    } catch (err) {
+      setError(errMsg(err))
+    }
+  }
+  const valid = method === 'recovery_code' ? code.replace(/[\s-]/g, '').length >= 16 : code.length === 6
+  return (
+    <GateFrame title="Two-step verification" subtitle={method === 'totp' ? 'Enter the 6-digit code from your authenticator app.' : method === 'email_code' ? 'We email you a 6-digit code.' : 'Enter one of the recovery codes you saved when you set up two-step verification.'}>
+      <form onSubmit={(e) => void submit(e)} className="grid gap-4" data-testid="second-step-form">
+        {method === 'recovery_code'
+          ? <Field label="Recovery code" htmlFor="mfa-code"><Input id="mfa-code" autoFocus autoComplete="off" spellCheck={false} value={code} onChange={(e) => setCode(e.target.value.toUpperCase().slice(0, 24))} className="font-mono tracking-wider" data-testid="mfa-code" /></Field>
+          : <Field label={method === 'totp' ? 'Code from the app' : 'Code from the email'} htmlFor="mfa-code"><CodeInput id="mfa-code" autoFocus value={code} onChange={setCode} testId="mfa-code" /></Field>}
+        {method === 'email_code' && (
+          <Button type="button" variant="outline" size="sm" className="justify-self-start" onClick={() => void sendCode()} data-testid="mfa-send-email"><Mail /> {sent ? 'Send another code' : 'Email me a code'}</Button>
+        )}
+        {sent && <p className="text-xs text-muted-foreground">Sent to {sent}. It works for 10 minutes.</p>}
+        {challenge.rememberDays > 0 && (
+          <label className="flex items-start gap-2.5 text-sm">
+            <Checkbox checked={remember} onCheckedChange={(v) => setRemember(v === true)} className="mt-0.5" data-testid="mfa-remember" />
+            <span>Remember this device for {challenge.rememberDays} days<span className="block text-xs text-muted-foreground">Only on a computer that only you use. You can forget it in Settings.</span></span>
+          </label>
+        )}
+        <FormError message={error} />
+        <Button type="submit" disabled={busy || !valid} data-testid="mfa-submit">{busy ? <Spinner /> : <ShieldCheck />} Verify</Button>
+        <div className="grid gap-1 text-center text-xs">
+          {challenge.methods.filter((m) => m !== method).map((m) => (
+            <button key={m} type="button" className="text-primary hover:underline" onClick={() => { setMethod(m); setCode(''); setError('') }} data-testid={`mfa-use-${m}`}>
+              {m === 'totp' ? 'Use my authenticator app' : m === 'recovery_code' ? 'Use a recovery code' : 'Get a code by email'}
+            </button>
+          ))}
+          <button type="button" className="text-muted-foreground hover:underline" onClick={onRestart}>Sign in as someone else</button>
+        </div>
+      </form>
+    </GateFrame>
+  )
+}
+
+/** "Forgot your password?": a reset link by email, or (no email set up / an administrator gave a code) the one-time code */
+function ForgotPassword({ info, initialEmail, onBack }: { info: IdentityInfo | null; initialEmail: string; onBack(): void }) {
+  const [email, setEmail] = useState(initialEmail)
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState('')
+  const [error, setError] = useState('')
+  const [withCode, setWithCode] = useState(info ? !info.email : false)
+  const [code, setCode] = useState('')
+  const [pw, setPw] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())
+  const request = async (e: FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      const r = await forgotPassword(email.trim())
+      setDone(r.message)
+      if (!r.email) setWithCode(true)
+    } catch (err) {
+      setError(errMsg(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const redeem = async (e: FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      await resetPassword({ email: email.trim(), code, password: pw })
+      setPw(''); setConfirm('')
+      setDone('Your password was changed and every session was signed out. Sign in with the new password.')
+      setWithCode(false)
+    } catch (err) {
+      setError(errMsg(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const back = <button type="button" className="inline-flex items-center gap-1 text-xs text-primary hover:underline" onClick={onBack} data-testid="back-to-login"><ArrowLeft className="size-3" /> Back to sign in</button>
+  if (withCode) {
+    return (
+      <GateFrame title="Use a reset code" subtitle={info && !info.email ? 'Email is not set up on this server. An administrator can create a one-time reset code for you (Admin console > Users), valid for 24 hours.' : 'Type your email, the one-time code an administrator gave you, and a new password.'}>
+        <form onSubmit={(e) => void redeem(e)} className="grid gap-4" data-testid="reset-code-form" autoComplete="off">
+          <Field label="Email" htmlFor="rc-email"><Input id="rc-email" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="rc-email" /></Field>
+          <Field label="Reset code" htmlFor="rc-code"><Input id="rc-code" value={code} spellCheck={false} onChange={(e) => setCode(e.target.value.toUpperCase().slice(0, 20))} className="font-mono tracking-wider" data-testid="rc-code" /></Field>
+          <NewPasswordFields password={pw} confirm={confirm} onPassword={setPw} onConfirm={setConfirm} email={email} idPrefix="rc" />
+          <FormError message={error} />
+          <Button type="submit" disabled={busy || !emailOk || code.replace(/[\s-]/g, '').length < 12 || !passwordsValid(pw, confirm, email)} data-testid="rc-submit">{busy && <Spinner />} Set new password</Button>
+          {info?.email && <button type="button" className="text-xs text-primary hover:underline" onClick={() => setWithCode(false)}>Send me a reset link instead</button>}
+          {back}
+        </form>
+      </GateFrame>
+    )
+  }
+  return (
+    <GateFrame title="Reset your password" subtitle="Type the email you sign in with. If it belongs to an account, we send a link to choose a new password (it works for 15 minutes).">
+      {done
+        ? <div className="grid gap-4" data-testid="forgot-done"><Alert><Mail /><AlertDescription className="col-start-2">{done}</AlertDescription></Alert>{back}</div>
+        : (
+          <form onSubmit={(e) => void request(e)} className="grid gap-4" data-testid="forgot-form">
+            <Field label="Email" htmlFor="forgot-email"><Input id="forgot-email" type="email" autoFocus autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="forgot-email" /></Field>
+            <FormError message={error} />
+            <Button type="submit" disabled={busy || !emailOk} data-testid="forgot-submit">{busy ? <Spinner /> : <Mail />} Send reset link</Button>
+            <button type="button" className="text-xs text-primary hover:underline" onClick={() => setWithCode(true)} data-testid="have-reset-code">I have a reset code from an administrator</button>
+            {back}
+          </form>
+        )}
+    </GateFrame>
+  )
+}
+
+/** a link from an email: #reset=, #invite=, #confirm-email= */
+function LinkScreen({ link, onDone }: { link: { kind: 'reset' | 'invite' | 'confirm-email'; token: string }; onDone(): void }) {
+  useIdentityInfo()
+  const [state, setState] = useState<{ email: string; name?: string } | null>(null)
+  const [error, setError] = useState('')
+  const [done, setDone] = useState('')
+  const [pw, setPw] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    const p = link.kind === 'reset' ? checkResetToken(link.token) : link.kind === 'invite' ? checkInvitation(link.token) : confirmEmail(link.token)
+    p.then((r) => {
+      if (link.kind === 'confirm-email') setDone(`Your sign-in email is now ${r.email}.`)
+      else setState(r as { email: string; name?: string })
+    }).catch((e) => setError(errMsg(e)))
+  }, [link])
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      if (link.kind === 'reset') {
+        await resetPassword({ token: link.token, password: pw })
+        setDone('Your password was changed and every session was signed out. Sign in with the new password.')
+      } else {
+        const session = await acceptInvitation(link.token, pw)
+        onDone()
+        await signedIn(session)
+      }
+      setPw(''); setConfirm('')
+    } catch (err) {
+      setError(errMsg(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const title = link.kind === 'reset' ? 'Choose a new password' : link.kind === 'invite' ? 'Welcome' : 'Confirm your email'
+  return (
+    <GateFrame title={title} subtitle={link.kind === 'invite' && state ? `Hello ${state.name ?? ''}. Choose a password for ${state.email} to finish setting up your account.` : link.kind === 'reset' && state ? `For ${state.email}. Other sessions are signed out afterwards.` : ''}>
+      <div className="grid gap-4" data-testid={`link-${link.kind}`}>
+        {done ? (
+          <>
+            <Alert><Check /><AlertDescription className="col-start-2" data-testid="link-done">{done}</AlertDescription></Alert>
+            <Button onClick={onDone} data-testid="link-continue">Continue <ArrowRight /></Button>
+          </>
+        ) : state ? (
+          <form onSubmit={(e) => void submit(e)} className="grid gap-4">
+            <input type="email" autoComplete="username" value={state.email} readOnly hidden />
+            <NewPasswordFields password={pw} confirm={confirm} onPassword={setPw} onConfirm={setConfirm} email={state.email} idPrefix="link" labelNew="New password" autoFocus />
+            <FormError message={error} />
+            <Button type="submit" disabled={busy || !passwordsValid(pw, confirm, state.email)} data-testid="link-submit">{busy ? <Spinner /> : <KeyRound />} {link.kind === 'invite' ? 'Set password and sign in' : 'Change password'}</Button>
+          </form>
+        ) : error ? (
+          <>
+            <FormError message={error} />
+            <Button variant="outline" onClick={onDone}>Go to sign in</Button>
+          </>
+        ) : <Spinner />}
+      </div>
+    </GateFrame>
+  )
+}
+
+/** the policy requires two-step verification and the grace period is over: set it up before anything else */
+function ForcedEnrolment() {
+  const [codes, setCodes] = useState<string[] | null>(null)
+  const email = usePlatform((s) => s.session?.user.email)
+  const finish = async () => {
+    const r = await fetch('/api/v1/auth/session', { credentials: 'same-origin', headers: { 'X-Appbuilder': '1' } })
+    if (r.ok) await signedIn((await r.json()) as Session)
+    else window.location.reload()
+  }
+  return (
+    <GateFrame title="Set up two-step verification" subtitle="Your administrator requires a code from an authenticator app in addition to your password. Set it up now to continue.">
+      <div data-testid="forced-mfa">
+        {codes
+          ? <div className="grid gap-4"><RecoveryCodes codes={codes} account={email} /><Button onClick={() => void finish()} data-testid="forced-mfa-done"><Check /> I saved them, continue</Button></div>
+          : <TotpEnrolment onDone={(c) => { if (c) setCodes(c); else void finish() }} />}
+        <button type="button" className="mt-4 w-full text-center text-xs text-muted-foreground hover:underline" onClick={() => { void platform.auth.logout() }}>Sign out</button>
+      </div>
     </GateFrame>
   )
 }
@@ -300,12 +556,29 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const mode = usePlatform((s) => s.mode)
   const setup = usePlatform((s) => s.setup)
   const session = usePlatform((s) => s.session)
+  // a link from an email (reset, invitation, email confirmation) is handled before anything else
+  const [link, setLink] = useState(() => (mode === 'server' ? linkFromHash() : null))
+  // also when the link is opened in a tab that already shows Appbuilder (only the hash changes)
+  useEffect(() => {
+    if (mode !== 'server') return
+    const on = () => { const l = linkFromHash(); if (l) setLink(l) }
+    window.addEventListener('hashchange', on)
+    return () => window.removeEventListener('hashchange', on)
+  }, [mode])
+  if (mode === 'server' && link && !setup.needsDatabase && !setup.needsAdmin) {
+    const done = () => {
+      history.replaceState(null, '', location.pathname + location.search)
+      setLink(null)
+    }
+    return <ToastProvider><LinkScreen link={link} onDone={done} /></ToastProvider>
+  }
   if (mode === 'server') {
     if (setup.incompatible) return <ToastProvider><DatabaseProblem incompatible /></ToastProvider>
     if (setup.needsDatabase || setup.needsAdmin) return <ToastProvider><SetupWizard /></ToastProvider>
     if (setup.unavailable && !session) return <ToastProvider><DatabaseProblem incompatible={false} /></ToastProvider>
     if (!session) return <ToastProvider><LoginScreen /></ToastProvider>
     if (session.user.mustChangePassword) return <ToastProvider><ForcedPasswordChange /></ToastProvider>
+    if (session.user.mfaEnrolmentRequired) return <ToastProvider><ForcedEnrolment /></ToastProvider>
   }
   return <>{children}</>
 }

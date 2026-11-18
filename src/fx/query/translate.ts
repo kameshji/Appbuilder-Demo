@@ -20,6 +20,8 @@ import { createEngine } from '../engine.ts'
 import { FxError } from '../errors.ts'
 import { parse } from '../parser.ts'
 import { printNode } from '../print.ts'
+import { expandMacros, hasSystemMacro } from '../functions/collab.ts'
+import { evaluateConditionV2 } from './reference.ts'
 import { describe as describeValue, hasOwn, isRecord, toBool, toNumber, toText } from '../values.ts'
 import {
   and, compareColumnLiteral, compareColumns, inList, isNull, not, numericOfText, or, Refusal, textMatch, withNull, type CmpOp, type DiagCode,
@@ -797,7 +799,33 @@ class Analyzer {
       'Use comparisons of a column with a value (=, <>, <, >, in, StartsWith, IsBlank) combined with And / Or / Not')
   }
 
+  /** `Lookup.Field` / `ThisRecord.Lookup.Field`: a lookup column of the row and a column of the table it points at */
+  lookupPath(n: Node, rc: RowCtx): { col: string; table: string; field: string; kind: ColumnKind; schema: TableSchemaInfo } | null {
+    if (n.t !== 'member') return null
+    const col = n.obj.t === 'id' ? (rc.s.cols.has(n.obj.name) ? n.obj.name : null) : this.columnRef(n.obj, rc)
+    if (col === null) return null
+    const table = rc.s.schema.lookups?.[col]
+    const schema = table ? this.tableOf(table) : undefined
+    if (!table || !schema) return null
+    const kind = schema.columns[n.name]
+    if (kind === undefined) throw new Refusal('unknown-column', `${table} has no column ${n.name}`, n)
+    return { col, table, field: n.name, kind, schema }
+  }
+
+  /** a comparison through a lookup: the referenced row matches (or, when blank matches, is missing) */
+  viaCompare(lp: { col: string; table: string; field: string; kind: ColumnKind; schema: TableSchemaInfo }, op: CmpOp, v: FxValue, flipped: boolean, at: Node): ConditionV2 {
+    if (lp.kind === 'other') throw new Refusal('unsupported-column', `${lp.table}.${lp.field} can't be compared on the server`, at)
+    const where = compareColumnLiteral(lp.field, lp.kind, op, v, flipped, at)
+    // the engine reads the field of a blank or unreadable lookup as blank: does the comparison hold for blank?
+    const orMissing = evaluateConditionV2(where, {}, lp.schema)
+    return { via: { col: lp.col, table: lp.table, where, ...(orMissing ? { orMissing: true as const } : {}) } }
+  }
+
   comparison(op: CmpOp, l: Node, r: Node, rc: RowCtx, at: Node): ConditionV2 {
+    const lp = this.lookupPath(l, rc)
+    if (lp && !this.rowDependent(r, rc)) return this.viaCompare(lp, op, this.scalar(r), false, at)
+    const rp = this.lookupPath(r, rc)
+    if (rp && !this.rowDependent(l, rc)) return this.viaCompare(rp, op, this.scalar(l), true, at)
     const lc = this.columnRef(l, rc)
     const rcol = this.columnRef(r, rc)
     if (lc !== null && rcol !== null) {
@@ -1070,13 +1098,15 @@ export function analyze(formula: string, schema: SchemaInfo, options: AnalyzeOpt
   }
   if (!p.ast) return { plan: null, plans: [], residual: null, diagnostics: [], fullyDelegated: true, clientEvaluated: false }
   const a = new Analyzer(formula, schema, options)
+  // core data model macros (Comments(r), MyTasks(), Setting(k) ...) become the Filter / LookUp they stand for
+  const ast = hasSystemMacro(p.ast) ? expandMacros(p.ast, (t) => !!schema.tables[t]) : p.ast
   let root: Node
   try {
-    const l = a.lower(p.ast)
+    const l = a.lower(ast)
     root = l.k === 'stream' ? a.materialize(l.s, l.node).node : l.e.node
   } catch (e) {
-    a.report(asRefusal(e, p.ast), a.baseTable(p.ast))
-    root = p.ast
+    a.report(asRefusal(e, ast), a.baseTable(ast))
+    root = ast
   }
   const hasError = a.diagnostics.some((d) => d.severity === 'error')
   // plans made while probing an expression that was then left to the browser are not used

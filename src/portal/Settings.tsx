@@ -33,6 +33,14 @@ import { NOTIFICATION_KINDS } from '@/platform/live-protocol'
 import type { NotificationSettings } from '@/platform/live-api'
 import { fetchServerInfo } from './serverApi'
 import type { ShellMode } from './modules'
+import { Badge } from '@/components/ui/badge'
+import {
+  ChangeEmailDialog, CodeInput, RecoveryCodesDialog, SessionList, SignInHistoryDialog, TotpEnrolDialog, isCancelled, useReauth,
+} from './Identity'
+import {
+  confirmEmailCodes, disableEmailCodes, disableTotp, endMySession, endOtherSessions, forgetDevice, mySessions, newRecoveryCodes, securityState,
+  startEmailCodes, type SecurityState, type SessionEntry,
+} from './identityApi'
 
 export type SettingsSection = 'profile' | 'appearance' | 'region' | 'notifications' | 'chat' | 'studio' | 'data' | 'admin' | 'about'
 interface SectionDef { key: SettingsSection; label: string; icon: LucideIcon; need?: 'maker' | 'admin' }
@@ -166,6 +174,8 @@ function ProfileSection() {
   const [name, setName] = useState(user?.name ?? '')
   const [busy, setBusy] = useState(false)
   const [pw, setPw] = useState(false)
+  const [emailDlg, setEmailDlg] = useState(false)
+  const { run, dialog } = useReauth()
   useEffect(() => { setName(user?.name ?? '') }, [user?.id, user?.name])
   const dirty = !!user && name.trim() !== user.name && !!name.trim()
   const save = async () => {
@@ -199,8 +209,11 @@ function ProfileSection() {
             <Button type="submit" size="sm" disabled={!dirty || busy} data-testid="profile-name-save">Save</Button>
           </form>
         </Row>
-        <Row title="Email" description="Your sign-in name. Only an administrator can change it." testId="setting-email">
-          <Input value={user.email} readOnly className="h-8 w-72 bg-muted/50 text-muted-foreground" aria-label="Email (read-only)" data-testid="profile-email" />
+        <Row title="Email" description={demo ? 'Your sign-in name.' : 'Your sign-in name. Changing it needs a confirmation from the new address (when email is set up); otherwise an administrator changes it.'} testId="setting-email">
+          <div className="flex items-center gap-2">
+            <Input value={user.email} readOnly className="h-8 w-64 bg-muted/50 text-muted-foreground" aria-label="Email (read-only)" data-testid="profile-email" />
+            {!demo && <Button size="sm" variant="outline" onClick={() => setEmailDlg(true)} data-testid="profile-email-change">Change</Button>}
+          </div>
         </Row>
         <Row title="Avatar colour" description="The circle with your initials. Only in this browser." testId="setting-avatar">
           <div className="flex items-center gap-1.5" role="radiogroup" aria-label="Avatar colour">
@@ -230,12 +243,12 @@ function ProfileSection() {
         <Row title="Password" description={demo ? 'Demo mode has no passwords; sign-in needs the local server.' : 'Change the password you sign in with. Other devices are signed out.'} testId="setting-password">
           <Button size="sm" variant="outline" disabled={demo} onClick={() => setPw(true)} data-testid="settings-change-password"><KeyRound /> Change password</Button>
         </Row>
-        <Row title="Sign out everywhere" soon="See your active sessions and end them on every device. Arrives with P0 Kernel (identity basics: reset, TOTP, sessions)." testId="setting-sessions">
-          <Button size="sm" variant="outline" disabled tabIndex={-1}>Active sessions</Button>
-        </Row>
-        <Row title="Two-step verification" soon="A code from an authenticator app (TOTP) in addition to your password. Arrives with P0 Kernel." testId="setting-2fa">
-          <Switch disabled aria-label="Two-step verification" tabIndex={-1} />
-        </Row>
+        {demo ? (
+          <>
+            <Row title="Two-step verification" description="Needs the local server: demo mode has no sign-in." testId="setting-2fa"><Switch disabled aria-label="Two-step verification" tabIndex={-1} /></Row>
+            <Row title="Active sessions" description="Needs the local server: demo mode has no sign-in." testId="setting-sessions"><Button size="sm" variant="outline" disabled tabIndex={-1}>Active sessions</Button></Row>
+          </>
+        ) : <SecurityRows run={run} />}
         <Row title="Passkeys and single sign-on" soon="Sign in with a passkey, or with your company account (single sign-on in and out). Arrives with P3.5 Identity advanced." testId="setting-sso">
           <Button size="sm" variant="outline" disabled tabIndex={-1}>Add a passkey</Button>
         </Row>
@@ -246,6 +259,107 @@ function ProfileSection() {
         )}
       </Group>
       {!demo && <ChangePasswordDialog open={pw} onOpenChange={setPw} />}
+      {!demo && <ChangeEmailDialog open={emailDlg} onOpenChange={setEmailDlg} run={run} />}
+      {dialog}
+    </>
+  )
+}
+
+/* ------------------------------------------------------------------ profile: two-step verification, sessions (package I) */
+
+function SecurityRows({ run }: { run<T>(fn: () => Promise<T>): Promise<T> }) {
+  const { toast, fail } = useToast()
+  const [st, setSt] = useState<SecurityState | null>(null)
+  const [sessions, setSessions] = useState<SessionEntry[]>([])
+  const [enrol, setEnrol] = useState(false)
+  const [codes, setCodes] = useState<string[] | null>(null)
+  const [history, setHistory] = useState(false)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [emailCode, setEmailCode] = useState<{ sentTo: string } | null>(null)
+  const [code, setCode] = useState('')
+  const load = () => {
+    securityState().then(setSt).catch(fail)
+    mySessions().then((r) => setSessions(r.items)).catch(fail)
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(load, [])
+  const act = async (fn: () => Promise<unknown>, ok?: string) => {
+    try {
+      await run(fn)
+      if (ok) toast(ok, 'success')
+      load()
+    } catch (e) {
+      if (!isCancelled(e)) fail(e)
+    }
+  }
+  const end = async (s: SessionEntry) => {
+    setBusyId(s.id)
+    try {
+      await endMySession(s.id)
+      if (s.current) { await platform.auth.logout(); return }
+      toast(`Signed out ${s.device}`, 'success')
+      load()
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusyId(null)
+    }
+  }
+  if (!st) return <Row title="Two-step verification" description="Loading..." testId="setting-2fa" />
+  const on = !!st.mfa.totp || st.mfa.email
+  const others = sessions.filter((x) => !x.current).length
+  return (
+    <>
+      <Row
+        title="Two-step verification"
+        testId="setting-2fa"
+        description={<>
+          {on ? <>On: {[st.mfa.totp && 'authenticator app', st.mfa.email && 'email codes'].filter(Boolean).join(' and ')}. </> : 'Off. Signing in asks only for your password. '}
+          {st.required && !on && <span className="font-medium text-amber-700 dark:text-amber-300">Your administrator requires it{st.required.enrolBy ? ` from ${new Date(st.required.enrolBy).toLocaleDateString()}` : ''}. </span>}
+          {st.mfa.recovery && <>Recovery codes left: {st.mfa.recovery.remaining} of {st.mfa.recovery.total}.</>}
+        </>}
+      >
+        <div className="flex flex-wrap justify-end gap-2">
+          {on && <Badge className="border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" data-testid="mfa-on">On</Badge>}
+          {!st.mfa.totp
+            ? <Button size="sm" onClick={() => setEnrol(true)} data-testid="mfa-setup"><ShieldHalf /> Set up authenticator app</Button>
+            : <Button size="sm" variant="outline" onClick={() => void act(disableTotp, 'Authenticator app removed')} data-testid="mfa-disable">Turn off</Button>}
+          {on && <Button size="sm" variant="outline" onClick={() => void run(newRecoveryCodes).then((r) => setCodes(r.recoveryCodes)).catch((e) => { if (!isCancelled(e)) fail(e) })} data-testid="mfa-new-codes">New recovery codes</Button>}
+        </div>
+      </Row>
+      {(st.emailCodesAvailable || st.mfa.email) && (
+        <Row title="Email codes" description={st.mfa.email ? 'A code by email can be used instead of the app at sign-in.' : 'Get the sign-in code by email instead of (or as well as) an app. Less safe than an app: anyone who reads your email can use it.'} testId="setting-email-codes">
+          {st.mfa.email
+            ? <Button size="sm" variant="outline" onClick={() => void act(disableEmailCodes, 'Email codes turned off')}>Turn off</Button>
+            : emailCode
+              ? <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); void confirmEmailCodes(code).then((r) => { setEmailCode(null); setCode(''); if (r.recoveryCodes) setCodes(r.recoveryCodes); toast('Email codes turned on', 'success'); load() }).catch(fail) }}>
+                  <CodeInput id="email-code-setup" value={code} onChange={setCode} testId="email-code-setup" />
+                  <Button size="sm" type="submit" disabled={code.length !== 6}>Confirm</Button>
+                </form>
+              : <Button size="sm" variant="outline" onClick={() => void startEmailCodes().then((r) => { setEmailCode(r); toast(`Code sent to ${r.sentTo}`, 'info') }).catch(fail)}>Turn on</Button>}
+        </Row>
+      )}
+      {st.devices.length > 0 && (
+        <Row title="Remembered devices" description={`${st.devices.length === 1 ? 'One device skips' : `${st.devices.length} devices skip`} the second step: ${st.devices.map((d) => d.device).join(', ')}.`} testId="setting-devices">
+          <Button size="sm" variant="outline" onClick={() => void act(() => forgetDevice(), 'Devices forgotten')} data-testid="devices-forget">Forget all</Button>
+        </Row>
+      )}
+      <div className="px-4 py-3.5" data-testid="setting-sessions">
+        <div className="mb-2 flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium">Active sessions</div>
+            <div className="text-xs text-muted-foreground">Browsers and devices signed in to your account. End any you do not recognise.</div>
+          </div>
+          <Button size="sm" variant="outline" disabled={!others} onClick={() => void endOtherSessions().then((r) => { toast(`Signed out ${r.ended} other session(s)`, 'success'); load() }).catch(fail)} data-testid="sessions-end-others"><LogOut /> Sign out everywhere else</Button>
+        </div>
+        <SessionList items={sessions} onEnd={(x) => void end(x)} busyId={busyId} />
+      </div>
+      <Row title="Sign-in history" description="Your last 50 sign-ins and failed attempts, with device and address." testId="setting-signins">
+        <Button size="sm" variant="outline" onClick={() => setHistory(true)} data-testid="signins-open">Show</Button>
+      </Row>
+      <TotpEnrolDialog open={enrol} onOpenChange={setEnrol} onDone={(c) => { toast('Two-step verification is on', 'success'); if (c) setCodes(c); load() }} />
+      <RecoveryCodesDialog codes={codes} onClose={() => setCodes(null)} />
+      <SignInHistoryDialog open={history} onOpenChange={setHistory} />
     </>
   )
 }
@@ -511,7 +625,10 @@ function DataSection() {
 function AdminLinksSection() {
   const links: { label: string; text: string; route: Route }[] = [
     { label: 'Environments', text: 'The built-in Default environment and what is planned.', route: { page: 'admin', id: 'environments' } },
-    { label: 'Users', text: 'Add people, set passwords, enable or disable, assign roles.', route: { page: 'admin', id: 'users' } },
+    { label: 'Users', text: 'Add or invite people, reset codes, sessions, two-step verification, roles.', route: { page: 'admin', id: 'users' } },
+    { label: 'Sign-in and security', text: 'Two-step verification policy, session lifetime, password rules, lockout, sign-in log.', route: { page: 'admin', id: 'security' } },
+    { label: 'Email', text: 'SMTP relay for resets, invitations and sign-in codes; test email; delivery log.', route: { page: 'admin', id: 'email' } },
+    { label: 'Service accounts', text: 'Accounts and API keys for integrations and the LAN agent.', route: { page: 'admin', id: 'service-accounts' } },
     { label: 'Licences', text: 'Current licence state and the planned passes.', route: { page: 'admin', id: 'licences' } },
     { label: 'Audit log', text: 'Who did what, and when.', route: { page: 'admin', id: 'audit' } },
     { label: 'Security roles', text: 'Table, column and row access per role.', route: { page: 'roles' } },

@@ -1,11 +1,12 @@
 /**
  * Admin console (#admin, #admin-<section>; Dev mode, administrators): its own sub-navigation over environments,
- * users, licences, the audit log, and the planned backups, logs and usage pages (ComingSoon, P0).
+ * users, licences, the audit log, jobs, backups (with the backup health line on every page), and the planned logs
+ * and usage pages (ComingSoon, P0).
  * Everything shown is real data or clearly marked: "preview" (derived, not enforced) and "Soon" (not built).
  */
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  Activity, Archive, BadgeCheck, ChevronLeft, ChevronRight, FileKey2, GitFork, Layers, ListChecks, Network, RefreshCw, ScrollText, ShieldHalf, Upload, Users, UsersRound, Zap,
+  Activity, Archive, BadgeCheck, KeySquare, Mail, ShieldCheck, ChevronLeft, ChevronRight, FileKey2, GitFork, Layers, ListChecks, Network, RefreshCw, ScrollText, ShieldHalf, Upload, Users, UsersRound, Zap,
   type LucideIcon,
 } from 'lucide-react'
 import { usePlatform, type UserDef } from '@/platform'
@@ -19,6 +20,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { ComingSoon, SoonBadge } from './ComingSoon'
 import { EnvironmentsSection } from './AdminEnvironments'
 import { EventRunsSection, JobsSection } from './AdminJobs'
+import { BackupHealthBanner, BackupsSection } from './AdminBackups'
 import { fetchInstallAuditPage } from './environmentApi'
 import { useCaps } from './security'
 import { Empty, Field, PageHeader, Panel, Segmented, errMsg, fmtDate, fmtRelative } from './kit'
@@ -26,12 +28,16 @@ import { UserAvatar } from './Profile'
 import { fetchAuditPage } from './serverApi'
 import { UsersPanel } from './Users'
 import { DepartmentsSection, OrgChartSection, TeamsSection } from './Organisation'
+import { EmailSection, ServiceAccountsSection, SignInSecuritySection } from './AdminIdentity'
 
-export type AdminSection = 'environments' | 'users' | 'departments' | 'teams' | 'orgchart' | 'licences' | 'audit' | 'jobs' | 'events' | 'backups' | 'logs' | 'usage'
+export type AdminSection = 'environments' | 'users' | 'security' | 'email' | 'service-accounts' | 'departments' | 'teams' | 'orgchart' | 'licences' | 'audit' | 'jobs' | 'events' | 'backups' | 'logs' | 'usage'
 interface SectionDef { key: AdminSection; label: string; icon: LucideIcon; soon?: boolean }
 export const ADMIN_SECTIONS: SectionDef[] = [
   { key: 'environments', label: 'Environments', icon: Layers },
   { key: 'users', label: 'Users', icon: Users },
+  { key: 'security', label: 'Sign-in and security', icon: ShieldCheck },
+  { key: 'email', label: 'Email', icon: Mail },
+  { key: 'service-accounts', label: 'Service accounts', icon: KeySquare },
   { key: 'departments', label: 'Departments', icon: Network },
   { key: 'teams', label: 'Teams', icon: UsersRound },
   { key: 'orgchart', label: 'Org chart', icon: GitFork },
@@ -39,7 +45,7 @@ export const ADMIN_SECTIONS: SectionDef[] = [
   { key: 'audit', label: 'Audit log', icon: ScrollText },
   { key: 'jobs', label: 'Jobs', icon: ListChecks },
   { key: 'events', label: 'Events run log', icon: Zap },
-  { key: 'backups', label: 'Backups', icon: Archive, soon: true },
+  { key: 'backups', label: 'Backups', icon: Archive },
   { key: 'logs', label: 'Server logs', icon: ScrollText, soon: true },
   { key: 'usage', label: 'Usage', icon: Activity, soon: true },
 ]
@@ -50,6 +56,8 @@ export function AdminConsole({ section }: { section?: string }) {
   return (
     <div data-testid="page-admin">
       <PageHeader icon={ShieldHalf} title="Admin console" subtitle="Environments, people, licences and the audit trail of this install." />
+      {/* backup health (install administrators): the last good backup's age, failures, what is running */}
+      {current !== 'backups' && <div className="mb-4"><BackupHealthBanner compact /></div>}
       <div className="grid grid-cols-[200px_minmax(0,1fr)] items-start gap-6">
         <nav aria-label="Admin console" className="sticky top-0 grid gap-0.5" data-testid="admin-nav">
           {ADMIN_SECTIONS.map((s) => (
@@ -73,6 +81,9 @@ export function AdminConsole({ section }: { section?: string }) {
         <section className="min-w-0" data-testid={`admin-section-${current}`}>
           {current === 'environments' && <EnvironmentsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'users' && <UsersPanel />}
+          {current === 'security' && <SignInSecuritySection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
+          {current === 'email' && <EmailSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
+          {current === 'service-accounts' && <ServiceAccountsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'departments' && <DepartmentsSection />}
           {current === 'teams' && <TeamsSection />}
           {current === 'orgchart' && <OrgChartSection />}
@@ -80,7 +91,8 @@ export function AdminConsole({ section }: { section?: string }) {
           {current === 'audit' && <AuditSection />}
           {current === 'jobs' && <JobsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'events' && <EventRunsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
-          {(current === 'backups' || current === 'logs' || current === 'usage') && <ComingSoon moduleKey={current} mode="dev" embedded />}
+          {current === 'backups' && <BackupsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
+          {(current === 'logs' || current === 'usage') && <ComingSoon moduleKey={current} mode="dev" embedded />}
         </section>
       </div>
     </div>

@@ -77,6 +77,12 @@ export type FxResult =
  */
 export interface FxScope {
   resolve(name: string): FxValue | undefined
+  /**
+   * Lookup columns (P0-N): the record a row id points at, so `ThisRecord.createdBy.FullName` reads the Users row. Row ids
+   * are unique across tables. undefined: not an id this scope knows (the member access is an error as before); null: an
+   * id whose record is not available (yet), read as blank.
+   */
+  recordById?(id: string): FxRecord | null | undefined
 }
 
 /**
@@ -121,6 +127,12 @@ export interface FxHost {
   unshare?(rowId: string, principal: string): void
   /** SendNotification(user, title, body, link): an in-app notification to a person in this environment (asynchronous) */
   sendNotification?(to: string, title: string, body: string, link: string): void
+  /**
+   * Core data model (P0-N): AddComment, AddActivity, Follow, Unfollow, Tag, Untag (asynchronous writes; failures are
+   * notified) and NextNumber (demo mode only: the server assigns numbers in column defaults and before-events).
+   * `args.record` is the row id; the result is what the function returns (NextNumber: the number text).
+   */
+  collab?(action: 'addComment' | 'addActivity' | 'follow' | 'unfollow' | 'tag' | 'untag' | 'nextNumber', args: Record<string, FxValue>): FxValue
 }
 
 export interface FxFunctionDoc {

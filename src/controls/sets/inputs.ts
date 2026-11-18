@@ -23,6 +23,7 @@ import { Stepper } from '../inputs/Stepper'
 import { PinInput } from '../inputs/PinInput'
 import { Form } from '../inputs/Form'
 import { Timer } from '../inputs/Timer'
+import { PersonPicker, TagInput } from '../display/collab'
 
 /** Insert-pane order (SPEC2 section 3, Inputs agent). */
 export const inputControls: ControlType[] = [
@@ -32,6 +33,8 @@ export const inputControls: ControlType[] = [
   SearchBox,
   RadioGroup,
   ComboBox,
+  PersonPicker,
+  TagInput,
   DatePicker,
   DateRangePicker,
   TimePicker,

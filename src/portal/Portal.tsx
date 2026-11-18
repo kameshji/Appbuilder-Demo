@@ -20,7 +20,9 @@ import { Connections } from './Connections'
 import { DataFiles } from './DataFiles'
 import { SolutionDetail, Solutions } from './Solutions'
 import { ComingSoon } from './ComingSoon'
+import { MentionsPage, TasksPage } from './TasksPage'
 import { AdminConsole } from './Admin'
+import { DataModel } from './model/DataModel'
 import { SettingsPage } from './Settings'
 import { usePrefs } from '@/platform/preferences'
 import { useChatDock } from '@/chat/dock'
@@ -44,6 +46,7 @@ function DevPage({ route }: { route: PortalRoute }) {
     case 'connections': return <Connections />
     case 'datafiles': return <DataFiles />
     case 'admin': return <AdminConsole section={'id' in route ? route.id : undefined} />
+    case 'datamodel': return <DataModel />
     default: return <Home />
   }
 }
@@ -139,7 +142,9 @@ function Frame({ route }: { route: Route }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routed, route, user, canDev])
 
-  const activeTab = routed === 'user' && route.page === 'u' && 'id' in route ? route.id : null
+  // built-in User mode pages of the core data model (P0-N): #u-tasks, #u-mentions (not app tabs)
+  const builtin = routed === 'user' && route.page === 'u' && 'id' in route && (route.id === 'tasks' || route.id === 'mentions') ? route.id : null
+  const activeTab = routed === 'user' && route.page === 'u' && 'id' in route && !builtin ? route.id : null
   useTabSync(activeTab)
 
   const switchMode = (m: ShellMode) => {
@@ -153,6 +158,8 @@ function Frame({ route }: { route: Route }) {
   let page = null
   if (studio || settings) page = null
   else if (route.page === 'soon') page = <ComingSoon moduleKey={route.id} mode={routed} />
+  else if (builtin === 'tasks') page = <TasksPage />
+  else if (builtin === 'mentions') page = <MentionsPage />
   else if (routed === 'user') page = <MyApps />
   else page = <DevPage route={route} />
 

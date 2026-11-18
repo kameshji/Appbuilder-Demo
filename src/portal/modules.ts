@@ -7,7 +7,7 @@
  * Phases are the build phases of docs/plan/master-plan.md (section 5).
  */
 import {
-  Activity, Archive, Bot, CheckSquare, ClipboardCheck, FileText, Folder, Globe, LayoutDashboard, LayoutTemplate, Mail, MessagesSquare, Network,
+  Activity, Archive, AtSign, Bot, CheckSquare, ClipboardCheck, FileText, Folder, Globe, LayoutDashboard, LayoutTemplate, Mail, MessagesSquare, Network,
   ScrollText, ShieldHalf, StickyNote, Workflow, type LucideIcon,
 } from 'lucide-react'
 import type { Route } from '@/router'
@@ -52,11 +52,11 @@ export interface ModuleEntry {
 export const MODULES: readonly ModuleEntry[] = [
   /* ---------------------------------------------------------------- Dev mode */
   {
-    key: 'datamodel', label: 'Data model', icon: Network, modes: ['dev'], status: 'soon', phase: 'P0', need: 'maker',
+    key: 'datamodel', label: 'Data model', icon: Network, modes: ['dev'], status: 'live', route: { page: 'datamodel' }, phase: 'P0', need: 'maker',
     tagline: 'A visual schema designer for your tables.',
     details: [
-      'See every table, lookup and relationship on one diagram and edit them in place.',
-      'Add formula columns and relationship-based row rules ("rows of my team") without leaving the diagram.',
+      'See every table, lookup and relationship on one diagram and edit them in a draft; review the plan and apply it in one step.',
+      'Patterns (master-detail, hierarchy, star schema, ...), imports from Excel, databases and DBML, and model checks.',
     ],
   },
   {
@@ -118,11 +118,11 @@ export const MODULES: readonly ModuleEntry[] = [
 
   /* ---------------------------------------------------------------- parts of the Admin console (no menu entry) */
   {
-    key: 'backups', label: 'Backups', icon: Archive, modes: ['dev'], status: 'soon', phase: 'P0', need: 'admin', inMenu: false,
-    tagline: 'Nightly backups you can download, and restore in place.',
+    key: 'backups', label: 'Backups', icon: Archive, modes: ['dev'], status: 'live', route: { page: 'admin', id: 'backups' }, phase: 'P0', need: 'admin', inMenu: false,
+    tagline: 'Verified backups of the install or one environment, restored in place, as a new environment, or table by table.',
     details: [
-      'A scheduled backup of the system database and the workspace folder, kept for a number of days you choose.',
-      'Download any backup, or restore it in place after an automatic safety backup; a restore drill is part of the P0 exit check.',
+      'Nightly install backup (database, attachments, data files) kept grandfather-father-son, optional passphrase encryption and off-site copy.',
+      'Automatic backups before solution upgrades, environment deletes, restores and server upgrades; a scheduled restore test; download and upload.',
     ],
   },
   {
@@ -144,12 +144,17 @@ export const MODULES: readonly ModuleEntry[] = [
 
   /* ---------------------------------------------------------------- User mode */
   {
-    key: 'tasks', label: 'Tasks', icon: CheckSquare, modes: ['user'], status: 'soon', phase: 'P3',
+    key: 'tasks', label: 'Tasks', icon: CheckSquare, modes: ['user'], status: 'live', route: { page: 'u', id: 'tasks' }, phase: 'P0',
     tagline: 'Your to-dos and the work assigned to you.',
     details: [
-      'Personal and team tasks with due dates, owners and reminders.',
-      'Tasks created by flows and approvals show up here, linked to the record they are about.',
+      'Personal and team tasks with due dates, owners and reminders, as a list or a board.',
+      'Tasks added on a record (its timeline) show the record they are about.',
     ],
+  },
+  {
+    key: 'mentions', label: 'Mentions', icon: AtSign, modes: ['user'], status: 'live', route: { page: 'u', id: 'mentions' }, phase: 'P0',
+    tagline: 'Comments where someone mentioned you.',
+    details: ['Every @mention of you in a comment, newest first, with a link back to where it was written.'],
   },
   {
     key: 'notes', label: 'Notes', icon: StickyNote, modes: ['user'], status: 'soon', phase: 'P3',

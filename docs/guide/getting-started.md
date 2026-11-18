@@ -165,5 +165,6 @@ We will build "Equipment checkout": a list of equipment, a search box, and a but
 - [The Studio](maker/studio.md): design tools and shortcuts.
 - [Formulas](maker/formulas.md): a friendly tutorial.
 - [Data](maker/data.md): tables, files and connections.
+- [Data model designer](maker/data-model.md): the diagram, relationships and delete behaviours, patterns, reporting views.
 - [Security for makers](maker/security-for-makers.md)
 - [Troubleshooting](troubleshooting.md)

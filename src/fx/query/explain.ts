@@ -31,6 +31,7 @@ export function describeCondition(c: ConditionV2): string {
   if ('and' in c) return c.and.map((x) => ('or' in x ? `(${describeCondition(x)})` : describeCondition(x))).join(' and ')
   if ('or' in c) return c.or.map((x) => ('and' in x ? `(${describeCondition(x)})` : describeCondition(x))).join(' or ')
   if ('not' in c) return `not (${describeCondition(c.not)})`
+  if ('via' in c) return `${c.via.col} (${c.via.table}) where ${describeCondition(c.via.where)}${c.via.orMissing ? ' or blank' : ''}`
   if (c.op === 'cmpExpr') return `${describeExpr(c.left)} ${OPS[c.cmp]} ${describeExpr(c.right)}`
   const cs = 'exact' in c && c.exact ? ' (case-sensitive)' : ''
   switch (c.op) {

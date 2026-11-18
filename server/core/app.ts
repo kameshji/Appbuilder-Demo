@@ -19,11 +19,14 @@ import { errText, log } from './util.ts'
 import { runInEnvironment } from './env-context.ts'
 import { notificationSink } from './kernel.ts'
 import { kernelRoutes } from './kernel-routes.ts'
+import { backupRoutes } from './backup/routes.ts'
+import { collabRoutes } from './collab-routes.ts'
 import { createLiveHub } from './live/hub.ts'
 import type { LiveHub } from './live/hub.ts'
 import { wireLive } from './live/wiring.ts'
 import { bridgeOutbox } from './live/changes.ts'
 import { createNotificationService, notificationRoutes } from './notifications.ts'
+import { identityRoutes } from './identity/routes.ts'
 
 export interface AppServer {
   services: CoreServices
@@ -86,10 +89,16 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   notificationRoutes(router, services, notifications)
   // core routes first; the router prefers literal segments over :params regardless of order
   authRoutes(router, services)
+  // identity basics (package I): second step, reset, invitations, sessions, email relay, policy, API keys
+  identityRoutes(router, services)
   dataRoutes(router, services)
   attachmentRoutes(router, services)
   metaRoutes(router, services)
   kernelRoutes(router, services)
+  // backups and restores (package J): progress goes to install administrators over the hub
+  backupRoutes(router, services)
+  services.backup.setLive(live)
+  collabRoutes(router, services)
   // table events' NotifyUser goes to the in-app notifications when they are available
   services.kernel.events.setNotificationSink(notificationSink(services))
   if (opts.boot !== false) {

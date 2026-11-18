@@ -16,10 +16,15 @@ import { migrateLegacyWorkspace, seedSample } from '../routes/meta/index.ts'
 import type { ApiRouter } from './router.ts'
 import { cookieValue } from './router.ts'
 import type { CoreServices } from './services.ts'
-import { SESSION_LIFETIME_MS } from './security.ts'
 import { checkPasswordPolicy, hashPassword, verifyDummy, verifyPassword } from './password.ts'
 import { errText, log } from './util.ts'
 import { SCHEMA_VERSION } from './meta-store.ts'
+import {
+  MFA_COOKIE, MFA_PENDING_MS, cookieOf, deviceName, identity, newSessionPublicId, noteRequestSession, requestSession,
+} from './identity/index.ts'
+import { checkPasswordHistory, passwordExpired, recordPassword } from './identity/passwords.ts'
+import { resolveApiKey } from './identity/api-keys.ts'
+import { setCookie } from './identity/util.ts'
 import { DEFAULT_ENVIRONMENT_ID, runInEnvironment } from './env-context.ts'
 import { NoEnvironmentError } from './environments.ts'
 
@@ -66,11 +71,18 @@ export function toUserDef(u: UserRecord): UserDef {
 
 export class LoginThrottle {
   private failures = new Map<string, number[]>()
-  private limit: number
-  private windowMs: number
-  constructor(limit = THROTTLE_LIMIT, windowMs = THROTTLE_WINDOW_MS) {
-    this.limit = limit
-    this.windowMs = windowMs
+  private limitOf: () => number
+  private windowOf: () => number
+  /** limit and window may be getters (package I: the lockout policy of Admin console > Sign-in and security) */
+  constructor(limit: number | (() => number) = THROTTLE_LIMIT, windowMs: number | (() => number) = THROTTLE_WINDOW_MS) {
+    this.limitOf = typeof limit === 'function' ? limit : () => limit
+    this.windowOf = typeof windowMs === 'function' ? windowMs : () => windowMs
+  }
+  private get limit(): number {
+    return this.limitOf()
+  }
+  private get windowMs(): number {
+    return this.windowOf()
   }
   private recent(key: string, now: number): number[] {
     const list = (this.failures.get(key) ?? []).filter((t) => now - t < this.windowMs)
@@ -101,6 +113,12 @@ export class LoginThrottle {
  */
 export class EmailBackoff {
   private failures = new Map<string, number[]>()
+  private delayFrom: () => number
+  private limit: () => number
+  constructor(o: { delayFrom?: () => number; limit?: () => number } = {}) {
+    this.delayFrom = o.delayFrom ?? (() => EMAIL_DELAY_FROM)
+    this.limit = o.limit ?? (() => EMAIL_LIMIT)
+  }
   private recent(key: string, now: number): number[] {
     const list = (this.failures.get(key) ?? []).filter((t) => now - t < EMAIL_WINDOW_MS)
     if (list.length) this.failures.set(key, list)
@@ -110,9 +128,11 @@ export class EmailBackoff {
   /** milliseconds until the next attempt is allowed (0 = now) */
   waitMs(key: string, now = Date.now()): number {
     const list = this.recent(key, now)
-    if (list.length >= EMAIL_LIMIT) return Math.max(1, list[0] + EMAIL_WINDOW_MS - now)
-    if (list.length < EMAIL_DELAY_FROM) return 0
-    const delay = Math.min(EMAIL_MAX_DELAY_MS, 1000 * 2 ** (list.length - EMAIL_DELAY_FROM))
+    const limit = this.limit()
+    const from = this.delayFrom()
+    if (list.length >= limit) return Math.max(1, list[list.length - limit] + EMAIL_WINDOW_MS - now)
+    if (list.length < from) return 0
+    const delay = Math.min(EMAIL_MAX_DELAY_MS, 1000 * 2 ** (list.length - from))
     return Math.max(0, list[list.length - 1] + delay - now)
   }
   fail(key: string, now = Date.now()): void {
@@ -128,12 +148,44 @@ export class EmailBackoff {
 
 /* ------------------------------------------------------------------ sessions */
 
-export async function createSession(services: CoreServices, ctx: Ctx, userId: string): Promise<Date> {
+/**
+ * A new session: random 256-bit token in the HttpOnly cookie, its SHA-256 in ab.sessions. Lifetime from the policy
+ * (idle timeout, absolute end). mfa: a second factor (or a remembered device) was used; restricted 'mfa_enrol': the
+ * session may only set up two-step verification.
+ */
+export async function createSession(services: CoreServices, ctx: Ctx, userId: string, o: { mfa?: boolean; restricted?: string | null } = {}): Promise<Date> {
+  const idn = identity(services)
+  const p = await idn.policy.get()
   const token = randomBytes(32).toString('base64url')
-  const expiresOn = new Date(Date.now() + SESSION_LIFETIME_MS)
-  await services.meta.sessions.insert({ idHash: hashToken(token), userId, expiresOn, userAgent: String(ctx.req.headers['user-agent'] ?? '').slice(0, 255) })
+  const now = Date.now()
+  const absoluteExpiresOn = p.sessions.absoluteHours ? new Date(now + p.sessions.absoluteHours * 3_600_000) : null
+  const idle = new Date(now + p.sessions.idleMinutes * 60_000)
+  const expiresOn = absoluteExpiresOn && absoluteExpiresOn < idle ? absoluteExpiresOn : idle
+  const publicId = newSessionPublicId()
+  const userAgent = String(ctx.req.headers['user-agent'] ?? '').slice(0, 255)
+  const idHash = hashToken(token)
+  const ip = idn.ip(ctx.req)
+  await services.meta.sessions.insert({ idHash, userId, expiresOn, userAgent, ip, publicId, absoluteExpiresOn, mfa: !!o.mfa, restricted: o.restricted ?? null })
   ctx.setSessionCookie(token, expiresOn)
+  const at = new Date(now)
+  noteRequestSession(ctx.req, { idHash, rec: { userId, expiresOn, createdOn: at, lastSeen: at, absoluteExpiresOn, authOn: at, publicId, restricted: o.restricted ?? null, mfa: !!o.mfa, ip, userAgent } })
   return expiresOn
+}
+
+/** the session payload with the identity facts the browser needs (two-step verification state and requirement) */
+export async function sessionPayload(services: CoreServices, uc: UserContext): Promise<Session> {
+  const s = uc.session()
+  if (uc.user.kind === 'service') return s
+  try {
+    const idn = identity(services)
+    const methods = await idn.mfaMethods(uc.user.id)
+    const rec = await services.meta.users.get(uc.user.id)
+    const req = rec ? await idn.mfaRequirement(rec) : { required: false, enrolBy: null }
+    return { ...s, user: { ...s.user, mfaEnabled: methods.totp || methods.email, ...(req.required ? { mfaRequired: { enrolBy: req.enrolBy ? req.enrolBy.toISOString() : null } } : {}) } }
+  } catch (e) {
+    log('warn', `session details: ${errText(e)}`)
+    return s
+  }
 }
 
 /**
@@ -161,9 +213,14 @@ export async function userContextFor(
   })
 }
 
-/** cookie -> UserContext (sliding expiry, touched at most every 10 minutes) in the request's environment */
+/**
+ * cookie -> UserContext in the request's environment. The session ends after the idle timeout (last_seen is touched at
+ * most every 10 minutes, or every quarter of the idle timeout) or at its absolute end. A request with
+ * Authorization: Bearer is an API key request (api-keys.ts): cookies are ignored then.
+ */
 export function sessionResolver(services: CoreServices) {
   return async (ctx: Ctx, o: { allowNoEnvironment?: boolean } = {}): Promise<UserContext | null> => {
+    if (/^Bearer\s/i.test(String(ctx.req.headers.authorization ?? ''))) return resolveApiKey(services, ctx)
     const token = cookieValue(ctx.req, SESSION_COOKIE)
     if (!token || token.length > 200) return null
     const meta = services.meta
@@ -171,21 +228,72 @@ export function sessionResolver(services: CoreServices) {
     const s = await meta.sessions.get(idHash)
     if (!s) return null
     const now = Date.now()
-    if (s.expiresOn.getTime() <= now) {
+    const p = await identity(services).policy.get()
+    const idleMs = p.sessions.idleMinutes * 60_000
+    const idleOver = !!s.lastSeen && now - s.lastSeen.getTime() > idleMs
+    if (s.expiresOn.getTime() <= now || (s.absoluteExpiresOn && s.absoluteExpiresOn.getTime() <= now) || idleOver) {
       await meta.sessions.remove(idHash).catch(() => {})
       return null
     }
     const user = await meta.users.get(s.userId)
-    if (!user || user.status === 'disabled') return null
+    if (!user || user.status === 'disabled' || user.kind === 'service') return null
+    noteRequestSession(ctx.req, { idHash, rec: s })
     let expires = s.expiresOn
-    const next = new Date(now + SESSION_LIFETIME_MS)
-    if (next.getTime() - s.expiresOn.getTime() > TOUCH_INTERVAL_MS) {
+    const idleEnd = now + idleMs
+    const next = new Date(s.absoluteExpiresOn ? Math.min(idleEnd, s.absoluteExpiresOn.getTime()) : idleEnd)
+    const touchEvery = Math.min(TOUCH_INTERVAL_MS, idleMs / 4)
+    if (now - (s.lastSeen?.getTime() ?? 0) > touchEvery || next.getTime() - s.expiresOn.getTime() > TOUCH_INTERVAL_MS) {
       await meta.sessions.touch(idHash, next)
       ctx.setSessionCookie(token, next)
       expires = next
     }
-    return userContextFor(services, user, ctx.requestedEnvironment ?? null, expires, o)
+    const rec: UserRecord = s.restricted === 'mfa_enrol' ? { ...user, mfaEnrolmentRequired: true } : user
+    return userContextFor(services, rec, ctx.requestedEnvironment ?? null, expires, o)
   }
+}
+
+/**
+ * The end of every successful sign-in (password, second step, invitation): the old cookie session goes, a new session,
+ * audit, the sign-in log, and (when email is set up) a "new sign-in" email for a device this account was not used on.
+ */
+export async function finishSignIn(
+  services: CoreServices, ctx: Ctx, user: UserRecord, o: { method: string; mfa?: boolean; restricted?: string | null },
+): Promise<Session> {
+  const idn = identity(services)
+  const old = cookieValue(ctx.req, SESSION_COOKIE)
+  if (old && old.length <= 200) await services.meta.sessions.remove(hashToken(old)).catch(() => {})
+  setCookie(ctx.req, ctx.res, MFA_COOKIE, null, 0, { secureCookie: services.config?.secureCookie, trustProxy: services.config?.trustProxy })
+  await services.meta.users.update(user.id, { lastLogin: new Date().toISOString() })
+  const expires = await createSession(services, ctx, user.id, { mfa: o.mfa, restricted: o.restricted })
+  const sessionId = requestSession(ctx.req)?.rec.publicId ?? null
+  await audit(services, user.id, 'auth.login', { method: o.method, ...(user.mustChangePassword ? { mustChangePassword: true } : {}), ...(o.restricted ? { restricted: o.restricted } : {}) })
+  // a device this account has not signed in on before (a long-lived random cookie, compared by hash)
+  const deviceHash = idn.knownDevice(ctx)
+  let newDevice = false
+  try {
+    const db = services.state.db!
+    const seen = await db.query<{ known: boolean; any: boolean }>(
+      `SELECT bool_or(device_hash = $2) AS known, count(*) > 0 AS any FROM "ab"."signin_log" WHERE user_id = $1 AND outcome = 'success'`,
+      [user.id, deviceHash],
+    )
+    newDevice = !!seen[0]?.any && !seen[0]?.known
+  } catch { /* not important */ }
+  await idn.logSignIn(ctx, { userId: user.id, email: user.email, outcome: 'success', reason: 'ok', method: o.method, sessionId, deviceHash, newDevice })
+  if (newDevice) {
+    void (async () => {
+      const p = await idn.policy.get()
+      if (!p.notifyNewDevice || !(await idn.mail.configured())) return
+      await idn.mail.sendTemplate('new_device', user.email, {
+        name: user.name, email: user.email, when: new Date().toUTCString(), device: deviceName(ctx.req.headers['user-agent']), ip: idn.ip(ctx.req),
+      }, user.id)
+    })().catch((e) => log('warn', `new-device email not queued: ${errText(e)}`))
+  }
+  const fresh = (await services.meta.users.get(user.id)) ?? user
+  // the session's privileges in the environment the client asked for (or the user's last one)
+  let requested = ctx.requestedEnvironment ?? null
+  if (requested && !(await services.environments.accessible(toUserDef(fresh))).some((e) => e.id === requested && e.state === 'ready')) requested = null
+  const rec: UserRecord = o.restricted === 'mfa_enrol' ? { ...fresh, mfaEnrolmentRequired: true } : fresh
+  return sessionPayload(services, await userContextFor(services, rec, requested, expires, { allowNoEnvironment: true }))
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -256,8 +364,10 @@ export async function ensureBuiltinRoles(services: CoreServices): Promise<void> 
 /* ------------------------------------------------------------------ routes */
 
 export function authRoutes(router: ApiRouter, services: CoreServices): void {
-  const throttle = new LoginThrottle()
-  const emailBackoff = new EmailBackoff()
+  const idn = identity(services)
+  const pol = () => idn.policy.cached().lockout
+  const throttle = new LoginThrottle(() => pol().attempts, () => pol().windowMinutes * 60_000)
+  const emailBackoff = new EmailBackoff({ delayFrom: () => pol().slowDownFrom, limit: () => pol().blockAt })
   /** separate map: login spraying can neither evict nor fill the password-change throttle (and vice versa) */
   const passwordThrottle = new LoginThrottle()
 
@@ -399,50 +509,68 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
 
   router.add('POST', '/auth/login', async (ctx): Promise<Session> => {
     if (!services.ready()) throw new HttpError(503, 'unavailable', 'The database is not configured yet.')
+    await idn.policy.get()
     const b = obj(ctx.body) as Partial<LoginRequest> & Record<string, unknown>
     const email = (typeof b.email === 'string' ? b.email : '').trim().toLowerCase().slice(0, 191)
     const password = typeof b.password === 'string' ? b.password.slice(0, 1024) : ''
     const key = `${email}|${ctx.req.socket.remoteAddress ?? ''}`
     if (throttle.blocked(key)) {
       await audit(services, null, 'auth.login_throttled', { email })
+      await idn.logSignIn(ctx, { email, outcome: 'failure', reason: 'throttled', method: 'password' })
       throw new HttpError(429, 'rate_limited', 'Too many attempts. Try again in a few minutes.')
     }
     const wait = emailBackoff.waitMs(email)
     if (wait > 0) {
       await audit(services, null, 'auth.login_throttled', { email, perEmail: true, waitSeconds: Math.ceil(wait / 1000) })
+      await idn.logSignIn(ctx, { email, outcome: 'failure', reason: 'throttled', method: 'password' })
       throw new HttpError(429, 'rate_limited', `Too many attempts for this account. Try again in ${wait >= 60000 ? `${Math.ceil(wait / 60000)} minute(s)` : `${Math.ceil(wait / 1000)} second(s)`}.`)
     }
-    const user = email ? await services.meta.users.byEmail(email) : null
+    const found = email ? await services.meta.users.byEmail(email) : null
+    // service accounts never sign in with a password (API keys only)
+    const user = found && found.kind !== 'service' ? found : null
     const ok = user && user.passwordHash && user.status !== 'disabled' ? await verifyPassword(password, user.passwordHash) : await verifyDummy(password)
     if (!ok || !user) {
       throttle.fail(key)
       if (email) emailBackoff.fail(email)
       await audit(services, user?.id ?? null, 'auth.login_failed', { email })
+      await idn.logSignIn(ctx, { userId: found?.id ?? null, email, outcome: 'failure', reason: !found ? 'unknown_user' : found.status === 'disabled' ? 'disabled' : found.kind === 'service' ? 'service_account' : !found.passwordHash ? 'no_password' : 'bad_password', method: 'password' })
       throw new HttpError(401, 'unauthenticated', 'Invalid email or password.')
     }
     throttle.reset(key)
     emailBackoff.reset(email)
-    const old = cookieValue(ctx.req, SESSION_COOKIE)
-    if (old && old.length <= 200) await services.meta.sessions.remove(hashToken(old)).catch(() => {})
-    await services.meta.users.update(user.id, { lastLogin: new Date().toISOString() })
-    const expires = await createSession(services, ctx, user.id)
-    await audit(services, user.id, 'auth.login', user.mustChangePassword ? { mustChangePassword: true } : undefined)
-    const fresh = (await services.meta.users.get(user.id)) ?? user
-    // the session's privileges in the environment the client asked for (or the user's last one)
-    let requested = ctx.requestedEnvironment ?? null
-    if (requested && !(await services.environments.accessible(toUserDef(fresh))).some((e) => e.id === requested && e.state === 'ready')) requested = null
-    return (await userContextFor(services, fresh, requested, expires, { allowNoEnvironment: true })).session()
+    // the password is older than the policy allows: it must be changed right after signing in
+    if (!user.mustChangePassword && (await passwordExpired(services, user))) {
+      await services.meta.users.update(user.id, { mustChangePassword: true })
+      user.mustChangePassword = true
+      await audit(services, user.id, 'auth.password_expired')
+    }
+    // second step: an authenticator code, a recovery code or an email code (unless this device is remembered)
+    const methods = await idn.mfaMethods(user.id)
+    if (methods.totp || methods.email) {
+      if (await idn.rememberedDevice(ctx, user.id)) return finishSignIn(services, ctx, user, { method: 'remembered_device', mfa: true })
+      await idn.revokeTokens(user.id, ['mfa_pending'])
+      const pending = await idn.createToken('mfa_pending', user.id, { ttlMs: MFA_PENDING_MS })
+      setCookie(ctx.req, ctx.res, MFA_COOKIE, pending.raw, MFA_PENDING_MS / 1000, { secureCookie: services.config?.secureCookie, trustProxy: services.config?.trustProxy })
+      const available = [...(methods.totp ? ['totp', 'recovery_code'] : []), ...(methods.email ? ['email_code'] : [])]
+      const rememberDays = idn.policy.cached().mfa.rememberDays
+      throw new HttpError(401, 'mfa_required', 'Enter the code from your authenticator app to finish signing in.', undefined, { mfa: { methods: available, rememberDays } })
+    }
+    // two-step verification required by policy but not set up: after the grace period the session may only set it up
+    const req = await idn.mfaRequirement(user)
+    const restricted = req.required && req.enrolBy && req.enrolBy.getTime() <= Date.now() ? 'mfa_enrol' : null
+    return finishSignIn(services, ctx, user, { method: 'password', restricted })
   }, { auth: 'none' })
 
   router.add('POST', '/auth/logout', async (ctx) => {
     const token = cookieValue(ctx.req, SESSION_COOKIE)
     if (token && token.length <= 200 && services.ready()) await services.meta.sessions.remove(hashToken(token))
     ctx.setSessionCookie(null)
+    if (cookieOf(ctx.req, MFA_COOKIE)) setCookie(ctx.req, ctx.res, MFA_COOKIE, null, 0, { secureCookie: services.config?.secureCookie, trustProxy: services.config?.trustProxy })
     if (ctx.user) await audit(services, ctx.user.user.id, 'auth.logout')
     return { ok: true }
   }, { auth: 'none' })
 
-  router.add('GET', '/auth/session', (ctx) => ctx.user!.session(), { auth: 'user', allowPendingPasswordChange: true, noEnvironment: true })
+  router.add('GET', '/auth/session', (ctx) => sessionPayload(services, ctx.user!), { auth: 'user', allowPendingPasswordChange: true, noEnvironment: true, allowPendingMfaEnrolment: true })
 
   router.add('POST', '/auth/password', async (ctx) => {
     const b = obj(ctx.body) as Partial<ChangePasswordRequest> & Record<string, unknown>
@@ -459,11 +587,19 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     }
     const next = checkPasswordPolicy(b.next, rec.email, 'next')
     if (next === current) throw new HttpError(422, 'invalid', 'The new password must be different.', 'next')
+    await checkPasswordHistory(services, rec, next, 'next')
     passwordThrottle.reset(key)
-    await services.meta.users.update(me.id, { passwordHash: await hashPassword(next), mustChangePassword: false })
-    await services.meta.sessions.removeForUser(me.id) // signs out every other device
-    await createSession(services, ctx, me.id) // and keeps this one signed in with a fresh token
+    const hash = await hashPassword(next)
+    const mfa = !!requestSession(ctx.req)?.rec.mfa
+    await services.meta.users.update(me.id, { passwordHash: hash, mustChangePassword: false })
+    await recordPassword(services, me.id, hash)
+    // signs out every other device and forgets remembered devices; this one stays signed in with a fresh token (rotation)
+    await idn.signOutEverywhere(me.id)
+    await createSession(services, ctx, me.id, { mfa })
     await audit(services, me.id, 'auth.password_changed', rec.mustChangePassword ? { forced: true } : undefined)
+    if (await idn.mail.configured().catch(() => false)) {
+      await idn.mail.sendTemplate('password_changed', rec.email, { name: rec.name, email: rec.email, when: new Date().toUTCString() }, rec.id).catch((e) => log('warn', `password-changed email not queued: ${errText(e)}`))
+    }
     return { ok: true }
-  }, { auth: 'user', allowPendingPasswordChange: true, noEnvironment: true })
+  }, { auth: 'user', allowPendingPasswordChange: true, noEnvironment: true, allowPendingMfaEnrolment: true })
 }

@@ -37,6 +37,7 @@ export const BUILTIN_SCHEDULES: BuiltinSchedule[] = [
   { id: 'sched_outbox_retention', name: 'Outbox, run log and job retention', description: 'Deletes dispatched outbox rows, event run log entries and finished jobs older than the configured number of days.', cron: '17 3 * * *', jobType: OUTBOX_RETENTION_JOB, payload: { days: DEFAULT_OUTBOX_DAYS, eventRunDays: 30, jobDays: 14 }, enabled: true },
   { id: 'sched_audit_retention', name: 'Audit log retention', description: 'Deletes audit entries of this environment older than the configured number of days. Off until an administrator enables it.', cron: '27 3 * * *', jobType: AUDIT_RETENTION_JOB, payload: { days: 730 }, enabled: false },
   { id: 'sched_attachment_sweep', name: 'Attachment orphan sweep', description: 'Removes attachment files whose row or cell no longer references them.', cron: '37 3 * * *', jobType: SWEEP_JOB, payload: { graceMinutes: 60 }, enabled: true },
+  { id: 'sched_collab_sweep', name: 'Collaboration orphan sweep', description: 'Removes comments, activities, follows, tags and file links about records deleted outside Appbuilder (and about tables that are gone).', cron: '47 3 * * *', jobType: 'collab.orphan-sweep', payload: {}, enabled: true },
   { id: 'sched_rollup_reconcile', name: 'Rollup reconcile', description: 'Recomputes every rollup column from its rows, repairing anything a missed or failed update left behind.', cron: '7 * * * *', jobType: ROLLUP_RECONCILE_JOB, payload: {}, enabled: true },
 ]
 

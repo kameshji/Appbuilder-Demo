@@ -262,6 +262,21 @@ time zone: `Year(Due) = 2026` is `Due >= 2026-01-01 and Due < 2027-01-01`; `<`, 
 fraction never equals a year; a blank cell compares as 0 (`withNull`). `Month`, `Day`, `Weekday` and other date parts are not
 ranges and stay refused.
 
+### 4c. Lookup paths: `via` (core data model, package N)
+
+`{ via: { col, table, where, orMissing? } }`: the row's lookup column `col` points at a row of `table` (by id) for which
+`where` holds. The translator produces it for a path through a lookup: `createdBy.FullName = "Ada"` is
+`{ via: { col: 'createdBy', table: 'sys_users', where: { col: 'FullName', op: 'eq', value: 'Ada' } } }`. `orMissing`
+(set when `where` holds for a blank row) also matches a blank lookup and an id whose row is missing or unreadable: the
+engine reads the fields of such a row as blank, so `IsBlank(createdBy.FullName)` holds for them. The validator checks that `col` is a lookup to `table` (`TableSchemaInfo.lookups`
+and `RelatedSchema`).
+
+- PostgreSQL: `col IN (SELECT id FROM <table> WHERE <where> AND <table's read predicate for the caller>)`; column
+  security applies to the target's columns (a hidden column in `where` is refused like on the main table). A target in
+  another store is refused, never evaluated in memory.
+- Reference executor: `ExecuteOptions.related` gives the target's rows (`RelatedRows`).
+- `explain` prints it as `createdBy (sys_users) where ...` (`or blank` with `orMissing`).
+
 ## 5. Sorting
 
 Each `SortKeyV2 { col, dir }` orders by a **normalised key**, which is how the engine orders values with blanks:

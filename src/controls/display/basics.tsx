@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { alignOf, alignProp, fontWeightOf, recordText, toColor, toNum, toRecords, toText } from '../util'
 import { DynIcon, SUCCESS_COLOR, lc, pick, pickText, variantOf } from './helpers'
+import { personName, usePeopleNames } from './people'
 
 /* ------------------------------------------------------------------ Heading */
 
@@ -239,9 +240,13 @@ export function AvatarCircle({ src, name, size, ring }: { src: string; name: str
 
 function AvatarRender({ props }: ControlRenderProps) {
   const size = toNum(props.Size, 0)
+  // User: a user id or a record of Users (createdBy, owner, User()): the name comes from the Users system table
+  const bound = props.User !== null && props.User !== undefined && props.User !== ''
+  const names = usePeopleNames(bound)
+  const name = bound ? personName(props.User, names) : toText(props.Name)
   return (
-    <div className="flex size-full items-center justify-center" style={{ containerType: 'size' }}>
-      <AvatarCircle src={toText(props.Image).trim()} name={toText(props.Name)} size={size > 0 ? `${size}px` : '100cqmin'} />
+    <div className="flex size-full items-center justify-center" style={{ containerType: 'size' }} title={name}>
+      <AvatarCircle src={toText(props.Image).trim()} name={name} size={size > 0 ? `${size}px` : '100cqmin'} />
     </div>
   )
 }
@@ -253,6 +258,7 @@ export const Avatar: ControlType = {
   category: 'Display',
   props: [
     { name: 'Name', kind: 'text', group: 'Content', default: '="Ada Lovelace"' },
+    { name: 'User', kind: 'any', group: 'Data', default: '=Blank()' },
     { name: 'Image', kind: 'text', group: 'Content', default: '=""' },
     { name: 'Size', kind: 'number', group: 'Style', default: '=0' },
   ],
@@ -263,7 +269,12 @@ export const Avatar: ControlType = {
 }
 
 function AvatarGroupRender({ props }: ControlRenderProps) {
-  const items = toRecords(props.Items)
+  // Users: a table of user ids or Users records (e.g. followers, assignees); otherwise Items with Name / Image
+  const people = Array.isArray(props.Users) ? props.Users : null
+  const names = usePeopleNames(!!people)
+  const items = people
+    ? people.map((v) => ({ Name: personName(v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date) && 'Value' in v && Object.keys(v).length === 1 ? v.Value : v, names) }))
+    : toRecords(props.Items)
   const max = Math.max(1, Math.round(toNum(props.Max, 4)))
   const size = toNum(props.Size, 0)
   const diam = size > 0 ? `${size}px` : '100cqh'
@@ -300,6 +311,7 @@ export const AvatarGroup: ControlType = {
   category: 'Display',
   props: [
     { name: 'Items', kind: 'table', group: 'Data', default: '=Table({Name: "Ada Lovelace"}, {Name: "Grace Hopper"}, {Name: "Alan Turing"}, {Name: "Linus Torvalds"}, {Name: "Margaret Hamilton"})' },
+    { name: 'Users', kind: 'table', group: 'Data', default: '=Blank()', simple: false },
     { name: 'Max', kind: 'number', group: 'Style', default: '=4' },
     { name: 'Size', kind: 'number', group: 'Style', default: '=0' },
   ],

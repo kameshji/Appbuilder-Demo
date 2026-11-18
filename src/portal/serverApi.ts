@@ -20,7 +20,10 @@ export async function toError(res: Response): Promise<PlatformError> {
   let body: Partial<ApiError> | null = null
   try { body = (await res.json()) as Partial<ApiError> } catch { /* not JSON */ }
   const code = body?.error?.code ?? (res.status === 401 ? 'unauthenticated' : res.status === 403 ? 'denied' : res.status === 404 ? 'not-found' : res.status === 405 ? 'method_not_allowed' : res.status === 409 ? 'conflict' : res.status === 429 ? 'rate_limited' : res.status === 503 ? 'unavailable' : 'storage')
-  return new PlatformError(code, body?.error?.message ?? `The server answered ${res.status}`)
+  const err = new PlatformError(code, body?.error?.message ?? `The server answered ${res.status}`)
+  // the field the server named (e.g. "backup": the backup before a change failed, package J)
+  if (body?.error?.field) Object.assign(err, { field: body.error.field })
+  return err
 }
 
 /** Admin only: what a chosen user would see (row counts and hidden / read-only columns per table), computed by the server. */

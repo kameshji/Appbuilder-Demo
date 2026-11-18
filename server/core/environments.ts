@@ -93,7 +93,9 @@ export function createEnvironmentManager(deps: {
         if (e.state !== 'ready') {
           throw new HttpError(503, 'unavailable', e.state === 'failed'
             ? `The environment "${e.name}" is not available: ${e.lastError ?? 'it failed'}`
-            : `The environment "${e.name}" is being ${e.state === 'creating' ? 'created' : 'deleted'}. Try again in a moment.`)
+            : e.state === 'restoring'
+              ? `The environment "${e.name}" is being restored from a backup. Nothing can be read or changed there until it is done; try again in a few minutes.`
+              : `The environment "${e.name}" is being ${e.state === 'creating' ? 'created' : 'deleted'}. Try again in a moment.`)
         }
         return e
       }

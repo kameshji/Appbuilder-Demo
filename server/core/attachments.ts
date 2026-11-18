@@ -196,6 +196,8 @@ export function attachmentRoutes(router: ApiRouter, services: CoreServices): voi
         await services.data.internals.removeAttachments(old)
       }
       await audit(services, user, 'attachment.upload', rec)
+      // core data model: the file is listed in Attachment links (and a document's file becomes a version)
+      await services.collab?.attachmentAdded(rec).catch((e) => services.collab?.log('attachment link', e))
       return services.attachments.toRef(rec)
     })
   }, { auth: 'user', raw: true, streamBody: true, maxBodyMB: ROUTE_MAX_MB })

@@ -351,7 +351,9 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
       const problem = originProblem(req, opts.allowAnyHost, allowedHosts)
       if (problem) throw new HttpError(403, 'denied', problem)
       const method = (req.method ?? 'GET').toUpperCase()
-      if (method !== 'GET' && method !== 'HEAD' && req.headers[CSRF_HEADER.toLowerCase()] !== '1') {
+      // API keys (package I): a request with Authorization: Bearer carries no cookie authority, so no CSRF header is needed
+      const bearer = /^Bearer\s/i.test(String(req.headers.authorization ?? ''))
+      if (method !== 'GET' && method !== 'HEAD' && !bearer && req.headers[CSRF_HEADER.toLowerCase()] !== '1') {
         throw new HttpError(403, 'denied', `Missing ${CSRF_HEADER} header.`)
       }
       if (!url.pathname.startsWith(API_BASE + '/') && url.pathname !== API_BASE) throw new HttpError(404, 'not-found', 'Unknown API route.')
@@ -426,12 +428,15 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
         if (user.user.mustChangePassword && !route.opts.allowPendingPasswordChange) {
           throw new HttpError(403, 'password_change_required', 'You must change your password before you can continue.')
         }
+        if (user.user.mfaEnrolmentRequired && !route.opts.allowPendingMfaEnrolment) {
+          throw new HttpError(403, 'mfa_enrolment_required', 'Set up two-step verification before you continue (your administrator requires it).')
+        }
         if (route.opts.auth === 'admin' && !user.privileges.isAdmin) throw new HttpError(403, 'denied', 'Only administrators can do this.')
         ctx.user = user
         if (route.opts.design && method !== 'GET' && (await services.environments?.isLocked(ctx.environmentId))) {
           throw new HttpError(403, 'denied', LOCKED_MESSAGE)
         }
-      } else if (services.ready() && cookieValue(req, SESSION_COOKIE)) {
+      } else if (!bearer && services.ready() && cookieValue(req, SESSION_COOKIE)) {
         try {
           ctx.user = (await resolveSession(ctx, { allowNoEnvironment: true })) ?? undefined
         } catch {

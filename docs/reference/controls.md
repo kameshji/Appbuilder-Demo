@@ -38,9 +38,9 @@ Every control except a screen has these 10 properties. They are not repeated in 
 ## Controls by category
 
 - [Layout](#layout): [Screen](#screen), [Container](#container), [Row](#row), [Column](#column), [Grid](#grid), [Card](#card), [Scroll area](#scroll-area), [Divider](#divider), [Spacer](#spacer), [Dialog](#dialog), [Sheet](#sheet), [Accordion](#accordion)
-- [Input](#input): [Button](#button), [Text input](#text-input), [Checkbox](#checkbox), [Toggle](#toggle), [Dropdown](#dropdown), [Text area](#text-area), [Number input](#number-input), [Password input](#password-input), [Search box](#search-box), [Radio group](#radio-group), [Combo box](#combo-box), [Date picker](#date-picker), [Date range picker](#date-range-picker), [Time picker](#time-picker), [Slider](#slider), [Range slider](#range-slider), [Rating](#rating), [Toggle group](#toggle-group), [Segmented control](#segmented-control), [Icon button](#icon-button), [Link button](#link-button), [Split button](#split-button), [Menu button](#menu-button), [File upload](#file-upload), [Color picker](#color-picker), [Stepper](#stepper), [PIN input](#pin-input), [Timer](#timer)
+- [Input](#input): [Button](#button), [Text input](#text-input), [Checkbox](#checkbox), [Toggle](#toggle), [Dropdown](#dropdown), [Text area](#text-area), [Number input](#number-input), [Password input](#password-input), [Search box](#search-box), [Radio group](#radio-group), [Combo box](#combo-box), [Person picker](#person-picker), [Tag input](#tag-input), [Date picker](#date-picker), [Date range picker](#date-range-picker), [Time picker](#time-picker), [Slider](#slider), [Range slider](#range-slider), [Rating](#rating), [Toggle group](#toggle-group), [Segmented control](#segmented-control), [Icon button](#icon-button), [Link button](#link-button), [Split button](#split-button), [Menu button](#menu-button), [File upload](#file-upload), [Color picker](#color-picker), [Stepper](#stepper), [PIN input](#pin-input), [Timer](#timer)
 - [Display](#display): [Label](#label), [Image](#image), [Rectangle](#rectangle), [Heading](#heading), [Rich text](#rich-text), [Badge](#badge), [Avatar](#avatar), [Avatar group](#avatar-group), [Icon](#icon), [Shape](#shape), [Tag list](#tag-list), [Stat card](#stat-card), [Timeline](#timeline)
-- [Data](#data): [Gallery](#gallery), [Form](#form), [Data table](#data-table), [List](#list), [Calendar](#calendar)
+- [Data](#data): [Gallery](#gallery), [Form](#form), [Data table](#data-table), [List](#list), [Calendar](#calendar), [Record timeline](#record-timeline), [Activity list](#activity-list)
 - [Navigation](#navigation): [Tabs](#tabs), [Breadcrumb](#breadcrumb), [Pagination](#pagination), [Nav menu](#nav-menu), [Top bar](#top-bar), [Steps](#steps)
 - [Feedback](#feedback): [Progress](#progress), [Circular progress](#circular-progress), [Spinner](#spinner), [Skeleton](#skeleton), [Alert](#alert), [Empty state](#empty-state)
 - [Media](#media): [Video](#video), [Audio](#audio), [Animated icon](#animated-icon)
@@ -584,6 +584,46 @@ Type: `ComboBox` · default size 260 x 40 · main property: `Items` · also has 
 
 - **Selection.** `Selected` is the first selected item; `SelectedItems` holds all of them.
 
+### Person picker
+
+Choose a person from the Users of this environment, with search; Value is the user id, Selected the person.
+
+Type: `PersonPicker` · default size 260 x 40 · main property: `Default`
+
+| Property | Kind | Group | Default | Level |
+| --- | --- | --- | --- | --- |
+| `Default` | text | Data | `=""` | Simple |
+| `Placeholder` | text | Content | `="Choose a person"` | Simple |
+| `OnChange` | action | Behaviour | `=false` | Simple |
+
+**Outputs**
+
+| Output | Initial value |
+| --- | --- |
+| `Value` | blank |
+| `Selected` | blank |
+
+**Events:** `OnChange`.
+
+### Tag input
+
+The tags of a record: add a tag (created when new) or remove one.
+
+Type: `TagInput` · default size 320 x 36 · main property: `Record`
+
+| Property | Kind | Group | Default | Level |
+| --- | --- | --- | --- | --- |
+| `Record` | record | Data | `=Blank()` | Simple |
+| `Table` | text | Data | `=""` | Advanced |
+
+**Outputs**
+
+| Output | Initial value |
+| --- | --- |
+| `Tags` | `[]` |
+
+**Events:** none.
+
 ### Date picker
 
 Picks one date from a calendar.
@@ -1098,13 +1138,14 @@ Type: `Badge` · default size 72 x 24 · main property: `Text`
 
 ### Avatar
 
-A round picture or initials for a person.
+A round picture or initials for a person. Set User to a user id or a Users record (ThisItem.owner, User()) to show that person.
 
 Type: `Avatar` · default size 48 x 48 · main property: `Name`
 
 | Property | Kind | Group | Default | Level |
 | --- | --- | --- | --- | --- |
 | `Name` | text | Content | `="Ada Lovelace"` | Simple |
+| `User` | any | Data | `=Blank()` | Simple |
 | `Image` | text | Content | `=""` | Simple |
 | `Size` | number | Style | `=0` | Simple |
 
@@ -1112,13 +1153,14 @@ Type: `Avatar` · default size 48 x 48 · main property: `Name`
 
 ### Avatar group
 
-A row of overlapping avatars for a list of people.
+A row of overlapping avatars for a list of people. Set Users to a table of user ids or Users records.
 
 Type: `AvatarGroup` · default size 180 x 40 · main property: `Items`
 
 | Property | Kind | Group | Default | Level |
 | --- | --- | --- | --- | --- |
 | `Items` | table | Data | `=Table({Name: "Ada Lovelace"}, {Name: "Grace Hopper"}, {Name: "Alan Turing"}, {Name: "Linus Torvalds"}, {Name: "Margaret Hamilton"})` | Simple |
+| `Users` | table | Data | `=Blank()` | Advanced |
 | `Max` | number | Style | `=4` | Simple |
 | `Size` | number | Style | `=0` | Simple |
 
@@ -1368,6 +1410,47 @@ Type: `Calendar` · default size 320 x 340 · main property: `Default`
 | `SelectedEvents` | `[]` |
 
 **Events:** `OnSelect`.
+
+### Record timeline
+
+The timeline of one record (core data model): comments with @mentions, activities, files and the record's changes in one live feed, with a composer, follow and tags.
+
+Type: `RecordTimeline` · default size 420 x 520 · main property: `Record`
+
+| Property | Shown as | Kind | Group | Default | Level |
+| --- | --- | --- | --- | --- | --- |
+| `Record` |  | record | Data | `=Blank()` | Simple |
+| `Table` |  | text | Data | `=""` | Advanced |
+| `Title` |  | text | Content | `=""` | Simple |
+| `ShowComposer` | Show composer | boolean | Behaviour | `=true` | Simple |
+| `PageSize` | Page size | number | Data | `=20` | Advanced |
+
+**Outputs**
+
+| Output | Initial value |
+| --- | --- |
+| `Count` | `0` |
+
+**Events:** none.
+
+### Activity list
+
+The signed-in user's open tasks (activities of type Task assigned to them or their teams), with a checkbox to complete each.
+
+Type: `ActivityList` · default size 360 x 320 · main property: `Title`
+
+| Property | Shown as | Kind | Group | Default | Level |
+| --- | --- | --- | --- | --- | --- |
+| `Title` |  | text | Content | `="My tasks"` | Simple |
+| `ShowDone` | Show done | boolean | Data | `=false` | Simple |
+
+**Outputs**
+
+| Output | Initial value |
+| --- | --- |
+| `Count` | `0` |
+
+**Events:** none.
 
 ## Navigation
 

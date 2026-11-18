@@ -54,7 +54,7 @@ describe('init and seed', () => {
     expect(s.users.map((u) => u.name)).toEqual(['Admin', 'Sam Maker', 'Vera Viewer'])
     expect(s.roles.map((r) => r.name)).toEqual(['Administrator', 'Maker', 'Viewer'])
     expect(s.roles[0].isAdmin).toBe(true)
-    expect(s.tables.map((t) => t.name).sort()).toEqual(['Contacts', 'Orders'])
+    expect(s.tables.filter((t) => !t.system).map((t) => t.name).sort()).toEqual(['Contacts', 'Orders'])
     expect(p.tables.rows('Contacts')).toHaveLength(8)
     expect(p.tables.rows('Orders')).toHaveLength(12)
     expect(s.connections).toHaveLength(1)
@@ -98,7 +98,7 @@ describe('init and seed', () => {
 
   it('does not seed when a workspace already has tables, and repairs missing admin', async () => {
     const { p } = await bootEmpty()
-    expect(p.getState().tables).toHaveLength(0)
+    expect(p.getState().tables.filter((t) => !t.system)).toHaveLength(0)
     expect(p.getState().users).toHaveLength(1)
     expect(p.getState().roles[0].isAdmin).toBe(true)
   })
@@ -608,7 +608,7 @@ describe('tables: schema operations', () => {
     expect(storage.files.has('tables/Orders.schema.yaml')).toBe(false)
     expect(p.getState().roles.every((r) => r.privileges.every((x) => x.table !== orders.id))).toBe(true)
     expect(p.getState().solutions[0].components.some((c) => c.id === orders.id)).toBe(false)
-    expect(p.getState().tables).toHaveLength(1)
+    expect(p.getState().tables.filter((t) => !t.system)).toHaveLength(1)
   })
 })
 
@@ -776,7 +776,7 @@ describe('app packages', () => {
     const imp2 = await p.apps.importPackage(text)
     expect(imp2.name).toBe('Contacts app (3)')
     expect(p.getState().apps).toHaveLength(3)
-    expect(p.getState().tables).toHaveLength(2) // Contacts was reused, not duplicated
+    expect(p.getState().tables.filter((t) => !t.system)).toHaveLength(2) // Contacts was reused, not duplicated
     expect(p.tables.rows('Contacts')).toHaveLength(8)
     const def = (await p.apps.load(imp.id))!
     expect(def.name).toBe('Contacts app (2)')
@@ -891,15 +891,15 @@ describe('solutions', () => {
     expect(s.apps.map((a) => a.name).sort()).toEqual(['Contacts app', 'Contacts app (2)'])
     expect(s.roles.map((r) => r.name).sort()).toEqual(['Administrator', 'Administrator (2)', 'Maker', 'Maker (2)', 'Viewer', 'Viewer (2)'])
     expect(s.connections.map((c) => c.name).sort()).toEqual(['Local CSV', 'Local CSV (2)'])
-    expect(s.tables).toHaveLength(2) // reused by name
+    expect(s.tables.filter((t) => !t.system)).toHaveLength(2) // reused by name
     const kinds = (k: string) => imp.components.filter((c) => c.kind === k).map((c) => c.id)
     expect(kinds('app')).toHaveLength(1)
     expect(kinds('app')[0]).not.toBe(s.apps.find((a) => a.name === 'Contacts app')!.id)
     expect(kinds('role')).toHaveLength(3)
-    expect(kinds('table').sort()).toEqual(s.tables.map((t) => t.id).sort())
+    expect(kinds('table').sort()).toEqual(s.tables.filter((t) => !t.system).map((t) => t.id).sort())
     // imported roles point at the (reused) tables and keep working
     const maker2 = s.roles.find((r) => r.name === 'Maker (2)')!
-    expect(maker2.privileges.map((x) => x.table).sort()).toEqual(s.tables.map((t) => t.id).sort())
+    expect(maker2.privileges.map((x) => x.table).sort()).toEqual(s.tables.filter((t) => !t.system).map((t) => t.id).sort())
     expect(s.roles.find((r) => r.name === 'Administrator (2)')!.isAdmin).toBe(true)
     // original is untouched
     expect(s.solutions[0].components).toEqual(sol.components)
@@ -911,7 +911,7 @@ describe('solutions', () => {
     const { p: q } = await bootEmpty()
     const imp = await q.solutions.importPackage(text)
     const qs = q.getState()
-    expect(qs.tables.map((t) => t.name).sort()).toEqual(['Contacts', 'Orders'])
+    expect(qs.tables.filter((t) => !t.system).map((t) => t.name).sort()).toEqual(['Contacts', 'Orders'])
     expect(q.tables.rows('Contacts')).toHaveLength(8)
     expect(q.tables.rows('Orders')).toHaveLength(12)
     const ids = new Set(q.tables.rows('Contacts').map((r) => r.id))

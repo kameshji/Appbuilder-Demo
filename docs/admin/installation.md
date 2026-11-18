@@ -173,6 +173,30 @@ After step 2:
 
 You can skip step 1 by setting the `APPBUILDER_DB_*` environment variables (see below). Step 2 is still needed.
 
+## Set up email (SMTP relay)
+
+Password reset links, invitations, sign-in codes and new-device notices are sent through an SMTP relay you already have
+(your mail provider's submission server, Microsoft 365, Google Workspace, or a relay in your network). Without it
+everything still works, with administrator reset codes and temporary passwords instead.
+
+1. Sign in as an install administrator, open **Admin console > Email**.
+2. Enter the relay: host, port and security. The usual choice is **STARTTLS on port 587**; **TLS** is port 465; **None**
+   only for a relay on this computer (a user name and password are never sent unencrypted to another host). Leave
+   *Verify the relay's certificate* on unless your internal relay has a self-signed certificate.
+3. User name and password of the relay account (stored encrypted with the install key, never shown again).
+4. The sender: from address (one the relay may send as), from name, optional reply-to, the **install name** shown in
+   every email, and the **public address** people open Appbuilder at (links in emails start with it; behind a proxy use
+   its `https://` address).
+5. **Save**, then **Send test email**. The answer of the relay is shown; failures say why (wrong password, refused sender,
+   certificate). The delivery log underneath lists every email (recipient, subject, status, attempts, last error; never
+   the body).
+
+Emails are queued as jobs (Admin console > Jobs, type `mail.send`) and retried with backoff when the relay is
+temporarily unavailable (up to 6 attempts); a permanent refusal (5xx) stops at once. Details:
+[Sign-in and identity](sign-in-and-identity.md#email).
+
+![Admin console, Email](../images/admin-email.png)
+
 ## Environment variables
 
 All are optional. Set them before starting the server (`npm start` or `node server/main.ts`). Read from
@@ -195,6 +219,7 @@ All are optional. Set them before starting the server (`npm start` or `node serv
 | `APPBUILDER_TRUST_PROXY` | off | `1`: trust the `X-Forwarded-Proto` header from a reverse proxy; when it says `https`, the cookie gets `Secure`. Only set it when a proxy you control is the only way to reach the port (otherwise any client can send the header; harmless for `Secure`, but nothing else is derived from it). |
 | `APPBUILDER_LIVE_MAX_PER_USER` | 20 | Realtime sockets (`/api/v1/live`) one user may hold at once, all tabs and devices together. One per open tab. |
 | `APPBUILDER_LIVE_MAX_CONNECTIONS` | 5000 | Realtime sockets for the whole server. |
+| `APPBUILDER_REAUTH_SECONDS` | 600 | How long a sign-in or re-authentication counts as recent for sensitive actions (changing the sign-in email, turning two-step verification off, creating API keys, deleting an environment, exporting all data). |
 
 Notes:
 

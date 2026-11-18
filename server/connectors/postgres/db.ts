@@ -6,6 +6,8 @@
  * - Every pooled connection starts with `search_path=pg_catalog,pg_temp` and `TimeZone=UTC` (startup options, never SET):
  *   an unqualified table name fails loudly instead of resolving to some schema, objects in `public` cannot shadow
  *   built-in functions, and no request can change what another request on the same pooled connection sees.
+ *   `jit=off` too: row-security predicates (the polymorphic "regarding" one of the collaboration tables in particular)
+ *   make large expressions with high cost estimates, and compiling them took seconds where running them took milliseconds.
  * - Type parsers (per pool, never global): int8 -> number (string above 2^53), numeric -> string, date -> 'YYYY-MM-DD'
  *   text (no local-time shift), timestamp without time zone -> Date read as UTC, timestamptz -> Date, json/jsonb -> parsed.
  * - Transactions: `tx(fn)` runs fn on one client inside BEGIN/COMMIT (ROLLBACK when fn throws). While it runs, the
@@ -22,7 +24,7 @@ import { HttpError } from '../../core/contracts.ts'
 import type { DatabaseSettings, SqlDb, SqlResult } from '../../core/contracts.ts'
 
 /** startup options of every connection (see the header) */
-export const SESSION_OPTIONS = '-c search_path=pg_catalog,pg_temp -c TimeZone=UTC'
+export const SESSION_OPTIONS = '-c search_path=pg_catalog,pg_temp -c TimeZone=UTC -c jit=off'
 
 const OID = { int8: 20, date: 1082, timestamp: 1114, numeric: 1700 } as const
 

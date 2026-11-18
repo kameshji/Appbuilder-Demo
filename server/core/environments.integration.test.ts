@@ -254,10 +254,10 @@ describe.skipIf(!PG_URL)('environments (PostgreSQL)', () => {
     expect((await A.patch('/environments/sales_test', { locked: true })).status).toBe(422) // sandbox
     const dev = await A.post('/environments', { name: 'Dev one', type: 'developer', sampleData: true })
     expect(dev.status, JSON.stringify(dev.data)).toBe(200)
-    expect((await A.get('/workspace', 'dev_one')).data.tables.map((t: { name: string }) => t.name).sort()).toEqual(['Contacts', 'Orders'])
+    expect((await A.get('/workspace', 'dev_one')).data.tables.filter((t: { system?: boolean }) => !t.system).map((t: { name: string }) => t.name).sort()).toEqual(['Contacts', 'Orders'])
     const empty = await A.post('/environments', { name: 'Empty', type: 'sandbox' })
     expect(empty.status).toBe(200)
-    expect((await A.get('/workspace', 'empty')).data.tables).toEqual([])
+    expect((await A.get('/workspace', 'empty')).data.tables.filter((t: { system?: boolean }) => !t.system)).toEqual([])
     // the limit is 4 here (APPBUILDER_MAX_ENVIRONMENTS)
     const over = await A.post('/environments', { name: 'Fifth', type: 'sandbox' })
     expect(over.status).toBe(409)
@@ -323,7 +323,7 @@ describe.skipIf(!PG_URL)('environments (PostgreSQL)', () => {
 
     const plan = await A.post(`/solutions/${solId}/deploy`, { target: 'default', plan: true }, 'sales_test')
     expect(plan.status, JSON.stringify(plan.data)).toBe(200)
-    expect(plan.data).toMatchObject({ mode: 'upgrade', target: { id: 'default', locked: true }, destructive: true, problems: [], backup: { available: false } })
+    expect(plan.data).toMatchObject({ mode: 'upgrade', target: { id: 'default', locked: true }, destructive: true, problems: [], backup: { available: true } })
     const t = plan.data.items.find((i: { kind: string; id: string }) => i.kind === 'table' && i.id === contacts.id)
     expect(t).toMatchObject({ change: 'changed', destructive: true })
     expect(t.columns).toEqual(expect.arrayContaining([{ name: 'City', change: 'removed', from: 'text', destructive: true }, { name: 'Score', change: 'added', to: 'number' }]))
@@ -335,8 +335,9 @@ describe.skipIf(!PG_URL)('environments (PostgreSQL)', () => {
     expect((await maker.post(`/solutions/${solId}/deploy`, { target: 'default', plan: true }, 'sales_test')).status).toBe(403)
     const done = await A.post(`/solutions/${solId}/deploy`, { target: 'default', confirm: plan.data.token }, 'sales_test')
     expect(done.status, JSON.stringify(done.data)).toBe(200)
-    expect(done.data).toMatchObject({ id: solId, version: '1.1.0', backup: { taken: false } })
-    expect(done.data.warnings.join(' ')).toMatch(/No backup was taken/)
+    // a backup of Default was taken before the upgrade (package J): no "no backup" warning
+    expect(done.data).toMatchObject({ id: solId, version: '1.1.0', backup: { taken: true } })
+    expect((done.data.warnings ?? []).join(' ')).not.toMatch(/No backup was taken/)
     // Default now has the column changes and the app change; rows are all still there (Score empty, City gone)
     const dws = (await A.get('/workspace', 'default')).data
     const dc = dws.tables.find((x: { id: string }) => x.id === contacts.id)

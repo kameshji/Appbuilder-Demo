@@ -16,6 +16,7 @@ import type { FxDiagnostic, FxEngine, FxScope, FxValue } from '@/contracts'
 import { analyze, bindResult, explain, residualScope, type AnalyzeResult, type PlannedQuery, type QueryDiagnostic } from '@/fx/query'
 import { parse } from '@/fx/parser'
 import { freeIdentifiers, type Node } from '@/fx/ast'
+import { isSystemMacro, systemMacroTables } from '@/fx/functions/collab'
 import { columnKind, type ColumnKind, type QueryPlan, type SchemaInfo, type SortKeyV2, type TableSchemaInfo } from '@/platform/query'
 import { platform, type QueryState } from '@/platform'
 import { platformMode, platformState } from './data'
@@ -132,15 +133,18 @@ export function tableReads(formula: string, collections: Record<string, unknown>
       return
     }
     if (n.t === 'call') {
+      // core data model macros read their system tables (Comments(r) is Filter(Comments, ...))
+      if (isSystemMacro(n)) for (const t of systemMacroTables(n)) if (tables.has(t)) macro.add(t)
       n.args.forEach((a, i) => visit(a, i === 0 && WRITE_TARGET.has(n.name) && a.t === 'id'))
       return
     }
     for (const id of childNodes(n)) visit(id, false)
   }
+  const macro = new Set<string>()
   visit(ast, false)
   // freeIdentifiers respects As aliases; intersect to drop names shadowed by an alias
   const free = new Set(freeIdentifiers(ast).map((x) => x.name))
-  return [...out].filter((n) => free.has(n))
+  return [...new Set([...[...out].filter((n) => free.has(n)), ...macro])]
 }
 
 function childNodes(n: Node): Node[] {
@@ -184,8 +188,13 @@ export function schemaFor(reads: string[]): SchemaInfo {
   const tables: Record<string, TableSchemaInfo> = {}
   for (const t of platformState()?.tables ?? []) {
     const columns: Record<string, ColumnKind> = { id: 'text' }
-    for (const c of t.columns) columns[c.name] = columnKind(c.type)
-    tables[t.name] = { columns }
+    const lookups: Record<string, string> = {}
+    for (const c of t.columns) {
+      columns[c.name] = columnKind(c.type)
+      // lookup paths (createdBy.FullName = ...) translate when the target table is known
+      if (c.type === 'lookup' && c.lookupTable) lookups[c.name] = c.lookupTable
+    }
+    tables[t.name] = Object.keys(lookups).length ? { columns, lookups } : { columns }
   }
   for (const name of reads) {
     const s = sizeOf(name)

@@ -86,7 +86,7 @@ describe.skipIf(!URL_ENV)('metadata API integration (PostgreSQL)', () => {
   it('seeds the sample tables, rows (owned by the admin) and the Contacts app', async () => {
     const boot = await A.get('/workspace')
     expect(boot.status).toBe(200)
-    const tables = boot.data.tables as { id: string; name: string }[]
+    const tables = (boot.data.tables as { id: string; name: string; system?: boolean }[]).filter((t) => !t.system)
     expect(tables.map((t) => t.name).sort()).toEqual(['Contacts', 'Orders'])
     const contacts = tables.find((t) => t.name === 'Contacts')!
     const rows = await A.post(`/data/${contacts.id}/query`, {})

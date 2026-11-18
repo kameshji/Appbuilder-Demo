@@ -1,6 +1,9 @@
 # Data
 
-Apps read and write **tables**. You manage them under **Tables** (Maker role).
+Apps read and write **tables**. You manage them under **Tables** (Maker role). To see all tables and their
+relationships on one diagram, change several of them in one reviewed step, set what happens to related rows when a row is
+deleted, or start from a pattern (master-detail, hierarchy, star schema, ...), use the
+[data model designer](data-model.md) (Dev mode > Data model).
 
 ![Tables](../../images/portal-tables.png)
 

@@ -56,7 +56,18 @@ export type Condition =
    */
   | { semi: SemiJoin }
 
-export interface SemiJoin { col: string; table: TableDef; key: string; where: Condition }
+export interface SemiJoin {
+  col: string
+  table: TableDef
+  key: string
+  where: Condition
+  /**
+   * PostgreSQL: emit a correlated `EXISTS (SELECT 1 FROM table WHERE key = outer.col AND where)` instead of `IN (...)`.
+   * Same meaning; used by the polymorphic "regarding" rule of the core data model, where many such branches are ORed
+   * and each must cost one primary-key probe per candidate row (src/platform/system-tables.ts).
+   */
+  correlated?: boolean
+}
 
 export interface Query {
   select?: string[]
@@ -165,6 +176,8 @@ export interface EnvironmentDetails extends EnvironmentDef {
   sizes?: EnvironmentSizes
   /** users who may enter it */
   accessCount?: number
+  /** the newest good backup that contains it (its own, or an install backup); null: none (package J; install admins) */
+  lastBackup?: { id: string; at: string; kind: 'install' | 'environment'; fileName: string } | null
 }
 export interface EnvironmentAccessEntry { userId: string; name: string; email: string; isEnvAdmin: boolean; isInstallAdmin?: boolean; grantedOn?: string; grantedBy?: string; status?: 'active' | 'disabled' }
 
@@ -329,4 +342,4 @@ export interface SolutionPlan {
    */
   systemEvents?: string[]
 }
-export type SolutionImportResult = SolutionDef & { warnings?: string[]; plan?: SolutionPlan; backup?: { taken: boolean; message: string } }
+export type SolutionImportResult = SolutionDef & { warnings?: string[]; plan?: SolutionPlan; backup?: { taken: boolean; message: string; id?: string; failed?: boolean } }

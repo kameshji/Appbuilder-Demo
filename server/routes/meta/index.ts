@@ -9,6 +9,8 @@ import { registerOrgRoutes } from './org.ts'
 import { registerSecurityRoutes } from './security.ts'
 import { registerSolutionRoutes } from './solutions.ts'
 import { registerTableRoutes } from './tables.ts'
+import { registerModelRoutes } from './model.ts'
+import { registerBusinessModelRoutes } from './business-model.ts'
 
 export const metaRoutes: RouteModule = (router, services) => {
   registerAppRoutes(router, services)
@@ -20,6 +22,8 @@ export const metaRoutes: RouteModule = (router, services) => {
   registerAdminRoutes(router, services)
   registerEnvironmentRoutes(router, services)
   registerOrgRoutes(router, services)
+  registerModelRoutes(router, services)
+  registerBusinessModelRoutes(router, services)
 }
 
 export { migrateLegacyWorkspace } from './migrate.ts'

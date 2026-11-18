@@ -3,6 +3,8 @@
  * value coercion (used for type-change checks), CSV and YAML helpers. Ported from the phase-2 browser
  * implementation (src/platform/values.ts, core.ts) so the server never imports browser modules.
  */
+import { isSystemTableId } from '../../../src/platform/system-tables.ts'
+import { sanitizeReporting, sanitizeUniqueTogether } from '../../core/model/packages.ts'
 import { normalizeComputed } from '../../core/table-events.ts'
 import * as yaml from 'js-yaml'
 import Papa from 'papaparse'
@@ -105,8 +107,9 @@ export const SYSTEM_COLUMNS: ColumnDef[] = [
   { name: 'id', displayName: 'Id', type: 'text', system: true },
   { name: 'createdOn', displayName: 'Created on', type: 'datetime', system: true },
   { name: 'modifiedOn', displayName: 'Modified on', type: 'datetime', system: true },
-  { name: 'createdBy', displayName: 'Created by', type: 'text', system: true },
-  { name: 'owner', displayName: 'Owner', type: 'text', system: true },
+  // core data model (P0-N): the people columns are lookups to the Users system table (ThisRecord.createdBy.FullName)
+  { name: 'createdBy', displayName: 'Created by', type: 'lookup', lookupTable: 'Users', system: true },
+  { name: 'owner', displayName: 'Owner', type: 'lookup', lookupTable: 'Users', system: true },
 ]
 export const SYSTEM_NAMES = new Set(SYSTEM_COLUMNS.map((c) => c.name))
 export const systemColumns = (): ColumnDef[] => SYSTEM_COLUMNS.map((c) => ({ ...c }))
@@ -293,6 +296,17 @@ export function sanitizeTableDef(raw: unknown, now: string): TableDef {
   if (typeof raw.description === 'string' && raw.description) def.description = raw.description
   if (raw.teamOwnership === true) def.teamOwnership = true
   if (raw.sharing === true) def.sharing = true
+  // core data model: a system table in a package carries only the columns a maker added to it (matched by its stable id)
+  if (raw.system === true && isSystemTableId(def.id)) def.system = true
+  // data model designer (package K): validated, never trusted as given
+  const names = columns.map((c) => c.name)
+  const reporting = sanitizeReporting(raw.reporting, names)
+  if (reporting) {
+    def.reporting = reporting
+    if (reporting.kind !== 'date') def.readOnly = true
+  }
+  const pairs = sanitizeUniqueTogether(raw.uniqueTogether, names)
+  if (pairs) def.uniqueTogether = pairs
   return def
 }
 
