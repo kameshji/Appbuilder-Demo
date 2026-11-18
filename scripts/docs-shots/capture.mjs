@@ -16,6 +16,9 @@
  *      The workspace and database must be EMPTY (no administrator yet): the script creates the first administrator.
  *   2. A wizard server with a fresh workspace and no APPBUILDER_DB_* variables, for the setup wizard screens:
  *        APPBUILDER_WORKSPACE=/tmp/ws-docs-wizard PORT=5296 node server/main.ts
+ *      Give it its OWN database (the script uses appbuilder_test_docs_wiz). Two servers must never share one database:
+ *      each seals the stored database password with its own key, and the other one then cannot read it.
+ *      The wizard server is single-use: after the wizard step ran, delete its workspace and restart it to run it again.
  *
  * Environment:
  *   BASE         main server URL            (default http://localhost:5196)
@@ -45,6 +48,7 @@ const DB = {
   host: process.env.DB_HOST || '127.0.0.1',
   port: process.env.DB_PORT || '3306',
   name: process.env.DB_NAME || 'appbuilder_test_docs',
+  wizardName: process.env.WIZARD_DB_NAME || 'appbuilder_test_docs_wiz',
   user: process.env.DB_USER || 'abdev',
   password: process.env.DB_PASSWORD || 'abdev-sandbox-only',
 }
@@ -127,6 +131,79 @@ async function openMain(hash = '#home') {
   return page
 }
 
+/** pick an option of a Radix Select: click the trigger (a handle or selector), then the option with this text */
+async function pickOption(page, trigger, text) {
+  const el = typeof trigger === 'string' ? await page.waitForSelector(trigger, { visible: true }) : trigger
+  await el.click()
+  await page.waitForSelector('[role="option"]', { visible: true })
+  const ok = await page.evaluate((text) => {
+    const o = [...document.querySelectorAll('[role="option"]')].find((e) => (e.textContent || '').replace(/\s+/g, ' ').trim() === text)
+    if (!o) return false
+    o.click()
+    return true
+  }, text)
+  if (!ok) throw new Error(`No option "${text}"`)
+  await sleep(150)
+}
+
+/** open the table designer of the table with this display name */
+async function openTable(name) {
+  const page = await openMain('#tables')
+  await page.waitForSelector(tid('tables-list'), { visible: true })
+  const ok = await page.evaluate((name) => {
+    const row = [...document.querySelectorAll('[data-testid^="table-row-"]')].find((r) => r.querySelector('.font-medium')?.textContent === name)
+    if (!row) return false
+    row.click()
+    return true
+  }, name)
+  if (!ok) throw new Error(`No table "${name}"`)
+  await page.waitForSelector(tid('page-table'), { visible: true })
+  await sleep(400)
+  return page
+}
+
+/** open an app in Studio from the Apps list */
+async function openStudio(appName) {
+  const page = await openMain('#apps')
+  await page.waitForSelector(tid('apps-table'), { visible: true })
+  const ok = await page.evaluate((name) => {
+    const b = [...document.querySelectorAll('[data-testid="apps-table"] tbody td:first-child button')].find((e) => e.textContent === name)
+    if (!b) return false
+    b.click()
+    return true
+  }, appName)
+  if (!ok) throw new Error(`No app "${appName}"`)
+  await page.waitForSelector(tid('studio-root'), { visible: true })
+  await sleep(1200)
+  return page
+}
+const selectNode = async (page, name) => { await click(page, tid(`tree-node-${name}`)); await sleep(250) }
+/** choose a property in the formula bar and replace its formula */
+async function setFormula(page, prop, text) {
+  const cur = await page.$eval(tid('prop-select'), (e) => e.textContent)
+  if (cur.trim() !== prop) await pickOption(page, tid('prop-select'), prop)
+  await page.click(tid('formula-input'))
+  await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control')
+  await page.keyboard.press('Backspace')
+  await page.keyboard.type(text.replace(/^=/, ''), { delay: 5 }) // the bar shows the = sign itself
+  await page.keyboard.press('Escape') // closes a suggestion list, if one is open
+  await page.keyboard.press('Enter')
+  await sleep(250)
+}
+async function setSimple(page, prop, value) {
+  await page.click(tid(`prop-${prop}`), { clickCount: 1 })
+  await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control')
+  await page.keyboard.type(String(value))
+  await page.keyboard.press('Enter')
+  await sleep(200)
+}
+const insertControl = async (page, label) => {
+  await click(page, tid('insert-menu'))
+  await page.waitForSelector('[role="menuitem"]', { visible: true })
+  await clickText(page, label, '[role="menuitem"]')
+  await sleep(400)
+}
+
 const steps = []
 const step = (name, fn) => steps.push({ name, fn })
 
@@ -138,7 +215,7 @@ step('wizard', async () => {
   await shot(page, 'setup-database')
 
   // a wrong password shows the real error message
-  await type(page, tid('setup-database'), DB.name)
+  await type(page, tid('setup-database'), DB.wizardName)
   await type(page, tid('setup-user'), DB.user)
   await type(page, tid('setup-password'), 'not-the-right-password')
   await click(page, tid('setup-database-continue'))
@@ -169,6 +246,159 @@ step('tour', async () => {
     await sleep(700)
     await shot(page, name)
   }
+  await page.close()
+})
+
+/* ------------------------------------------------------------------ 3. the Equipment table */
+
+step('table', async () => {
+  const page = await openMain('#tables')
+  await click(page, tid('new-table-button'))
+  await page.waitForSelector(tid('new-table-dialog'), { visible: true })
+  await type(page, tid('new-table-name'), 'Equipment')
+  // the dialog starts with one text column called Name: rename it and add three more
+  await type(page, '[aria-label="Column 1 name"]', 'Item')
+  const addCol = async (n, name, typeLabel) => {
+    await clickText(page, 'Add column')
+    await type(page, `[aria-label="Column ${n} name"]`, name)
+    const triggers = await page.$$(`${tid('new-table-dialog')} [role="combobox"]`)
+    // triggers: [connection select (server mode), type of column 1, type of column 2, ...]
+    await pickOption(page, triggers[triggers.length - 1], typeLabel)
+  }
+  await addCol(2, 'Checked out to', 'Single line of text')
+  await addCol(3, 'Checked out', 'Yes / No')
+  await addCol(4, 'Due date', 'Date')
+  await shot(page, 'table-new')
+  await click(page, tid('new-table-create'))
+  await page.waitForSelector(tid('page-table'), { visible: true })
+  await sleep(500)
+  await shot(page, 'table-designer-data')
+  await page.close()
+})
+
+step('columns', async () => {
+  const page = await openTable('Equipment')
+  await click(page, tid('tab-columns'))
+  await click(page, tid('add-column-button'))
+  await page.waitForSelector(tid('column-editor'), { visible: true })
+  await type(page, tid('col-display-name'), 'Category')
+  await pickOption(page, `${tid('column-editor')} [role="combobox"]`, 'Choice')
+  for (const c of ['Laptop', 'Camera', 'Projector', 'Other']) {
+    await type(page, tid('choice-input'), c)
+    await page.keyboard.press('Enter')
+  }
+  await shot(page, 'table-column-choice')
+  await click(page, tid('col-save'))
+  await sleep(600)
+  await page.evaluate(() => document.querySelector('[data-testid="column-editor"] button[aria-label="Close panel"]')?.click())
+  await clearToasts(page)
+  await shot(page, 'table-columns')
+  await page.close()
+})
+
+step('rows', async () => {
+  const page = await openTable('Equipment')
+  await click(page, tid('add-row-button'))
+  await page.waitForSelector(tid('add-row-dialog'), { visible: true })
+  await type(page, '#add-Item', 'Dell laptop 14"')
+  await page.select('#add-Category', 'Laptop')
+  await shot(page, 'table-add-row')
+  await click(page, tid('add-row-save'))
+  await sleep(600)
+  await click(page, tid('csv-import-button'))
+  await page.waitForSelector(tid('csv-import-dialog'), { visible: true })
+  const csv = ['Item,Category,CheckedOut', 'Canon camera,Camera,false', 'Epson projector,Projector,false', 'Lenovo laptop 15",Laptop,false', 'Tripod,Other,false', 'Wireless microphone,Other,false'].join('\n')
+  await page.$eval(tid('csv-import-text'), (el, v) => {
+    const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+    set.call(el, v)
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+  }, csv)
+  await shot(page, 'table-import-csv')
+  await click(page, tid('csv-import-run'))
+  await sleep(800)
+  await clearToasts(page)
+  await shot(page, 'table-rows')
+  await page.close()
+})
+
+/* ------------------------------------------------------------------ 4. the app (Start with data) and Studio */
+
+step('app', async () => {
+  const page = await openMain('#home')
+  // re-running this step replaces an earlier "Equipment app"
+  await page.evaluate(async () => {
+    const h = { 'X-Appbuilder': '1' }
+    const list = await (await fetch('/api/v1/workspace', { headers: h })).json()
+    for (const a of (Array.isArray(list) ? list : list.apps ?? []).filter((x) => /^Equipment app/.test(x.name))) await fetch('/api/v1/apps/' + a.id, { method: 'DELETE', headers: h })
+  })
+  await page.evaluate(() => location.reload())
+  await page.waitForSelector(tid('portal-root'), { visible: true })
+  await click(page, tid('start-with-data-button'))
+  await page.waitForSelector(tid('start-with-data-dialog'), { visible: true })
+  await pickOption(page, tid('start-table-select'), 'Equipment (6 rows)')
+  await shot(page, 'home-start-with-data')
+  await click(page, tid('start-with-data-create'))
+  await page.waitForSelector(tid('studio-root'), { visible: true })
+  await sleep(1500)
+  await clearToasts(page)
+  await shot(page, 'studio-start-with-data')
+  await page.close()
+})
+
+step('studio', async () => {
+  const page = await openStudio('Equipment app')
+  await selectNode(page, 'DataTable1')
+  await shot(page, 'studio-select-table')
+  await setFormula(page, 'Columns', '="Item, Category, CheckedOutTo, CheckedOut, DueDate"')
+  await setSimple(page, 'Y', 112)
+  await setSimple(page, 'Height', 928)
+
+  // a search box above the table
+  await selectNode(page, 'Screen1')
+  await insertControl(page, 'Search box')
+  await setSimple(page, 'X', 40)
+  await setSimple(page, 'Y', 40)
+  await setSimple(page, 'Width', 520)
+  await setSimple(page, 'Height', 48)
+
+  // the table shows only rows that match the search box
+  await selectNode(page, 'DataTable1')
+  await setFormula(page, 'Items', 'Filter(Equipment, IsBlank(SearchBox1.Value) || SearchBox1.Value in Item)')
+  await shot(page, 'studio-filter-formula')
+
+  // a button that checks the selected item out
+  await selectNode(page, 'Screen1')
+  await insertControl(page, 'Button')
+  await setSimple(page, 'Text', 'Check out')
+  await setSimple(page, 'X', 1200)
+  await setSimple(page, 'Y', 820)
+  await setSimple(page, 'Width', 320)
+  await setSimple(page, 'Height', 48)
+  await setFormula(page, 'OnSelect', 'Patch(Equipment, DataTable1.Selected, {CheckedOut: true, CheckedOutTo: User().FullName, DueDate: DateAdd(Today(), 7, "Days")}); Notify("Checked out for 7 days", NotificationType.Success)')
+  await shot(page, 'studio-button-onselect')
+  // the button is disabled until a row is selected
+  await setFormula(page, 'DisplayMode', 'If(IsBlank(DataTable1.Selected), DisplayMode.Disabled, DisplayMode.Edit)')
+  await sleep(1200)
+  await page.close()
+})
+
+step('preview', async () => {
+  const page = await openStudio('Equipment app')
+  await click(page, tid('preview-button'))
+  await page.waitForSelector(tid('preview-root'), { visible: true })
+  await sleep(1200)
+  await shot(page, 'preview-start')
+  // select a row, then check it out
+  await page.evaluate(() => {
+    const cell = [...document.querySelectorAll('[data-testid="preview-screen"] td')].find((e) => e.textContent === 'Canon camera')
+    cell?.click()
+  })
+  await sleep(500)
+  await clickText(page, 'Check out', '[data-testid="preview-screen"] button')
+  await sleep(900)
+  await shot(page, 'preview-checked-out', { wait: 100 })
+  await click(page, tid('preview-back'))
+  await sleep(300)
   await page.close()
 })
 
