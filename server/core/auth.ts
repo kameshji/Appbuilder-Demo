@@ -164,6 +164,8 @@ export async function ensureBuiltinRoles(services: CoreServices): Promise<void> 
 
 export function authRoutes(router: ApiRouter, services: CoreServices): void {
   const throttle = new LoginThrottle()
+  /** separate map: login spraying can neither evict nor fill the password-change throttle (and vice versa) */
+  const passwordThrottle = new LoginThrottle()
 
   router.add('GET', '/status', async (ctx): Promise<StatusResponse> => {
     let needsAdmin = true
@@ -250,7 +252,7 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     const key = `${email}|${ctx.req.socket.remoteAddress ?? ''}`
     if (throttle.blocked(key)) {
       await audit(services, null, 'auth.login_throttled', { email })
-      throw new HttpError(429, 'denied', 'Too many attempts. Try again in a few minutes.')
+      throw new HttpError(429, 'rate_limited', 'Too many attempts. Try again in a few minutes.')
     }
     const user = email ? await services.meta.users.byEmail(email) : null
     const ok = user && user.passwordHash && user.status !== 'disabled' ? await verifyPassword(password, user.passwordHash) : await verifyDummy(password)
@@ -282,19 +284,19 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
   router.add('POST', '/auth/password', async (ctx) => {
     const b = obj(ctx.body) as Partial<ChangePasswordRequest> & Record<string, unknown>
     const me = ctx.user!.user
-    const key = `password|${me.id}`
-    if (throttle.blocked(key)) throw new HttpError(429, 'denied', 'Too many attempts. Try again in a few minutes.')
+    const key = me.id
+    if (passwordThrottle.blocked(key)) throw new HttpError(429, 'rate_limited', 'Too many attempts. Try again in a few minutes.')
     const rec = await services.meta.users.get(me.id)
     if (!rec) throw new HttpError(401, 'unauthenticated', 'Please sign in.')
     const current = typeof b.current === 'string' ? b.current.slice(0, 1024) : ''
     if (!(await verifyPassword(current, rec.passwordHash))) {
-      throttle.fail(key)
+      passwordThrottle.fail(key)
       await audit(services, me.id, 'auth.password_failed')
       throw new HttpError(422, 'invalid', 'The current password is not correct.', 'current')
     }
     const next = checkPasswordPolicy(b.next, rec.email, 'next')
     if (next === current) throw new HttpError(422, 'invalid', 'The new password must be different.', 'next')
-    throttle.reset(key)
+    passwordThrottle.reset(key)
     await services.meta.users.update(me.id, { passwordHash: await hashPassword(next) })
     await services.meta.sessions.removeForUser(me.id) // signs out every other device
     await createSession(services, ctx, me.id) // and keeps this one signed in with a fresh token

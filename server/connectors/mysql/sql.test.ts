@@ -185,6 +185,14 @@ describe('statements', () => {
   it('select always includes id and counts separately', () => {
     const p = buildSelect(D, { select: ['title'], where: { col: 'qty', op: 'gt', value: 1 }, orderBy: [{ col: 'qty', dir: 'desc' }], top: 10, skip: 20, count: true })
     expect(p.sql).toBe('SELECT `title`, `id` FROM `t_orders` WHERE (`qty` > ?) ORDER BY (`qty` IS NULL) ASC, `qty` DESC, `id` ASC LIMIT 10 OFFSET 20')
+    // a def listing its system columns (every platform table): insertion order by default and as the tie-breaker
+    const S = def([col('createdOn', 'datetime', { system: true }), col('id', 'text', { system: true }), col('title', 'text')])
+    expect(buildSelect(S, { select: ['title'] }).sql).toBe('SELECT `title`, `id` FROM `t_orders` WHERE (1 = 1) ORDER BY `createdOn` ASC, `id` ASC')
+    expect(buildSelect(S, { select: ['title'], orderBy: [{ col: 'title', dir: 'asc' }] }).sql).toBe('SELECT `title`, `id` FROM `t_orders` WHERE (1 = 1) ORDER BY (`title` IS NULL OR CHAR_LENGTH(`title`) = 0) ASC, `title` ASC, `createdOn` ASC, `id` ASC')
+    // a def without listed system columns (some linked tables): no createdOn; id only when paging
+    expect(buildSelect(D, { select: ['title'] }).sql).toBe('SELECT `title`, `id` FROM `t_orders` WHERE (1 = 1)')
+    expect(buildSelect(S, { select: ['title'] }).sql).toBe('SELECT `title`, `id` FROM `t_orders` WHERE (1 = 1) ORDER BY `createdOn` ASC, `id` ASC')
+    expect(buildSelect(D, { orderBy: [{ col: 'id', dir: 'desc' }], select: ['id'] }).sql).toBe('SELECT `id` FROM `t_orders` WHERE (1 = 1) ORDER BY (`id` IS NULL OR CHAR_LENGTH(`id`) = 0) ASC, `id` DESC')
     expect(p.countSql).toBe('SELECT COUNT(*) AS n FROM `t_orders` WHERE (`qty` > ?)')
     expect(p.columns.map((c) => c.name)).toEqual(['title', 'id'])
   })

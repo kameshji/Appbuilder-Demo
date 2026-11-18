@@ -15,8 +15,9 @@ import { tableParam } from './data-routes.ts'
 import { attachmentIds } from './values.ts'
 import { errText, log } from './util.ts'
 
+/** column maxSizeMB is validated to 0 < n <= 25 (server/routes/meta/util.ts); the route never accepts more */
 const DEFAULT_MAX_MB = 25
-const ROUTE_MAX_MB = 200
+export const ROUTE_MAX_MB = 25
 const MIME_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$/i
 
 function cleanName(name: string | null): string {
@@ -134,13 +135,28 @@ export function attachmentRoutes(router: ApiRouter, services: CoreServices): voi
     if (access === 'none') throw new HttpError(404, 'not-found', 'Row not found.')
     if (access !== 'update') throw new HttpError(403, 'denied', `${col.displayName || col.name} is read-only for you.`, col.name)
     if (!rowId || rowId.length > 64) throw new HttpError(404, 'not-found', 'Row not found.')
-    const bytes = ctx.rawBody ?? Buffer.alloc(0)
-    if (!bytes.length) throw new HttpError(422, 'invalid', 'The file is empty.')
-    const maxMB = col.maxSizeMB && col.maxSizeMB > 0 ? Math.min(col.maxSizeMB, ROUTE_MAX_MB) : DEFAULT_MAX_MB
-    if (bytes.length > maxMB * 1024 * 1024) throw new HttpError(413, 'invalid', `The file is larger than ${maxMB} MB.`, col.name)
     const mime = cleanMime(ctx.req.headers['content-type'])
     if (!mimeAccepted(col, mime)) throw new HttpError(422, 'invalid', `${col.displayName || col.name} does not accept ${mime} files.`, col.name)
     const fileName = cleanName(ctx.query.get('name'))
+    // permission before reading the upload (checked again under the row lock below)
+    if (!(await services.data.internals.findRow(def, rowId, user.rowPredicate(def, 'update')))) {
+      const readable = await services.data.internals.findRow(def, rowId, user.rowPredicate(def, 'read'))
+      throw readable ? new HttpError(403, 'denied', 'You are not allowed to change this row.') : new HttpError(404, 'not-found', 'Row not found.')
+    }
+    // size: a declared Content-Length above the column limit is refused before reading; a streamed body is cut off
+    // (413, connection closed) as soon as it crosses the limit, so oversized uploads are never buffered
+    const maxMB = col.maxSizeMB && col.maxSizeMB > 0 ? Math.min(col.maxSizeMB, ROUTE_MAX_MB) : DEFAULT_MAX_MB
+    const limit = Math.floor(maxMB * 1024 * 1024)
+    const tooBig = `The file is larger than ${maxMB} MB.`
+    const bytes = ctx.readBody ? await ctx.readBody(limit).catch((e: unknown) => {
+      if (e instanceof HttpError && e.status === 413) {
+        e.message = tooBig
+        e.field = col.name
+      }
+      throw e
+    }) : (ctx.rawBody ?? Buffer.alloc(0))
+    if (bytes.length > limit) throw new HttpError(413, 'invalid', tooBig, col.name)
+    if (!bytes.length) throw new HttpError(422, 'invalid', 'The file is empty.')
 
     return withRowLock(`${def.id}:${rowId}`, async () => {
       const row = await services.data.internals.findRow(def, rowId, user.rowPredicate(def, 'update'))
@@ -179,7 +195,7 @@ export function attachmentRoutes(router: ApiRouter, services: CoreServices): voi
       await audit(services, user, 'attachment.upload', rec)
       return services.attachments.toRef(rec)
     })
-  }, { auth: 'user', raw: true, maxBodyMB: ROUTE_MAX_MB })
+  }, { auth: 'user', raw: true, streamBody: true, maxBodyMB: ROUTE_MAX_MB })
 
   router.add('POST', '/attachments/resolve', async (ctx): Promise<AttachmentResolveResponse> => {
     const user = ctx.user!

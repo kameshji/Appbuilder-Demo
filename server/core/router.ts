@@ -7,11 +7,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { TLSSocket } from 'node:tls'
 import { Readable } from 'node:stream'
 import { HttpError } from './contracts.ts'
-import type { AuthLevel, Ctx, Handler, RawResponse, Router, Services, UserContext } from './contracts.ts'
+import type { Ctx, Handler, RawResponse, RouteOptions, Router, Services, UserContext } from './contracts.ts'
 import { API_BASE, CSRF_HEADER, SESSION_COOKIE } from '../../src/platform/http.ts'
 import { mapDbError } from '../connectors/mysql/index.ts'
 import { errText, log } from './util.ts'
 
+/** default JSON body limit; a route's maxBodyMB overrides it (JSON and raw bodies alike) */
 export const JSON_LIMIT_BYTES = 2 * 1024 * 1024
 export const DEFAULT_RAW_MB = 25
 
@@ -21,7 +22,7 @@ interface Route {
   segments: string[]
   literalCount: number
   handler: Handler
-  opts: { auth: AuthLevel; raw?: boolean; maxBodyMB?: number }
+  opts: RouteOptions
 }
 
 /** resolves the signed-in user (null = no valid session); provided by auth.ts */
@@ -67,12 +68,29 @@ export function originProblem(req: IncomingMessage, allowAnyHost = false): strin
   return null
 }
 
-export function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
+const mbText = (bytes: number): string => {
+  const mb = bytes / 1024 / 1024
+  return Number.isInteger(mb) ? String(mb) : mb >= 1 ? String(Math.round(mb * 10) / 10) : String(Math.round(mb * 100) / 100)
+}
+
+/** the 413 of an oversized body; the router closes the connection after sending it (see sendError) */
+export function tooLarge(limit: number, message?: string): HttpError {
+  const e = new HttpError(413, 'invalid', message ?? `The request body is too large (limit ${mbText(limit)} MB).`)
+  ;(e as HttpError & { closeConnection?: boolean }).closeConnection = true
+  return e
+}
+
+/**
+ * Reads the body up to `limit` bytes. A declared Content-Length above the limit is refused before reading; a body that
+ * grows past the limit is refused as soon as the limit is crossed (nothing more is buffered and the stream is paused;
+ * the router answers 413 and closes the connection, so the client cannot keep uploading).
+ */
+export function readBody(req: IncomingMessage, limit: number, message?: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const declared = Number(req.headers['content-length'])
     if (Number.isFinite(declared) && declared > limit) {
-      req.resume()
-      reject(new HttpError(413, 'invalid', `The request body is too large (limit ${Math.round(limit / 1024 / 1024)} MB).`))
+      req.pause()
+      reject(tooLarge(limit, message))
       return
     }
     const chunks: Buffer[] = []
@@ -83,8 +101,9 @@ export function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
       size += c.length
       if (size > limit) {
         done = true
-        reject(new HttpError(413, 'invalid', `The request body is too large (limit ${Math.round(limit / 1024 / 1024)} MB).`))
-        req.resume()
+        chunks.length = 0
+        req.pause()
+        reject(tooLarge(limit, message))
         return
       }
       chunks.push(c)
@@ -137,9 +156,14 @@ export function toHttpError(e: unknown): HttpError {
   return new HttpError(500, 'storage', 'Internal server error.')
 }
 
-export function sendError(res: ServerResponse, e: unknown): void {
+export function sendError(res: ServerResponse, e: unknown, req?: IncomingMessage): void {
   const h = toHttpError(e)
-  sendJson(res, h.status, { error: { code: h.code, message: h.message, ...(h.field ? { field: h.field } : {}) } })
+  const close = !!(h as HttpError & { closeConnection?: boolean }).closeConnection
+  if (close && req) {
+    // unread request bytes are not drained: answer, then drop the connection
+    res.on('finish', () => req.destroy())
+  }
+  sendJson(res, h.status, { error: { code: h.code, message: h.message, ...(h.field ? { field: h.field } : {}) } }, close ? { Connection: 'close' } : {})
 }
 
 export function cookieValue(req: IncomingMessage, name: string): string | null {
@@ -177,7 +201,7 @@ export function createRouter(services: Services, opts: { allowAnyHost?: boolean 
   const routes: Route[] = []
   let resolveSession: SessionResolver = async () => null
 
-  function add(method: Method, pattern: string, handler: Handler, o: { auth: AuthLevel; raw?: boolean; maxBodyMB?: number }) {
+  function add(method: Method, pattern: string, handler: Handler, o: RouteOptions) {
     let p = pattern.trim()
     if (p.startsWith(API_BASE)) p = p.slice(API_BASE.length)
     const segments = p.split('/').filter(Boolean)
@@ -211,6 +235,13 @@ export function createRouter(services: Services, opts: { allowAnyHost?: boolean 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const url = new URL(req.url ?? '/', 'http://localhost')
     if (url.pathname !== '/api' && !url.pathname.startsWith('/api/')) return false
+    /** a streamBody route answered without reading its body: close instead of draining the upload */
+    let unreadStream = false
+    const closeIfUnread = () => {
+      if (!unreadStream || req.complete) return
+      if (!res.headersSent) res.setHeader('Connection', 'close')
+      res.on('finish', () => req.destroy())
+    }
     try {
       const problem = originProblem(req, opts.allowAnyHost)
       if (problem) throw new HttpError(403, 'denied', problem)
@@ -227,7 +258,7 @@ export function createRouter(services: Services, opts: { allowAnyHost?: boolean 
       }
       const m = match(method === 'HEAD' ? 'GET' : method, segs)
       if (m === null) throw new HttpError(404, 'not-found', 'Unknown API route.')
-      if (m === 'method') throw new HttpError(405, 'invalid', 'Method not allowed.')
+      if (m === 'method') throw new HttpError(405, 'method_not_allowed', 'Method not allowed.')
       const { route, params } = m
 
       const ctx: Ctx = {
@@ -246,12 +277,21 @@ export function createRouter(services: Services, opts: { allowAnyHost?: boolean 
         },
       }
 
-      // body
-      if (method !== 'GET' && method !== 'HEAD') {
+      // body (limit: the route's maxBodyMB, else 2 MB for JSON / 25 MB for raw)
+      const hasBody = method !== 'GET' && method !== 'HEAD'
+      const routeLimit = route.opts.maxBodyMB !== undefined ? route.opts.maxBodyMB * 1024 * 1024 : route.opts.raw ? DEFAULT_RAW_MB * 1024 * 1024 : JSON_LIMIT_BYTES
+      if (hasBody && route.opts.raw && route.opts.streamBody) {
+        unreadStream = true
+        ctx.readBody = (limitBytes: number) => {
+          if (!unreadStream) return Promise.reject(new Error('readBody called twice'))
+          unreadStream = false
+          return readBody(req, Math.min(limitBytes, routeLimit))
+        }
+      } else if (hasBody) {
         if (route.opts.raw) {
-          ctx.rawBody = await readBody(req, (route.opts.maxBodyMB ?? DEFAULT_RAW_MB) * 1024 * 1024)
+          ctx.rawBody = await readBody(req, routeLimit)
         } else {
-          const buf = await readBody(req, JSON_LIMIT_BYTES)
+          const buf = await readBody(req, routeLimit)
           if (buf.length) {
             const type = String(req.headers['content-type'] ?? 'application/json')
             if (!/^application\/json\b/i.test(type)) throw new HttpError(415, 'invalid', 'Request body must be application/json.')
@@ -281,6 +321,7 @@ export function createRouter(services: Services, opts: { allowAnyHost?: boolean 
       }
 
       const out = await route.handler(ctx)
+      closeIfUnread()
       if (res.writableEnded) return true
       if (isRaw(out)) {
         const headers: Record<string, string> = { ...SECURITY_HEADERS, 'Cache-Control': 'no-store', ...(out.headers ?? {}) }
@@ -306,7 +347,8 @@ export function createRouter(services: Services, opts: { allowAnyHost?: boolean 
       sendJson(res, 200, out === undefined ? { ok: true } : out)
       return true
     } catch (e) {
-      sendError(res, e)
+      closeIfUnread()
+      sendError(res, e, req)
       return true
     }
   }

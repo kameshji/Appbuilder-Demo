@@ -47,6 +47,11 @@ describe('apps', () => {
     const def = { ...got.body.definition, name: 'Renamed', width: 2560, height: 1440 }
     const saved = await h.call(M, 'PUT', `/api/v1/apps/${id}`, { definition: def })
     expect(saved.body).toMatchObject({ name: 'Renamed', width: 2560 })
+    // PUT with a name another app already has: 409 like PATCH (the name is not silently kept)
+    const clash = await h.call(M, 'PUT', `/api/v1/apps/${id}`, { definition: { ...def, name: 'SALES (2)' } })
+    expect(clash.status).toBe(409)
+    expect(clash.code).toBe('conflict')
+    expect((await h.call(M, 'GET', `/api/v1/apps/${id}`)).body.meta.name).toBe('Renamed')
     expect((await h.call(M, 'PUT', `/api/v1/apps/${id}`, { definition: { nope: 1 } })).status).toBe(422)
     expect((await h.call(M, 'POST', '/api/v1/apps', { name: 'Tall', width: 500, height: 900 })).status).toBe(422)
     expect((await h.call(M, 'DELETE', `/api/v1/apps/${id}`)).body).toEqual({ ok: true })

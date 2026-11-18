@@ -14,7 +14,8 @@ import type { RoleDef, TableDef, UserDef } from '../../src/platform/contracts.ts
 import { LoginThrottle } from './auth.ts'
 import { coerceIn, cellOut } from './values.ts'
 import { safeStaticPath } from './static.ts'
-import { setQuiet } from './util.ts'
+import { rowUid, setQuiet } from './util.ts'
+import { evaluateCondition } from './condition.ts'
 
 setQuiet(true)
 
@@ -158,6 +159,29 @@ describe('security engine', () => {
     expect(rowFilterCondition([{ column: 'Region', op: 'in', value: ['@me', 'East'] }], table, user)).toEqual({ col: 'Region', op: 'in', value: ['user_1', 'East'] })
   })
 
+  it("create predicate (WITH CHECK): OR over roles granting create of their rowFilter, tokens resolved, no owner term", () => {
+    const sales = role('r_sales', { create: true, read: 'all', rowFilter: [{ column: 'Region', op: 'eq', value: 'West' }] })
+    const mine = role('r_mine', { create: true, read: 'own', rowFilter: [{ column: 'Email', op: 'eq', value: '@myEmail' }] })
+    const reader = role('r_read', { create: false, read: 'all' })
+    expect(ctxFor([reader]).rowPredicate(table, 'create')).toEqual({ const: false })
+    expect(ctxFor([sales]).rowPredicate(table, 'create')).toEqual({ col: 'Region', op: 'eq', value: 'West' })
+    const both = ctxFor([sales, mine, reader]).rowPredicate(table, 'create')
+    expect(both).toEqual({ or: [{ col: 'Region', op: 'eq', value: 'West' }, { col: 'Email', op: 'eq', value: 'u@x.io' }] })
+    expect(evaluateCondition(both, { id: 'x', Region: 'west', Email: null })).toBe(true)
+    expect(evaluateCondition(both, { id: 'x', Region: 'East', Email: 'U@x.io' })).toBe(true)
+    expect(evaluateCondition(both, { id: 'x', Region: 'East', Email: 'other@x.io' })).toBe(false)
+    expect(ctxFor([role('r_plain', { create: true, read: 'own' })]).rowPredicate(table, 'create')).toEqual({ const: true })
+    expect(ctxFor([role('r_admin', null, { isAdmin: true })]).rowPredicate(table, 'create')).toEqual({ const: true })
+  })
+
+  it('row ids are time-ordered UUIDv7, monotonic within one millisecond', () => {
+    const ids = Array.from({ length: 5000 }, () => rowUid(1_700_000_000_000))
+    expect(ids.every((x) => /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(x))).toBe(true)
+    expect([...ids].sort()).toEqual(ids)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(rowUid(1_700_000_000_000 - 5) > ids[ids.length - 1]).toBe(true) // a clock step back never goes backwards
+  })
+
   it('a rowFilter on a missing column makes that role grant nothing', () => {
     const broken = role('r_broken', { read: 'all', rowFilter: [{ column: 'Gone', op: 'eq', value: 1 }] })
     expect(ctxFor([broken]).rowPredicate(table, 'read')).toEqual({ const: false })
@@ -244,6 +268,11 @@ describe('router guards', () => {
     router.add('GET', '/api/v1/items/:id', (ctx) => ({ id: ctx.params.id, kind: 'param' }), { auth: 'none' })
     router.add('GET', '/items/special', () => ({ kind: 'literal' }), { auth: 'none' })
     router.add('GET', '/private', () => ({ secret: 1 }), { auth: 'user' })
+    router.add('POST', '/bigjson', (ctx) => ({ len: String((ctx.body as { s: string }).s).length }), { auth: 'none', maxBodyMB: 5 })
+    router.add('POST', '/stream', async (ctx) => ({ size: (await ctx.readBody!(1024 * 1024)).length }), { auth: 'none', raw: true, streamBody: true, maxBodyMB: 4 })
+    router.add('POST', '/stream-deny', () => {
+      throw new HttpError(403, 'denied', 'No.')
+    }, { auth: 'none', raw: true, streamBody: true, maxBodyMB: 4 })
     router.add('GET', '/boom', () => {
       throw new Error('select * from secret_table where password = hunter2')
     }, { auth: 'none' })
@@ -306,12 +335,70 @@ describe('router guards', () => {
     expect((await post('/api/v1/upload', Buffer.alloc(1024 * 1024 + 1, 1), { 'X-Appbuilder': '1', 'Content-Type': 'application/octet-stream' })).status).toBe(413)
   })
 
+  it('honours a route maxBodyMB for JSON bodies (not just the 2 MB default)', async () => {
+    const s = 'x'.repeat(3 * 1024 * 1024)
+    const r = await post('/api/v1/bigjson', JSON.stringify({ s }), { 'X-Appbuilder': '1' })
+    expect(r.status).toBe(200)
+    expect(await r.json()).toEqual({ len: s.length })
+    const over = await post('/api/v1/bigjson', JSON.stringify({ s: 'x'.repeat(5 * 1024 * 1024) }), { 'X-Appbuilder': '1' })
+    expect(over.status).toBe(413)
+    expect((await post('/api/v1/echo', JSON.stringify({ s }), { 'X-Appbuilder': '1' })).status).toBe(413) // default stays 2 MB
+  })
+
+  /** raw http request that keeps sending until the response arrives; resolves with status and bytes sent by then */
+  function streamUpload(p: string, total: number, headers: Record<string, string> = {}): Promise<{ status: number; body: string; sentBeforeResponse: number }> {
+    return new Promise((resolve, reject) => {
+      const u = new URL(base + p)
+      let sent = 0
+      let done = false
+      const req = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: 'POST', headers: { 'X-Appbuilder': '1', 'Content-Type': 'application/octet-stream', ...headers } }, (res) => {
+        done = true
+        const at = sent
+        let body = ''
+        res.on('data', (c) => (body += c))
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body, sentBeforeResponse: at }))
+        res.on('error', reject)
+      })
+      req.on('error', (e) => (done ? undefined : reject(e)))
+      const chunk = Buffer.alloc(64 * 1024, 1)
+      const pump = () => {
+        if (done || sent >= total) {
+          if (!done) req.end()
+          return
+        }
+        sent += chunk.length
+        req.write(chunk, () => setTimeout(pump, 2))
+      }
+      if (headers['Content-Length'] === undefined) pump()
+      else req.flushHeaders()
+    })
+  }
+
+  it('streamBody routes: refuse a declared Content-Length over the limit, cut a chunked body off at the limit', async () => {
+    const small = await post('/api/v1/stream', Buffer.alloc(1000, 1), { 'X-Appbuilder': '1', 'Content-Type': 'application/octet-stream' })
+    expect(await small.json()).toEqual({ size: 1000 })
+    // declared too large: answered before any byte of the body is sent
+    const declared = await streamUpload('/api/v1/stream', 0, { 'Content-Length': String(2 * 1024 * 1024) })
+    expect(declared.status).toBe(413)
+    expect(JSON.parse(declared.body).error.code).toBe('invalid')
+    // chunked 8 MB upload against a 1 MB handler limit: 413 arrives while the client is still sending
+    const chunked = await streamUpload('/api/v1/stream', 8 * 1024 * 1024)
+    expect(chunked.status).toBe(413)
+    expect(chunked.sentBeforeResponse).toBeLessThan(8 * 1024 * 1024)
+    // a handler that refuses before reading: answered without draining the upload
+    const denied = await streamUpload('/api/v1/stream-deny', 8 * 1024 * 1024)
+    expect(denied.status).toBe(403)
+    expect(denied.sentBeforeResponse).toBeLessThan(8 * 1024 * 1024)
+  })
+
   it('matches params, prefers literals, answers 404/405, 503 for auth routes without a database', async () => {
     expect(await (await fetch(base + '/api/v1/items/abc%20d')).json()).toEqual({ id: 'abc d', kind: 'param' })
     expect(await (await fetch(base + '/api/v1/items/special')).json()).toEqual({ kind: 'literal' })
     expect((await fetch(base + '/api/v1/nope')).status).toBe(404)
     expect((await fetch(base + '/api/fs/health')).status).toBe(404)
-    expect((await fetch(base + '/api/v1/ping', { method: 'DELETE', headers: { 'X-Appbuilder': '1' } })).status).toBe(405)
+    const m = await fetch(base + '/api/v1/ping', { method: 'DELETE', headers: { 'X-Appbuilder': '1' } })
+    expect(m.status).toBe(405)
+    expect((await m.json()).error.code).toBe('method_not_allowed')
     expect((await fetch(base + '/api/v1/private')).status).toBe(503)
     expect((await fetch(base + '/index.html')).status).toBe(418) // not an API path: left to the caller
   })

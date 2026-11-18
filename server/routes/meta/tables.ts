@@ -1,21 +1,20 @@
 /**
- * Tables, columns, move between connections, create from CSV, CSV export.
+ * Tables, columns, move between connections, create from CSV (CSV export: server/core/data-routes.ts).
  * Physical DDL always goes through the connector of the table's connection; the TableDef lives in ab_tables.
  */
 import type { ColumnDef, TableDef } from '../../../src/platform/contracts.ts'
-import type { QueryValue } from '../../../src/platform/http.ts'
 import { DEFAULT_ROW_CAP } from '../../../src/platform/http.ts'
 import { HttpError } from '../../core/contracts.ts'
 import { removeTableAttachments } from '../../core/attachments.ts'
 import type { CoreServices } from '../../core/services.ts'
 import type { Connector, ConnectionRecord, Router, Services } from '../../core/contracts.ts'
 import {
-  IDENT, me, MAX_COLUMNS, MAX_IDENT, SYSTEM_NAMES, bodyObj, buildColumn, clone, conflict, defaultFor, inferType, invalid, isAttachmentType, isBlankCell,
-  jsonCellToCsv, normalizeForConversion, optString, parseCsvText, reqString, systemColumns, toIdentifier, tryCoerce, uniqueIdentifier, unparseCsv,
+  IDENT, MAX_COLUMNS, MAX_IDENT, SYSTEM_NAMES, bodyObj, buildColumn, clone, conflict, defaultFor, inferType, invalid, isAttachmentType, isBlankCell,
+  normalizeForConversion, optString, parseCsvText, reqString, systemColumns, toIdentifier, tryCoerce, uniqueIdentifier, unparseCsv,
 } from './util.ts'
 import type { RoleX } from './util.ts'
 import {
-  audit, createPhysical, friendly, grantDefaults, lookupReferrers, pickSource, queryAll, requireTable, resolveConnection,
+  audit, createPhysical, friendly, grantDefaults, lookupReferrers, pickSource, requireTable, resolveConnection,
   resolver, unregisterTable,
 } from './tables-core.ts'
 
@@ -321,7 +320,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
       if (typeChanged) {
         const updates: { id: string; v: string }[] = []
         for (const [i, r] of rows.entries()) {
-          const res = tryCoerce(next, r.v as string | number | boolean | Date | null)
+          const res = tryCoerce(next, r.v as string | number | boolean | Date | null, old)
           if (!res.ok) throw invalid(`Cannot change the type: row ${i + 1} — ${res.message}`, 'type')
           if (typeof r.v === 'string' && res.value !== null && ['number', 'decimal', 'currency', 'boolean', 'date', 'datetime'].includes(next.type)) {
             const n = normalizeForConversion(next, r.v)
@@ -395,17 +394,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
     await audit(s, ctx, 'table.move', { name: def.name, to: record.id }, def.id)
     return moved
   }, { auth: 'maker' })
-
-  /* csv export of the rows the user may read (visible columns) */
-  router.add('GET', '/api/v1/tables/:id/csv', async (ctx) => {
-    const u = me(ctx)
-    const def = await requireTable(s, ctx.params.id)
-    if (u.privileges.tables[def.id]?.read === 'none' && !u.privileges.isAdmin) throw new HttpError(403, 'denied', `You are not allowed to read "${def.displayName}".`)
-    const visible = u.visibleDef(def)
-    const rows = await queryAll(s, u, def)
-    const csv = unparseCsv(visible.columns.map((c) => c.name), rows.map((r) => visible.columns.map((c) => jsonCellToCsv(r[c.name] as QueryValue))))
-    return { raw: true as const, headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${def.name}.csv"` }, body: csv }
-  }, { auth: 'user' })
+  // CSV export (GET /tables/:id/csv) lives in server/core/data-routes.ts (DataService: RBAC + RLS + CLS)
 }
 
 /** copy a table's rows into a new physical table on another connection; the table id and name stay (apps keep working) */

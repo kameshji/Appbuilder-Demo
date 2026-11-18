@@ -64,7 +64,19 @@ Contract points an implementer must honour:
   | `gsheets` | yes | yes | no | no |
 
   `pushdown: false` means the connector loads the sheet or file and runs `applyQuery` from `server/core/condition.ts` itself.
-  `transactions: true` means multi-row `insert`/`delete` are all-or-nothing (the MySQL tests assert a failing chunk rolls everything back).
+  `transactions: true` means multi-row `insert`/`delete` are all-or-nothing (the MySQL tests assert a failing chunk rolls everything back)
+  and the connector implements the optional `transaction(fn)`: `fn` gets a connector whose `select`/`insert`/`update`/`delete` run on
+  one transaction (BEGIN/COMMIT, ROLLBACK when `fn` throws; data statements only). The DataService uses it for a CSV import in
+  `replace` mode (delete + inserts).
+- **Atomicity without transactions** (`files`, `gsheets`). The DataService validates everything first (every import row is built
+  and checked, every delete target's permission is checked) and then issues one `delete` and one `insert` call. Those two calls are
+  still separate writes: on the files connector they land in memory together and are persisted by the next debounced save, so a
+  crash in between is the only window; on Google Sheets they are separate API requests, so a failure of the insert request after
+  the delete request (network, quota) leaves the replaced rows deleted. Re-run the import in that case.
+- **Default order.** A `select` without `orderBy` returns rows in insertion order: MySQL orders by `createdOn, id` (row ids are
+  time-ordered UUIDv7 from `rowUid()` in `server/core/util.ts`, so `id` breaks ties within a millisecond; only columns the def lists
+  are used, so a linked table without system columns gets no default order) and uses the same keys as the tie-breaker of an
+  explicit sort; the in-memory connectors keep file/sheet order and sort stably.
 
 ## Condition semantics (the reference)
 

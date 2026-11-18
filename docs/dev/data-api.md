@@ -20,8 +20,10 @@ browser over at most 5,000 rows), no websockets or server push, no pagination cu
 - **Base path** `/api/v1`. Routes in the code may be written with or without the prefix; the router strips it
   (`server/core/router.ts`).
 - **Bodies.** JSON with `Content-Type: application/json`, except the raw upload routes (attachments, data files). A non-raw
-  request with another content type gets 415 `invalid`; invalid JSON gets 422 `invalid`. JSON bodies are limited to 2 MB (413
-  `invalid` above that). Raw routes default to 25 MB (`/attachments` allows 200 MB, see below).
+  request with another content type gets 415 `invalid`; invalid JSON gets 422 `invalid`. Bodies are limited by the route's `maxBodyMB`
+  (JSON and raw alike; 413 `invalid` above it): 2 MB for JSON and 25 MB for raw routes unless the route sets more
+  (`POST /apps/import` and `POST /tables/from-csv` 25 MB, `POST /solutions/import` 40 MB). A declared `Content-Length` above the
+  limit is refused before the body is read; a body that grows past it is cut off, and after a 413 the server closes the connection.
 - **Cookie.** `ab_session`: HttpOnly, `SameSite=Strict`, `Path=/`, `Secure` when the connection is TLS. The value is a random
   token; the server stores only its SHA-256 (`ab_sessions.id_hash`). Lifetime 7 days, sliding (touched at most every 10 minutes).
   No tokens appear in URLs or in `localStorage`.
@@ -37,12 +39,12 @@ browser over at most 5,000 rows), no websockets or server push, no pagination cu
   | Status | `code` | Meaning |
   | --- | --- | --- |
   | 401 | `unauthenticated` | No valid session (also a wrong login) |
-  | 403 | `denied` | Signed in but not allowed; also CSRF header missing; also 429 login/password throttle |
+  | 403 | `denied` | Signed in but not allowed (including a row filter a new or changed row would not match); also CSRF header missing |
   | 404 | `not-found` | Unknown route, or the object does not exist **or the caller may not know it exists** |
-  | 405 | `invalid` | Known path, wrong method |
+  | 405 | `method_not_allowed` | Known path, wrong method |
   | 409 | `conflict` | Duplicate name or key, object in use, setup already done |
   | 413 / 415 / 422 | `invalid` | Body too large, wrong content type, validation failure (`field` names the offending input) |
-  | 429 | `denied` | Throttled (8 failed attempts per email+IP, or per user for password changes, in 15 minutes; in memory) |
+  | 429 | `rate_limited` | Throttled (8 failed attempts per email+IP for login, or per user for password changes, in 15 minutes; two separate in-memory maps) |
   | 503 | `unavailable` | The database is not configured or not reachable |
   | 500 | `storage` | Unexpected error; the message is always `Internal server error.` |
 
@@ -143,6 +145,8 @@ Body (`Query`, every field optional): `{ select?: string[], where?: Condition, o
   whether more matched. If `top` is 5000 or less, exactly that many rows are returned at most, and `truncated` is false.
 - `count: true` adds `total` (rows matching `where` and the caller's row filter).
 - A column in `select`, `where` or `orderBy` that does not exist: 422. A column the caller may not read (column access `none`): 403.
+- Without `orderBy` rows come in insertion order (MySQL: `ORDER BY createdOn, id`; row ids are time-ordered UUIDv7; the file and
+  Google Sheets connectors keep file/sheet order). The same keys break ties of an explicit sort.
 - The caller's row filter and row scope are ANDed into `where` on the server. Blanks sort last for both directions in the
   in-memory connectors and in MySQL (MySQL sorts `(col IS NULL)` first, then the value); see `connectors.md`.
 
@@ -165,7 +169,9 @@ Body `{ values: { [column]: value } }` -> `{ row }`.
   attachments, then the connector insert. Autonumber columns are assigned by the server (`prefix` + a zero-padded 4-digit counter
   from `ab_counters`).
 - Columns the caller cannot write (column access below `update`): 403. Unknown column: 422. Wrong type: 422.
-- Create does not apply the caller's row filter, so a user may create a row that their own read filter then hides.
+- Row filters apply to create like `WITH CHECK` in Postgres RLS: the new row (after defaults) must match the row filter of at least
+  one role that grants `create` (OR over those roles; `@me`/`@myEmail` resolved); otherwise 403 and nothing is written. A role
+  granting create without a row filter allows any row. Administrators are not checked.
 
 ```bash
 curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"values":{"Title":"Printer is down","Status":"Open"}}' $BASE/data/Tickets/rows
@@ -176,6 +182,8 @@ curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"values":{"Title":"Printer is down","St
 Body `{ changes: { [column]: value } }` -> `{ row }`. `changes.id`, if present, must equal `:id` (else 422). `modifiedOn` is set.
 
 - A row the caller can read but not update: 403. A row the caller cannot read at all: 404.
+- The row must match the caller's update predicate before **and after** the change (`WITH CHECK`); a change that would move it out
+  of that predicate is 403 and nothing is written. Leaving the caller's *read* filter is allowed (the row then disappears for them).
 - Writing a column the caller may only read, or an unknown column: 403 / 422 as for insert.
 
 ```bash
@@ -184,9 +192,9 @@ curl -sS -b $JAR -H "$H" -H "$JSON" -X PATCH -d '{"changes":{"Status":"Closed"}}
 
 ### `POST /data/:table/delete` (user)
 
-Body `{ ids: string[] }` -> `{ deleted: number }`. Ids are processed in chunks of 500. If a chunk contains a row the caller can read
-but not delete: 403 for that chunk (earlier chunks stay deleted; the operation is not atomic across chunks). Deleting a single id
-that deletes nothing is 404. Attachments of deleted rows are removed.
+Body `{ ids: string[] }` -> `{ deleted: number }`. All or nothing: the permission of every target row is checked first; if any row
+the caller can read may not be deleted, the answer is 403 and nothing is deleted. The rows are then deleted in one connector call
+(MySQL: chunks of 500 inside one transaction). Ids the caller cannot read are skipped. Deleting a single id that deletes nothing is 404. Attachments of deleted rows are removed.
 
 ```bash
 curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"ids":["3b1f6f7a-2c1e-4c5e-9d3a-0f7c9d2e8a11"]}' $BASE/data/Tickets/delete
@@ -199,9 +207,11 @@ Body `{ csv: string, mode?: 'append' | 'replace' }` (default `append`) -> `{ imp
 
 - The header row is matched to columns by `name`, then by `displayName`, case-insensitively. Unknown, system, hidden and read-only
   columns are ignored.
-- Every row is validated before anything changes; a bad row gives 422 `Row N: ...`.
-- `replace` deletes the existing rows the caller may delete, then inserts row by row. That is **not atomic**: a failure in the middle
-  leaves a partial import, and the message then ends with `(n rows were imported before this one)`.
+- Every row is built and checked (types, required, unique within the file and against the table, lookups, the create row filter)
+  before anything changes; a bad row gives `Row N: ... (nothing was imported)` with the status of the failed check.
+- `replace` deletes the existing rows the caller may delete and inserts the new rows; the new rows may reuse ids and unique values
+  of the rows they replace. On MySQL the delete and the inserts run in one transaction. On connectors without transactions
+  (files, Google Sheets) the delete and the insert are two writes, see `connectors.md`.
 - The table privileges needed are the same as for insert (and delete for `replace`).
 
 ```bash
@@ -233,8 +243,10 @@ Attachment cells (`file`, `image`) hold ids of the form `att_<random>`. Bytes li
 
 - Upload needs `update` column access on that column and the right to update that row (a row the caller cannot read: 404; read but not
   update: 403; a read-only table or column: 403). The column's
-  `accept` patterns and `maxSizeMB` (default 25) are enforced; violation: 422. The route accepts up to 200 MB of body, but
-  `maxSizeMB` is validated to 1..25 when a column is defined, so 25 MB is the effective limit.
+  `accept` patterns are enforced (422). The size limit is the column's `maxSizeMB` (validated to at most 25 when the column is
+  defined; default 25), and the route never accepts more than 25 MB. A `Content-Length` above the column limit is refused with 413
+  before the body is read; a streamed body is cut off with 413 as soon as it passes the limit (the connection is then closed).
+  Permission is checked before the body is read.
 - Reading needs read access to the row that owns the attachment. `GET` answers with the stored MIME, `nosniff`, and a strict
   sandbox CSP; `?download=1` sets `Content-Disposition: attachment`.
 - Attachments not linked to a row after the grace period of one hour are removed by a sweep at server start.
@@ -259,14 +271,13 @@ curl -sS -b $JAR -o out.pdf "$BASE/attachments/att_0123abcd?download=1"
 | `POST /apps/import` | maker | `{ yaml }` | `AppMeta` |
 
 - `width` and `height` must be 200..16000. A duplicate name on create gets a unique label (`Name (2)`). `PATCH` with a name already
-  in use: 409. `PUT` with a name that collides keeps the old name silently (it does not return 409).
+  in use: 409. `PUT` with a definition whose name collides with another app: 409 as well (nothing is saved).
 - `PUT` stores the whole definition; `AppDef` is described in `architecture.md`. The definition is validated structurally; formulas
   are strings and are **not** evaluated by the server.
 - `package` produces a YAML document with `kind: appbuilder/app`, `packageVersion: 1`; with `data=1` the rows of the tables the app
   uses are included (only the rows the caller may read). Import always creates a new app (unique name), reuses tables by name, and
   loads rows only into tables it creates. See `/home/claude/appbuilder-demo/server/routes/meta/packages.ts`.
-- `POST /apps/import` sets `maxBodyMB: 25` in the code, but the router applies the 2 MB JSON limit to non-raw routes, so a larger
-  package gets 413 (see "Known differences").
+- `POST /apps/import` accepts bodies up to 25 MB (`maxBodyMB: 25`).
 
 ```bash
 curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"name":"Help desk","width":1920,"height":1080,"template":"blank"}' $BASE/apps
@@ -299,7 +310,7 @@ Rules that clients and a gateway must reproduce:
   with more than one row is refused unless valid; deleting a column that is the target of a `lookup` elsewhere is refused (409).
 - `DELETE /tables/:id` also removes the table's role privileges, solution links and file links; `dropSource=1` also drops the
   physical table or sheet.
-- `POST /tables/from-csv` sets `maxBodyMB: 25` in the code but is subject to the 2 MB JSON limit (see "Known differences").
+- `POST /tables/from-csv` accepts bodies up to 25 MB (`maxBodyMB: 25`); the rows are stored in CSV order and read back in that order.
 
 ```bash
 curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"displayName":"Tickets","columns":[{"displayName":"Title","type":"text","required":true},{"displayName":"Status","type":"choice","choices":["Open","Closed"]}]}' $BASE/tables
@@ -375,8 +386,8 @@ curl -sS -b $JAR "$BASE/security/preview?user=user_abc"
 | `POST /solutions/import` | `{ yaml, filesAs?: 'database' \| 'file' }` (default `database`) | `SolutionDef`, plus `warnings` when something was skipped |
 
 Import creates new instances only; roles and connections are imported only when the caller is an admin (the admin flag is not
-imported, and connections arrive without secrets, with a warning). `POST /solutions/import` sets `maxBodyMB: 40` in the code but is
-subject to the 2 MB JSON limit.
+imported, and connections arrive without secrets, with a warning). `POST /solutions/import` accepts bodies up to 40 MB
+(`maxBodyMB: 40`).
 
 ```bash
 curl -sS -b $JAR "$BASE/solutions/sol_abc/package?data=1" -o pkg.json
@@ -419,8 +430,5 @@ The client detects the backend by calling `GET /api/v1/status` (800 ms timeout);
 - `http.ts` comments "connections (admins; makers may read)". In code `test`, `source-tables` and `link` are maker-level and the rest
   are admin-only; there is no `GET /connections` (connections come from `GET /workspace`).
 - `SetupDatabaseRequest` lacks the `ssl` flag that `/setup/database` accepts.
-- `maxBodyMB` on non-raw routes (`/apps/import`, `/tables/from-csv`, `/solutions/import`) is not applied; the 2 MB JSON limit is.
-- `GET /tables/:id/csv` is registered twice (in `server/core/data-routes.ts` and `server/routes/meta/tables.ts`); the core one is
-  registered first and wins, so the second is dead code.
 - The doc comment for `Query.top` says "default and maximum: DEFAULT_ROW_CAP"; the code returns the cap when `top` is larger, as
   described above.

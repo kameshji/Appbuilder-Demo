@@ -284,8 +284,9 @@ empty until `ensureTablesLoaded` (called from `linkPlatform()` for `app.dataSour
 8. `platform.tables.flush()` waits for the chain and rejects with the first error. Form submits await it so `OnSuccess` and `OnFailure`
    reflect the server's verdict.
 
-Writes are not transactional across rows: a multi-row delete is chunked (500), and a CSV import in `replace` mode deletes before
-inserting.
+Multi-row writes are all or nothing where the connector allows it: a multi-row delete checks every row's permission before deleting
+(one transaction on MySQL), and a CSV import validates every row first and runs `replace` (delete + inserts) in one transaction on
+MySQL. On the files and Google Sheets connectors the delete and the insert remain two writes (see `connectors.md`).
 
 ### Sign-in
 

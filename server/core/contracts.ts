@@ -14,7 +14,12 @@ import type { Condition, Query, QueryValue } from '../../src/platform/http.ts'
 
 /* ------------------------------------------------------------------ http */
 
-export type ApiErrorCode = 'unauthenticated' | 'denied' | 'not-found' | 'conflict' | 'invalid' | 'unavailable' | 'storage'
+export type ApiErrorCode =
+  | 'unauthenticated' | 'denied' | 'not-found' | 'conflict' | 'invalid' | 'unavailable' | 'storage'
+  /** 429: too many attempts (login / password change throttle) */
+  | 'rate_limited'
+  /** 405: the path exists but not for this HTTP method */
+  | 'method_not_allowed'
 
 /** Throw from anywhere in a request; the router turns it into { error: { code, message, field? } }. */
 export class HttpError extends Error {
@@ -42,6 +47,12 @@ export interface Ctx {
   body: unknown
   /** raw body for routes registered with { raw: true } (size-limited by the router) */
   rawBody?: Buffer
+  /**
+   * routes registered with { raw: true, streamBody: true } only: the router does not read the body; the handler
+   * calls this (once) after its own checks. Rejects with 413 as soon as more than `limitBytes` arrive (never more
+   * than the route's maxBodyMB) and closes the connection after the error response.
+   */
+  readBody?(limitBytes: number): Promise<Buffer>
   /** present when the route's auth level is not 'none' */
   user?: UserContext
   services: Services
@@ -59,8 +70,14 @@ export interface RawResponse {
 
 export type Handler = (ctx: Ctx) => Promise<unknown> | unknown
 
+/**
+ * maxBodyMB: body limit of the route (JSON or raw; default 2 MB for JSON, 25 MB for raw).
+ * streamBody (raw routes only): the body is not read before the handler; see Ctx.readBody.
+ */
+export interface RouteOptions { auth: AuthLevel; raw?: boolean; maxBodyMB?: number; streamBody?: boolean }
+
 export interface Router {
-  add(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', pattern: string, handler: Handler, opts: { auth: AuthLevel; raw?: boolean; maxBodyMB?: number }): void
+  add(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', pattern: string, handler: Handler, opts: RouteOptions): void
 }
 
 /** Each route module exports one of these; server/main.ts calls them all. */
@@ -123,6 +140,11 @@ export interface Connector {
   /** update rows with this id that also satisfy `guard` (RLS); returns affected count (0 = not found or not allowed) */
   update(def: TableDef, id: string, changes: RawRow, guard?: Condition): Promise<number>
   delete(def: TableDef, ids: string[], guard?: Condition): Promise<number>
+  /**
+   * Only when capabilities.transactions: runs fn with a connector bound to one transaction (BEGIN/COMMIT,
+   * ROLLBACK when fn throws). Data statements only (no DDL).
+   */
+  transaction?<T>(fn: (tx: Connector) => Promise<T>): Promise<T>
   close(): Promise<void>
 }
 
@@ -241,8 +263,11 @@ export interface UserContext {
   user: UserDef
   roles: RoleDef[]
   privileges: EffectivePrivileges
-  /** RLS predicate for op on a table (OR over granting roles of scope AND rowFilter); {const:false} when none */
-  rowPredicate(table: TableDef, op: 'read' | 'update' | 'delete'): Condition
+  /**
+   * RLS predicate for op on a table (OR over granting roles of scope AND rowFilter); {const:false} when none.
+   * 'create': OR over the roles granting create of their rowFilter (the WITH CHECK a new row must satisfy).
+   */
+  rowPredicate(table: TableDef, op: 'read' | 'update' | 'delete' | 'create'): Condition
   canCreate(table: TableDef): boolean
   /** CLS: effective access for a column (system columns: 'read' unless hidden by a role) */
   columnAccess(table: TableDef, column: string): 'none' | 'read' | 'update'

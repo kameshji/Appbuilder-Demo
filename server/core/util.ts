@@ -67,3 +67,38 @@ export function errText(e: unknown): string {
 }
 
 export const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+
+/* ------------------------------------------------------------------ row ids */
+
+let lastMs = 0
+let seq = 0
+
+/**
+ * Row id: a UUIDv7 (RFC 9562) — 48-bit Unix ms time, then a 12-bit counter, then random bits. Monotonic within this
+ * process (the counter orders ids created in the same millisecond), so `ORDER BY createdOn, id` is insertion order.
+ */
+export function rowUid(now = Date.now()): string {
+  if (now > lastMs) {
+    lastMs = now
+    seq = 0
+  } else {
+    seq++
+    if (seq > 0xfff) {
+      lastMs++
+      seq = 0
+    }
+  }
+  const b = randomBytes(16)
+  const ms = lastMs
+  b[0] = Math.floor(ms / 2 ** 40) & 0xff
+  b[1] = Math.floor(ms / 2 ** 32) & 0xff
+  b[2] = (ms >>> 24) & 0xff
+  b[3] = (ms >>> 16) & 0xff
+  b[4] = (ms >>> 8) & 0xff
+  b[5] = ms & 0xff
+  b[6] = 0x70 | ((seq >>> 8) & 0x0f)
+  b[7] = seq & 0xff
+  b[8] = 0x80 | (b[8] & 0x3f)
+  const h = b.toString('hex')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}

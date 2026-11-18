@@ -53,8 +53,10 @@ export function registerAppRoutes(router: Router, s: Services): void {
     if (!cur) throw notFound('App not found.')
     const def = clone(validateDef(bodyObj(ctx).definition))
     const wanted = typeof def.name === 'string' && def.name.trim() ? def.name.trim().slice(0, 100) : cur.meta.name
-    const taken = (await s.meta.apps.list()).some((a) => a.id !== cur.meta.id && a.name.toLowerCase() === wanted.toLowerCase())
-    const name = taken ? cur.meta.name : wanted
+    if ((await s.meta.apps.list()).some((a) => a.id !== cur.meta.id && a.name.toLowerCase() === wanted.toLowerCase())) {
+      throw conflict(`An app named "${wanted}" already exists.`)
+    }
+    const name = wanted
     def.name = name
     const meta: AppMeta = {
       ...cur.meta, name,

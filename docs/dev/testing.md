@@ -59,7 +59,9 @@ What each suite creates and needs:
 
 - `server/core/integration.test.ts` creates a fresh database `appbuilder_test_s1_<8 hex>` and drops it afterwards, so the account
   needs `CREATE` and `DROP` on `appbuilder_test%`.
-- `server/routes/meta/meta.integration.test.ts` does the same with `appbuilder_test_s2_<8 hex>`.
+- `server/routes/meta/meta.integration.test.ts` does the same with `appbuilder_test_s2_<8 hex>`, and
+  `server/core/fixes.integration.test.ts` (body limits, RLS WITH CHECK, atomic deletes and imports, attachment limits, row order,
+  throttle codes, email migration) with `appbuilder_test_fx_<8 hex>`.
 - `server/connectors/mysql/mysql.integration.test.ts` uses the database named in the URL (`appbuilder_test`), which must exist, and
   creates and drops its own tables inside it with a random `tst<hex>_` prefix. It needs `ALL` on that database. Besides
   parity it covers DDL, indexes, transactions (a failing multi-row insert rolls everything back) and error mapping.

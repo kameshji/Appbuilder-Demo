@@ -81,12 +81,17 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
     return roles.some((r) => !!privFor(r, table)?.create)
   }
 
-  function rowPredicate(table: TableDef, op: 'read' | 'update' | 'delete'): Condition {
+  /**
+   * read/update/delete: OR over granting roles of (scope AND rowFilter).
+   * create (WITH CHECK for new rows): OR over roles with create of their rowFilter; no owner term, because a new row
+   * is always owned by its creator.
+   */
+  function rowPredicate(table: TableDef, op: 'read' | 'update' | 'delete' | 'create'): Condition {
     if (isAdmin) return TRUE
     const terms: Condition[] = []
     for (const r of roles) {
       const p = privFor(r, table)
-      const s = p?.[op] ?? 'none'
+      const s: AccessScope = op === 'create' ? (p?.create ? 'all' : 'none') : (p?.[op] ?? 'none')
       if (!p || s === 'none') continue
       const filter = rowFilterCondition(p.rowFilter, table, user)
       if (filter === null) continue // filter on a missing column: this role grants nothing

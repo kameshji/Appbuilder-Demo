@@ -136,10 +136,10 @@ export const createMySqlConnector: ConnectorFactory = (conn: ConnectionRecord, e
     if (!db) db = createSqlDb(settings, password)
     return db
   }
-  /** run a DB action, mapping driver errors (logged without SQL or secrets) */
-  async function run<T>(fn: (d: SqlDb) => Promise<T>): Promise<T> {
+  /** run a DB action, mapping driver errors (logged without SQL or secrets); `bound` = inside a transaction */
+  async function run<T>(fn: (d: SqlDb) => Promise<T>, bound?: SqlDb): Promise<T> {
     try {
-      return await fn(getDb())
+      return await fn(bound ?? getDb())
     } catch (e) {
       const mapped = mapDbError(e, password)
       if (!(e instanceof HttpError)) env.log(mapped.status >= 500 ? 'error' : 'warn', `mysql: ${(e as DbError).code ?? 'error'}: ${scrub((e as DbError).sqlMessage ?? (e as DbError).message ?? '', password)}`)
@@ -171,6 +171,61 @@ export const createMySqlConnector: ConnectorFactory = (conn: ConnectionRecord, e
     }
     if (want && !have) {
       await d.exec(`ALTER TABLE ${tableId(def)} ADD ${want === 'unique' ? 'UNIQUE KEY' : 'KEY'} ${quoteId(indexName(want, col.name))} (${quoteId(col.name)})`)
+    }
+  }
+
+  /** data statements over the pool, or bound to one transaction connection */
+  function dataOps(bound: SqlDb | undefined): Pick<Connector, 'select' | 'insert' | 'update' | 'delete'> {
+    return {
+      async select(def: TableDef, q: Query) {
+        const plan = buildSelect(def, q)
+        const types = columnTypesByName(def)
+        return run(async (d) => {
+          const raw = await d.query<Record<string, unknown>>(plan.sql, plan.params)
+          const rows: RawRow[] = raw.map((r) => {
+            const out: RawRow = {}
+            for (const c of plan.columns) out[c.name] = fromDb(r[c.name], types.get(c.name) ?? c.type)
+            return out
+          })
+          let total: number | undefined
+          if (plan.countSql) total = Number((await d.query<{ n: number }>(plan.countSql, plan.countParams))[0]?.n ?? 0)
+          return { rows, total }
+        }, bound)
+      },
+
+      async insert(def: TableDef, rows: RawRow[]) {
+        const stmts = buildInserts(def, rows)
+        if (!stmts.length) return
+        await run(async (d) => {
+          if (stmts.length === 1) { await d.exec(stmts[0].sql, stmts[0].params); return }
+          await d.tx(async (t) => { for (const s of stmts) await t.exec(s.sql, s.params) })
+        }, bound)
+      },
+
+      async update(def: TableDef, id: string, changes: RawRow, guard?: Condition) {
+        const stmt = buildUpdate(def, id, changes, guard)
+        return run(async (d) => {
+          if (!stmt) {
+            const c = buildCountById(def, id, guard)
+            return Number((await d.query<{ n: number }>(c.sql, c.params))[0]?.n ?? 0)
+          }
+          return (await d.exec(stmt.sql, stmt.params)).affectedRows
+        }, bound)
+      },
+
+      async delete(def: TableDef, ids: string[], guard?: Condition) {
+        const stmts = buildDeletes(def, ids, guard)
+        if (!stmts.length) return 0
+        return run(async (d) => {
+          if (stmts.length === 1) return (await d.exec(stmts[0].sql, stmts[0].params)).affectedRows
+          // several chunks: all or nothing
+          return d.tx(async (t) => {
+            let n = 0
+            for (const s of stmts) n += (await t.exec(s.sql, s.params)).affectedRows
+            return n
+          })
+        }, bound)
+      },
     }
   }
 
@@ -265,50 +320,15 @@ export const createMySqlConnector: ConnectorFactory = (conn: ConnectionRecord, e
       await run((d) => d.exec(`DROP TABLE IF EXISTS ${t}`))
     },
 
-    async select(def: TableDef, q: Query) {
-      const plan = buildSelect(def, q)
-      const types = columnTypesByName(def)
-      return run(async (d) => {
-        const raw = await d.query<Record<string, unknown>>(plan.sql, plan.params)
-        const rows: RawRow[] = raw.map((r) => {
-          const out: RawRow = {}
-          for (const c of plan.columns) out[c.name] = fromDb(r[c.name], types.get(c.name) ?? c.type)
-          return out
-        })
-        let total: number | undefined
-        if (plan.countSql) total = Number((await d.query<{ n: number }>(plan.countSql, plan.countParams))[0]?.n ?? 0)
-        return { rows, total }
-      })
-    },
+    ...dataOps(undefined),
 
-    async insert(def, rows) {
-      const stmts = buildInserts(def, rows)
-      if (!stmts.length) return
-      await run(async (d) => {
-        if (stmts.length === 1) { await d.exec(stmts[0].sql, stmts[0].params); return }
-        await d.tx(async (t) => { for (const s of stmts) await t.exec(s.sql, s.params) })
-      })
-    },
-
-    async update(def, id, changes, guard?: Condition) {
-      const stmt = buildUpdate(def, id, changes, guard)
-      return run(async (d) => {
-        if (!stmt) {
-          const c = buildCountById(def, id, guard)
-          return Number((await d.query<{ n: number }>(c.sql, c.params))[0]?.n ?? 0)
-        }
-        return (await d.exec(stmt.sql, stmt.params)).affectedRows
-      })
-    },
-
-    async delete(def, ids, guard?: Condition) {
-      const stmts = buildDeletes(def, ids, guard)
-      if (!stmts.length) return 0
-      return run(async (d) => {
-        let n = 0
-        for (const s of stmts) n += (await d.exec(s.sql, s.params)).affectedRows
-        return n
-      })
+    async transaction<T>(fn: (tx: Connector) => Promise<T>): Promise<T> {
+      return run((d) => d.tx((t) => {
+        // same connector, data statements on the transaction's connection; nested transactions join it
+        const txc: Connector = { ...connector, ...dataOps(t), close: async () => {} }
+        txc.transaction = <U>(inner: (tx: Connector) => Promise<U>) => inner(txc)
+        return fn(txc)
+      }))
     },
 
     async close() {

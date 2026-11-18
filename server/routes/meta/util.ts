@@ -8,6 +8,7 @@ import Papa from 'papaparse'
 import type { ColumnDef, ColumnType, RoleDef, TableDef } from '../../../src/platform/contracts.ts'
 import { HttpError } from '../../core/contracts.ts'
 import type { Ctx, UserContext } from '../../core/contracts.ts'
+import { convertCell, defaultIn } from '../../core/values.ts'
 
 /* ------------------------------------------------------------------ errors */
 
@@ -118,161 +119,41 @@ export const isAttachmentType = (t: ColumnType): boolean => t === 'file' || t ==
 export const MAX_COLUMNS = 200
 
 /* ------------------------------------------------------------------ coercion (type-change checks) */
+// Value rules are NOT duplicated here: type changes and defaults use server/core/values.ts (coerceIn), the same code
+// every later write goes through, so a conversion the check accepts is a value a write accepts (and vice versa).
 
 const pad = (n: number, w = 2) => String(n).padStart(w, '0')
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/
 const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const URL_LIKE = /^([a-z][a-z0-9+.-]*:\/\/|www\.|mailto:|tel:|data:)\S+$/i
-const PHONE = /^[+()\-.\s\d]{3,32}(\s*(x|ext\.?)\s*\d{1,6})?$/i
 
-/** a calendar day as UTC (the server stores dates without time zone) */
+/** a calendar day as UTC (inferType only) */
 function parseDateText(s: string): Date | null {
   const m = ISO_DATE.exec(s)
-  if (m) {
-    const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
-    return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]) ? d : null
-  }
-  const t = Date.parse(s)
-  if (Number.isNaN(t)) return null
-  const d = new Date(t)
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
-}
-function parseDateTimeText(s: string): Date | null {
-  if (ISO_DATE.test(s)) return parseDateText(s)
-  if (!ISO_DATETIME.test(s) && !/^[A-Za-z]{3}/.test(s) && !/^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(s)) return null
-  const t = Date.parse(s.includes(' ') && !s.includes('T') && ISO_DATETIME.test(s) ? s.replace(' ', 'T') + (/(Z|[+-]\d{2}:?\d{2})$/.test(s) ? '' : 'Z') : s)
-  return Number.isNaN(t) ? null : new Date(t)
+  if (!m) return null
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+  return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]) ? d : null
 }
 
 export type Cell = string | number | boolean | Date | null | undefined
 
 export const isBlankCell = (v: unknown): boolean => v === null || v === undefined || (typeof v === 'string' && v.trim() === '')
 
-class ConvertError extends Error {}
-const bad = (col: ColumnDef, msg: string): never => {
-  throw new ConvertError(`${col.displayName}: ${msg}`)
-}
-
-function toNumber(col: ColumnDef, v: Cell): number {
-  if (typeof v === 'number') {
-    if (!Number.isFinite(v)) bad(col, 'must be a finite number')
-    return v
-  }
-  if (typeof v === 'boolean' || v instanceof Date) return bad(col, 'must be a number')
-  if (typeof v === 'string') {
-    const t = v.trim().replace(/,/g, '')
-    if (t === '' || !/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(t)) bad(col, `"${v}" is not a number`)
-    return Number(t)
-  }
-  return bad(col, 'must be a number')
-}
-
 /**
- * Coerce a stored value to the column's type (type-change check). Blank -> null.
- * Throws ConvertError (message is maker-readable); callers turn it into an `invalid` HttpError.
+ * Can a stored value of column `from` become a value of column `to`? Uses the write path's coercion (values.ts):
+ * the value is taken as the client would read it (cellOut) and coerced like a client write (coerceIn).
  */
-export function coerceCell(col: ColumnDef, raw: Cell): string | number | boolean | Date | null {
-  if (raw === undefined || raw === null) return null
-  if (typeof raw === 'string' && raw.trim() === '' && col.type !== 'multiline') return null
-  switch (col.type) {
-    case 'text':
-    case 'multiline':
-    case 'image':
-    case 'file':
-    case 'autonumber': {
-      if (raw instanceof Date) return raw.toISOString()
-      return String(raw)
-    }
-    case 'email': {
-      const s = String(raw).trim()
-      if (!EMAIL.test(s)) bad(col, `"${s}" is not a valid email address`)
-      return s
-    }
-    case 'url': {
-      const s = String(raw).trim()
-      if (!URL_LIKE.test(s)) bad(col, `"${s}" is not a valid URL`)
-      return s
-    }
-    case 'phone': {
-      const s = String(raw).trim()
-      if (!PHONE.test(s)) bad(col, `"${s}" is not a valid phone number`)
-      return s
-    }
-    case 'number': {
-      const n = toNumber(col, raw)
-      if (!Number.isInteger(n)) bad(col, `${n} is not a whole number`)
-      return n
-    }
-    case 'decimal':
-      return toNumber(col, raw)
-    case 'currency':
-      return Math.round(toNumber(col, raw) * 100) / 100
-    case 'boolean': {
-      if (typeof raw === 'boolean') return raw
-      if (typeof raw === 'number') {
-        if (raw === 1) return true
-        if (raw === 0) return false
-      }
-      if (typeof raw === 'string') {
-        const t = raw.trim().toLowerCase()
-        if (t === 'true' || t === '1' || t === 'yes' || t === 'y') return true
-        if (t === 'false' || t === '0' || t === 'no' || t === 'n') return false
-      }
-      return bad(col, 'must be true or false')
-    }
-    case 'date': {
-      let d: Date | null = null
-      if (raw instanceof Date) d = Number.isNaN(raw.getTime()) ? null : new Date(Date.UTC(raw.getUTCFullYear(), raw.getUTCMonth(), raw.getUTCDate()))
-      else if (typeof raw === 'string') d = parseDateText(raw.trim())
-      if (!d) bad(col, `${String(raw)} is not a valid date (use YYYY-MM-DD)`)
-      return d
-    }
-    case 'datetime': {
-      let d: Date | null = null
-      if (raw instanceof Date) d = Number.isNaN(raw.getTime()) ? null : new Date(raw.getTime())
-      else if (typeof raw === 'string') d = parseDateTimeText(raw.trim())
-      if (!d) bad(col, `${String(raw)} is not a valid date and time`)
-      return d
-    }
-    case 'choice': {
-      const s = String(raw).trim()
-      if (col.choices && col.choices.length) {
-        const hit = col.choices.find((c) => c === s) ?? col.choices.find((c) => c.toLowerCase() === s.toLowerCase())
-        if (hit === undefined) bad(col, `"${s}" is not one of: ${col.choices.join(', ')}`)
-        return hit as string
-      }
-      return s
-    }
-    case 'lookup':
-      return String(raw)
-  }
-}
-
-/** coerceCell that returns the failure message instead of throwing; `ok: true` carries the value */
-export function tryCoerce(col: ColumnDef, raw: Cell): { ok: true; value: ReturnType<typeof coerceCell> } | { ok: false; message: string } {
-  try {
-    return { ok: true, value: coerceCell(col, raw) }
-  } catch (e) {
-    if (e instanceof ConvertError) return { ok: false, message: e.message }
-    throw e
-  }
+export function tryCoerce(to: ColumnDef, raw: Cell, from?: ColumnDef): { ok: true; value: string | number | boolean | Date | null } | { ok: false; message: string } {
+  return convertCell(from, to, raw ?? null)
 }
 
 /** default value as typed value (literal text; date/datetime also accept today/now). null when it does not fit. */
-export function defaultFor(col: ColumnDef, now: Date): string | number | boolean | Date | null {
-  if (col.type === 'autonumber' || col.default === undefined || col.default === '') return null
-  if ((col.type === 'date' || col.type === 'datetime') && /^(today|now)$/i.test(col.default.trim())) {
-    return col.type === 'date' ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())) : new Date(now.getTime())
-  }
-  const r = tryCoerce(col, col.default)
-  return r.ok ? r.value : null
-}
+export const defaultFor = (col: ColumnDef, now: Date): string | number | boolean | Date | null => defaultIn(col, now)
 
 /** text a SQL/file column of the OLD text type can hold so that converting it to `target` is lossless */
 export function normalizeForConversion(target: ColumnDef, v: string | number | boolean | Date | null): string | null {
   if (v === null) return null
-  const r = tryCoerce(target, v)
+  const r = convertCell(undefined, target, v)
   if (!r.ok || r.value === null) return null
   const c = r.value
   switch (target.type) {

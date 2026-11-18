@@ -11,10 +11,36 @@ import type {
 import type { AppDef } from '../../src/contracts.ts'
 import { parseJson, toDate, toIso } from './util.ts'
 
-export const SCHEMA_VERSION = 1
+/** 1: initial schema; 2: ab_users.email normalised to trimmed lowercase */
+export const SCHEMA_VERSION = 2
 
 /** RoleDef as stored: the optional maker flag (ab_roles.is_maker) travels with the role. */
 export type StoredRole = RoleDef & { isMaker?: boolean }
+
+/**
+ * v2: every ab_users.email is stored trimmed and lowercase. A CHECK constraint is not portable (MySQL 5.7 parses and
+ * ignores CHECK), so the rule is enforced by the MetaStore write path (users.insert / users.update lowercase) and this
+ * migration fixes older rows. ux_ab_users_email (utf8mb4_unicode_ci, case-insensitive) already prevents two rows that
+ * differ only in case; a row whose trimmed form collides with another row is left as it is (and logged by the caller).
+ */
+export async function normaliseUserEmails(db: SqlDb): Promise<{ changed: number; skipped: string[] }> {
+  const rows = await db.query<{ id: string; email: string }>('SELECT id, email FROM ab_users')
+  let changed = 0
+  const skipped: string[] = []
+  for (const r of rows) {
+    const email = String(r.email)
+    const norm = email.trim().toLowerCase()
+    if (norm === email) continue
+    try {
+      await db.exec('UPDATE ab_users SET email = ? WHERE id = ?', [norm, r.id])
+      changed++
+    } catch (e) {
+      if ((e as { code?: string }).code !== 'ER_DUP_ENTRY') throw e
+      skipped.push(String(r.id))
+    }
+  }
+  return { changed, skipped }
+}
 
 const TAIL = 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
 
@@ -334,7 +360,8 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
       const rows = await db.query<Row>("SELECT v FROM ab_meta WHERE k = 'schemaVersion'")
       const current = rows.length ? Number(rows[0].v) || 0 : 0
       if (current < SCHEMA_VERSION) {
-        // future upgrades go here, ordered by version
+        // upgrades, ordered by version
+        if (current < 2) await normaliseUserEmails(db)
         await db.exec('INSERT INTO ab_meta (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)', ['schemaVersion', String(SCHEMA_VERSION)])
       }
     },

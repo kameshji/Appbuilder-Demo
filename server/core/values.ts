@@ -214,3 +214,17 @@ export function csvText(v: QueryValue): string {
   if (typeof v === 'boolean') return v ? 'true' : 'false'
   return String(v)
 }
+
+/**
+ * Column type change check: the stored cell of `from` as the JSON value a client reads (cellOut), coerced to `to`
+ * exactly like a client write (coerceIn). `from` undefined = the cell is client-style text/number already.
+ */
+export function convertCell(from: ColumnDef | undefined, to: ColumnDef, v: Cell | undefined): { ok: true; value: Cell } | { ok: false; message: string } {
+  try {
+    const json = v instanceof Date || from ? cellOut(from, v) : (v ?? null)
+    return { ok: true, value: coerceIn(to, json) }
+  } catch (e) {
+    if (e instanceof HttpError) return { ok: false, message: e.message }
+    throw e
+  }
+}

@@ -10,10 +10,10 @@ import type {
 import type { ColumnDef, TableDef } from '../../src/platform/contracts.ts'
 import type { Condition, Query, QueryValue } from '../../src/platform/http.ts'
 import { DEFAULT_ROW_CAP } from '../../src/platform/http.ts'
-import { and, applyQuery, conditionColumns } from './condition.ts'
+import { and, applyQuery, conditionColumns, evaluateCondition } from './condition.ts'
 import { attachmentIds, cellOut, coerceIn, csvText, defaultIn, isBlank } from './values.ts'
 import { SYSTEM_COLUMN_NAMES } from './security.ts'
-import { errText, isUuid, uid } from './util.ts'
+import { errText, isUuid, rowUid } from './util.ts'
 import { DEFAULT_CONNECTION_ID } from './connections.ts'
 
 type JsonRow = Record<string, QueryValue>
@@ -105,6 +105,11 @@ function checkQuery(q: unknown): Query {
 }
 
 const pad4 = (n: number) => String(n).padStart(4, '0')
+const isConstFalse = (c: Condition | undefined): boolean => !!c && 'const' in c && !c.const
+const isConstTrue = (c: Condition | undefined): boolean => !c || ('const' in c && c.const)
+/** unique-check key (text compares case-insensitively, like the connectors) */
+const uniqueKey = (v: Cell): string => (v instanceof Date ? `d:${v.getTime()}` : typeof v === 'string' ? `s:${v.trim().toLowerCase()}` : `v:${String(v)}`)
+const ID_CHUNK = 500
 
 export function createDataService(deps: DataDeps): DataService & { internals: DataInternals } {
   const meta = () => deps.meta()
@@ -123,9 +128,9 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     return applyQuery(all.rows, q)
   }
 
-  async function findRow(table: TableDef, id: string, guard?: Condition): Promise<RawRow | null> {
+  async function findRow(table: TableDef, id: string, guard?: Condition, conn?: Connector): Promise<RawRow | null> {
     const def = physical(table)
-    const connector = await connectorFor(def)
+    const connector = conn ?? (await connectorFor(def))
     const where = guard && !('const' in guard && guard.const) ? and({ col: 'id', op: 'eq', value: id }, guard) : { col: 'id', op: 'eq' as const, value: id }
     if (guard && 'const' in guard && !guard.const) return null
     const res = await runSelect(connector, def, { where, top: 2 })
@@ -217,26 +222,31 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
 
   /* ---------------------------------------------------------------- validation helpers */
 
-  async function exists(def: TableDef, where: Condition): Promise<boolean> {
-    const connector = await connectorFor(def)
-    const res = await runSelect(connector, def, { where, top: 1, select: ['id'] })
-    return res.rows.length > 0
+  /** true when a row matches `where`, ignoring the rows in `ignore` (rows about to be replaced) */
+  async function exists(def: TableDef, where: Condition, conn?: Connector, ignore?: Set<string>): Promise<boolean> {
+    const connector = conn ?? (await connectorFor(def))
+    const top = 1 + (ignore?.size ?? 0)
+    const res = await runSelect(connector, def, { where, top, select: ['id'] })
+    return ignore?.size ? res.rows.some((r) => !ignore.has(String(r.id))) : res.rows.length > 0
   }
 
-  async function checkUnique(def: TableDef, col: ColumnDef, v: Cell, exceptId?: string) {
+  async function checkUnique(def: TableDef, col: ColumnDef, v: Cell, exceptId?: string, conn?: Connector, ignore?: Set<string>) {
     if (!col.unique || v === null || v === '') return
     const value: QueryValue = v instanceof Date ? v.toISOString() : v
     const where: Condition = exceptId ? and({ col: col.name, op: 'eq', value }, { col: 'id', op: 'ne', value: exceptId }) : { col: col.name, op: 'eq', value }
-    if (await exists(def, where)) {
-      throw new HttpError(409, 'conflict', `${col.displayName || col.name}: "${String(value).slice(0, 60)}" already exists (values must be unique).`, col.name)
-    }
+    if (await exists(def, where, conn, ignore)) throw duplicate(col, value)
   }
 
-  async function checkLookup(def: TableDef, col: ColumnDef, v: Cell) {
+  function duplicate(col: ColumnDef, value: QueryValue): HttpError {
+    return new HttpError(409, 'conflict', `${col.displayName || col.name}: "${String(value).slice(0, 60)}" already exists (values must be unique).`, col.name)
+  }
+
+  async function checkLookup(def: TableDef, col: ColumnDef, v: Cell, conn?: Connector) {
     if (col.type !== 'lookup' || v === null || v === '') return
-    const target = col.lookupTable === def.name || col.lookupTable === def.id ? def : col.lookupTable ? await meta().tables.get(col.lookupTable) : null
+    const self = col.lookupTable === def.name || col.lookupTable === def.id
+    const target = self ? def : col.lookupTable ? await meta().tables.get(col.lookupTable) : null
     if (!target) throw new HttpError(422, 'invalid', `${col.displayName || col.name}: the lookup table "${col.lookupTable ?? ''}" does not exist.`, col.name)
-    if (!(await exists(physical(target), { col: 'id', op: 'eq', value: String(v) }))) {
+    if (!(await exists(physical(target), { col: 'id', op: 'eq', value: String(v) }, self ? conn : undefined))) {
       throw new HttpError(422, 'invalid', `${col.displayName || col.name}: no row with id "${String(v).slice(0, 64)}" in "${target.displayName || target.name}".`, col.name)
     }
   }
@@ -299,23 +309,51 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     return { raw, id }
   }
 
-  async function insertOne(ctx: UserContext | null, table: TableDef, values: Record<string, unknown>, opts: InsertOpts): Promise<JsonRow> {
-    const def = physical(table)
-    checkWritableTable(def)
-    if (ctx && !ctx.canCreate(def)) throw new HttpError(403, 'denied', `You are not allowed to add rows to "${def.displayName || def.name}".`)
+  /** state shared by the rows of one import (duplicates inside the batch) */
+  interface Batch { ids: Set<string>; unique: Map<string, Set<string>> }
+  interface BuildOpts extends InsertOpts {
+    /** connector to check against (the import's) */
+    conn?: Connector
+    /** ids of rows that are replaced by this batch: ignored by the id and unique checks */
+    replacing?: Set<string>
+    batch?: Batch
+  }
+
+  function cannotCreate(def: TableDef): HttpError {
+    return new HttpError(403, 'denied', `You are not allowed to add rows to "${def.displayName || def.name}".`)
+  }
+
+  /**
+   * The complete row to insert (defaults, system fields, autonumbers) after every check: create permission including the
+   * WITH CHECK of the roles' row filters, required, unique, lookups, attachments. Writes nothing (except autonumber
+   * counters, which may leave gaps when a later check fails).
+   */
+  async function buildRow(ctx: UserContext | null, def: TableDef, values: Record<string, unknown>, opts: BuildOpts): Promise<RawRow> {
     const { raw: given, id: wantedId } = prepareInsert(ctx, def, values, opts)
     const now = new Date()
     let id = wantedId
-    if (id && (await exists(def, { col: 'id', op: 'eq', value: id }))) {
-      if (ctx) throw new HttpError(409, 'conflict', 'A row with this id already exists.', 'id')
-      id = undefined
+    if (id) {
+      const taken = opts.batch?.ids.has(id) || (await exists(def, { col: 'id', op: 'eq', value: id }, opts.conn, opts.replacing))
+      if (taken) {
+        if (ctx) throw new HttpError(409, 'conflict', 'A row with this id already exists.', 'id')
+        id = undefined
+      }
     }
-    id ??= uid()
+    id ??= rowUid(now.getTime())
+    opts.batch?.ids.add(id)
     const raw: RawRow = { id }
     for (const col of def.columns) {
       if (isSystem(col)) continue
       if (col.name in given) raw[col.name] = given[col.name]
       else raw[col.name] = defaultIn(col, now)
+    }
+    raw.createdOn = (given.createdOn as Date | undefined) ?? now
+    raw.modifiedOn = (given.modifiedOn as Date | undefined) ?? now
+    raw.createdBy = ctx ? ctx.user.id : ((given.createdBy as string | undefined) ?? (given.owner as string | undefined) ?? null)
+    raw.owner = ctx ? ctx.user.id : ((given.owner as string | undefined) ?? (given.createdBy as string | undefined) ?? null)
+    // RLS WITH CHECK: the new row must match the row filter of a role that grants create (admins: always)
+    if (ctx && !evaluateCondition(ctx.rowPredicate(def, 'create'), raw)) {
+      throw new HttpError(403, 'denied', `You are not allowed to add this row to "${def.displayName || def.name}": it does not match the rows your role may create.`)
     }
     for (const col of def.columns) {
       if (col.type !== 'autonumber' || isSystem(col)) continue
@@ -329,19 +367,35 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     }
     for (const col of def.columns) {
       if (isSystem(col)) continue
-      await checkUnique(def, col, raw[col.name])
-      await checkLookup(def, col, raw[col.name])
-      if (ctx) await checkAttachments(def, col, raw[col.name], id, [])
+      const v = raw[col.name]
+      if (opts.batch && col.unique && v !== null && v !== '') {
+        const seen = opts.batch.unique.get(col.name) ?? new Set<string>()
+        opts.batch.unique.set(col.name, seen)
+        if (seen.has(uniqueKey(v))) throw duplicate(col, v instanceof Date ? v.toISOString() : v)
+        seen.add(uniqueKey(v))
+      }
+      await checkUnique(def, col, v, undefined, opts.conn, opts.replacing)
+      await checkLookup(def, col, v, opts.conn)
+      if (ctx) await checkAttachments(def, col, v, id, [])
     }
-    raw.createdOn = (given.createdOn as Date | undefined) ?? now
-    raw.modifiedOn = (given.modifiedOn as Date | undefined) ?? now
-    raw.createdBy = ctx ? ctx.user.id : ((given.createdBy as string | undefined) ?? (given.owner as string | undefined) ?? null)
-    raw.owner = ctx ? ctx.user.id : ((given.owner as string | undefined) ?? (given.createdBy as string | undefined) ?? null)
+    return raw
+  }
+
+  async function writableConnector(def: TableDef): Promise<Connector> {
     const connector = await connectorFor(def)
     if (!connector.capabilities.write) throw new HttpError(403, 'denied', `"${def.displayName || def.name}" cannot be written through its connection.`)
+    return connector
+  }
+
+  async function insertOne(ctx: UserContext | null, table: TableDef, values: Record<string, unknown>, opts: InsertOpts): Promise<JsonRow> {
+    const def = physical(table)
+    checkWritableTable(def)
+    if (ctx && !ctx.canCreate(def)) throw cannotCreate(def)
+    const connector = await writableConnector(def)
+    const raw = await buildRow(ctx, def, values, { ...opts, conn: connector })
     await connector.insert(def, [raw])
     await markFileModified(def)
-    await audit(ctx, 'row.insert', def, id)
+    await audit(ctx, 'row.insert', def, String(raw.id))
     return rowOut(ctx, def, raw)
   }
 
@@ -377,6 +431,11 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     if (ctx && guard && !('const' in guard) && !(await findRow(def, id, guard))) {
       throw (await readable()) ? new HttpError(403, 'denied', 'You are not allowed to change this row.') : new HttpError(404, 'not-found', 'Row not found.')
     }
+    // RLS WITH CHECK: the changed row must still match the update predicate (it may leave the read filter: it then
+    // simply disappears for this user)
+    if (ctx && guard && !isConstTrue(guard) && !evaluateCondition(guard, { ...existing, ...raw })) {
+      throw new HttpError(403, 'denied', 'You are not allowed to make this change: the row would no longer match the rows your role may change.')
+    }
     const removed: string[] = []
     for (const [name, v] of Object.entries(raw)) {
       const col = findColumn(def, name)!
@@ -391,8 +450,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
       }
     }
     raw.modifiedOn = new Date()
-    const connector = await connectorFor(def)
-    if (!connector.capabilities.write) throw new HttpError(403, 'denied', `"${def.displayName || def.name}" cannot be written through its connection.`)
+    const connector = await writableConnector(def)
     const n = await connector.update(def, id, raw, guard && !('const' in guard) ? guard : undefined)
     if (n === 0) {
       throw (await readable()) ? new HttpError(403, 'denied', 'You are not allowed to change this row.') : new HttpError(404, 'not-found', 'Row not found.')
@@ -409,37 +467,47 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
 
   /* ---------------------------------------------------------------- delete */
 
+  /** ids (of `ids`) that match `where`; queried in chunks */
+  async function matchingIds(connector: Connector, def: TableDef, ids: string[], where: Condition | undefined): Promise<string[]> {
+    if (isConstFalse(where)) return []
+    const out: string[] = []
+    for (let i = 0; i < ids.length; i += ID_CHUNK) {
+      const inIds: Condition = { col: 'id', op: 'in', value: ids.slice(i, i + ID_CHUNK) }
+      const res = await runSelect(connector, def, { where: isConstTrue(where) ? inIds : and(inIds, where), select: ['id'] })
+      for (const r of res.rows) out.push(String(r.id))
+    }
+    return out
+  }
+
+  /**
+   * All or nothing: the permission of EVERY target row is checked before anything is deleted (403 and no change when
+   * one readable row may not be deleted), then the rows go in one connector call (MySQL: one transaction).
+   */
   async function del(ctx: UserContext | null, table: TableDef, idsIn: string[]): Promise<number> {
     const def = physical(table)
     checkWritableTable(def)
     if (!Array.isArray(idsIn) || !idsIn.every((x) => typeof x === 'string')) throw new HttpError(422, 'invalid', 'ids must be a list of row ids.')
     const ids = [...new Set(idsIn.filter((x) => x && x.length <= 64))]
     if (!ids.length) return 0
-    const connector = await connectorFor(def)
-    if (!connector.capabilities.write) throw new HttpError(403, 'denied', `"${def.displayName || def.name}" cannot be written through its connection.`)
-    let total = 0
-    for (let i = 0; i < ids.length; i += 500) {
-      const chunk = ids.slice(i, i + 500)
-      const inIds: Condition = { col: 'id', op: 'in', value: chunk }
-      let guard: Condition | undefined
-      let deletable = chunk
-      if (ctx) {
-        const delPred = ctx.rowPredicate(def, 'delete')
-        const readPred = ctx.rowPredicate(def, 'read')
-        const readableIds = 'const' in readPred && !readPred.const ? [] : (await runSelect(connector, def, { where: 'const' in readPred ? inIds : and(inIds, readPred), select: ['id'] })).rows.map((r) => String(r.id))
-        deletable = 'const' in delPred && !delPred.const ? [] : (await runSelect(connector, def, { where: 'const' in delPred ? inIds : and(inIds, delPred), select: ['id'] })).rows.map((r) => String(r.id))
-        const denied = readableIds.filter((x) => !deletable.includes(x))
-        if (denied.length) throw new HttpError(403, 'denied', denied.length === 1 ? 'You are not allowed to delete this row.' : `You are not allowed to delete ${denied.length} of these rows.`)
-        if (!('const' in delPred)) guard = delPred
-      } else {
-        deletable = (await runSelect(connector, def, { where: inIds, select: ['id'] })).rows.map((r) => String(r.id))
+    const connector = await writableConnector(def)
+    let guard: Condition | undefined
+    let targets: string[]
+    if (ctx) {
+      const delPred = ctx.rowPredicate(def, 'delete')
+      const readable = await matchingIds(connector, def, ids, ctx.rowPredicate(def, 'read'))
+      targets = await matchingIds(connector, def, ids, delPred)
+      const allowed = new Set(targets)
+      const denied = readable.filter((x) => !allowed.has(x))
+      if (denied.length) {
+        const what = ids.length === 1 ? 'this row' : denied.length === 1 ? 'one of these rows' : `${denied.length} of these rows`
+        throw new HttpError(403, 'denied', `You are not allowed to delete ${what}${ids.length > 1 ? ' (nothing was deleted)' : ''}.`)
       }
-      if (!deletable.length) continue
-      const n = await connector.delete(def, deletable, guard)
-      total += n
-      const recs = await meta().attachments.forRows(def.id, deletable)
-      await removeAttachments(recs)
+      if (!('const' in delPred)) guard = delPred
+    } else {
+      targets = await matchingIds(connector, def, ids, undefined)
     }
+    const total = targets.length ? await connector.delete(def, targets, guard) : 0
+    if (targets.length) await removeAttachments(await meta().attachments.forRows(def.id, targets))
     if (total === 0 && ids.length === 1) throw new HttpError(404, 'not-found', 'Row not found.')
     if (total > 0) {
       await markFileModified(def)
@@ -455,7 +523,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     checkWritableTable(def)
     if (typeof csv !== 'string') throw new HttpError(422, 'invalid', 'csv must be text.', 'csv')
     if (mode !== 'append' && mode !== 'replace') throw new HttpError(422, 'invalid', "mode must be 'append' or 'replace'.", 'mode')
-    if (ctx && !ctx.canCreate(def)) throw new HttpError(403, 'denied', `You are not allowed to add rows to "${def.displayName || def.name}".`)
+    if (ctx && !ctx.canCreate(def)) throw cannotCreate(def)
     const parsed = Papa.parse<Record<string, string>>(csv.replace(/^﻿/, ''), { header: true, skipEmptyLines: 'greedy' })
     const headers = parsed.meta.fields ?? []
     // header -> column (by name, then display name; case-insensitive). Unknown, system, hidden, read-only columns are ignored.
@@ -487,25 +555,43 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
         throw e
       }
     })
+    // every row is built and checked before anything is written (nothing changes when one row is refused)
+    const connector = await writableConnector(def)
+    let targets: string[] = []
+    let guard: Condition | undefined
     if (mode === 'replace') {
-      const connector = await connectorFor(def)
-      let pred: Condition | undefined
-      if (ctx) pred = ctx.rowPredicate(def, 'delete')
-      if (!pred || !('const' in pred) || pred.const) {
-        const ids = (await runSelect(connector, def, { where: pred && !('const' in pred) ? pred : undefined, select: ['id'] })).rows.map((r) => String(r.id))
-        if (ids.length) await del(ctx, def, ids)
+      // replace = delete the rows this caller may delete, then insert; rows outside the delete permission stay
+      const pred = ctx ? ctx.rowPredicate(def, 'delete') : undefined
+      if (!isConstFalse(pred)) {
+        targets = (await runSelect(connector, def, { where: isConstTrue(pred) ? undefined : pred, select: ['id'] })).rows.map((r) => String(r.id))
+        if (pred && !('const' in pred)) guard = pred
       }
     }
-    let n = 0
+    const replacing = new Set(targets)
+    const batch: Batch = { ids: new Set(), unique: new Map() }
+    const rows: RawRow[] = []
     for (let i = 0; i < records.length; i++) {
       try {
-        await insertOne(ctx, def, records[i], { preserve: true })
+        rows.push(await buildRow(ctx, def, records[i], { preserve: true, conn: connector, replacing, batch }))
       } catch (e) {
-        if (e instanceof HttpError) throw new HttpError(e.status, e.code, `Row ${i + 1}: ${e.message} (${n} rows were imported before this one)`, e.field)
+        if (e instanceof HttpError) throw new HttpError(e.status, e.code, `Row ${i + 1}: ${e.message} (nothing was imported)`, e.field)
         throw e
       }
-      n++
     }
+    // MySQL: delete + inserts in one transaction. Connectors without transactions (files, Google Sheets): the delete
+    // and the insert are separate writes (see docs/dev/connectors.md).
+    const write = async (c: Connector) => {
+      if (targets.length) await c.delete(def, targets, guard)
+      if (rows.length) await c.insert(def, rows)
+    }
+    if (connector.capabilities.transactions && connector.transaction) await connector.transaction(write)
+    else await write(connector)
+    if (targets.length) {
+      await removeAttachments(await meta().attachments.forRows(def.id, targets))
+      await audit(ctx, 'row.delete', def, undefined, { count: targets.length, import: true })
+    }
+    if (targets.length || rows.length) await markFileModified(def)
+    const n = rows.length
     await audit(ctx, 'table.import', def, undefined, { mode, rows: n })
     return n
   }
@@ -524,6 +610,13 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     const guard = ctx ? ctx.rowPredicate(def, 'update') : undefined
     if (guard && 'const' in guard && !guard.const) return 0
     const connector = await connectorFor(def)
+    if (guard && !isConstTrue(guard)) {
+      const before = await findRow(def, rowId, guard, connector)
+      if (!before) return 0
+      if (!evaluateCondition(guard, { ...before, ...changes })) {
+        throw new HttpError(403, 'denied', 'You are not allowed to make this change: the row would no longer match the rows your role may change.')
+      }
+    }
     const n = await connector.update(def, rowId, { ...changes, modifiedOn: new Date() }, guard && !('const' in guard) ? guard : undefined)
     if (n > 0) await markFileModified(def)
     return n

@@ -152,6 +152,23 @@ describe('tables', () => {
     expect((await h.call(M, 'POST', `/api/v1/tables/${t.id}/move`, { connectionId: 'conn_nope' })).status).toBe(404)
   })
 
+  it('type-change checks use the write path rules (values.ts): no data: URLs, currency kept to 4 decimals', async () => {
+    const t = await mk('Links', [{ displayName: 'Name', type: 'text' }, { displayName: 'Link', type: 'text' }, { displayName: 'Price', type: 'text' }])
+    const def = (await h.meta.tables.get(t.id))!
+    const row = await h.services.data.insert(null, def, { Name: 'a', Link: 'data:text/html,<b>x</b>', Price: '1.23456' })
+    // a write into a url column refuses data: URLs, so the type change refuses them too
+    const toUrl = await h.call(M, 'PATCH', `/api/v1/tables/${t.id}/columns/Link`, { type: 'url' })
+    expect(toUrl.status).toBe(422)
+    expect(toUrl.body.error.message).toMatch(/Cannot change the type: row 1 .*not a valid URL/)
+    await h.services.data.update(null, def, String(row.id), { Link: 'https://example.com/x' })
+    expect((await h.call(M, 'PATCH', `/api/v1/tables/${t.id}/columns/Link`, { type: 'url' })).status).toBe(200)
+    // currency: the stored text is normalised with 4 decimals, the same rounding as a later write
+    expect((await h.call(M, 'PATCH', `/api/v1/tables/${t.id}/columns/Price`, { type: 'currency' })).status).toBe(200)
+    expect((await h.mem.select(def, {})).rows[0].Price).toBe('1.2346')
+    const after = (await h.meta.tables.get(t.id))!
+    expect((await h.services.data.update(null, after, String(row.id), { Price: '1.23456' })).Price).toBe(1.2346)
+  })
+
   it('exports csv for the user with visible columns only', async () => {
     const t = await mk('Exp', [{ displayName: 'Name', type: 'text' }, { displayName: 'Secret', type: 'text' }])
     const def = (await h.meta.tables.get(t.id))!
@@ -165,6 +182,9 @@ describe('tables', () => {
     expect(text).toContain('Name')
     const none = (await h.call(A, 'POST', '/api/v1/roles', { name: 'Blind', apps: 'all' })).body
     const u2 = (await h.call(A, 'POST', '/api/v1/users', { name: 'B', email: 'b@x.io', roleIds: [none.id] })).body
-    expect((await h.call(u2.id, 'GET', `/api/v1/tables/${t.id}/csv`)).status).toBe(403)
+    // no privilege on the table at all: it does not exist for this user (core route, no existence leak)
+    expect((await h.call(u2.id, 'GET', `/api/v1/tables/${t.id}/csv`)).status).toBe(404)
+    // the only registered handler is the core one (DataService: RBAC + RLS + CLS)
+    expect(h.router.regs.filter((r) => r.method === 'GET' && r.segs.join('/').endsWith(':id/csv'))).toHaveLength(1)
   })
 })

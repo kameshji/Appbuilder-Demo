@@ -103,8 +103,12 @@ All data routes call `DataService`, which receives the `UserContext`.
 1. `canCreate(T)` else 403. The table and connector must be writable (`readOnly` tables and non-`write` connectors: 403).
 2. Each supplied column: system columns are ignored (except a client-supplied UUID `id`); autonumber is server-assigned; any other
    column needs access `update` (hidden: 403, read-only: 403).
-3. Required, unique, lookup and attachment checks, then insert, `createdBy` = `owner` = the user.
-4. The row filter is **not** applied on insert. A user may create a row that their own read predicate then hides.
+3. `createdBy` = `owner` = the user. **WITH CHECK**: the complete new row (with defaults) must satisfy
+   `rowPredicate(T, 'create')` = OR over the roles granting `create` of that role's row filter (tokens resolved; no owner term,
+   because the creator owns the row; a granting role without a filter allows any row; admins: `TRUE`). Otherwise 403, nothing
+   written. Evaluated in memory with `evaluateCondition` (`server/core/condition.ts`).
+4. Required, unique, lookup and attachment checks, then insert. A row the user may create but not read afterwards is allowed
+   (for example a create filter wider than the read filter).
 
 **Update**
 1. The row must exist (404). Each changed column needs access `update`; `autonumber` and system columns are ignored for non-service
@@ -113,17 +117,21 @@ All data routes call `DataService`, which receives the `UserContext`.
    read the row, else 404** (so a user cannot probe for rows they cannot see).
 3. The guard is passed to the connector, which applies it atomically with the write (`WHERE id = ? AND <guard>`); `0` affected rows
    gives the same 403-or-404 decision.
-4. The guard is checked before the write only. Nothing re-checks the read predicate afterwards, so an update can move a row out of
-   the user's own visibility (for example changing `Status` away from a filtered value).
+4. **WITH CHECK**: the guard is evaluated again on the row as it would be after the change (`{ ...existing, ...changes }`); if the
+   changed row no longer satisfies it the answer is 403 and nothing is written. Only the update predicate is re-checked: an update
+   may move a row out of the user's *read* predicate when another role grants the update (the row then disappears for the user).
+   Attachment uploads and removals (`writeCells`) apply the same check.
 
-**Delete** (chunks of 500 ids)
-1. For each chunk the service selects the ids readable under the read predicate and those deletable under the delete predicate. If
-   some readable id is not deletable the whole chunk is refused with 403 (earlier chunks stay deleted). Ids the user cannot read are
-   silently skipped; if exactly one id was requested and nothing was deleted the answer is 404.
+**Delete** (all or nothing)
+1. Before anything is deleted the service selects (in chunks of 500 ids) the ids readable under the read predicate and those
+   deletable under the delete predicate. If any readable id is not deletable the whole request is refused with 403 and nothing is
+   deleted. Ids the user cannot read are silently skipped. The deletable ids then go to one `connector.delete` call (MySQL: one
+   transaction over the chunks). If exactly one id was requested and nothing was deleted the answer is 404.
 2. Deleting also removes the attachments of those rows.
 
-**Import** (`/data/:table/import`): needs create; columns the user cannot update are ignored (not errors); `replace` first deletes rows
-under the delete predicate.
+**Import** (`/data/:table/import`): needs create; columns the user cannot update are ignored (not errors); every row passes the
+insert checks above (including the create WITH CHECK) before anything is written; `replace` deletes the rows under the delete
+predicate and inserts the new ones, in one transaction on MySQL.
 
 **Export** (`/tables/:id/csv`): visible columns, rows under the read predicate.
 

@@ -11,7 +11,7 @@ import type { AppDef } from '../../../src/contracts.ts'
 import type { Condition, Query } from '../../../src/platform/http.ts'
 import { HttpError } from '../../core/contracts.ts'
 import type {
-  AttachmentRecord, AuthLevel, Connector, ConnectionRecord, ConnectorEnv, ConnectorFactory, Ctx, Handler, MetaStore, RawRow, Router, Services,
+  AttachmentRecord, Connector, ConnectionRecord, ConnectorEnv, ConnectorFactory, Ctx, Handler, MetaStore, RawRow, RouteOptions, Router, Services,
   SourceColumn, SqlDb, UserRecord,
 } from '../../core/contracts.ts'
 import { applyQuery, evaluateCondition } from '../../core/condition.ts'
@@ -22,6 +22,9 @@ import { createDataService } from '../../core/data.ts'
 import { createAttachmentStore } from '../../core/attachment-store.ts'
 import { createFilesConnector } from '../../connectors/files/index.ts'
 import { metaRoutes } from './index.ts'
+import { dataRoutes } from '../../core/data-routes.ts'
+import type { ApiRouter } from '../../core/router.ts'
+import type { CoreServices } from '../../core/services.ts'
 
 const clone = <T>(v: T): T => structuredClone(v)
 
@@ -195,15 +198,16 @@ export class MemoryConnector implements Connector {
 
 /* ------------------------------------------------------------------ router */
 
-interface Reg { method: string; segs: string[]; handler: Handler; opts: { auth: AuthLevel; raw?: boolean; maxBodyMB?: number } }
+interface Reg { method: string; segs: string[]; handler: Handler; opts: RouteOptions }
 
 export class FakeRouter implements Router {
   regs: Reg[] = []
-  add(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', pattern: string, handler: Handler, opts: { auth: AuthLevel; raw?: boolean; maxBodyMB?: number }) {
-    this.regs.push({ method, segs: pattern.split('/').filter(Boolean), handler, opts })
+  add(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', pattern: string, handler: Handler, opts: RouteOptions) {
+    // like server/core/router.ts: patterns with or without the /api/v1 prefix
+    this.regs.push({ method, segs: pattern.replace(/^\/api\/v1(?=\/|$)/, '').split('/').filter(Boolean), handler, opts })
   }
   find(method: string, pathname: string) {
-    const segs = pathname.split('/').filter(Boolean)
+    const segs = pathname.replace(/^\/api\/v1(?=\/|$)/, '').split('/').filter(Boolean)
     let best: { r: Reg; params: Record<string, string>; lit: number } | null = null
     for (const r of this.regs) {
       if (r.method !== method || r.segs.length !== segs.length) continue
@@ -267,6 +271,8 @@ export async function makeHarness(opts: { workspace?: (dir: string) => void } = 
   await meta.users.insert(mk('user_viewer', 'Vic Viewer', 'role_viewer'))
 
   const router = new FakeRouter()
+  // core data routes too (same registration order as server/core/app.ts), e.g. GET /tables/:id/csv
+  dataRoutes(router as unknown as ApiRouter, services as unknown as CoreServices)
   metaRoutes(router, services)
 
   async function call(as: string | null, method: string, url: string, body?: unknown, o: { raw?: Buffer } = {}): Promise<CallResult> {

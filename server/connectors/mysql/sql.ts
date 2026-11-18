@@ -11,7 +11,8 @@
  *  - three-valued logic is neutralised under NOT (leaves are COALESCEd to 0/1) so NOT behaves like the in-memory one
  * Known differences (collation based): accent/width insensitivity and PAD SPACE of utf8mb4_unicode_ci in eq/in/ne,
  * collation ordering instead of code-unit ordering for lt/le/gt/ge on text, `contains` on date columns compares the
- * SQL text form, non-numeric text vs a numeric literal is "not equal" (the in-memory reference says "equal").
+ * SQL text form, non-numeric text vs a numeric literal is "not comparable" (eq false, ne true, ordering false), the same as the
+ * in-memory reference (a mismatch in typeof is not comparable there too).
  */
 import type { ColumnDef, ColumnType, TableDef } from '../../../src/platform/contracts.ts'
 import type { Condition, Query, QueryValue } from '../../../src/platform/http.ts'
@@ -394,7 +395,14 @@ export function buildSelect(def: TableDef, q: Query): SelectPlan {
     order.push(kindOf(c.type) === 'text' ? `${textBlank(qc)} ASC` : `(${qc} IS NULL) ASC`, `${qc} ${dir}`)
   }
   const paged = q.top !== undefined || (q.skip ?? 0) > 0
-  if (paged && !(q.orderBy ?? []).some((o) => o.col === 'id')) order.push('`id` ASC')
+  // deterministic insertion order: with no sort, and as the tie-breaker of an explicit sort (stable like the in-memory
+  // applyQuery). Row ids are UUIDv7 (time-ordered, server/core/util.ts rowUid), so id breaks createdOn ties.
+  // Only columns the def lists (a linked table may lack the system columns); paging always needs the id tie-breaker.
+  if (!(q.orderBy ?? []).some((o) => o.col === 'id')) {
+    const listed = new Set(def.columns.map((c) => c.name))
+    if (listed.has('createdOn')) order.push('`createdOn` ASC')
+    if (listed.has('id') || paged) order.push('`id` ASC')
+  }
   let sql = `SELECT ${selected.map((c) => quoteId(c.name)).join(', ')} FROM ${t} WHERE ${where.sql}`
   if (order.length) sql += ` ORDER BY ${order.join(', ')}`
   if (paged) {
