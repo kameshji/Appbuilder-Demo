@@ -19,22 +19,29 @@ import { NewPasswordFields, passwordsValid } from './PasswordFields'
 import { TestAsUserDialog } from './Roles'
 import { UserAvatar } from './Profile'
 import { matches, useSearch } from './Shell'
+import { useCaps } from './security'
 
 function UserDialog({ open, onOpenChange, user, onCreated }: { open: boolean; onOpenChange(o: boolean): void; user: UserDef | null; onCreated(u: UserDef): void }) {
   const server = usePlatform((s) => s.mode) === 'server'
   const roles = usePlatform((s) => s.roles)
+  const envName = usePlatform((s) => s.environments.find((e) => e.id === s.environmentId)?.name)
+  const caps = useCaps()
+  // accounts are install-wide: only install administrators change them; environment administrators assign roles
+  const account = !server || caps.isInstallAdmin
   const { fail, toast } = useToast()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [roleIds, setRoleIds] = useState<string[]>([])
+  const [installAdmin, setInstallAdmin] = useState(false)
   const [busy, setBusy] = useState(false)
-  useEffect(() => { if (open) { setName(user?.name ?? ''); setEmail(user?.email ?? ''); setRoleIds(user?.roleIds ?? []) } }, [open, user])
+  useEffect(() => { if (open) { setName(user?.name ?? ''); setEmail(user?.email ?? ''); setRoleIds(user?.roleIds ?? []); setInstallAdmin(!!user?.isInstallAdmin) } }, [open, user])
   const run = async () => {
     setBusy(true)
     try {
-      if (user) await platform.security.updateUser(user.id, { name: name.trim(), email: email.trim(), roleIds })
+      const flag = server && caps.isInstallAdmin && installAdmin !== !!user?.isInstallAdmin ? { isInstallAdmin: installAdmin } : {}
+      if (user) await platform.security.updateUser(user.id, account ? { name: name.trim(), email: email.trim(), roleIds, ...flag } : { roleIds })
       else {
-        const u = await platform.security.createUser({ name: name.trim(), email: email.trim(), roleIds })
+        const u = await platform.security.createUser({ name: name.trim(), email: email.trim(), roleIds, ...flag })
         toast(`Added ${name.trim()}`, 'success')
         onOpenChange(false)
         onCreated(u)
@@ -53,10 +60,16 @@ function UserDialog({ open, onOpenChange, user, onCreated }: { open: boolean; on
       <DialogContent data-testid="user-dialog">
         <DialogHeader><DialogTitle>{user ? 'Edit user' : 'Add user'}</DialogTitle><DialogDescription>{server ? 'After adding a user you set their first password; they can change it themselves.' : 'Users are people you can run apps as on this machine.'}</DialogDescription></DialogHeader>
         <form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); if (name.trim() && email.trim()) void run() }}>
-          <Field label="Name" htmlFor="user-name"><Input id="user-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} data-testid="user-name" /></Field>
-          <Field label="Email" htmlFor="user-email"><Input id="user-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="user-email" /></Field>
+          <Field label="Name" htmlFor="user-name"><Input id="user-name" autoFocus value={name} disabled={!account} onChange={(e) => setName(e.target.value)} data-testid="user-name" /></Field>
+          <Field label="Email" htmlFor="user-email"><Input id="user-email" type="email" value={email} disabled={!account} onChange={(e) => setEmail(e.target.value)} data-testid="user-email" /></Field>
+          {server && caps.isInstallAdmin && (
+            <label className="flex items-start gap-2 text-sm">
+              <Checkbox checked={installAdmin} onCheckedChange={(v) => setInstallAdmin(v === true)} data-testid="user-install-admin" className="mt-0.5" />
+              <span><span className="font-medium">Install administrator</span><span className="block text-xs text-muted-foreground">Manages environments and user accounts, enters every environment and administers it.</span></span>
+            </label>
+          )}
           <div className="grid gap-2">
-            <Label className="text-xs font-medium">Roles</Label>
+            <Label className="text-xs font-medium">{server && envName ? `Roles in ${envName}` : 'Roles'}</Label>
             {roles.length === 0 && <p className="text-sm text-muted-foreground">No roles exist yet.</p>}
             {roles.map((r) => (
               <label key={r.id} className="flex items-center gap-2 text-sm">
@@ -127,6 +140,9 @@ export function UsersPanel() {
   const roles = usePlatform((s) => s.roles)
   const users = usePlatform((s) => s.users)
   const currentUserId = usePlatform((s) => s.currentUserId)
+  const envName = usePlatform((s) => s.environments.find((e) => e.id === s.environmentId)?.name)
+  const caps = useCaps()
+  const account = !server || caps.isInstallAdmin
   const q = useSearch()
   const { toast, fail } = useToast()
   const [pwUser, setPwUser] = useState<UserDef | null>(null)
@@ -142,11 +158,11 @@ export function UsersPanel() {
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <div className="min-w-0 flex-1">
           <h2 className="text-base font-semibold">Users</h2>
-          <p className="text-sm text-muted-foreground">{server ? 'People who can sign in, their roles and their sign-in state.' : 'People you can run apps as in this browser (demo mode has no sign-in).'}</p>
+          <p className="text-sm text-muted-foreground">{server ? `People who can sign in (accounts are shared by every environment), their roles in ${envName ?? 'this environment'} and their sign-in state.${account ? '' : ' Only install administrators add, disable or delete accounts.'}` : 'People you can run apps as in this browser (demo mode has no sign-in).'}</p>
         </div>
         <Button size="sm" variant="outline" onClick={() => go({ page: 'roles' })} data-testid="users-roles-link"><ShieldCheck /> Security roles</Button>
         {server && <Button size="sm" variant="outline" onClick={() => setPreview(true)} data-testid="users-test-as"><Eye /> Test as user</Button>}
-        <Button size="sm" onClick={() => setUserDlg({ user: null })} data-testid="new-user-button"><Plus /> Add user</Button>
+        <Button size="sm" onClick={() => setUserDlg({ user: null })} disabled={!account} title={account ? undefined : 'Only install administrators add accounts'} data-testid="new-user-button"><Plus /> Add user</Button>
       </div>
       {!server && (
         <div className="mb-4 flex items-start gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-xs text-muted-foreground">
@@ -172,6 +188,7 @@ export function UsersPanel() {
                       <UserAvatar user={u} size={24} />
                       <span className="truncate">{u.name}</span>
                       {isMe(u) && <Badge variant="secondary">{server ? 'You' : 'Running as'}</Badge>}
+                      {server && u.isInstallAdmin && <Badge variant="outline" className="border-rose-500/40 text-rose-700 dark:text-rose-300" title="Install administrator: environments, accounts; administers every environment" data-testid={`install-admin-${u.id}`}>Install admin</Badge>}
                     </span>
                   </td>
                   <td className="px-4 py-2.5 text-muted-foreground">{u.email}</td>
@@ -193,10 +210,10 @@ export function UsersPanel() {
                   {server && <td className="whitespace-nowrap px-4 py-2.5 text-xs text-muted-foreground" data-testid={`last-login-${u.id}`} title={u.lastLogin ? fmtDate(u.lastLogin) : undefined}>{u.lastLogin ? fmtRelative(u.lastLogin) : 'Never'}</td>}
                   <td className="px-4 py-1.5">
                     <div className="flex justify-end gap-1">
-                      {server && <Button variant="ghost" size="icon-sm" aria-label={`${u.hasPassword ? 'Reset' : 'Set'} password for ${u.name}`} title={u.hasPassword ? 'Reset password' : 'Set password'} onClick={() => setPwUser(u)} data-testid={`password-${u.id}`}><KeyRound /></Button>}
-                      {server && <Button variant="ghost" size="icon-sm" aria-label={u.status === 'disabled' ? `Enable ${u.name}` : `Disable ${u.name}`} title={isMe(u) ? 'You cannot disable yourself' : u.status === 'disabled' ? 'Enable user' : 'Disable user'} disabled={isMe(u)} data-testid={`toggle-status-${u.id}`} onClick={() => { platform.security.updateUser(u.id, { status: u.status === 'disabled' ? 'active' : 'disabled' }).then(() => toast(u.status === 'disabled' ? `${u.name} can sign in again` : `${u.name} is disabled and signed out`, 'success')).catch(fail) }}>{u.status === 'disabled' ? <CircleCheck /> : <Ban />}</Button>}
+                      {server && <Button variant="ghost" size="icon-sm" aria-label={`${u.hasPassword ? 'Reset' : 'Set'} password for ${u.name}`} title={u.hasPassword ? 'Reset password' : 'Set password'} disabled={!account && !isMe(u)} onClick={() => setPwUser(u)} data-testid={`password-${u.id}`}><KeyRound /></Button>}
+                      {server && <Button variant="ghost" size="icon-sm" aria-label={u.status === 'disabled' ? `Enable ${u.name}` : `Disable ${u.name}`} title={isMe(u) ? 'You cannot disable yourself' : u.status === 'disabled' ? 'Enable user' : 'Disable user'} disabled={isMe(u) || !account} data-testid={`toggle-status-${u.id}`} onClick={() => { platform.security.updateUser(u.id, { status: u.status === 'disabled' ? 'active' : 'disabled' }).then(() => toast(u.status === 'disabled' ? `${u.name} can sign in again` : `${u.name} is disabled and signed out`, 'success')).catch(fail) }}>{u.status === 'disabled' ? <CircleCheck /> : <Ban />}</Button>}
                       <Button variant="ghost" size="icon-sm" aria-label={`Edit ${u.name}`} title="Edit name, email and roles" onClick={() => setUserDlg({ user: u })} data-testid={`edit-user-${u.id}`}><Pencil /></Button>
-                      <Button variant="ghost" size="icon-sm" aria-label={`Delete ${u.name}`} title="Delete user" onClick={() => setDelUser(u)}><Trash2 /></Button>
+                      <Button variant="ghost" size="icon-sm" aria-label={`Delete ${u.name}`} title="Delete user" disabled={!account} onClick={() => setDelUser(u)}><Trash2 /></Button>
                     </div>
                   </td>
                 </tr>
@@ -215,7 +232,7 @@ export function UsersPanel() {
         open={!!delUser}
         onOpenChange={(o) => !o && setDelUser(null)}
         title={`Delete user "${delUser?.name ?? ''}"?`}
-        description="The user is removed from this workspace. Rows they own stay in the tables."
+        description="The account is removed from every environment of this install. Rows they own stay in the tables."
         onConfirm={async () => { if (delUser) { await platform.security.removeUser(delUser.id); toast('User deleted', 'success') } }}
       />
     </div>

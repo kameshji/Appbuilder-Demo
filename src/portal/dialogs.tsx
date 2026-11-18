@@ -5,11 +5,15 @@ import { go } from '@/router'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CodeDialog, Empty, Field, Segmented, slugName, useToast } from './kit'
 import { createAppWithData } from './actions'
+import { PlanView, useConfirmable } from './SolutionPlan'
+import { planImport } from './environmentApi'
+import type { SolutionPlan } from '@/platform/http'
 import { SizePicker } from './SizePicker'
 import { DEFAULT_DESKTOP, presetById, sizeError } from '@/runtime/sizes'
 import { usePrefs } from '@/platform/preferences'
@@ -177,9 +181,15 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
   const [fileName, setFileName] = useState('')
   const [busy, setBusy] = useState(false)
   const [filesAs, setFilesAs] = useState<'database' | 'file'>('database')
+  const [asCopy, setAsCopy] = useState(false)
   const server = usePlatform((s) => s.mode) === 'server'
+  // server mode, solutions: the plan comes first (an existing solution is upgraded in place after confirmation)
+  const planned = kind === 'solution' && server
+  const [plan, setPlan] = useState<SolutionPlan | null>(null)
+  const { ok: confirmable, box } = useConfirmable(plan)
   const fileRef = useRef<HTMLInputElement>(null)
-  useEffect(() => { if (open) { setText(''); setFileName(''); setFilesAs('database') } }, [open])
+  useEffect(() => { if (open) { setText(''); setFileName(''); setFilesAs('database'); setAsCopy(false); setPlan(null) } }, [open])
+  useEffect(() => { setPlan(null) }, [text, asCopy])
 
   const pick = async (f: File | undefined) => {
     if (!f) return
@@ -193,8 +203,15 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
   const run = async () => {
     setBusy(true)
     try {
-      const res = kind === 'app' ? await platform.apps.importPackage(text) : await platform.solutions.importPackage(text, server ? { filesAs } : undefined)
-      toast(`Imported ${kind} "${'displayName' in res ? res.displayName : res.name}"`, 'success')
+      if (planned && !plan) {
+        setPlan(await planImport(text, { asCopy }))
+        return
+      }
+      const res = kind === 'app'
+        ? await platform.apps.importPackage(text)
+        : await platform.solutions.importPackage(text, server ? { filesAs, ...(asCopy ? { asCopy: true } : {}), ...(plan?.mode === 'upgrade' ? { confirm: plan.token } : {}) } : undefined)
+      const warn = 'warnings' in res && Array.isArray(res.warnings) && res.warnings.length ? ` ${res.warnings.join(' ')}` : ''
+      toast(`Imported ${kind} "${'displayName' in res ? res.displayName : res.name}".${warn}`, 'success')
       onOpenChange(false)
       onDone?.(res)
     } catch (e) {
@@ -208,7 +225,9 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
       <DialogContent className="sm:max-w-xl" data-testid="import-dialog">
         <DialogHeader>
           <DialogTitle>Import {kind} package</DialogTitle>
-          <DialogDescription>Paste the package YAML or choose a file. Importing always creates new copies and never overwrites existing work.</DialogDescription>
+          <DialogDescription>{planned
+            ? 'Paste the package YAML or choose a file. You see the plan before anything changes: a solution that already exists here (same identity) is upgraded in place.'
+            : 'Paste the package YAML or choose a file. Importing creates new copies and never overwrites existing work.'}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-3">
           <textarea
@@ -225,6 +244,14 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
             <Button type="button" variant="outline" size="sm" onClick={() => fileRef.current?.click()}><FileUp /> Choose file</Button>
             {fileName && <span className="truncate text-xs text-muted-foreground">{fileName}</span>}
           </div>
+          {planned && (
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox checked={asCopy} onCheckedChange={(v) => setAsCopy(v === true)} data-testid="import-as-copy" />
+              Import as a copy (new identities: never upgrades what is here)
+            </label>
+          )}
+          {plan && <PlanView plan={plan} />}
+          {box}
           {kind === 'solution' && server && (
             <Field label="Data files in the package" hint="Only applies to solutions that contain data files. Database tables are the default.">
               <select value={filesAs} onChange={(e) => setFilesAs(e.target.value as 'database' | 'file')} data-testid="import-files-as" className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm">
@@ -236,7 +263,7 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button disabled={busy || !text.trim()} onClick={() => void run()} data-testid="import-run">Import</Button>
+          <Button disabled={busy || !text.trim() || (!!plan && !confirmable)} variant={plan?.destructive ? 'destructive' : 'default'} onClick={() => void run()} data-testid="import-run">{planned && !plan ? 'Review plan' : plan?.mode === 'upgrade' ? 'Upgrade' : 'Import'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

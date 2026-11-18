@@ -59,8 +59,8 @@ export class FakeMetaStore implements MetaStore {
   async migrate() {}
   tableName(name: string) { return `"fake"."${name}"` }
   environments = {
-    list: async () => [{ id: 'default', name: 'Default', schema: 'env_default', type: 'production' as const, builtIn: true, createdOn: '' }],
-    get: async (id: string) => (id === 'default' ? { id: 'default', name: 'Default', schema: 'env_default', type: 'production' as const, builtIn: true, createdOn: '' } : null),
+    list: async () => [{ id: 'default', name: 'Default', schema: 'env_default', type: 'production' as const, builtIn: true, createdOn: '', state: 'ready' as const, schemaVersion: 5, locked: false }],
+    get: async (id: string) => (id === 'default' ? { id: 'default', name: 'Default', schema: 'env_default', type: 'production' as const, builtIn: true, createdOn: '', state: 'ready' as const, schemaVersion: 5, locked: false } : null),
   }
 
   users = {
@@ -315,7 +315,8 @@ export async function makeHarness(opts: { workspace?: (dir: string) => void } = 
   await meta.roles.upsert({ id: 'role_maker', name: 'Maker', isMaker: true, privileges: [], apps: 'all' } as RoleDef)
   await meta.roles.upsert({ id: 'role_viewer', name: 'Viewer', privileges: [], apps: 'all' })
   const mk = (id: string, name: string, role: string): UserRecord => ({ id, name, email: `${id}@example.test`, roleIds: [role], status: 'active', passwordHash: null })
-  await meta.users.insert(mk('user_admin', 'Ada Admin', 'role_admin'))
+  // the harness has one environment: its administrator is also the install administrator (as after setup)
+  await meta.users.insert({ ...mk('user_admin', 'Ada Admin', 'role_admin'), isInstallAdmin: true })
   await meta.users.insert(mk('user_maker', 'Mia Maker', 'role_maker'))
   await meta.users.insert(mk('user_viewer', 'Vic Viewer', 'role_viewer'))
 

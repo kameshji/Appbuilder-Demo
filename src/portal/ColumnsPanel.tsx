@@ -24,6 +24,7 @@ function ColumnEditor({ table, mode, onClose }: { table: TableDef; mode: Mode; o
   const [type, setType] = useState<ColumnType>('text')
   const [required, setRequired] = useState(false)
   const [unique, setUnique] = useState(false)
+  const [indexed, setIndexed] = useState(false)
   const [def, setDef] = useState('')
   const [choices, setChoices] = useState<string[]>([])
   const [newChoice, setNewChoice] = useState('')
@@ -42,6 +43,7 @@ function ColumnEditor({ table, mode, onClose }: { table: TableDef; mode: Mode; o
     setType(c?.type ?? 'text')
     setRequired(!!c?.required)
     setUnique(!!c?.unique)
+    setIndexed(!!c?.indexed)
     setDef(c?.default ?? '')
     setChoices(c?.choices ?? [])
     setNewChoice('')
@@ -57,6 +59,9 @@ function ColumnEditor({ table, mode, onClose }: { table: TableDef; mode: Mode; o
   const finalName = mode.kind === 'edit' ? mode.name : nameTouched ? name : slugName(displayName)
   const nameClash = mode.kind === 'new' && !!finalName && table.columns.some((c) => c.name.toLowerCase() === finalName.toLowerCase())
   const attach = type === 'file' || type === 'image'
+  // a Query v2 index (server mode, PostgreSQL): long text and attachments can't be indexed; lookups and unique columns always are
+  const server = usePlatform((s) => s.mode) === 'server'
+  const indexable = server && !attach && type !== 'multiline'
   const maxOk = !maxSize.trim() || (Number.isFinite(Number(maxSize)) && Number(maxSize) > 0)
   const valid = !!displayName.trim() && !!finalName && !nameClash && maxOk && (type !== 'lookup' || !!lookupTable) && (type !== 'choice' || choices.length > 0 || !!newChoice.trim())
 
@@ -76,6 +81,7 @@ function ColumnEditor({ table, mode, onClose }: { table: TableDef; mode: Mode; o
         type,
         required,
         unique,
+        indexed: indexable ? indexed : undefined,
         default: def.trim() || undefined,
         choices: finalChoices,
         lookupTable: type === 'lookup' ? lookupTable : undefined,
@@ -185,6 +191,12 @@ function ColumnEditor({ table, mode, onClose }: { table: TableDef; mode: Mode; o
             <span>Unique<span className="block text-xs text-muted-foreground">No two rows may share a value.</span></span>
             <Switch checked={unique} disabled={locked} onCheckedChange={setUnique} data-testid="col-unique" aria-label="Unique" />
           </label>
+          {indexable && (
+            <label className="flex items-center justify-between gap-3 text-sm">
+              <span>Indexed<span className="block text-xs text-muted-foreground">{type === 'lookup' || unique ? 'Always indexed. Turn on to also make descending sorts and text search fast.' : 'Keeps filtering, sorting and searching by this column fast on large tables. Adds a little work to every save.'}</span></span>
+              <Switch checked={indexed} disabled={locked} onCheckedChange={setIndexed} data-testid="col-indexed" aria-label="Indexed" />
+            </label>
+          )}
         </div>
         <button type="submit" className="sr-only" tabIndex={-1}>Save</button>
       </form>
@@ -235,6 +247,7 @@ export function ColumnsPanel({ table }: { table: TableDef }) {
                           {c.system && <Badge variant="outline"><Lock /> System</Badge>}
                           {c.required && <Badge variant="outline">Required</Badge>}
                           {c.unique && <Badge variant="outline">Unique</Badge>}
+                          {c.indexed && <Badge variant="outline">Indexed</Badge>}
                         </span>
                         <span className="block truncate font-mono text-[11px] text-muted-foreground">{c.name}{c.type === 'choice' && c.choices?.length ? ` · ${c.choices.join(', ')}` : ''}{c.type === 'lookup' && c.lookupTable ? ` · to ${c.lookupTable}` : ''}{(c.type === 'file' || c.type === 'image') ? `${c.multiple ? ' · several' : ' · one'}${c.accept?.length ? ` · ${c.accept.join(', ')}` : ''}${c.maxSizeMB ? ` · max ${c.maxSizeMB} MB` : ''}` : ''}</span>
                       </span>

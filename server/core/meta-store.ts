@@ -20,8 +20,10 @@ import { DEFAULT_ENVIRONMENT_ID, INSTALL_SCHEMA, currentEnvironment, environment
 /**
  * 1-3: the MySQL system store (no longer supported, never upgraded: there is no migration path from MySQL).
  * 4: PostgreSQL layout, schema `ab` plus one schema per environment.
+ * 5: real environments: ab.environments (state, schema_version, locked, ...), ab.environment_access, ab.audit (install
+ *    level), ab.users.is_install_admin / last_environment_id; every environment schema carries its own schema_version.
  */
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 
 /** the database was upgraded by a newer server: this one must not touch it (downgrade guard) */
 export class SchemaTooNewError extends Error {
@@ -81,6 +83,36 @@ export const INSTALL_DDL: string[] = [
     built_in boolean NOT NULL DEFAULT false,
     created_on timestamptz NOT NULL
   )`,
+  // version 5: users carry the install-admin flag and their last environment; environments their lifecycle
+  `ALTER TABLE ${A('users')} ADD COLUMN IF NOT EXISTS is_install_admin boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE ${A('users')} ADD COLUMN IF NOT EXISTS last_environment_id text NULL`,
+  `ALTER TABLE ${A('environments')} ADD COLUMN IF NOT EXISTS description text NULL`,
+  `ALTER TABLE ${A('environments')} ADD COLUMN IF NOT EXISTS created_by text NULL`,
+  `ALTER TABLE ${A('environments')} ADD COLUMN IF NOT EXISTS state text NOT NULL DEFAULT 'ready'`,
+  `ALTER TABLE ${A('environments')} ADD COLUMN IF NOT EXISTS schema_version integer NOT NULL DEFAULT 0`,
+  `ALTER TABLE ${A('environments')} ADD COLUMN IF NOT EXISTS locked boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE ${A('environments')} ADD COLUMN IF NOT EXISTS last_error text NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS ab_ux_environments_name ON ${A('environments')} (lower(name))`,
+  `CREATE TABLE IF NOT EXISTS ${A('environment_access')} (
+    environment_id text NOT NULL,
+    user_id text NOT NULL,
+    is_env_admin boolean NOT NULL DEFAULT false,
+    granted_on timestamptz NOT NULL,
+    granted_by text NULL,
+    PRIMARY KEY (environment_id, user_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS ab_ix_environment_access_user ON ${A('environment_access')} (user_id)`,
+  // install-level audit: environment lifecycle and access, install administrators, install migrations
+  `CREATE TABLE IF NOT EXISTS ${A('audit')} (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    at timestamptz NOT NULL,
+    user_id text NULL,
+    action text NOT NULL,
+    environment_id text NULL,
+    details jsonb NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS ab_ix_install_audit_at ON ${A('audit')} (at)`,
+  `CREATE INDEX IF NOT EXISTS ab_ix_install_audit_action ON ${A('audit')} (action)`,
   // placeholder for the signed licence file (docs/plan/master-plan.md section 9): one row at most
   `CREATE TABLE IF NOT EXISTS ${A('licence')} (
     id smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
@@ -221,20 +253,111 @@ export const ENVIRONMENT_TABLES = [
   'ab_attachments', 'ab_counters', 'ab_audit',
 ]
 /** names of the tables in schema ab */
-export const INSTALL_TABLES = ['settings', 'users', 'sessions', 'environments', 'licence']
+export const INSTALL_TABLES = ['settings', 'users', 'sessions', 'environments', 'environment_access', 'audit', 'licence']
 
 /**
- * Creates (or completes) the metadata tables of an environment schema and registers it. Idempotent; runs on the given
- * SqlDb (call it inside a transaction). Package E calls it to create a new environment.
+ * Creates (or completes) the metadata tables of an environment schema and registers it (state ready, schema_version
+ * SCHEMA_VERSION). Idempotent; runs on the given SqlDb (call it inside a transaction). environments.ts calls it to
+ * create a new environment; migrate() for the built-in Default.
  */
-export async function migrateEnvironment(db: SqlDb, env: { id: string; name: string; type?: EnvironmentRecord['type']; builtIn?: boolean }): Promise<string> {
+export async function migrateEnvironment(
+  db: SqlDb,
+  env: { id: string; name: string; type?: EnvironmentRecord['type']; builtIn?: boolean; description?: string; createdBy?: string; state?: EnvironmentRecord['state'] },
+): Promise<string> {
   const schema = environmentSchema(env.id)
   for (const stmt of environmentDdl(schema)) await db.exec(stmt)
   await db.exec(
-    `INSERT INTO ${A('environments')} (id, name, schema_name, type, built_in, created_on) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
-    [env.id, env.name, schema, env.type ?? 'production', !!env.builtIn, new Date()],
+    `INSERT INTO ${A('environments')} (id, name, schema_name, type, built_in, created_on, description, created_by, state, schema_version)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (id) DO NOTHING`,
+    [env.id, env.name, schema, env.type ?? 'production', !!env.builtIn, new Date(), env.description ?? null, env.createdBy ?? null, env.state ?? 'ready', SCHEMA_VERSION],
   )
   return schema
+}
+
+/**
+ * Upgrade steps of one environment schema, by the version they lead to (run in order, inside the environment's own
+ * transaction, after environmentDdl). Version 5 changed nothing inside environment schemas.
+ */
+export const ENVIRONMENT_STEPS: { to: number; describe: string; run(db: SqlDb, schema: string): Promise<void> }[] = []
+
+/** the outcome of migrating one environment at boot */
+export interface EnvironmentMigration { id: string; from: number; to: number; ok: boolean; error?: string }
+
+/**
+ * Brings one registered environment schema to SCHEMA_VERSION in its own transaction (advisory lock per environment).
+ * Throws SchemaTooNewError when it was migrated by a newer server: nothing is changed then.
+ */
+export async function migrateEnvironmentSchema(db: SqlDb, env: { id: string; schema: string }): Promise<{ from: number; to: number }> {
+  return db.tx(async (tx) => {
+    await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`appbuilder.migrate.${env.id}`])
+    const rows = await tx.query<Record<string, unknown>>(`SELECT schema_version FROM ${A('environments')} WHERE id = $1`, [env.id])
+    const from = Number(rows[0]?.schema_version) || 0
+    if (from > SCHEMA_VERSION) throw new SchemaTooNewError(from, SCHEMA_VERSION)
+    if (from === SCHEMA_VERSION) {
+      // still complete it (idempotent): a table added by a fix keeps every environment whole
+      for (const stmt of environmentDdl(env.schema)) await tx.exec(stmt)
+      return { from, to: from }
+    }
+    for (const stmt of environmentDdl(env.schema)) await tx.exec(stmt)
+    for (const step of ENVIRONMENT_STEPS) if (step.to > from && step.to <= SCHEMA_VERSION) await step.run(tx, env.schema)
+    await tx.exec(`UPDATE ${A('environments')} SET schema_version = $1 WHERE id = $2`, [SCHEMA_VERSION, env.id])
+    return { from, to: SCHEMA_VERSION }
+  })
+}
+
+/** prefix of ab.environments.last_error when a boot migration failed (the next successful one clears it) */
+export const MIGRATION_FAILED = 'Migration failed:'
+
+/**
+ * 4 -> 5 inside the install transaction: today's administrators become install administrators, and everybody keeps
+ * entering the environments they had roles in (every user: Default, the only environment of a version 4 install).
+ */
+async function upgradeInstallTo5(tx: SqlDb): Promise<string[]> {
+  const D = (t: string): string => `${q(environmentSchema(DEFAULT_ENVIRONMENT_ID))}.${q(t)}`
+  const admins = await tx.query<Record<string, unknown>>(
+    `UPDATE ${A('users')} SET is_install_admin = true WHERE id IN (
+       SELECT ur.user_id FROM ${D('ab_user_roles')} ur JOIN ${D('ab_roles')} r ON r.id = ur.role_id WHERE r.is_admin) RETURNING id`,
+  )
+  const now = new Date()
+  const granted = await tx.query<Record<string, unknown>>(
+    `INSERT INTO ${A('environment_access')} (environment_id, user_id, is_env_admin, granted_on, granted_by)
+     SELECT $1, u.id, EXISTS (SELECT 1 FROM ${D('ab_user_roles')} ur JOIN ${D('ab_roles')} r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.is_admin), $2, NULL
+     FROM ${A('users')} u ON CONFLICT DO NOTHING RETURNING user_id`,
+    [DEFAULT_ENVIRONMENT_ID, now],
+  )
+  // other registered environments (none in a normal version 4 install): whoever holds a role there may enter
+  for (const r of await tx.query<Record<string, unknown>>(`SELECT id, schema_name FROM ${A('environments')} WHERE id <> $1`, [DEFAULT_ENVIRONMENT_ID])) {
+    const S = (t: string): string => `${q(String(r.schema_name))}.${q(t)}`
+    const exists = await tx.query<Record<string, unknown>>(`SELECT to_regclass($1) IS NOT NULL AS ok`, [`${q(String(r.schema_name))}.ab_user_roles`])
+    if (!exists[0]?.ok) continue
+    await tx.exec(
+      `INSERT INTO ${A('environment_access')} (environment_id, user_id, is_env_admin, granted_on)
+       SELECT $1, ur.user_id, bool_or(ro.is_admin), $2 FROM ${S('ab_user_roles')} ur JOIN ${S('ab_roles')} ro ON ro.id = ur.role_id GROUP BY ur.user_id
+       ON CONFLICT DO NOTHING`,
+      [String(r.id), now],
+    )
+  }
+  await tx.exec(`UPDATE ${A('environments')} SET schema_version = 4 WHERE schema_version = 0 AND state = 'ready'`)
+  return [
+    `version 5: ${admins.length} administrator(s) became install administrators; ${granted.length} user(s) keep access to Default`,
+  ]
+}
+
+/** a row of ab.environments */
+export function toEnvironment(r: Record<string, unknown>): EnvironmentRecord {
+  const type = r.type === 'sandbox' || r.type === 'developer' ? r.type : 'production'
+  const state = r.state === 'creating' || r.state === 'deleting' || r.state === 'failed' ? r.state : 'ready'
+  const out: EnvironmentRecord = {
+    id: str(r.id), name: str(r.name), schema: str(r.schema_name), type, builtIn: bool(r.built_in), createdOn: toIso(r.created_on),
+    state, schemaVersion: Number(r.schema_version) || 0, locked: bool(r.locked),
+  }
+  const d = optStr(r.description)
+  if (d) out.description = d
+  const by = optStr(r.created_by)
+  if (by) out.createdBy = by
+  const err = optStr(r.last_error)
+  if (err) out.lastError = err
+  return out
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -291,17 +414,39 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
       hasPassword: !!hash,
       ...(bool(r.must_change_password) ? { mustChangePassword: true } : {}),
       ...(lastLogin ? { lastLogin } : {}),
+      ...(bool(r.is_install_admin) ? { isInstallAdmin: true } : {}),
+      ...(optStr(r.last_environment_id) ? { lastEnvironmentId: str(r.last_environment_id) } : {}),
       passwordHash: hash,
     }
   }
   async function usersWhere(where: string, params: unknown[]): Promise<UserRecord[]> {
-    const rows = await db.query<Row>(`SELECT id, name, email, password_hash, status, must_change_password, created_on, last_login FROM ${A('users')} ${where}`, params)
+    const rows = await db.query<Row>(`SELECT id, name, email, password_hash, status, must_change_password, created_on, last_login, is_install_admin, last_environment_id FROM ${A('users')} ${where}`, params)
     const roles = await userRoles(rows.map((r) => str(r.id)))
     return rows.map((r) => toUser(r, roles))
   }
+  /**
+   * roles of a user in the current environment. Holding a role there means being allowed in: an access row is added
+   * (never removed here; revoking access is environments.ts). The access row's is_env_admin follows the roles.
+   */
   async function setUserRoles(tx: SqlDb, userId: string, roleIds: string[]): Promise<void> {
     await tx.exec(`DELETE FROM ${E('ab_user_roles')} WHERE user_id = $1`, [userId])
     for (const rid of [...new Set(roleIds)]) await tx.exec(`INSERT INTO ${E('ab_user_roles')} (user_id, role_id) VALUES ($1, $2)`, [userId, rid])
+    if (roleIds.length) {
+      await tx.exec(
+        `INSERT INTO ${A('environment_access')} (environment_id, user_id, is_env_admin, granted_on) VALUES ($1, $2, false, $3) ON CONFLICT DO NOTHING`,
+        [envOf().id, userId, new Date()],
+      )
+    }
+    await syncEnvAdmins(tx)
+  }
+  /** ab.environment_access.is_env_admin = holds an administrator role in the current environment (one statement) */
+  async function syncEnvAdmins(tx: SqlDb): Promise<void> {
+    await tx.exec(
+      `UPDATE ${A('environment_access')} a SET is_env_admin = EXISTS (
+         SELECT 1 FROM ${E('ab_user_roles')} ur JOIN ${E('ab_roles')} r ON r.id = ur.role_id WHERE ur.user_id = a.user_id AND r.is_admin)
+       WHERE a.environment_id = $1`,
+      [envOf().id],
+    )
   }
   async function environmentSchemas(d: SqlDb): Promise<string[]> {
     return (await d.query<Row>(`SELECT schema_name FROM ${A('environments')} ORDER BY id`)).map((r) => str(r.schema_name))
@@ -422,10 +567,6 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
     }
   }
 
-  function toEnvironment(r: Row): EnvironmentRecord {
-    const type = r.type === 'sandbox' || r.type === 'developer' ? r.type : 'production'
-    return { id: str(r.id), name: str(r.name), schema: str(r.schema_name), type, builtIn: bool(r.built_in), createdOn: toIso(r.created_on) }
-  }
 
   async function storedVersion(): Promise<number> {
     const exists = await db.query<Row>(`SELECT to_regclass('ab.settings') IS NOT NULL AS ok`)
@@ -451,21 +592,47 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
         throw new UnsuitableDatabaseError(`The database uses the ${str(enc[0]?.server_encoding)} encoding; Appbuilder needs UTF8. Create the database with ENCODING 'UTF8'.`)
       }
       const steps: string[] = []
+      // phase 1: schema ab, in one transaction (one migration at a time per database: two servers starting together)
       await db.tx(async (tx) => {
-        // one migration at a time per database (two servers starting together)
         await tx.query("SELECT pg_advisory_xact_lock(hashtext('appbuilder.migrate'))")
         for (const stmt of INSTALL_DDL) await tx.exec(stmt)
-        await migrateEnvironment(tx, { id: DEFAULT_ENVIRONMENT_ID, name: 'Default', type: 'production', builtIn: true })
-        for (const schema of await environmentSchemas(tx)) {
-          if (schema === environmentSchema(DEFAULT_ENVIRONMENT_ID)) continue
-          for (const stmt of environmentDdl(schema)) await tx.exec(stmt)
-        }
+        const hasDefault = (await tx.query<Row>(`SELECT 1 FROM ${A('environments')} WHERE id = $1`, [DEFAULT_ENVIRONMENT_ID])).length > 0
+        if (!hasDefault) await migrateEnvironment(tx, { id: DEFAULT_ENVIRONMENT_ID, name: 'Default', type: 'production', builtIn: true })
+        if (current === 4) steps.push(...(await upgradeInstallTo5(tx)))
+        // an operation that was running when the server stopped cannot be resumed: the environment is marked failed
+        const stuck = await tx.query<Row>(`UPDATE ${A('environments')} SET state = 'failed', last_error = CASE state WHEN 'creating' THEN 'Creating it was interrupted (the server stopped). Delete it and create it again.' ELSE 'Deleting it was interrupted (the server stopped). Delete it again.' END WHERE state IN ('creating', 'deleting') RETURNING id`)
+        for (const r of stuck) steps.push(`environment ${str(r.id)}: interrupted operation, marked failed`)
         if (current < SCHEMA_VERSION) {
           await tx.exec(`INSERT INTO ${A('settings')} (k, v) VALUES ('schemaVersion', $1) ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v`, [String(SCHEMA_VERSION)])
         }
       })
       if (current === 0) steps.push(`created schema ab and environment schema ${environmentSchema(DEFAULT_ENVIRONMENT_ID)} (schema version ${SCHEMA_VERSION})`)
-      return { from: current, to: SCHEMA_VERSION, steps }
+      // phase 2: every environment schema in its own transaction; one that fails is marked failed, the others go on
+      const environments: EnvironmentMigration[] = []
+      const regs = await db.query<Row>(`SELECT id, schema_name, state, schema_version, last_error FROM ${A('environments')} ORDER BY built_in DESC, id`)
+      for (const r of regs) {
+        const id = str(r.id)
+        const state = str(r.state)
+        const version = Number(r.schema_version) || 0
+        // a failed creation never finished: there is nothing to migrate (it can only be deleted)
+        if (state === 'failed' && version === 0) continue
+        try {
+          const res = await migrateEnvironmentSchema(db, { id, schema: str(r.schema_name) })
+          environments.push({ id, from: res.from, to: res.to, ok: true })
+          if (res.from !== res.to) steps.push(`environment ${id}: schema version ${res.from} -> ${res.to}`)
+          if (state === 'failed' && str(r.last_error).startsWith(MIGRATION_FAILED)) {
+            await db.exec(`UPDATE ${A('environments')} SET state = 'ready', last_error = NULL WHERE id = $1`, [id])
+          }
+        } catch (e) {
+          const why = e instanceof SchemaTooNewError
+            ? `${MIGRATION_FAILED} it was upgraded by a newer Appbuilder (schema version ${e.database}, this server knows ${e.server}); it is not touched.`
+            : `${MIGRATION_FAILED} ${e instanceof Error ? e.message : String(e)}`.slice(0, 1000)
+          environments.push({ id, from: version, to: version, ok: false, error: why })
+          steps.push(`environment ${id}: migration failed`)
+          await db.exec(`UPDATE ${A('environments')} SET state = 'failed', last_error = $2 WHERE id = $1`, [id, why]).catch(() => {})
+        }
+      }
+      return { from: current, to: SCHEMA_VERSION, steps, environments }
     },
 
     environments: {
@@ -493,8 +660,8 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
       async insert(u) {
         await db.tx(async (tx) => {
           await tx.exec(
-            `INSERT INTO ${A('users')} (id, name, email, password_hash, status, must_change_password, created_on, last_login) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-            [u.id, u.name, u.email.trim().toLowerCase(), u.passwordHash ?? null, u.status ?? 'active', !!u.mustChangePassword, new Date(), toDate(u.lastLogin)],
+            `INSERT INTO ${A('users')} (id, name, email, password_hash, status, must_change_password, created_on, last_login, is_install_admin) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [u.id, u.name, u.email.trim().toLowerCase(), u.passwordHash ?? null, u.status ?? 'active', !!u.mustChangePassword, new Date(), toDate(u.lastLogin), !!u.isInstallAdmin],
           )
           await setUserRoles(tx, u.id, u.roleIds ?? [])
         })
@@ -510,6 +677,8 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
           if (patch.status !== undefined) set('status', patch.status)
           if (patch.mustChangePassword !== undefined) set('must_change_password', !!patch.mustChangePassword)
           if (patch.lastLogin !== undefined) set('last_login', toDate(patch.lastLogin))
+          if (patch.isInstallAdmin !== undefined) set('is_install_admin', !!patch.isInstallAdmin)
+          if (patch.lastEnvironmentId !== undefined) set('last_environment_id', patch.lastEnvironmentId || null)
           if (sets.length) await tx.exec(`UPDATE ${A('users')} SET ${sets.join(', ')} WHERE id = $${params.length + 1}`, [...params, id])
           if (patch.roleIds !== undefined) await setUserRoles(tx, id, patch.roleIds)
         })
@@ -518,6 +687,7 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
         await db.tx(async (tx) => {
           // users are install-wide: their role assignments go in every environment
           for (const schema of await environmentSchemas(tx)) await tx.exec(`DELETE FROM ${q(schema)}.${q('ab_user_roles')} WHERE user_id = $1`, [id])
+          await tx.exec(`DELETE FROM ${A('environment_access')} WHERE user_id = $1`, [id])
           await tx.exec(`DELETE FROM ${A('sessions')} WHERE user_id = $1`, [id])
           await tx.exec(`DELETE FROM ${A('users')} WHERE id = $1`, [id])
         })
@@ -582,6 +752,7 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
               ],
             )
           }
+          await syncEnvAdmins(tx)
         })
       },
       async remove(id) {
@@ -589,6 +760,7 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
           await tx.exec(`DELETE FROM ${E('ab_role_tables')} WHERE role_id = $1`, [id])
           await tx.exec(`DELETE FROM ${E('ab_user_roles')} WHERE role_id = $1`, [id])
           await tx.exec(`DELETE FROM ${E('ab_roles')} WHERE id = $1`, [id])
+          await syncEnvAdmins(tx)
         })
       },
     },

@@ -29,6 +29,18 @@ Set the gallery's **Items** to:
 
 Add a search box: `Filter(Equipment, IsBlank(SearchBox1.Value) || SearchBox1.Value in Item)`. Wrap with `Sort(...)`, `FirstN(...)` or `CountRows(...)` as needed. Column names in formulas are the display name without spaces ("Checked out to" becomes `CheckedOutTo`).
 
+With the local server these formulas run in the database, so they work on tables of any size: the gallery shows the first rows and
+loads more as you scroll. Calculations on number columns are fine too: `Filter(Orders, Qty * Price > 1000)`,
+`Sum(Orders, Qty * Price)`, `Round(Price * 1.18, 2)`, `Year(OrderDate) = 2026`.
+
+## When a formula can't run on the server
+
+The formula bar shows **Runs on server**, **Runs in browser** or **Can't run** for formulas that read tables. A formula that can't be
+translated into a database query (for example `Len(Title) > 3`, `Month(Due) = 3`, `Price / Cost > 2`, `Concat(Filter(Orders, ...), Title)`)
+is evaluated in the browser only while the table is small (at most 2,000 rows you can see), with a warning. On a bigger table it is an
+**error**: the part that can't run is underlined, and the message says why and how to rewrite it. Appbuilder never shows a result
+computed from only some of the rows. See [Data: large tables](data.md#large-tables-what-runs-on-the-server).
+
 ## Change data
 
 Patch a row: `Patch(Equipment, DataTable1.Selected, {CheckedOut: true})`. Add a new row: `Patch(Equipment, Defaults(Equipment), {Item: "Tripod"})`. Remove: `Remove(Equipment, DataTable1.Selected)`.
@@ -52,6 +64,8 @@ Then use `Overdue` or `Area(2, 3)` anywhere.
 
 ## Good to know
 
-- Formulas run synchronously; there is no waiting for a result inside one formula.
+- Formulas that read tables may wait for the server: a control shows its previous value (or nothing, the first time) until the answer
+  arrives. In an action (`OnSelect`), each step of `a; b; c` reads the server after the earlier steps were saved, so
+  `Patch(...); Set(n, CountRows(Orders))` counts the new row.
 - `;` chaining works only in action properties.
 - Errors show in the formula bar and in the status bar error list.

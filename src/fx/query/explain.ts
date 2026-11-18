@@ -1,5 +1,5 @@
 import type { FxRecord, FxScope, FxValue } from '../../contracts.ts'
-import type { ConditionV2, QueryLiteral, QueryPlan } from '../../platform/query.ts'
+import type { ConditionV2, NumExprV2, QueryLiteral, QueryPlan } from '../../platform/query.ts'
 import type { AnalyzeResult, PlannedQuery } from './translate.ts'
 
 function lit(v: QueryLiteral): string {
@@ -10,12 +10,28 @@ function lit(v: QueryLiteral): string {
 
 const OPS: Record<string, string> = { eq: '=', ne: '<>', lt: '<', le: '<=', gt: '>', ge: '>=' }
 
+const EXPR_OPS: Record<string, string> = { add: '+', sub: '-', mul: '*', div: '/' }
+const ROUND_NAMES: Record<string, string> = { round: 'Round', roundUp: 'RoundUp', roundDown: 'RoundDown' }
+
+/** a numeric expression as formula-like text */
+export function describeExpr(e: NumExprV2): string {
+  if (typeof e === 'number') return String(e)
+  if ('col' in e) return e.col
+  switch (e.fn) {
+    case 'add': case 'sub': case 'mul': case 'div': return `(${describeExpr(e.args[0])} ${EXPR_OPS[e.fn]} ${describeExpr(e.args[1])})`
+    case 'neg': return `-${describeExpr(e.args[0])}`
+    case 'abs': return `Abs(${describeExpr(e.args[0])})`
+    default: return `${ROUND_NAMES[e.fn]}(${describeExpr(e.args[0])}, ${e.digits})`
+  }
+}
+
 /** a condition as readable text (for the Studio and logs) */
 export function describeCondition(c: ConditionV2): string {
   if ('const' in c) return c.const ? 'every row' : 'no row'
   if ('and' in c) return c.and.map((x) => ('or' in x ? `(${describeCondition(x)})` : describeCondition(x))).join(' and ')
   if ('or' in c) return c.or.map((x) => ('and' in x ? `(${describeCondition(x)})` : describeCondition(x))).join(' or ')
   if ('not' in c) return `not (${describeCondition(c.not)})`
+  if (c.op === 'cmpExpr') return `${describeExpr(c.left)} ${OPS[c.cmp]} ${describeExpr(c.right)}`
   const cs = 'exact' in c && c.exact ? ' (case-sensitive)' : ''
   switch (c.op) {
     case 'isNull': return `${c.col} is blank`
@@ -37,7 +53,7 @@ export function describePlan(p: QueryPlan): string[] {
   if (p.take) out.push(`  keep the ${p.take.from === 'start' ? 'first' : 'last'} ${p.take.n} row${p.take.n === 1 ? '' : 's'}`)
   if (p.aggregate) {
     const a = p.aggregate
-    const ms = a.measures.map((m) => `${m.name} = ${m.fn}${m.col ? `(${m.col})` : ''}${m.filter ? ` where ${describeCondition(m.filter)}` : ''}`)
+    const ms = a.measures.map((m) => `${m.name} = ${m.fn}${m.col ? `(${m.col})` : m.expr !== undefined ? `(${describeExpr(m.expr)})` : ''}${m.filter ? ` where ${describeCondition(m.filter)}` : ''}`)
     out.push(`  ${a.groupBy.length ? `group by ${a.groupBy.join(', ')}` : 'over all rows'}${ms.length ? `: ${ms.join(', ')}` : ''}`)
     if (a.sort?.length) out.push(`  sort groups by ${a.sort.map((k) => `${k.col} ${k.dir === 'asc' ? 'ascending' : 'descending'}`).join(', ')}`)
   }

@@ -36,24 +36,33 @@ After start, sign in and check an app, **Connections > Test**, and the console f
 
 ## What happens to the database
 
-On every start the server runs its schema step (`migrate()` in `server/core/meta-store.ts`): it reads `schemaVersion` from
-`ab.settings`, then, in **one transaction** (PostgreSQL DDL is transactional, so a failed step leaves the database as it was),
-creates or completes schema `ab` and every environment schema (`CREATE ... IF NOT EXISTS`), runs the upgrade steps the database has
-not had yet, in order, and records the new `schemaVersion`. Current version: **4**.
+On every start the server runs its schema step (`migrate()` in `server/core/meta-store.ts`) in two phases:
+
+1. It reads `schemaVersion` from `ab.settings` (downgrade guard below), then, in **one transaction** (PostgreSQL DDL is
+   transactional, so a failed step leaves the database as it was), creates or completes schema `ab`, runs the install-level
+   upgrade steps the database has not had yet, in order, and records the new `schemaVersion`.
+2. Then **each environment** schema (`env_<id>`), in **its own transaction**: it reads that environment's `schema_version`
+   (`ab.environments`), refuses one that a newer server migrated (downgrade guard per environment), completes its tables,
+   runs its upgrade steps and records its version. An environment whose step fails is marked **Failed** with the reason
+   (`ERROR ENVIRONMENT <id> NOT AVAILABLE` on the console, `environment.migrate_failed` in the install audit log); the
+   others, and the server, keep working. The next start tries it again. See [Environments](environments.md#when-an-environment-is-not-available).
+
+Current version: **5**.
 
 | Version | Step |
 | --- | --- |
 | 1 to 3 | The MySQL/MariaDB system store of versions 0.1 to 0.4. **There is no upgrade from MySQL** (decision D14): a PostgreSQL database never has these versions, and a 0.5 server pointed at an old MySQL database cannot connect to it at all. |
 | 4 | The PostgreSQL layout: schema `ab` (settings, users, sessions, environments, licence) and the environment schema `env_default` (see [schema](../dev/schema.md)). |
+| 5 | Real environments: `ab.environments` gets state, schema version, lock, description, creator; new tables `ab.environment_access` (who may enter which environment) and `ab.audit` (install-level audit); `ab.users` gets `is_install_admin` and `last_environment_id`. Data: every user who held an Administrator role becomes an **install administrator**; every user keeps access to Default (environment administrators: the Administrator role holders). Files: `workspace/attachments/` and `workspace/files/` move into `workspace/env/default/` (only what is not there yet; nothing is overwritten or deleted). |
 
 - **Moving from 0.4 (MySQL) to 0.5 (PostgreSQL).** Since there are no customer installations yet, there is no conversion. Install
   PostgreSQL ([Installation](installation.md#prepare-the-database)), point the new version at an empty database and start fresh.
   To carry apps and tables over, export them as **solution packages with data** from the 0.4 installation first and import them
   into the new one ([Solutions](../guide/maker/solutions.md)); users and roles have to be created again.
 - **The migration summary** (from which version to which, and what each step did) is printed to the server console at
-  start and written to the audit log as `schema.migrate` (details: `{ from, to, steps }`). An up-to-date database prints
-  "system schema version 4 (up to date)" and writes nothing.
-- The data tables (`t_...` in `env_default`) are yours and are not touched by upgrades. (Linked tables are touched only when a
+  start and written to the audit log of Default and the install-level audit log as `schema.migrate` (details:
+  `{ from, to, steps, environments }`). An up-to-date database prints "system schema version 5 (up to date)" and writes nothing.
+- The data tables (`t_...` in each `env_<id>`) are yours and are not touched by upgrades. (Linked tables are touched only when a
   maker agrees to add system columns while linking, see [Connections](connections.md).)
 - The schema step needs the Appbuilder role to own the database (or have `CREATE` on it), as set up by
   `scripts/setup-postgres.*` ([Installation](installation.md#prepare-the-database)).
@@ -64,13 +73,26 @@ The server refuses a database whose `schemaVersion` is **higher** than the versi
 not run any statement against it (not even `CREATE TABLE IF NOT EXISTS`), prints
 
 ```
-ERROR DATABASE NOT USED: The database schema is version 5, but this Appbuilder only knows version 4. ...
+ERROR DATABASE NOT USED: The database schema is version 6, but this Appbuilder only knows version 5. ...
 ```
 
 and stays up without a database: every data route answers 503, `GET /api/v1/status` reports `setup.incompatible: true`,
 the browser shows "This database needs a newer Appbuilder", and the setup screen cannot be used to point it elsewhere.
 It does not retry. Start the newer version again, or restore the pre-upgrade backup into the database before starting
 the old code.
+
+## Solution upgrades in an environment
+
+Not the Appbuilder upgrade, but the one makers and administrators do every day: importing or deploying a newer version of a
+solution into an environment where it already exists **upgrades it in place** (same apps, tables and roles; data kept), after a
+plan that lists every new, changed and removed app, table, column and role, with destructive changes (a dropped table or
+column loses its data) in red. The whole upgrade runs in one transaction: if any step fails (for example a value that does not
+convert to a column's new type), nothing changes. See [Solutions](../guide/maker/solutions.md#deploy-to-another-environment).
+
+Before it changes anything, the upgrade calls the backup hook (`backup.snapshot()` in `server/core/backup.ts`). In this version
+the hook **takes no backup** and says so in the plan and in the result ("No backup was taken"); the automatic pre-upgrade
+backup arrives with the backup package. Until then: export the solution with data from the target first, or back up the
+database ([Backup and restore](backup-and-restore.md)).
 
 ## Roll back
 

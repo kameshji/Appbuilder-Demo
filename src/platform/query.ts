@@ -95,6 +95,32 @@ export type ConditionV2 =
   | { col: string; op: 'contains' | 'startsWith' | 'endsWith'; value: string; exact?: true }
   /** strict comparison of two columns of the same kind (both non-null); text columns: eq/ne only */
   | { col: string; op: 'cmpCol'; cmp: CompareOpV2; other: string; exact?: true }
+  /**
+   * comparison of two numeric expressions (NumExprV2). Never NULL: inside an expression a NULL number cell reads as 0,
+   * so this node is plain two-valued arithmetic. Fails the whole query (HTTP 422) when an expression divides by zero or
+   * leaves the double range, as the formula engine fails the formula.
+   */
+  | { op: 'cmpExpr'; cmp: CompareOpV2; left: NumExprV2; right: NumExprV2 }
+
+/* ------------------------------------------------------------------ numeric expressions */
+
+/**
+ * A computed number over the current row (P0 package D), as the formula engine computes it:
+ *  - a JSON number: a literal (outside values are folded to literals by the translator);
+ *  - `{ col }`: a number (or boolean, true = 1) column; a NULL cell reads as 0 (the engine's blank-as-zero);
+ *  - `{ fn: 'add' | 'sub' | 'mul' | 'div', args: [a, b] }`: IEEE double arithmetic; division by zero is an error;
+ *  - `{ fn: 'neg' | 'abs', args: [a] }`;
+ *  - `{ fn: 'round' | 'roundUp' | 'roundDown', args: [a], digits }`: Round (halves away from zero), RoundUp (away from
+ *    zero), RoundDown (toward zero) at `digits` decimal places (a whole number, may be negative), on the shortest
+ *    decimal form of the double (JavaScript String(x)), like the engine.
+ * Any intermediate result that is not a finite double is an error (the engine's "That result isn't a valid number").
+ */
+export type NumExprV2 =
+  | number
+  | { col: string }
+  | { fn: 'add' | 'sub' | 'mul' | 'div'; args: [NumExprV2, NumExprV2] }
+  | { fn: 'neg' | 'abs'; args: [NumExprV2] }
+  | { fn: 'round' | 'roundUp' | 'roundDown'; args: [NumExprV2]; digits: number }
 
 /* ------------------------------------------------------------------ plan */
 
@@ -115,7 +141,18 @@ export type MeasureFn = 'sum' | 'avg' | 'min' | 'max' | 'count'
  * Empty input (no non-NULL value): sum 0, min 0, max 0, avg NULL. count: number of rows of the group (with
  * `filter`: rows where the filter is true; `col` unused).
  */
-export interface MeasureV2 { name: string; fn: MeasureFn; col?: string; filter?: ConditionV2 }
+export interface MeasureV2 {
+  name: string
+  fn: MeasureFn
+  col?: string
+  /**
+   * sum/avg/min/max of a computed number instead of a column (`Sum(Orders, Qty * Price)`). The expression is never NULL
+   * (blank cells read as 0), so every row of the group counts: avg = sum / rows; empty input: sum/min/max 0, avg NULL.
+   * Exactly one of `col` and `expr`.
+   */
+  expr?: NumExprV2
+  filter?: ConditionV2
+}
 
 export interface AggregateV2 {
   /**
@@ -168,4 +205,26 @@ export interface QueryV2Response {
   count?: number
   /** present when `page` was given: cursor of the next page, or null when this was the last page */
   nextCursor?: string | null
+  /**
+   * Only for connectors that cannot run a plan themselves (MySQL external connections, data files, Google Sheets): the
+   * server read at most QUERY_FALLBACK_ROW_CAP rows the caller may see and ran the plan over those, so the answer covers
+   * only part of the table. Never set for PostgreSQL tables (the plan runs in the database).
+   */
+  truncated?: boolean
 }
+
+/** POST /api/v1/query body */
+export interface QueryV2Request { plan: QueryPlan }
+
+/* ------------------------------------------------------------------ limits (server-enforced, docs/dev/query-v2.md) */
+
+/** largest page.size */
+export const QUERY_MAX_PAGE_SIZE = 500
+/** a rows plan without `page` may return at most this many rows (otherwise 422: page it) */
+export const QUERY_MAX_UNPAGED_ROWS = 5000
+/** an aggregate may produce at most this many groups (otherwise 422) */
+export const QUERY_MAX_GROUPS = 5000
+/** rows read by the fallback executor of connectors without SQL pushdown (truncated beyond) */
+export const QUERY_FALLBACK_ROW_CAP = 5000
+/** default statement timeout of a v2 query on PostgreSQL, ms (APPBUILDER_QUERY_TIMEOUT_MS) */
+export const QUERY_TIMEOUT_MS = 15000

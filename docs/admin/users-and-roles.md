@@ -1,14 +1,42 @@
 # Users and roles
 
-Access in Appbuilder has three layers, all enforced by the server:
+Access in Appbuilder has four layers, all enforced by the server:
 
-1. **Who you are**: a user with an email and password.
-2. **What kind of user you are**: *Administrator*, *Maker*, or an ordinary user.
-3. **What you may do with each table**: table privileges (create/read/update/delete), column access and row filters,
-   given through **roles**. A user can have several roles.
+1. **Who you are**: a user account with an email and password. Accounts are install-wide: the same in every
+   [environment](environments.md).
+2. **Which environments you may enter**: given by an install administrator or an environment's administrator.
+3. **What kind of user you are in an environment**: *Administrator*, *Maker*, or an ordinary user (your roles there).
+4. **What you may do with each table** there: table privileges (create/read/update/delete), column access and row filters,
+   given through **roles**. A user can have several roles. Roles belong to an environment.
 
-Users live in the **Admin console** (Dev mode menu, administrators only) under **Users**: add people, set or reset
-their password, enable or disable them and assign their roles. The roles themselves are edited on the **Security roles**
+## Install administrators and environment roles
+
+There are two kinds of administrator, kept apart on purpose:
+
+| | Install administrator | Environment administrator |
+| --- | --- | --- |
+| What makes you one | the **Install administrator** box on your account (`ab.users.is_install_admin`) | the **Administrator** role (any role with the Administrator switch) in that environment |
+| Environments | creates, renames, changes the type of, locks and deletes them | none |
+| Who may enter | gives and removes access to any environment | gives and removes access to their environment |
+| Accounts | adds, renames, disables, deletes accounts; sets other people's passwords; makes others install administrators | none (they assign roles to existing accounts) |
+| Inside an environment | administrator of **every** environment (enters all of them without being given access) | administrator of that environment only: roles, users' roles there, all data, connections, its audit log |
+| Audit log | the install-level log (Admin console > Audit log > Install) | the environment's log |
+
+An environment administrator is exactly what "Administrator" meant before there were environments, now limited to one
+environment. Being given a role in an environment (Users page, while you work in it) also lets the person in; removing their
+access removes every role they held there. The access list keeps a copy of who administers the environment
+(`ab.environment_access.is_env_admin`), updated with every role change, so the install-level view does not need to open
+every environment.
+
+Guards: at least one active **install administrator** must remain (you cannot remove your own flag, disable or delete the
+last one), and in every environment at least one active user must keep an Administrator role (as before).
+
+**Upgrading from 0.4** (one environment): everybody who held an Administrator role became an install administrator, and
+everybody kept access to Default, with the same roles. Nothing else changed for them.
+
+Users live in the **Admin console** (Dev mode menu, administrators only) under **Users**: install administrators add
+people, set or reset their password, enable or disable them; administrators of the environment you are in assign their roles
+there (the dialog's role list is titled *Roles in <environment>*). Install administrators carry an *Install admin* badge. The roles themselves are edited on the **Security roles**
 page. Each page links to the other (*Security roles* button on the Users page, *Users* button and a note on the
 Security roles page).
 
@@ -56,7 +84,9 @@ Read-only tables (for example linked read-only) never grant write access by defa
 
 ## Create a user
 
-1. **Admin console** > **Users** > **Add user**. Enter name, email and the role(s).
+1. **Admin console** > **Users** > **Add user** (install administrators). Enter name, email and the role(s) in the
+   environment you are in; tick **Install administrator** for someone who should manage the install. A new user with a
+   role may enter the current environment; give access to others in Admin console > Environments > Access.
 2. After adding, use the key button on the user's row to **Set password**. Give the password to the person. It is
    temporary: at their first sign-in Appbuilder shows only *Choose a new password* (no way around it except signing
    out) until they have set their own.
@@ -88,7 +118,7 @@ Password changes:
   login throttle.
 - **Administrator sets or resets a password** (key button on the user, or a password given when creating the user): the
   new password must meet the policy. The user's sessions are signed out and the account is marked **must change
-  password** (`ab_users.must_change_password`). At the next sign-in the user gets a session that can only change the
+  password** (`ab.users.must_change_password`). At the next sign-in the user gets a session that can only change the
   password, sign out and read its own session (`/auth/password`, `/auth/logout`, `/auth/session`, plus `/status`);
   every other request answers 403 with the code `password_change_required`, and the portal shows the change dialog
   without a *Cancel* button. Changing it clears the mark. An administrator setting their **own** password this way is not
@@ -109,7 +139,7 @@ per-account wait for a known email; see [Security model](security-model.md#sign-
 
 There is no command-line password reset. If the only administrator cannot sign in, restore access by one of:
 asking another administrator (create at least two administrators), or, as an advanced step, updating the
-`password_hash` of an administrator in the `ab_users` table with a hash made by the server's own code. Treat the second
+`password_hash` of an install administrator in the `ab.users` table with a hash made by the server's own code. Treat the second
 as a support task; we have not documented a tested procedure for it.
 
 ## Disable or delete a user
@@ -205,8 +235,9 @@ For every table, a role sets (`server/core/security.ts`):
   only read West rows); the row then simply disappears from that user's view.
 - **Column access is checked on use.** A query that mentions a hidden column is refused with "You do not have access
   to the column"; hidden columns are never returned.
-- **Truncation.** Apps load at most 5,000 rows per table at once; filters are applied first, so the 5,000 are the rows the
-  user may see.
+- **Large tables.** Queries run in the database with the user's row filters and column access in the same statement, so counts,
+  totals and pages only ever cover rows the user may see. (Connections that can't run queries use the first 5,000 rows the user may
+  see.)
 
 ## How several roles combine
 

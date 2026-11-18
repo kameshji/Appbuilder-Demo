@@ -9,6 +9,42 @@ migration from a MySQL installation: install PostgreSQL, run `scripts/setup-post
 database; carry apps and tables over as solution packages with data.
 
 ### Added
+- **Large tables work** (P0 package D, decision D16): with the local server, formulas over tables run in the database. Filter,
+  Search, Sort, LookUp, FirstN/LastN, CountRows/CountIf, Sum/Average/Min/Max, Distinct and GroupBy totals become one query
+  (`POST /api/v1/query`, Data API v2) with the user's roles, row filters and column access applied in the same statement: exact
+  counts, keyset paging, aggregates. Calculations on number columns are translated too (`Filter(Orders, Qty * Price > 1000)`,
+  `Sum(Orders, Qty * Price)`, Round/RoundUp/RoundDown/Abs, `Year(Date) = 2026`), with the engine's results (0 mismatches over 870
+  formulas on PostgreSQL). A 1,000,000-row table: first page 42 ms, indexed filters 5-190 ms, deep sorted pages 7 ms, exact count
+  51 ms, grouped totals 0.4-0.5 s (`docs/dev/query-v2.md` section 15).
+- **Data table, gallery, dropdown and combo box over large tables**: rows load page by page as you scroll (only the rows in view are
+  drawn), the exact row count is shown, header sort and the search box run on the server, a dropdown over a large table searches as
+  you type. The portal's table grid pages, sorts and searches on the server and shows the exact count.
+- **Studio delegation diagnostics**: the formula bar says **Runs on server**, **Runs in browser** or **Can't run** for table
+  formulas (hover for the steps), underlines the part that can't run, and the error list and data warnings list them.
+- **Indexed columns**: a column setting **Indexed** (server mode) keeps filtering, sorting (both directions) and text search by that
+  column fast; lookup and unique columns and the natural row order are always indexed. Text search on indexed columns uses a
+  trigram index when PostgreSQL's `pg_trgm` extension is available.
+- `scripts/bench/seed-million.mjs` (loads 1,000,000 rows and measures the queries) and `scripts/bench/browser-check.mjs` (drives the
+  app in a headless browser at that size).
+- **Environments** (P0 package E): an install now has the built-in Default plus up to four more environments (production,
+  sandbox, developer; `APPBUILDER_MAX_ENVIRONMENTS` changes the limit), each its own database schema `env_<id>` and folder
+  `workspace/env/<id>/` with its own tables, rows, apps, roles, connections, solutions, data files, attachments and audit log.
+  Admin console > Environments: create (empty, with the sample, or copied from another environment, schema only or with data,
+  copied inside the database in one transaction; connections to other systems lose their secrets), details with sizes, rename,
+  change type, lock, delete after typing the name, and an Access tab. Every request names its environment
+  (`X-Appbuilder-Environment`, or `?env=` on links) and the server checks it against the user's access; every cache is per
+  environment. The top bar shows the environment's name and a type badge (production red, sandbox amber, developer blue) and a
+  line in that colour, also in the Studio; switching reloads the workspace, closes the other environment's app tabs and is
+  remembered on your account. A failing environment migration marks only that environment failed.
+- **Install administrators and environment roles**: account and install management (environments, users, passwords, the
+  install-level audit log `ab.audit`) needs an install administrator; roles and everything inside an environment its
+  administrators. Admin console > Audit log has an *Install* tab for install administrators.
+- **Solutions between environments**: solution packages carry stable ids. Importing one where it exists is an **in-place
+  upgrade** after a plan (new, changed and removed apps, tables, columns and roles; dropped tables and columns in red) that you
+  confirm, in one transaction. **Deploy to...** on a solution page exports and imports into another environment in one step.
+  A pre-upgrade backup hook is in place (it takes no backup yet and says so). *Import as a copy* keeps the old behaviour.
+- **Locked production environments**: apps, tables, columns, roles, solutions and data files change only by importing or
+  deploying a solution (server-enforced, 403); the Studio opens apps there read-only with a banner.
 - PostgreSQL system store (driver `pg`): schema `ab` for install-wide objects (settings, users, sessions, the environment
   registry, a licence placeholder) and one schema per environment (`env_default`) for roles, privileges, tables, apps,
   connections, solutions, data files, attachments, audit and the data tables. Every statement uses fully qualified names; pooled
@@ -55,6 +91,20 @@ database; carry apps and tables over as solution packages with data.
 - README links to the documentation, and run instructions that match the current start-up steps (PostgreSQL and the first-run setup screen).
 
 ### Changed
+- **Formulas that can't be turned into a database query are errors on large tables** (more than 2,000 rows you can see), never a
+  result computed from part of the rows. The message names the part and suggests a rewrite. Smaller tables are loaded whole and
+  evaluated in the browser as before, with a Studio warning. Demo mode is unchanged.
+- The 5,000-row limit is gone for PostgreSQL tables (and the "Only the first 5,000 rows are loaded" banner with it). Tables on MySQL,
+  data file and Google Sheets connections are queried over their first 5,000 rows, with a warning.
+- Actions that read large tables (`Set(n, CountRows(Filter(...)))`) wait for the server; each `;` step sees the saved writes of the
+  steps before it.
+- Schema version 5. Opening a version 4 database converts it without losing anything: administrators become install
+  administrators, everybody keeps access to Default, and `workspace/attachments` and `workspace/files` move into
+  `workspace/env/default/`. Attachment URLs carry `?env=<environment>`.
+- Creating, deleting, renaming and disabling accounts and setting other people's passwords need an install administrator;
+  environment administrators assign roles.
+- Importing a solution that already exists (same id) upgrades it after a confirmed plan instead of creating copies
+  (`POST /solutions/import` answers 409 without `confirm`); `asCopy: true` and packages exported before 0.5 still create copies.
 - **Database: PostgreSQL 15+ instead of MySQL/MariaDB** for the system tables and the default connection. MySQL/MariaDB stays as
   a connector for existing customer databases only. `APPBUILDER_DB_PORT` defaults to 5432; `GET /status` and `/workspace` report
   `storage.kind: 'postgres'`. Text conditions now compare exactly after lowercasing (no accent or trailing-space folding as with

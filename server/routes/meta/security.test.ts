@@ -104,7 +104,8 @@ describe('users', () => {
     expect((await h.call(A, 'DELETE', `/api/v1/users/${A}`)).status).toBe(409)
     expect((await h.call(A, 'PATCH', `/api/v1/users/${A}`, { status: 'disabled' })).status).toBe(409)
     expect((await h.call(A, 'PATCH', `/api/v1/users/${A}`, { roleIds: ['role_viewer'] })).status).toBe(409)
-    const second = (await h.call(A, 'POST', '/api/v1/users', { name: 'Ad2', email: 'ad2@x.io', roleIds: ['role_admin'] })).body
+    // deleting accounts needs an install administrator (an environment administrator only assigns roles)
+    const second = (await h.call(A, 'POST', '/api/v1/users', { name: 'Ad2', email: 'ad2@x.io', roleIds: ['role_admin'], isInstallAdmin: true })).body
     expect((await h.call(second.id, 'DELETE', `/api/v1/users/${second.id}`)).status).toBe(409) // yourself
     expect((await h.call(second.id, 'DELETE', `/api/v1/users/${A}`)).status).toBe(200)
     // the remaining admin is the last one

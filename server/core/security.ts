@@ -60,10 +60,14 @@ function simplifyAnd(a: Condition, b: Condition): Condition {
   return { and: [a, b] }
 }
 
-/** Builds the per-request security context for a user from the roles and tables of the workspace. */
-export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: TableDef[], expiresOn?: Date): UserContext {
+/**
+ * Builds the per-request security context for a user from the roles and tables of one environment. Environment
+ * administrator = an administrator role there; an install administrator is one in every environment.
+ */
+export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: TableDef[], expiresOn?: Date, environmentId: string = currentEnvironment().id): UserContext {
   const roles = allRoles.filter((r) => user.roleIds.includes(r.id))
-  const isAdmin = roles.some((r) => r.isAdmin)
+  const isInstallAdmin = !!user.isInstallAdmin
+  const isAdmin = isInstallAdmin || roles.some((r) => r.isAdmin)
   const isMaker = isAdmin || roles.some(isMakerRole)
 
   const privFor = (r: RoleDef, table: TableDef): TablePrivilege | undefined => r.privileges.find((p) => p.table === table.id)
@@ -150,6 +154,7 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
   else appsAllowed = [...new Set(roles.flatMap((r) => (Array.isArray(r.apps) ? r.apps : [])))]
 
   const privileges: EffectivePrivileges = { isAdmin, isMaker, tables: {}, apps: appsAllowed }
+  if (isInstallAdmin) privileges.isInstallAdmin = true
   for (const t of tables) {
     const columns: Record<string, ColumnAccess> = {}
     for (const c of t.columns) {
@@ -172,6 +177,7 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
 
   const expires = expiresOn ?? new Date(Date.now() + SESSION_LIFETIME_MS)
   return {
+    environmentId,
     user,
     roles,
     privileges,
@@ -180,7 +186,7 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
     columnAccess,
     visibleDef,
     canRunApp: (appId: string) => appsAllowed === 'all' || appsAllowed.includes(appId),
-    session: () => ({ user, privileges, expiresOn: expires.toISOString() }),
+    session: () => ({ user, privileges, expiresOn: expires.toISOString(), environmentId }),
   }
 }
 
@@ -228,9 +234,13 @@ export function createSecurityEngine(getMeta: () => MetaStore, ttlMs = 5000): Se
   return {
     async forUser(user: UserDef, expiresOn?: Date) {
       const { roles, tables } = await load()
-      return buildUserContext(user, roles, tables, expiresOn)
+      return buildUserContext(user, roles, tables, expiresOn, currentEnvironment().id)
     },
-    invalidate(scope?: 'all') {
+    invalidate(scope?: 'all' | { environment: string }) {
+      if (scope && scope !== 'all') {
+        slots.delete(scope.environment)
+        return
+      }
       const list = scope === 'all' ? [...slots.values()] : [slot(currentEnvironment().id)]
       for (const s of list) {
         s.generation++

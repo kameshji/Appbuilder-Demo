@@ -39,11 +39,14 @@ export function useItemSelection({ props, outputs, setOutput, multiple, field, w
   }
   selected.sort((a, b) => a - b)
 
-  const write = (indices: number[]) => {
+  // selected records that are not among the items shown now (a server search narrowed the list): kept when adding more
+  const missing = current.filter((rec) => !items.some((it) => sameRecord(it, rec)) && texts.indexOf(itemText(rec, field)) < 0)
+
+  const write = (indices: number[], keepMissing = false) => {
     const idx = [...new Set(indices)].filter((i) => i >= 0 && i < items.length).sort((a, b) => a - b)
-    const recs = idx.map((i) => items[i])
+    const recs = [...(keepMissing && multiple ? missing : []), ...idx.map((i) => items[i])]
     setOutput('Selected', (multiple ? recs[0] : recs[recs.length - 1]) ?? null)
-    setOutput('SelectedText', idx.map((i) => texts[i]).join(', '))
+    setOutput('SelectedText', recs.map((r) => itemText(r, field)).join(', '))
     if (withItems) setOutput('SelectedItems', recs)
   }
 
@@ -58,10 +61,12 @@ export function useItemSelection({ props, outputs, setOutput, multiple, field, w
     items,
     texts,
     selected,
-    /** user-initiated change */
-    set(indices: number[]) {
-      sync.markBlank(indices.length === 0)
-      write(indices)
+    /** the selected records, also those not among the current items */
+    current,
+    /** user-initiated change; `keepMissing` (multiple selection) keeps selected records the list no longer shows */
+    set(indices: number[], keepMissing = false) {
+      sync.markBlank(indices.length === 0 && (!keepMissing || missing.length === 0))
+      write(indices, keepMissing)
     },
   }
 }

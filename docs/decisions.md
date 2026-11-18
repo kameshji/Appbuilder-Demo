@@ -70,8 +70,8 @@ before reporting success.
 ## D10. Row cap instead of query delegation, for now (phase 3)
 **Decision.** Apps load up to 5,000 rows per table and warn when truncated; formulas filter in memory.
 **Why.** Pushing formula filters down to the database needs the delegation layer (Query AST from Fx), not built yet.
-**Status.** Temporary. The delegation layer exists (D13); D10 is superseded by D13 once P0 package D (Data API v2 and the client
-data layer) lands.
+**Status.** Superseded by D16 (P0 package D, Nov 2026): PostgreSQL tables are queried on the server with paging and exact counts;
+only connectors that cannot run queries still work on their first 5,000 rows, and say so.
 
 ## D11. Attachment ids start with `att_` (phase 3)
 **Decision.** Server and demo mode generate `att_<random>`; cells store the id (or a JSON array of ids).
@@ -121,3 +121,49 @@ no longer ignores accents or trailing spaces (`"cafe" <> "café"`, `"a " <> "a"`
 `utf8mb4_unicode_ci` collation, `contains` needs no LIKE escaping. The client's `rowfilter.ts` already follows the reference
 (`condition.ts`), so it is in parity with the server again. Supersedes D7 and the MariaDB bundle of the master plan section 3.1.
 **Status.** Active (package A of `docs/plan/p0-spec.md`).
+
+## D15. Environments: install administrators, per-environment roles, stable-id solutions (P0, Nov 2026)
+**Decision.** (P0 package E, `docs/plan/p0-spec.md`.) An environment is one schema `env_<id>` plus one workspace folder
+`workspace/env/<id>/`; at most 5 per install by default (`APPBUILDER_MAX_ENVIRONMENTS`). Every request names its environment in the
+`X-Appbuilder-Environment` header (`?env=` on GET links); the server checks it against the session (`ab.environment_access`) and
+never trusts it blindly. Without one it uses the user's last environment (`ab.users.last_environment_id`), then Default.
+Administration is split in two: the **install administrator** (`ab.users.is_install_admin`: environments, accounts, the
+install-level audit `ab.audit`, administrator everywhere) and the **environment administrator** (an Administrator role in that
+environment, as before). Holding a role in an environment grants access to it; revoking access removes the roles there; the access
+row's `is_env_admin` mirrors the roles (kept in step by the MetaStore). Solution packages carry stable ids (the solution's and its
+components'); importing where they exist is an **in-place upgrade** after a plan whose token the administrator confirms, in one
+transaction, after a `backup.snapshot()` hook (package J implements it; today it takes no backup and says so). Production
+environments can be locked: the router refuses `DESIGN_ROUTES` there, so they change only through solution import or deploy.
+Migrations run `ab` in one transaction, then each environment in its own; a failing one is marked failed and does not block the
+others.
+**Why.** Power Platform's model (users per tenant, security roles per environment, managed solutions moved by ALM) without its
+pain points (`docs/research/power-platform/admin-and-environments.md`): no shared free-for-all default, a small fixed number of
+environments, one access list, real copies made inside the database, and a plan that shows destructive changes before they happen.
+Keeping "environment administrator = Administrator role" kept every existing role, test and UI meaning, and made the 4 to 5
+migration lossless (today's administrators become install administrators, so nobody loses a power they had). Upgrades match by id,
+not by name, so renaming in a sandbox does not create duplicates in production; app packages stay a copy mechanism for sharing.
+**Consequences.** Accounts can only be created and changed by install administrators. `POST /solutions/import` of an existing
+solution answers 409 until the plan is confirmed (`asCopy` keeps the old behaviour). Attachment URLs carry `?env=`. Renaming a
+table between versions is refused in an upgrade (a problem in the plan). Data files are left alone by upgrades. Copies do not take
+users' roles, audit or other systems' secrets. A copied environment shares ids with its source, which is what makes deployment
+between them an upgrade.
+**Status.** Active.
+
+## D16. Formulas over tables run as Query v2 on the server; the client keeps a query cache (P0 package D, Nov 2026)
+**Decision.** In server mode the browser no longer loads tables to filter them. Every table formula goes through `analyze()` (D13);
+its plans run as `POST /api/v1/query`, which the PostgreSQL connector executes as one SQL statement per plan with the caller's RBAC
+scope, row filters (v1 semantics) and column security inside it, keyset paging (`page.size` <= 500), exact counts, aggregates
+(groups <= 5,000), a statement timeout, and calculations on number columns (`+ - * /`, Abs, Round...) translated exactly. The client
+caches results by plan (de-duplicated, cancelled when unwanted, overlaid with optimistic writes, refetched after writes with the old
+rows kept on screen); controls page (infinite scroll, virtualised rows) and sort / search on the server. A non-delegable formula over
+a table with more than 2,000 readable rows is an evaluation error; smaller tables are held whole and evaluated in the browser with a
+Studio warning. Connectors without SQL pushdown (MySQL, data files, Google Sheets) answer plans with the reference executor over at
+most 5,000 rows and flag `truncated`. Columns can be marked `indexed`; lookup and unique columns and the natural order always are.
+**Why.** Exit checks 2 and 3 of P0: a million-row table must be usable, and a wrong partial answer is worse than an error. One
+statement per plan keeps security and counts consistent; sort-key comparisons let one index per column serve filter, sort and seek.
+**Consequences.** Formulas that read large tables resolve asynchronously (a property shows its previous value while loading; actions
+that read large tables run step by step after the earlier writes are saved). Some formulas that worked on the first 5,000 rows are now
+errors that name the sub-expression and a rewrite. `WorkspaceState.truncated` only concerns the capped connectors. Demo mode is
+unchanged. Parity: 0 mismatches over 870 formulas on PostgreSQL (`docs/dev/query-v2.md` section 15).
+**Status.** Active. Supersedes D10.
+

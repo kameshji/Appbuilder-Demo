@@ -109,7 +109,11 @@ describe('owner and createdBy of imported rows', () => {
     await h.call(M, 'POST', `/api/v1/solutions/${sol.id}/components`, { kind: 'table', id: t.id })
     const { yaml } = (await h.call(M, 'GET', `/api/v1/solutions/${sol.id}/package?data=1`)).body
     await h.call(M, 'DELETE', `/api/v1/tables/${t.id}?dropSource=1`)
-    const imp = await h.call(A, 'POST', '/api/v1/solutions/import', { yaml })
+    // the solution still exists here: an in-place upgrade, confirmed with the plan's token (the table comes back new)
+    expect((await h.call(A, 'POST', '/api/v1/solutions/import', { yaml })).status).toBe(409)
+    const plan = (await h.call(A, 'POST', '/api/v1/solutions/import/plan', { yaml })).body
+    expect(plan).toMatchObject({ mode: 'upgrade', items: [{ kind: 'table', id: t.id, change: 'new' }] })
+    const imp = await h.call(A, 'POST', '/api/v1/solutions/import', { yaml, confirm: plan.token })
     expect(imp.status, JSON.stringify(imp.body)).toBe(200)
     const deals = (await h.meta.tables.get('Deals'))!
     expect((await h.services.data.query(null, deals, {})).rows).toEqual([expect.objectContaining({ Name: 'D1', owner: A, createdBy: A })])

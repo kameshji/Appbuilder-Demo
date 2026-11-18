@@ -433,6 +433,7 @@ Type: `Dropdown` · default size 240 x 40 · main property: `Items` · also has 
 | --- | --- |
 | `Selected` | blank |
 | `SelectedText` | `""` |
+| `SearchText` | `""` |
 
 **Events:** `OnChange`.
 

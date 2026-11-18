@@ -4,6 +4,7 @@ import { uid, isRecord } from './util'
 import { currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableRows, tables } from './data'
 import { pendingFilesOf } from './attachments'
 import { finishSubmit } from './submit'
+import { chainItems, prepareAction } from './delegation'
 
 export type ToastKind = 'info' | 'success' | 'warning' | 'error'
 export interface Toast { id: string; message: string; kind: ToastKind }
@@ -107,7 +108,52 @@ function fallbackCopy(text: string) {
 
 /** Run an action against a private copy of the runtime; the caller commits the result in one update. */
 export function runFormula(input: RunInput): RunResult {
-  const { app, rt, node, ctx, formula, label } = input
+  const run = beginRun(input)
+  run.exec(() => {
+    if (input.action) input.action(run.host)
+    else {
+      const r = run.evr.engine.evaluate(input.formula ?? '=', run.evr.scopeFor(input.node, input.ctx), run.host)
+      if (!r.ok) run.res.failed = r.error.message
+    }
+  })
+  return run.end()
+}
+
+/**
+ * Server mode, an action that reads tables the browser does not hold whole: each top-level step (`a; b; c`) has its
+ * table reads run on the server first (after the writes of the earlier steps are saved), then runs with the results
+ * bound. A read the server can't run fails the action with the reason; nothing runs on part of the rows.
+ */
+export async function runFormulaAsync(input: RunInput): Promise<RunResult> {
+  const run = beginRun(input)
+  try {
+    const steps = chainItems(input.formula ?? '=')
+    for (let i = 0; i < steps.length && !run.res.failed && !run.res.exit; i++) {
+      if (i > 0 && run.writes() > 0) await submitDeps.flush().catch(() => {})
+      const prep = await prepareAction(steps[i]!, run.evr.scopeFor(input.node, input.ctx), run.evr.engine, run.res.collections)
+      run.exec(() => {
+        const r = run.evr.engine.evaluate(prep.formula, prep.scope, run.host)
+        if (!r.ok) run.res.failed = r.error.message
+      })
+    }
+  } catch (e) {
+    run.res.failed = errorMessage(e)
+  }
+  return run.end()
+}
+
+interface Run {
+  res: RunResult
+  evr: Evaluator
+  host: FxHost
+  /** table writes so far */
+  writes(): number
+  exec(fn: () => void): void
+  end(): RunResult
+}
+
+function beginRun(input: RunInput): Run {
+  const { app, rt, node, ctx, label } = input
   const view: RuntimeView = {
     ...rt,
     vars: { ...rt.vars },
@@ -149,10 +195,12 @@ export function runFormula(input: RunInput): RunResult {
     res.outputs[k] = { ...(res.outputs[k] ?? {}), ...values }
   }
 
+  let writeCount = 0
   const tableWrite = <T,>(fn: () => T, dry?: T): T => {
     if (input.dryData) return dry as T
     try {
       const r = fn()
+      writeCount++
       fresh()
       return r
     } catch (e) {
@@ -370,22 +418,28 @@ export function runFormula(input: RunInput): RunResult {
     },
   }
 
-  try {
-    if (input.action) input.action(host)
-    else {
-      const r = evr.engine.evaluate(formula ?? '=', evr.scopeFor(node, ctx), host)
-      if (!r.ok) res.failed = r.error.message
-    }
-  } catch (e) {
-    res.failed = errorMessage(e)
+  return {
+    res,
+    evr,
+    host,
+    writes: () => writeCount,
+    exec(fn) {
+      try {
+        fn()
+      } catch (e) {
+        res.failed = errorMessage(e)
+      }
+    },
+    end() {
+      if (res.failed) {
+        const message = `${label}: ${res.failed}`
+        res.toasts.push({ id: uid(), message, kind: 'error' })
+        res.traces.push({ id: uid(), at: Date.now(), kind: 'error', message, source: label })
+      }
+      res.navStack = nav
+      return res
+    },
   }
-  if (res.failed) {
-    const message = `${label}: ${res.failed}`
-    res.toasts.push({ id: uid(), message, kind: 'error' })
-    res.traces.push({ id: uid(), at: Date.now(), kind: 'error', message, source: label })
-  }
-  res.navStack = nav
-  return res
 }
 
 class HostFailure extends Error {}

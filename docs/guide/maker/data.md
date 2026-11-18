@@ -48,6 +48,39 @@ When you edit a sheet of an Excel file in Appbuilder, the stored copy is written
 
 Administrators create connections: **PostgreSQL** (host, port, database, user, password, schema, SSL), **MySQL / MariaDB** (host, port, database, user, password, SSL) and **Google Sheets** (spreadsheet URL or id plus a service-account key; share the sheet with the service account email as Editor). On a connection use **Test**, **Browse tables** (link existing MySQL tables or Sheets tabs), **Set as default** (MySQL), **Edit** and **Delete** (the default cannot be deleted). Linking a source that has no `id` column asks permission to add one.
 
-## The 5,000-row limit
+## Large tables: what runs on the server
 
-Apps load at most the first 5,000 rows of a table. A banner says "Only the first 5,000 rows are loaded", and the Studio shows "Data truncated at N rows". Formulas such as CountRows or Filter only see those rows. Split large data across tables or archive old rows. There is no server-side filtering yet, despite what the banner suggests.
+With the local server, formulas over tables run **in the database**: Appbuilder translates `Filter`, `Search`, `Sort`,
+`SortByColumns`, `LookUp`, `First`/`Last`, `FirstN`/`LastN`, `CountRows`, `CountIf`, `Sum`/`Average`/`Min`/`Max` (also over
+calculations such as `Qty * Price`), `Distinct`, `GroupBy` with totals, `ShowColumns`/`DropColumns` and `IsEmpty` into one query
+and only the answer travels to the browser. A table of a million rows works: a gallery or data table shows the first rows at once and
+loads more as you scroll, the row count is exact, sorting a data table by a header and its search box run on the server, a dropdown
+over a large table searches as you type, and charts get their totals from the server. Your security roles are applied in that same
+query, so counts and totals only include rows you may see.
+
+Some formulas can't be translated, for example `Len(Title) > 3`, `Month(DueDate) = 3`, a division by a column, `Concat(Filter(...), ...)`
+over a whole table, or a `LookUp` of another table inside a `Filter`. Then:
+
+- **Small tables (up to 2,000 rows you can see)** are loaded into the browser whole and the formula runs there as before. The Studio
+  shows a yellow **Runs in browser** label and a data warning, because it will stop working once the table grows.
+- **Larger tables**: the formula is an **error**, never an answer computed from part of the rows. The formula bar underlines the part
+  that can't run, says why ("Can't run on the server: ...") and suggests a rewrite; the error list shows it too.
+
+Typical fixes: compare the column itself and move the calculation to the other side (`DueDate < DateAdd(Today(), -7, "Days")` rather
+than `DateAdd(DueDate, 7, "Days") < Today()`), use `Year(DueDate) = 2026` (that one works), multiply instead of dividing by a column
+(`Price > 2 * Cost`), read a value from another table into a variable first (`Set(minTier, LookUp(Tiers, ...).Min)` in OnVisible), add
+a column that stores the computed value, or limit the rows with `FirstN(..., 500)` before working through them.
+
+The formula bar says where a table formula runs: **Runs on server**, **Runs in browser** or **Can't run**. Hover the label for the
+steps.
+
+**Make big tables fast.** Filters, sorting and paging by a column are fast when the column is indexed. Lookup and unique columns always
+are. For other columns you filter, sort or search by, open the column in the table designer and turn on **Indexed** (server mode). An
+index costs a little time on every save, so mark only the columns you use.
+
+**Tables on other connections.** Tables in a PostgreSQL connection run their formulas in that database too. Tables on a MySQL/MariaDB
+connection, data files and Google Sheets can't run queries themselves: Appbuilder works on their first 5,000 rows and warns ("only
+the first 5,000 rows are searched, sorted and counted"). Copy such a table into the default database to use every row (for a data
+file: **Data files > Move to database**).
+
+**Demo mode** (the browser-only page) keeps every row in the browser and runs every formula there, as before.

@@ -5,7 +5,17 @@ it in **Admin console > Audit log**: newest first, 50 entries per page, filtered
 such as `auth.*`), by user and by date (shown in your browser's time zone). Click a details cell to see all of it. The
 same data comes from `GET /api/v1/audit` (administrators only; see `docs/dev/data-api.md`). Reading the log is not itself
 recorded. For anything the viewer cannot do (joins, counts, exports), use SQL with a database client (`psql`, pgAdmin, DBeaver and so on) and an account that can `SELECT` from the Appbuilder
-database. The log is the table `env_default.ab_audit` (one per environment); users are in `ab.users`.
+database. Each [environment](environments.md) has its own log, the table `env_<id>.ab_audit` (Default: `env_default.ab_audit`);
+the viewer shows the one of the environment you work in. Users are in `ab.users`.
+
+**Install-level log.** Install administrators have a second tab in the viewer, **Install** (`GET /api/v1/install/audit`), over
+the table `ab.audit`: what concerns the install rather than one environment. It has the same columns as below, without
+`table_id`/`row_id` and with `environment_id` (the environment the action was about). Actions: `environment.create`
+(details: id, name, type, schema, `copyFrom`/`copy`, `sampleData`, `ms`), `environment.create_failed`, `environment.update`
+(`changes` before/after), `environment.lock`, `environment.unlock`, `environment.delete` (name, type, schema, what happened to
+the folder), `environment.delete_failed`, `environment.access_grant` (user, email, `isEnvAdmin`), `environment.access_revoke`,
+`environment.migrate_failed`, `install.admin_grant`, `install.admin_revoke`, `install.user_create`, `install.user_disable`,
+`install.user_enable`, `install.user_delete`, `solution.deploy` (solution, version, from, to), `schema.migrate`.
 
 ## The table
 
@@ -13,7 +23,7 @@ database. The log is the table `env_default.ab_audit` (one per environment); use
 | --- | --- |
 | `id` | Increasing number. |
 | `at` | When it happened, **in UTC**, to the millisecond. Convert to local time yourself. |
-| `user_id` | The id of the acting user (`ab_users.id`), or empty for events with no signed-in user (failed or throttled sign-in, setup, schema migration). |
+| `user_id` | The id of the acting user (`ab.users.id`), or empty for events with no signed-in user (failed or throttled sign-in, setup, schema migration). |
 | `action` | What happened, see below. |
 | `table_id` | The table concerned, when there is one (for example `t_orders`). |
 | `row_id` | The row concerned, for single-row actions. |
@@ -32,7 +42,7 @@ database. The log is the table `env_default.ab_audit` (one per environment); use
 | Data files | `file.add`, `file.replace`, `file.delete` |
 | Attachments | `attachment.upload`, `attachment.delete` |
 | Connections | `connection.create`, `connection.update`, `connection.default`, `connection.delete` |
-| Apps and packages | `app.create`, `app.duplicate`, `app.delete`, `app.import`, `solution.create`, `solution.import`, `solution.delete` |
+| Apps and packages | `app.create`, `app.duplicate`, `app.delete`, `app.import`, `solution.create`, `solution.import` (an import as copies), `solution.install` and `solution.upgrade` (an import or deployment with stable ids: version, `fromVersion`, counts of new/changed/removed, the items, `destructive`, `backup: none` or `taken`), `solution.delete` |
 
 This list comes from the code and a run of a live server; the test suite checks that sign-in, failed sign-in, row
 insert/update/delete, import and attachment upload produce entries.

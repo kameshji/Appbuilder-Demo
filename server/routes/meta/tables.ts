@@ -21,7 +21,7 @@ import { denied } from './util.ts'
 
 /* ------------------------------------------------------------------ helpers */
 
-async function tableResolver(s: Services) {
+export async function tableResolver(s: Services) {
   return resolver(await s.meta.tables.list())
 }
 
@@ -46,7 +46,7 @@ async function rowCount(connector: Connector, def: TableDef): Promise<number> {
 }
 
 /** every value of one column (+ id), straight from the connector */
-async function columnValues(connector: Connector, def: TableDef, col: string): Promise<{ id: string; v: unknown }[]> {
+export async function columnValues(connector: Connector, def: TableDef, col: string): Promise<{ id: string; v: unknown }[]> {
   const r = await connector.select(def, { select: ['id', col], orderBy: [{ col: 'createdOn', dir: 'asc' }] })
   return r.rows.map((row) => ({ id: String(row.id ?? ''), v: row[col] }))
 }
@@ -58,7 +58,7 @@ function validateName(s: string | undefined, taken: string[]): void {
 }
 
 /** values of a lookup column must point at existing rows of the target table */
-async function checkLookupValues(s: Services, col: ColumnDef, values: unknown[]): Promise<void> {
+export async function checkLookupValues(s: Services, col: ColumnDef, values: unknown[]): Promise<void> {
   const target = col.lookupTable ? await s.meta.tables.get(col.lookupTable) : null
   if (!target) throw invalid('A lookup column needs an existing target table.', 'lookupTable')
   const distinct = [...new Set(values.filter((v) => !isBlankCell(v)).map(String))]
@@ -74,7 +74,7 @@ async function checkLookupValues(s: Services, col: ColumnDef, values: unknown[])
   if (missing !== undefined) throw invalid(`${col.displayName}: some rows point at a row that does not exist in "${target.displayName}" (for example "${missing}").`)
 }
 
-async function backfill(s: Services, connector: Connector, def: TableDef, col: ColumnDef): Promise<void> {
+export async function backfill(s: Services, connector: Connector, def: TableDef, col: ColumnDef): Promise<void> {
   const rows = await connector.select(def, { select: ['id'], orderBy: [{ col: 'createdOn', dir: 'asc' }] })
   if (!rows.rows.length) return
   const now = new Date()
@@ -91,7 +91,7 @@ async function backfill(s: Services, connector: Connector, def: TableDef, col: C
 }
 
 /** remove CLS entries of a column from every role (row filters stay: a filter on a missing column grants nothing) */
-async function dropColumnFromRoles(s: Services, tableId: string, column: string): Promise<void> {
+export async function dropColumnFromRoles(s: Services, tableId: string, column: string): Promise<void> {
   for (const role of (await s.meta.roles.list()) as RoleX[]) {
     let changed = false
     const privileges = role.privileges.map((p) => {
@@ -291,7 +291,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
       merged.displayName = p.displayName.trim().slice(0, 200)
     }
     if (p.type !== undefined) merged.type = p.type
-    for (const k of ['required', 'unique'] as const) {
+    for (const k of ['required', 'unique', 'indexed'] as const) {
       if (k in p) {
         if (p[k]) merged[k] = true
         else delete merged[k]
@@ -312,6 +312,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
     const next: ColumnDef = { ...checked, name: old.name }
     const typeChanged = next.type !== old.type
     const uniqueChanged = !!next.unique !== !!old.unique
+    const indexedChanged = !!next.indexed !== !!old.indexed
     const lookupChanged = next.type === 'lookup' && next.lookupTable?.toLowerCase() !== old.lookupTable?.toLowerCase()
     if (typeChanged) {
       if (isAttachmentType(next.type) !== isAttachmentType(old.type)) throw invalid('Attachment columns cannot be converted to or from other types. Add a new column instead.', 'type')
@@ -347,7 +348,12 @@ export function registerTableRoutes(router: Router, s: Services): void {
     const columns = [...def.columns]
     columns[idx] = next
     const nextDef: TableDef = { ...clone(def), columns, modifiedOn: s.now() }
-    if (connector && (typeChanged || uniqueChanged)) {
+    // the indexed flag only changes something on PostgreSQL (other connectors keep their own indexes)
+    if (indexedChanged && !connector) {
+      const c = (await connectorOf(s, def)).connector
+      if (c.kind === 'postgres' && c.capabilities.ddl) connector = c
+    }
+    if (connector && (typeChanged || uniqueChanged || (indexedChanged && connector.kind === 'postgres'))) {
       try {
         await connector.alterColumn(nextDef, old, next)
       } catch (e) {

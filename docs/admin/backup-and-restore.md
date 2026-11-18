@@ -14,7 +14,7 @@ package excludes secrets, users and, for most purposes, the data rows you did no
 | What | Where | Why |
 | --- | --- | --- |
 | The database | The PostgreSQL database you entered during setup | Schema `ab` (settings, users, sessions, environments) and `env_default` (roles, privileges, apps, table definitions, the audit log, and the rows of tables created in Appbuilder, `t_...`). One `pg_dump` covers all of it. |
-| The workspace folder | `workspace/` or the folder in `APPBUILDER_WORKSPACE` | `.secret-key` (decrypts saved passwords and keys), `server.json` (database location), `files/` (copies of CSV/Excel/JSON data files) and `attachments/` if any are stored there. |
+| The workspace folder | `workspace/` or the folder in `APPBUILDER_WORKSPACE` | `.secret-key` (decrypts saved passwords and keys), `server.json` (database location), and per [environment](environments.md) `env/<id>/files/` (copies of CSV/Excel/JSON data files) and `env/<id>/attachments/`. |
 | Other databases | Any extra PostgreSQL or MySQL connection | Appbuilder does not back these up; they are your existing databases. |
 | Google Sheets | Google | Use Google's version history; Appbuilder keeps nothing. |
 | Environment settings | Your service definition or scheduled task | `APPBUILDER_*` variables, including `APPBUILDER_SECRET_KEY` if you use it. |
@@ -87,8 +87,8 @@ Restore into an empty database; never over a running installation you want to ke
    code from the server window). A new key is
    created; users, roles and apps are intact, but **every other saved connection secret is unreadable** (for example the
    Google service-account key): open each such connection and enter the secret again.
-7. Copy back `workspace/files/` data files. These are not in the dump; without them tables of those connections show
-   errors.
+7. Copy back the `workspace/env/` folder (data files and attachments of every environment). These are not in the dump;
+   without them tables of data-file connections show errors and attachments are missing.
 8. Check: sign in, open an app, look at a few rows, open **Connections** and press **Test** on each.
 
 After a restore, the *Default database* connection is rebuilt from `server.json` or the environment (it cannot be edited in
@@ -131,6 +131,9 @@ check) is part of P0 package J.
 
 - **Point-in-time recovery.** A dump is a snapshot. Anything after it is lost unless you set up PostgreSQL WAL archiving
   (continuous archiving) yourself.
+- **One environment.** Each environment is one schema (`pg_dump --schema=env_<id>` dumps one), but restoring a single
+  environment into a running install, and the automatic snapshot before a solution upgrade, arrive with the backup package
+  (P0 package J). Until then back up and restore the whole database and workspace folder.
 - **Single-table or single-app restore.** Not provided. You can restore a dump into a scratch database and copy rows
   out with SQL.
 - **Attachments.** Files uploaded to attachment columns are stored by Appbuilder and are not part of the database dump.

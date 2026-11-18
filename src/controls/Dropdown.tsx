@@ -3,8 +3,16 @@ import { ChevronDown, ChevronsUpDown } from 'lucide-react'
 import type { ControlRenderProps, ControlType } from '@/contracts'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { displayModeProp, recordText, toDisplayMode, toRecords, toText } from './util'
+import { queryMeta } from './virtual'
+import { ComboBoxRender } from './inputs/ComboBox'
 
-function DropdownRender({ props, mode, outputs, setOutput, fire }: ControlRenderProps) {
+function DropdownRender(p: ControlRenderProps) {
+  // server mode, Items from a large table: rows load lazily with a type-ahead search on the server
+  if (queryMeta(p.props.Items)) return <ComboBoxRender {...p} props={{ ...p.props, SelectionMode: 'Single', Clearable: false, Size: 14 }} />
+  return <PlainDropdown {...p} />
+}
+
+function PlainDropdown({ props, mode, outputs, setOutput, fire }: ControlRenderProps) {
   const design = mode === 'design'
   const dm = toDisplayMode(props.DisplayMode)
   const items = useMemo(() => toRecords(props.Items), [props.Items])
@@ -79,6 +87,8 @@ export const Dropdown: ControlType = {
   outputs: [
     { name: 'Selected', initial: null },
     { name: 'SelectedText', initial: '' },
+    // type-ahead text when the items are a large server table (searched on the server)
+    { name: 'SearchText', initial: '' },
   ],
   defaultSize: { width: 240, height: 40 },
   primaryProp: 'Items',

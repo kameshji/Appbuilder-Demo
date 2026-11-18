@@ -4,6 +4,7 @@
  */
 import { PlatformError } from '@/platform'
 import { API_BASE, CSRF_HEADER, type ApiError, type AuditPageResponse, type StatusResponse, type StatusServerInfo } from '@/platform/http'
+import { environmentHeaders } from '@/platform/environments'
 
 /** One row of GET /api/v1/security/preview?user= */
 export interface TablePreview {
@@ -13,7 +14,7 @@ export interface TablePreview {
   readOnlyColumns: string[]
 }
 
-async function toError(res: Response): Promise<PlatformError> {
+export async function toError(res: Response): Promise<PlatformError> {
   let body: Partial<ApiError> | null = null
   try { body = (await res.json()) as Partial<ApiError> } catch { /* not JSON */ }
   const code = body?.error?.code ?? (res.status === 401 ? 'unauthenticated' : res.status === 403 ? 'denied' : res.status === 404 ? 'not-found' : res.status === 405 ? 'method_not_allowed' : res.status === 409 ? 'conflict' : res.status === 429 ? 'rate_limited' : res.status === 503 ? 'unavailable' : 'storage')
@@ -24,7 +25,7 @@ async function toError(res: Response): Promise<PlatformError> {
 export async function fetchSecurityPreview(userId: string): Promise<TablePreview[]> {
   let res: Response
   try {
-    res = await fetch(`${API_BASE}/security/preview?user=${encodeURIComponent(userId)}`, { credentials: 'same-origin', headers: { [CSRF_HEADER]: '1' } })
+    res = await fetch(`${API_BASE}/security/preview?user=${encodeURIComponent(userId)}`, { credentials: 'same-origin', headers: { [CSRF_HEADER]: '1', ...environmentHeaders() } })
   } catch {
     throw new PlatformError('unavailable', 'The server cannot be reached.')
   }
@@ -56,7 +57,7 @@ export async function assignOwnerToUnownedRows(tableId: string, userId?: string)
     res = await fetch(`${API_BASE}/tables/${encodeURIComponent(tableId)}/assign-owner`, {
       method: 'POST',
       credentials: 'same-origin',
-      headers: { [CSRF_HEADER]: '1', 'Content-Type': 'application/json' },
+      headers: { [CSRF_HEADER]: '1', 'Content-Type': 'application/json', ...environmentHeaders() },
       body: JSON.stringify(userId ? { userId } : {}),
     })
   } catch {
@@ -66,10 +67,10 @@ export async function assignOwnerToUnownedRows(tableId: string, userId?: string)
   return Number(((await res.json()) as { updated?: number }).updated ?? 0)
 }
 
-async function getJson<T>(path: string): Promise<T> {
+export async function getJson<T>(path: string): Promise<T> {
   let res: Response
   try {
-    res = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin', headers: { [CSRF_HEADER]: '1' }, cache: 'no-store' })
+    res = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin', headers: { [CSRF_HEADER]: '1', ...environmentHeaders() }, cache: 'no-store' })
   } catch {
     throw new PlatformError('unavailable', 'The server cannot be reached.')
   }

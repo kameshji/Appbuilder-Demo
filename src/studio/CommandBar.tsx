@@ -2,6 +2,8 @@ import { ArrowLeft, Check, CloudOff, EllipsisVertical, ExternalLink, FilePlus2, 
 import { controls } from '@/controls'
 import { go } from '@/router'
 import { ProfileAvatar } from '@/portal/Profile'
+import { EnvironmentBadge } from '@/portal/EnvironmentPicker'
+import { usePlatform } from '@/platform'
 import { useTheme } from '@/portal/theme'
 import { useStore } from '@/runtime/store'
 import { useUi } from '@/runtime/ui'
@@ -15,7 +17,9 @@ import { CATEGORIES } from './categories'
 import { ChatButton } from '@/chat/ChatDock'
 
 function SaveIndicator() {
+  const locked = usePlatform((st) => !!st.environments.find((e) => e.id === st.environmentId)?.locked)
   const s = useStore((st) => st.saveState)
+  if (locked) return <span data-testid="save-state" data-state="read-only" className="flex items-center gap-1 text-[11px] text-rose-600 dark:text-rose-300">Read-only</span>
   const map = {
     saved: { icon: <Check className="size-3" />, text: 'Saved', cls: 'text-muted-foreground' },
     saving: { icon: <Loader2 className="size-3 animate-spin" />, text: 'Saving…', cls: 'text-muted-foreground' },
@@ -103,6 +107,7 @@ export function CommandBar() {
       </Button>
 
       <div className="ml-auto flex items-center gap-1.5">
+        <EnvironmentBadge className="mr-1 @max-[1180px]/cmd:hidden" />
         <ChatButton />
         <Button variant="ghost" size="icon-sm" title="Toggle Studio theme" data-testid="theme-toggle" onClick={toggleTheme}>
           {theme === 'dark' ? <Sun /> : <Moon />}

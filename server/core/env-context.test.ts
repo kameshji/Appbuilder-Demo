@@ -1,12 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_ENVIRONMENT_ID, currentEnvironment, environmentSchema, resolveEnvironment, runInEnvironment } from './env-context.ts'
+import { DEFAULT_ENVIRONMENT_ID, currentEnvironment, environmentSchema, requestedEnvironment, resolveEnvironment, runInEnvironment } from './env-context.ts'
+import type { IncomingMessage } from 'node:http'
 import { createSecurityEngine } from './security.ts'
 import { createConnectionManager } from './connections.ts'
 import type { Connector, ConnectorEnv, MetaStore } from './contracts.ts'
 import type { UserDef } from '../../src/platform/contracts.ts'
 
 describe('environment context', () => {
-  it('one environment for now: every request resolves to default, schema env_default', () => {
+  it('the environment a request names: header, or ?env= on GET; validated, never both different', () => {
+    const req = (method: string, headers: Record<string, string> = {}) => ({ method, headers }) as unknown as IncomingMessage
+    const u = (q = '') => new URL(`http://localhost/api/v1/x${q}`)
+    expect(requestedEnvironment(req('GET'), u())).toBeNull()
+    expect(requestedEnvironment(req('POST', { 'x-appbuilder-environment': 'sales' }), u())).toBe('sales')
+    expect(requestedEnvironment(req('GET'), u('?env=sales'))).toBe('sales')
+    // the query only counts for GET (links); a POST must send the header
+    expect(requestedEnvironment(req('POST'), u('?env=sales'))).toBeNull()
+    expect(requestedEnvironment(req('GET', { 'x-appbuilder-environment': 'sales' }), u('?env=sales'))).toBe('sales')
+    expect(() => requestedEnvironment(req('GET', { 'x-appbuilder-environment': 'sales' }), u('?env=default'))).toThrow(/two different/)
+    for (const bad of ['Sales', 'env-1', '1x', 'a"b', 'x'.repeat(41)]) expect(() => requestedEnvironment(req('GET', { 'x-appbuilder-environment': bad }), u())).toThrow()
+  })
+
+  it('outside a request: the default environment, schema env_default', () => {
     expect(resolveEnvironment()).toBe(DEFAULT_ENVIRONMENT_ID)
     expect(currentEnvironment()).toEqual({ id: 'default', schema: 'env_default' })
     expect(environmentSchema('test_2')).toBe('env_test_2')

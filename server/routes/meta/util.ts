@@ -210,6 +210,8 @@ export function buildColumn(p: Partial<ColumnDef>, o: ColumnBuildOpts): ColumnDe
   const col: ColumnDef = { name, displayName, type }
   if (p.required) col.required = true
   if (p.unique) col.unique = true
+  // a Query v2 key index (PostgreSQL); long text and attachments are never indexed
+  if (p.indexed && !isAttachmentType(type) && type !== 'multiline') col.indexed = true
   if (p.default !== undefined && p.default !== null && p.default !== '') col.default = String(p.default)
   if (type === 'choice') col.choices = [...new Set((p.choices ?? []).map((s) => String(s).trim()).filter(Boolean))]
   if (type === 'lookup') {
@@ -242,6 +244,7 @@ export function sanitizeTableDef(raw: unknown, now: string): TableDef {
     const col: ColumnDef = { name: rc.name, displayName: typeof rc.displayName === 'string' && rc.displayName ? rc.displayName.slice(0, 200) : rc.name, type }
     if (rc.required === true) col.required = true
     if (rc.unique === true && !isAttachmentType(type)) col.unique = true
+    if (rc.indexed === true && !isAttachmentType(type) && type !== 'multiline') col.indexed = true
     if (typeof rc.default === 'string' || typeof rc.default === 'number' || typeof rc.default === 'boolean') col.default = String(rc.default)
     if (type === 'choice') col.choices = Array.isArray(rc.choices) ? rc.choices.map(String) : []
     if (type === 'lookup' && typeof rc.lookupTable === 'string') col.lookupTable = rc.lookupTable

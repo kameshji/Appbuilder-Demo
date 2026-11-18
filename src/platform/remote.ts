@@ -21,8 +21,17 @@ import type {
   WorkspaceResponse,
 } from './http'
 import { rowsToCsv } from './csv'
-import { pickEnvironment, readSelectedEnvironment, selectEnvironment } from './environments'
+import {
+  environmentHeaders, getRequestEnvironment, pickEnvironment, readSelectedEnvironment, selectEnvironment, setRequestEnvironment, withEnvironment,
+  writeSelectedEnvironment,
+} from './environments'
 import { coerceValue, defaultValue, formatDate, isBlankValue, uniqueKey, uuid } from './values'
+import type { QueryPlan, QueryV2Response } from './query'
+import { QueryCache, type QueryState } from './query-cache'
+import { rowsFromWire } from './query-wire'
+
+/** tables with at most this many readable rows are held in memory whole (formulas the server can't run work in the browser) */
+export const SMALL_TABLE_ROWS = 2000
 
 export interface RemotePlatformOptions {
   /** fetch implementation (default: globalThis.fetch, looked up on each call) */
@@ -186,6 +195,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     contentType?: string
     query?: Record<string, string | undefined>
     as?: 'json' | 'blob'
+    signal?: AbortSignal
   }
 
   async function call<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, o: CallOptions = {}): Promise<T> {
@@ -197,6 +207,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     const headers: Record<string, string> = {}
     let body: BodyInit | undefined
     if (method !== 'GET') headers[CSRF_HEADER] = '1'
+    // every request names the environment it works in (the server checks it against the session)
+    Object.assign(headers, environmentHeaders())
     if (o.raw !== undefined) {
       body = o.raw
       headers['Content-Type'] = o.contentType ?? 'application/octet-stream'
@@ -209,8 +221,9 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     }
     let res: Response
     try {
-      res = await doFetch(url, { method, headers, body, credentials: 'same-origin' })
-    } catch {
+      res = await doFetch(url, { method, headers, body, credentials: 'same-origin', signal: o.signal })
+    } catch (e) {
+      if (o.signal?.aborted) throw e
       throw new PlatformError('unavailable', 'Could not reach the server.')
     }
     if (!res.ok) {
@@ -243,6 +256,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
   function onUnauthenticated() {
     if (state.session === null) return
     entries = new Map(state.tables.map((d) => [d.id, newEntry(d)]))
+    queries.clear()
     setState({ session: null, loading: [], truncated: [] }, true)
   }
 
@@ -264,6 +278,94 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
 
   const findColumn = (def: TableDef, name: string): ColumnDef | undefined =>
     def.columns.find((c) => c.name === name) ?? def.columns.find((c) => c.name.toLowerCase() === name.toLowerCase())
+
+  /* ------------------------------------------------------------------ Query v2 cache */
+
+  const queryListeners = new Set<(keys: string[]) => void>()
+  const typesOf = (def: TableDef): Record<string, ColumnDef['type']> => {
+    const out: Record<string, ColumnDef['type']> = { id: 'text' }
+    for (const c of def.columns) out[c.name] = c.type
+    return out
+  }
+  /** pending optimistic writes of a table on top of a query's confirmed rows */
+  function overlay(table: string, rows: Row[], plan: QueryPlan, _paged: boolean, complete: boolean): Row[] {
+    const e = findEntry(table)
+    if (!e || !e.ops.length || plan.aggregate) return rows
+    let out = rows
+    for (const op of e.ops) {
+      if (op.kind === 'update') {
+        if (!out.some((r) => r.__id === op.id)) continue
+        out = out.map((r) => (r.__id === op.id ? { ...r, ...pickKnown(r, op.changes), ...('modifiedOn' in r ? { modifiedOn: op.at } : {}) } : r))
+      } else if (op.kind === 'delete') {
+        if (out.some((r) => op.ids.has(String(r.__id)))) out = out.filter((r) => !op.ids.has(String(r.__id)))
+      } else if (complete && !plan.filter && !plan.search && !plan.sort?.length && !plan.take && !plan.single && !plan.select) {
+        if (!out.some((r) => r.__id === op.row.__id)) out = [...out, op.row]
+      }
+    }
+    return out
+  }
+  const pickKnown = (row: Row, changes: FxRecord): FxRecord => {
+    const o: FxRecord = {}
+    for (const [k, v] of Object.entries(changes)) if (k in row) o[k] = v
+    return o
+  }
+  const queries = new QueryCache({
+    post: (plan, signal) => call<QueryV2Response>('POST', '/query', { json: { plan }, signal }),
+    toRows: (plan, rows) => {
+      const e = findEntry(plan.table)
+      return rowsFromWire(plan, rows, e ? typesOf(e.def) : {})
+    },
+    overlay,
+    onChange: (keys) => {
+      for (const k of keys) {
+        const st = queries.byKey(k)
+        if (st && st.status === 'ready') {
+          noteTruncated(st.plan.table, st)
+          // a count of a table came in: small tables are then held in memory whole
+          if (isCountPlan(st.plan)) {
+            const e = findEntry(st.plan.table)
+            if (e && !e.loaded && (st.count ?? Infinity) <= SMALL_TABLE_ROWS) scheduleLoad(e)
+          }
+        }
+      }
+      for (const l of [...queryListeners]) {
+        try {
+          l(keys)
+        } catch (err) {
+          console.error('[platform] query listener failed', err)
+        }
+      }
+    },
+  })
+  const countPlan = (def: TableDef): QueryPlan => ({ version: 2, table: def.name, count: true })
+  const isCountPlan = (p: QueryPlan) => p.count === true && !p.filter && !p.search && !p.take && !p.aggregate && !p.select && !p.single && !p.sort
+
+  /**
+   * How big a table is for the current user (an exact count, cached and refreshed after writes) and whether every row
+   * is held in memory. Small tables (at most SMALL_TABLE_ROWS readable rows) are loaded whole on first use, so formulas
+   * the server cannot run still work on them (with a Studio warning); larger tables are only ever read through queries.
+   */
+  function sizeInfo(tableName: string): { rowCount?: number; fullyLoaded: boolean } {
+    const e = findEntry(tableName)
+    if (!e || !state.session) return { fullyLoaded: false }
+    const st = queries.get(countPlan(e.def), { owner: `size:${e.def.id}` })
+    const rowCount = st.status === 'ready' || st.refreshing ? st.count : undefined
+    const small = rowCount !== undefined && rowCount <= SMALL_TABLE_ROWS
+    if (small && !e.loaded) scheduleLoad(e)
+    return { rowCount, fullyLoaded: e.loaded && small && !state.truncated.includes(e.def.name) }
+  }
+
+  /** capped connectors: the tables whose last v2 answer was truncated (the UI warns) */
+  function noteTruncated(table: string, st: QueryState) {
+    const name = findEntry(table)?.def.name ?? table
+    const on = !!st.truncated
+    if (state.truncated.includes(name) !== on) setState({ truncated: setNames(state.truncated, name, on) })
+  }
+  /** after a confirmed (or refused) write: fold it into cached results, then refetch them in the background */
+  function queriesAfterWrite(table: string, w?: Parameters<QueryCache['fold']>[1]) {
+    if (w) queries.fold(table, w)
+    queries.invalidateTable(table)
+  }
 
   /* ------------------------------------------------------------------ mirrored security (UX only) */
 
@@ -378,7 +480,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     chain = chain.then(fn).then(() => {}, () => {})
   }
 
-  function settle(e: TableEntry, op: Op, apply?: () => void) {
+  function settle(e: TableEntry, op: Op, apply?: () => void, fold?: Parameters<QueryCache['fold']>[1]) {
     e.ops = e.ops.filter((o) => o !== op)
     if (!isCurrent(e)) return
     if (apply) {
@@ -386,6 +488,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       e.epoch++
     }
     recompute(e)
+    // cached queries keep the confirmed change, then refetch the server's truth (a refused write simply disappears)
+    queriesAfterWrite(e.def.name, apply ? fold : undefined)
     setState({}, true)
   }
   function rollback(e: TableEntry, op: Op, kind: DataErrorEvent['op'], ids: string[], err: unknown) {
@@ -398,7 +502,10 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
   /* ------------------------------------------------------------------ workspace load */
 
   function applyWorkspace(ws: WorkspaceResponse, reset = false) {
-    if (reset) entries = new Map()
+    if (reset) {
+      entries = new Map()
+      queries.clear()
+    }
     const next = new Map<string, TableEntry>()
     const stale: TableEntry[] = []
     for (const def of ws.tables) {
@@ -413,19 +520,25 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     entries = next
     const names = new Set(ws.tables.map((t) => t.name))
     const environments = ws.environments ?? []
+    // the workspace belongs to the environment the server answered for (the session's); older servers: this browser's choice
+    const environmentId = ws.session.environmentId ?? pickEnvironment(environments, readSelectedEnvironment(ws.session.user.id))?.id ?? ''
+    setRequestEnvironment(environments.some((e) => e.id === environmentId) ? environmentId : '')
+    if (environmentId) writeSelectedEnvironment(ws.session.user.id, environmentId)
     setState({
-      environments, environmentId: pickEnvironment(environments, readSelectedEnvironment(ws.session.user.id))?.id ?? '',
+      environments, environmentId,
       session: ws.session, currentUserId: ws.session.user.id, apps: sortApps(ws.apps), tables: sortTables(ws.tables), roles: ws.roles,
       users: ws.users, connections: ws.connections, solutions: ws.solutions, dataFiles: ws.dataFiles ?? [], storage: ws.storage,
       setup: { needsDatabase: false, needsAdmin: false },
       loading: state.loading.filter((n) => names.has(n)), truncated: state.truncated.filter((n) => names.has(n)),
     }, true)
     for (const e of stale) if (e.loaded && isCurrent(e)) load(e, { quiet: true, force: true }).catch(() => {})
+    for (const e of stale) queries.invalidateTable(e.def.name)
   }
 
   /** signed in with a password an administrator set: only the change-password screen until it is changed */
   function applyPendingSession(session: Session) {
     entries = new Map()
+    queries.clear()
     setState({
       session, currentUserId: session.user.id, apps: [], tables: [], roles: [], users: [], connections: [], solutions: [], dataFiles: [],
       setup: { needsDatabase: false, needsAdmin: false }, loading: [], truncated: [], environments: [], environmentId: '',
@@ -441,6 +554,13 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
         applyPendingSession(await call<Session>('GET', '/auth/session'))
         return
       }
+      // the environment this page worked in is gone, or the user lost access to it: the server's choice instead
+      if (e instanceof PlatformError && ['denied', 'not-found', 'unavailable'].includes(e.code) && getRequestEnvironment()) {
+        setRequestEnvironment('')
+        ws = await call<WorkspaceResponse>('GET', '/workspace')
+        applyWorkspace(ws, true)
+        return
+      }
       throw e
     }
     applyWorkspace(ws, reset)
@@ -449,6 +569,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
 
   function clearWorkspace() {
     entries = new Map()
+    queries.clear()
+    setRequestEnvironment('')
     setState({
       session: null, apps: [], tables: [], roles: [], users: [], connections: [], solutions: [], dataFiles: [], currentUserId: '',
       loading: [], truncated: [], environments: [], environmentId: '',
@@ -559,11 +681,13 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     const op: Op = { seq: ++seq, kind: 'create', row }
     e.ops.push(op)
     recompute(e)
+    queries.opsChanged(def.name)
     setState({}, true)
     enqueue(async () => {
       try {
         const res = await call<RowResponse>('POST', `/data/${enc(def.name)}/rows`, { json: { values: payload } })
-        settle(e, op, () => upsertConfirmed(e, rowFromJson(e.def, res.row)))
+        const saved = rowFromJson(e.def, res.row)
+        settle(e, op, () => upsertConfirmed(e, saved), { kind: 'create', row: saved })
       } catch (err) {
         rollback(e, op, 'create', [id], err)
       }
@@ -574,7 +698,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
   function updateRow(tableName: string, id: string, changes: FxRecord): Row {
     const e = needEntry(tableName)
     const def = e.def
-    const existing = e.rows.find((r) => r.id === id) ?? fail('not-found', `No row with id "${id}" in "${def.displayName}".`)
+    // the full-table cache (small tables) or any query result the row is shown in
+    const existing = e.rows.find((r) => r.id === id) ?? queries.findRow(def.name, id) ?? fail('not-found', `No row with id "${id}" in "${def.displayName}".`)
     const g = grantOf(def)
     if (g.update === 'none' || !rowOk(g.update, existing)) denied('update', def)
     const given = resolveKeys(def, changes)
@@ -597,18 +722,20 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     const op: Op = { seq: ++seq, kind: 'update', id, changes: typed, at: new Date(nowMs()) }
     e.ops.push(op)
     recompute(e)
+    queries.opsChanged(def.name)
     setState({}, true)
-    const optimistic = e.rows.find((r) => r.id === id)!
+    const optimistic = e.rows.find((r) => r.id === id) ?? { ...existing!, ...typed, modifiedOn: op.at }
     enqueue(async () => {
       try {
         const res = await call<RowResponse>('PATCH', `/data/${enc(def.name)}/rows/${enc(id)}`, { json: { changes: payload } })
+        const saved = rowFromJson(e.def, res.row)
         settle(e, op, () => {
           const i = e.confirmed.findIndex((r) => r.id === id)
           if (i >= 0) {
             e.confirmed = e.confirmed.slice()
-            e.confirmed[i] = rowFromJson(e.def, res.row)
+            e.confirmed[i] = saved
           }
-        })
+        }, { kind: 'update', row: saved })
       } catch (err) {
         rollback(e, op, 'update', [id], err)
       }
@@ -621,23 +748,24 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     const def = e.def
     const g = grantOf(def)
     const known = new Set(e.rows.map((r) => r.id as string))
-    const targets = e.loaded ? ids.filter((id) => known.has(id)) : [...ids]
+    const targets = e.loaded ? ids.filter((id) => known.has(id) || !!queries.findRow(def.name, id)) : [...ids]
     if (targets.length === 0) return
     if (g.delete === 'none') denied('delete', def)
     for (const id of targets) {
-      const row = e.rows.find((r) => r.id === id)
+      const row = e.rows.find((r) => r.id === id) ?? queries.findRow(def.name, id)
       if (!rowOk(g.delete, row)) denied('delete', def)
     }
     const op: Op = { seq: ++seq, kind: 'delete', ids: new Set(targets) }
     e.ops.push(op)
     recompute(e)
+    queries.opsChanged(def.name)
     setState({}, true)
     enqueue(async () => {
       try {
         await call<{ deleted: number }>('POST', `/data/${enc(def.name)}/delete`, { json: { ids: targets } })
         settle(e, op, () => {
           e.confirmed = e.confirmed.filter((r) => !op.ids.has(r.id as string))
-        })
+        }, { kind: 'delete', ids: op.ids })
       } catch (err) {
         rollback(e, op, 'delete', targets, err)
       }
@@ -742,7 +870,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     rows(tableName) {
       const e = needEntry(tableName)
       if (!e.loaded) {
-        scheduleLoad(e)
+        // only small tables are ever held whole; sizeInfo() starts the count and schedules the load when small
+        sizeInfo(e.def.name)
         return []
       }
       return e.rows.slice()
@@ -751,7 +880,9 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     delete: (tableName, ids) => deleteRows(tableName, ids),
 
     async reload(tableName) {
-      await load(needEntry(tableName), { force: true })
+      const e = needEntry(tableName)
+      queries.invalidateTable(e.def.name)
+      if (e.loaded) await load(e, { force: true })
     },
     exportCsv(tableName) {
       const e = needEntry(tableName)
@@ -760,7 +891,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     async importCsv(tableName, csvText, mode) {
       const e = needEntry(tableName)
       const res = await call<{ imported: number }>('POST', `/data/${enc(e.def.name)}/import`, { json: { csv: csvText, mode } })
-      await load(e, { force: true })
+      queries.invalidateTable(e.def.name)
+      if (e.loaded) await load(e, { force: true })
       return res.imported
     },
     async createFromCsv(displayName, csvText) {
@@ -778,14 +910,31 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       firstError = null
       if (e) throw e
     },
+    /** loads the SMALL tables among these whole (an exact count decides); larger tables are only read through queries */
     async ensureLoaded(tableNames) {
       const todo: Promise<void>[] = []
       for (const n of tableNames) {
         const e = findEntry(n)
-        if (e) todo.push(load(e, e.failed ? { force: true } : {}))
+        if (!e || !state.session) continue
+        todo.push((async () => {
+          const st = await queries.fetch(countPlan(e.def), { owner: `size:${e.def.id}` })
+          if ((st.count ?? Infinity) <= SMALL_TABLE_ROWS) await load(e, e.failed ? { force: true } : {})
+        })().catch(() => {}))
       }
       await Promise.all(todo)
     },
+    query: (plan, opts) => queries.fetch(plan, opts),
+    queryState: (plan, opts) => queries.get(plan, opts),
+    loadMore: (key) => queries.loadMore(key),
+    releaseQuery: (owner) => queries.release(owner),
+    onQueryChange(listener) {
+      queryListeners.add(listener)
+      return () => {
+        queryListeners.delete(listener)
+      }
+    },
+    invalidateQueries: (tableName) => queries.invalidateTable(tableName),
+    sizeInfo,
     async listSourceTables(connectionId) {
       const res = await call<{ items: SourceTableInfo[] }>('GET', `/connections/${enc(connectionId)}/source-tables`)
       return res.items
@@ -884,7 +1033,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       const res = await call<AttachmentResolveResponse>('POST', '/attachments/resolve', { json: { ids } })
       return res.items
     },
-    url: (id) => `${API_BASE}/attachments/${enc(id)}`,
+    url: (id) => withEnvironment(`${API_BASE}/attachments/${enc(id)}`, state.environmentId),
     async remove(id) {
       await call('DELETE', `/attachments/${enc(id)}`)
     },
@@ -960,14 +1109,28 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
   const environmentsApi: PlatformApi['environments'] = {
     async list() {
       const res = await call<EnvironmentsResponse>('GET', '/environments')
-      const id = pickEnvironment(res.items, state.environmentId || readSelectedEnvironment(state.currentUserId))?.id ?? ''
+      // the workspace shown stays the current one; the list (names, types, locks) is refreshed
+      const id = res.items.some((e) => e.id === state.environmentId) ? state.environmentId : (pickEnvironment(res.items, readSelectedEnvironment(state.currentUserId))?.id ?? '')
       setState({ environments: res.items, environmentId: id })
       return res.items
     },
     current: () => state.environments.find((e) => e.id === state.environmentId) ?? null,
     async select(id) {
       const env = selectEnvironment(state.environments, id, state.currentUserId)
-      setState({ environmentId: env.id })
+      if (env.id === state.environmentId) return env
+      // remembered on the user record, then the whole workspace of that environment is loaded (rows of the old one dropped)
+      // without the old environment's header: it may be one the user can no longer enter
+      const prev = getRequestEnvironment()
+      setRequestEnvironment('')
+      try {
+        await call('POST', `/environments/${enc(env.id)}/select`)
+      } catch (e) {
+        setRequestEnvironment(prev)
+        throw e
+      }
+      setRequestEnvironment(env.id)
+      setState({ environmentId: env.id, loading: [], truncated: [] })
+      await loadWorkspace(true)
       return env
     },
   }
@@ -1024,9 +1187,11 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       return res.yaml
     },
     async importPackage(yamlText, opts) {
-      const sol = await call<SolutionDef>('POST', '/solutions/import', { json: { yaml: yamlText, ...(opts?.filesAs ? { filesAs: opts.filesAs } : {}) } })
+      const sol = await call<SolutionDef & { warnings?: string[] }>('POST', '/solutions/import', { json: {
+        yaml: yamlText, ...(opts?.filesAs ? { filesAs: opts.filesAs } : {}), ...(opts?.confirm ? { confirm: opts.confirm } : {}), ...(opts?.asCopy ? { asCopy: true } : {}),
+      } })
       await refresh()
-      return state.solutions.find((s) => s.id === sol.id) ?? sol
+      return { ...(state.solutions.find((s) => s.id === sol.id) ?? sol), ...(sol.warnings ? { warnings: sol.warnings } : {}) }
     },
   }
 

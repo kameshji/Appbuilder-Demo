@@ -6,7 +6,8 @@ import type { AppDef, ControlNode, FxRecord, FxValue } from '@/contracts'
 import { fx } from '@/fx'
 import { controls } from '@/controls'
 import { EvaluatorSlot, isContainerType, isOverlayType, metaMap, ROOT_CTX, type Env, type Evaluator, type NodeCtx } from './evaluator'
-import { runFormula, type DeferredSubmit, type RunResult, type Toast, type ToastKind, type TraceEntry } from './host'
+import { runFormula, runFormulaAsync, type DeferredSubmit, type RunResult, type Toast, type ToastKind, type TraceEntry } from './host'
+import { needsServer } from './delegation'
 import { SubmitError } from './submit'
 import { readClipboard, writeClipboard } from './persist'
 import { useUi } from './ui'
@@ -15,7 +16,10 @@ import {
   allNames, cloneWithNewIds, deepEqual, findNode, findParent, isDescendant, mapNodes, parseNumberLiteral, round2, screenOf, uid,
   uniqueName, walk,
 } from './util'
-import { currentUserId, dataVersion, ensureTablesLoaded, errorMessage, isTable, platformState, subscribePlatform, subscribeDataErrors } from './data'
+import {
+  currentUserId, dataVersion, ensureQueryFeed, ensureTablesLoaded, errorMessage, isTable, platformState, queryVersion, subscribePlatform,
+  subscribeDataErrors, subscribeQueries,
+} from './data'
 
 setAutoFreeze(false)
 
@@ -30,6 +34,8 @@ export interface RuntimeState {
   navStack: string[]
   toasts: Toast[]
   dataKey: string
+  /** server mode: bumps when cached query results change (data.ts queryVersion) */
+  queryVersion?: number
   userId: string
   currentScreenId?: string
   /** Exit() was called */
@@ -132,6 +138,7 @@ const freshRuntime = (collections: Record<string, FxRecord[]> = {}, firstScreen?
   navStack: firstScreen ? [firstScreen] : [],
   toasts: [],
   dataKey: platformDataKey(),
+  queryVersion: queryVersion(),
   userId: currentUserId(),
   currentScreenId: firstScreen,
   exited: false,
@@ -298,16 +305,25 @@ export function createAppStore(opts: { run?: boolean } = {}) {
     let depth = 0
     const run = (node: ControlNode | null, ctx: NodeCtx, label: string, what: { formula?: string; action?: Parameters<typeof runFormula>[0]['action']; fromSubmitButton?: boolean }, designRun = false) => {
       const st = get()
-      const r = runFormula({ app: st.app, rt: st.runtime, env: st.env, node, ctx, label, ...what, dryData: designRun })
-      applyRun(r)
-      r.deferred.forEach(finishDeferred)
-      if (r.failed || depth > 8) return
-      depth++
-      try {
-        for (const f of r.followUps) get().fire(f.nodeId, f.event, f.ctx, { allowInDesign: true })
-      } finally {
-        depth--
+      const input = { app: st.app, rt: st.runtime, env: st.env, node, ctx, label, ...what, dryData: designRun }
+      const after = (r: ReturnType<typeof runFormula>, nested: number) => {
+        applyRun(r)
+        r.deferred.forEach(finishDeferred)
+        if (r.failed || nested > 8) return
+        depth = nested + 1
+        try {
+          for (const f of r.followUps) get().fire(f.nodeId, f.event, f.ctx, { allowInDesign: true })
+        } finally {
+          depth = nested
+        }
       }
+      // server mode: table reads of the action run on the server first (asynchronously); everything else stays synchronous
+      if (what.formula && !what.action && needsServer(what.formula, st.runtime.collections)) {
+        const nested = depth
+        void runFormulaAsync(input).then((r) => after(r, nested))
+        return
+      }
+      after(runFormula(input), depth)
     }
 
     return {
@@ -971,6 +987,7 @@ function recordRecent(type: string) {
  */
 export function linkStore(store: AppStore, opts: { scoped?: boolean } = {}): () => void {
   const sync = () => {
+    ensureQueryFeed()
     const key = platformDataKey()
     const uid2 = currentUserId()
     const rt = store.getState().runtime
@@ -982,6 +999,14 @@ export function linkStore(store: AppStore, opts: { scoped?: boolean } = {}): () 
   }
   const offPlatform = subscribePlatform(sync)
   sync()
+  // server mode: query results arrived or changed -> re-evaluate only the formulas that read them
+  const offQueries = subscribeQueries(() => {
+    const v = queryVersion()
+    if (store.getState().runtime.queryVersion === v) return
+    store.setState((s) => {
+      s.runtime.queryVersion = v
+    })
+  })
   // load the rows of the app's tables when an app opens and whenever a data source is added
   const offStore = store.subscribe((s, prev) => {
     if (s.app !== prev.app && s.app.dataSources !== prev.app.dataSources) ensureTablesLoaded(s.app.dataSources ?? [])
@@ -1005,6 +1030,7 @@ export function linkStore(store: AppStore, opts: { scoped?: boolean } = {}): () 
     offPlatform()
     offStore()
     offErrors()
+    offQueries()
   }
 }
 

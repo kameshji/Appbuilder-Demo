@@ -37,7 +37,17 @@ The server needs Node 22.18 or newer. Check with `node --version`.
 
 ## Data warnings
 
-- "Only the first 5,000 rows are loaded" / "Data truncated": see [Data](maker/data.md).
+- "Can't run on the server: ..." on a formula: the table is too big to work through in the browser and the formula can't be
+  turned into a database query. The underlined part is the problem; the message suggests a rewrite. See
+  [Data: large tables](maker/data.md#large-tables-what-runs-on-the-server).
+- "Runs in browser" (yellow) / a data warning that a formula runs in the browser: fine for now, the table is small; it becomes an error
+  when the table passes 2,000 rows. Rewrite it the same way.
+- "This query took longer than 15 seconds and was stopped": filter or sort by indexed columns (column setting **Indexed**), or narrow the
+  filter. A search for text inside a column that is not indexed reads every row.
+- "This query returns more than 5,000 rows" / "more than 5,000 groups": a formula asks for a very long list where it can't page (for
+  example in a variable). Use `FirstN(..., n)`, filter further, or group by fewer distinct values.
+- "only the first 5,000 rows are searched, sorted and counted": the table is on a MySQL, data file or Google Sheets connection, which
+  can't run queries. Move it to the default database to use every row.
 - "Could not add/save/delete in <table>": the server refused the write, usually for permission reasons. See [Security for makers](maker/security-for-makers.md).
 
 ## Run window blocked

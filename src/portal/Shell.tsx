@@ -10,7 +10,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { ChatButton } from '@/chat/ChatDock'
 import { useChatDock } from '@/chat/dock'
 import { ProfileAvatar, SettingsEntry } from './Profile'
-import { EnvironmentPicker } from './EnvironmentPicker'
+import { EnvironmentPicker, EnvironmentStripe } from './EnvironmentPicker'
 import { useCaps } from './security'
 import { useTheme } from './theme'
 import { modulesFor, moduleRoute, type ModuleEntry, type ShellMode } from './modules'
@@ -218,6 +218,7 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
           <ProfileAvatar />
         </div>
       </header>
+      <EnvironmentStripe />
       {user && <TabStrip activeId={activeTab} />}
       <div className="flex min-h-0 flex-1">
         {!appTab && (
@@ -238,7 +239,7 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
             <div className="mt-auto flex min-w-0 shrink-0 flex-col gap-2 pt-3">
               {!user && (
                 <div className="rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                  {caps.server ? 'Your data lives in the default database. Data files and device-only connections stay on this machine.' : 'Everything lives in your workspace in this browser. Export a package to share it.'}
+                  {caps.server ? 'Your data lives in the default database of this environment. Data files and device-only connections stay on this machine.' : 'Everything lives in your workspace in this browser. Export a package to share it.'}
                 </div>
               )}
               <div className="border-t border-border pt-2"><SettingsEntry /></div>

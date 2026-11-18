@@ -8,6 +8,7 @@ import type { FxRecord, FxResult, FxValue } from '../../contracts.ts'
 import { createEngine } from '../engine.ts'
 import { analyze, bindResult, executePlan, residualScope, type AnalyzeResult } from './index.ts'
 import { corpus, customerRows, sampleScope, SCHEMA, ticketRows } from './testdata.ts'
+import { exprCorpus } from './testdata-expr.ts'
 
 /** canonical form for deep comparison: dates by instant, record keys sorted */
 function canon(v: FxValue): unknown {
@@ -113,5 +114,50 @@ describe('Query v2 parity with the formula engine', () => {
       }
     }
     expect(checked).toBeGreaterThan(50)
+  })
+})
+
+describe('Query v2 parity: computed numbers and years (package D)', () => {
+  const formulas = exprCorpus()
+  const results = formulas.map((f) => ({ f, want: engine.evaluate(f, scope), r: analyze(f, SCHEMA, { scope, engine }) }))
+
+  it('the corpus adds at least 150 formulas, most of them delegated', () => {
+    expect(formulas.length).toBeGreaterThanOrEqual(150)
+    expect(new Set([...formulas, ...corpus()]).size).toBe(formulas.length + corpus().length)
+    const delegated = results.filter((x) => x.r.fullyDelegated).length
+    console.log(`expression corpus: ${formulas.length} formulas, ${delegated} fully delegated`)
+    expect(delegated).toBeGreaterThanOrEqual(120)
+  })
+
+  it('every translated formula gives exactly the engine result (division by zero and overflow included)', () => {
+    const mismatches: string[] = []
+    for (const { f, want, r } of results) {
+      if (!r.fullyDelegated) continue
+      let got: FxResult
+      try {
+        got = runPlans(r)
+      } catch (e) {
+        got = { ok: false, error: { message: String(e), start: 0, end: 0 } } as FxResult
+        if (!(e instanceof Error) || e.constructor.name !== 'QueryEvaluationError') {
+          mismatches.push(`${f}\n  executor threw: ${e instanceof Error ? e.message : String(e)}\n  plans: ${JSON.stringify(r.plans.map((q) => q.plan))}`)
+          continue
+        }
+      }
+      const a = want.ok ? canon(want.value) : 'error'
+      const b = got.ok ? canon(got.value) : 'error'
+      if (JSON.stringify(a) !== JSON.stringify(b)) {
+        mismatches.push(`${f}\n  engine: ${JSON.stringify(a)}\n  plan:   ${JSON.stringify(b)}\n  plans: ${JSON.stringify(r.plans.map((q) => q.plan))}`)
+      }
+    }
+    expect(mismatches.slice(0, 5).join('\n\n')).toBe('')
+  })
+
+  it('refused calculations name the sub-expression', () => {
+    for (const { f, r } of results) {
+      if (r.fullyDelegated) continue
+      expect(r.plan, f).toBeNull()
+      expect(r.diagnostics.some((d) => d.severity === 'error'), f).toBe(true)
+      for (const d of r.diagnostics) expect(f.slice(d.start, d.end), f).toBe(d.text)
+    }
   })
 })

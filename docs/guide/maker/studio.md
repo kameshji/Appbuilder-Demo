@@ -98,6 +98,7 @@ Use undo and redo to step back through design changes, and copy and paste to reu
 
 ## Errors and debugging
 
-The status bar error list has Data warnings, Formulas and Runtime sections. The **Debug console** pane shows messages from `Trace` and runtime errors. A "Data truncated" warning means a table has more rows than apps can load (see [Data](data.md)).
+The status bar error list has Data warnings, Formulas and Runtime sections. The **Debug console** pane shows messages from `Trace` and runtime errors. Data warnings list table formulas that run in the browser because the table is small (they will become errors when it grows), and
+tables on connections that can't run queries, where only the first 5,000 rows are used (see [Data](data.md#large-tables-what-runs-on-the-server)).
 
 More: [controls reference](../../reference/controls.md).

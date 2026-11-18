@@ -233,9 +233,11 @@ with no CSP violation in the console.
   get nothing.
 - A user who may not know a table exists gets "does not exist" (404), and a row they may not see gets "Row not found",
   not "not allowed", so existence is not revealed.
-- **Row cap:** the server returns at most **5,000 rows** per query (`DEFAULT_ROW_CAP`); apps are told when results were
-  truncated. CSV export is capped at 1,000,000 rows. This is a performance limit, not a security feature, and applies
-  after the user's own filters.
+- **Queries (Data API v2):** filters, search, sorting, paging, counts and aggregates run in PostgreSQL with RBAC, the row scope and
+  row filters ANDed into the one statement, and a plan naming a hidden column anywhere (select, filter, sort, search, grouping,
+  measures) is refused (403), so aggregates cannot leak hidden values or other users' rows. Limits: pages of at most 500 rows, at
+  most 5,000 rows without paging, 5,000 groups, a 15 s statement timeout. The v1 query still returns at most **5,000 rows**
+  (`DEFAULT_ROW_CAP`); CSV export is capped at 1,000,000 rows. These are performance limits, applied after the user's own filters.
 - **CSV exports are neutralised against formula injection** (OWASP): in `GET /tables/:id/csv` and in the download of a
   CSV data file, a text cell starting with `=`, `+`, `-`, `@`, tab or carriage return gets a leading `'`, so a spreadsheet
   shows it as text instead of running it. Plain numbers (`-5`, `+1.5e3`) and number/boolean cells are left as they are
@@ -329,7 +331,8 @@ beyond their role. Web pages the user visits are not trusted.
   tables and columns that Appbuilder created. Sharing the database with other applications exposes those applications'
   tables to makers.
 - Writes from the browser are optimistic (see above).
-- Query results are capped at 5,000 rows.
+- Pages hold at most 500 rows; a list read without paging, and a grouping, at most 5,000 (larger requests are refused with a
+  message, not truncated). Tables on MySQL, data file and Google Sheets connections are queried over their first 5,000 rows.
 - Data is not encrypted at rest; backups are not encrypted.
 - The audit log is not tamper-proof, does not record reads, and has no viewer or retention.
 - The Content-Security-Policy allows inline style (not inline script).

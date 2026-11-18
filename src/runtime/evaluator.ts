@@ -2,7 +2,8 @@ import type { AppDef, ControlNode, FxDiagnostic, FxEngine, FxNamedFormula, FxRec
 import { createEngine, splitFormulas } from '@/fx'
 import { controls } from '@/controls'
 import { isRecord, walk } from './util'
-import { currentUserRecord, isTable, tableRows } from './data'
+import { currentUserRecord, isTable, queryDepsSince, tableRows } from './data'
+import { deriveList, evaluateDelegated, type DelegationInfo, type ListView } from './delegation'
 
 /**
  * Formula evaluation for one app definition.
@@ -26,6 +27,8 @@ export interface RuntimeView {
   formModes: Record<string, string>
   /** changes whenever platform table rows or the table list change */
   dataKey: string
+  /** server mode: bumps when cached query results change (see data.ts queryVersion) */
+  queryVersion?: number
   userId: string
   currentScreenId?: string
 }
@@ -37,7 +40,19 @@ export interface RowCtx { galleryId: string; index: number; item: FxRecord }
 export interface NodeCtx { rows: RowCtx[]; inert?: boolean }
 export const ROOT_CTX: NodeCtx = { rows: [] }
 
-export interface PropEval { value: FxValue; error?: string; diag?: FxDiagnostic }
+export interface PropEval {
+  value: FxValue
+  error?: string
+  diag?: FxDiagnostic
+  /** server mode: a query this value needs is on its way (value = the previous value, or the default) */
+  loading?: boolean
+  /** server mode: the formula reads tables; where it runs and why (Studio diagnostics) */
+  delegation?: DelegationInfo
+  /** a non-blocking note for the Studio (a small table evaluated in the browser) */
+  warning?: string
+  /** delegation stamp (same stamp, same value) */
+  stamp?: string
+}
 export interface NodeEval { props: Record<string, FxValue>; errors: Record<string, string>; outputs: Record<string, FxValue> }
 export interface NodeInfo { node: ControlNode; parent: ControlNode | null; screen: ControlNode; galleries: string[] }
 export interface Geom { x: number; y: number; w: number; h: number }
@@ -232,6 +247,12 @@ export class Evaluator {
       for (const id of keys) if (o[field][id] !== rt[field][id]) for (const nk of this.nodeKeysById.get(id) ?? [id]) this.bump(nk)
     }
     if (rt.dataKey !== o.dataKey) this.invalidateTables()
+    if ((rt.queryVersion ?? 0) !== (o.queryVersion ?? 0)) {
+      const deps = queryDepsSince(o.queryVersion ?? 0)
+      if (deps === null) {
+        for (const d of [...this.rdeps.keys()]) if (d.startsWith('q:') || d.startsWith('ts:')) this.invalidate(d)
+      } else for (const d of deps) this.invalidate(d)
+    }
     if (rt.userId !== o.userId) this.invalidate('u')
   }
 
@@ -413,11 +434,70 @@ export class Evaluator {
           const d = this.engine.check(formula)
         return { value: null, error: d[0]?.message, diag: d[0] }
       }
+      const key = `P|${this.nodeKey(node, ctx)}|${prop}`
+      const view = this.listView(node, prop, ctx)
+      const delegated = this.delegate(key, formula, this.scopeFor(node, ctx), () => this.defaultValue(node, meta, ctx), view)
+      if (delegated) return delegated
       const r = this.engine.evaluate(formula, this.scopeFor(node, ctx))
+      // a server list from a named formula / variable, shown with the control's own sort or search: re-plan it
+      if (r.ok && view) {
+        const d = deriveList(r.value, view, key, (dep) => this.record(dep))
+        if (d) return this.settleDelegated(key, d, () => this.defaultValue(node, meta, ctx))
+      }
       return r.ok ? { value: r.value } : { value: this.defaultValue(node, meta, ctx), error: r.error.message, diag: r.error }
     } catch (e) {
       return { value: this.defaultValue(node, meta, ctx), error: e instanceof Error ? e.message : String(e) }
     }
+  }
+
+  /** last good value of a delegated property (shown while a refresh is loading: no flicker) */
+  private prevValues = new Map<string, PropEval>()
+
+  /** server mode: run the table reads of a formula on the server (null: evaluate in the browser as usual) */
+  private delegate(key: string, formula: string, scope: FxScope, fallback: () => FxValue, view?: ListView): PropEval | null {
+    const res = evaluateDelegated({
+      formula, scope, engine: this.engine, collections: this.rt.collections, record: (dep) => this.record(dep), owner: key, view,
+    })
+    if (!res) {
+      this.prevValues.delete(key)
+      return null
+    }
+    if (res.browser) {
+      // a small, fully loaded table: the browser evaluates the formula (the Studio shows the warning)
+      this.prevValues.delete(key)
+      const r = this.engine.evaluate(formula, scope)
+      return r.ok ? { value: r.value, delegation: res.info, warning: res.warning } : { value: fallback(), error: r.error.message, diag: r.error, delegation: res.info }
+    }
+    return this.settleDelegated(key, res, fallback)
+  }
+
+  /** loading keeps the previous value (no flicker); the same stamp keeps the same value identity */
+  private settleDelegated(key: string, res: import('./delegation').DelegatedResult, fallback: () => FxValue): PropEval {
+    const prev = this.prevValues.get(key)
+    if (res.loading) return { value: prev ? prev.value : fallback(), loading: true, delegation: res.info, warning: res.warning }
+    if (res.error !== undefined) return { value: fallback(), error: res.error, diag: res.diag, delegation: res.info }
+    if (prev && prev.stamp !== undefined && prev.stamp === res.stamp) return { ...prev, delegation: res.info, warning: res.warning }
+    const out: PropEval = { value: res.value ?? null, delegation: res.info, warning: res.warning, stamp: res.stamp }
+    this.prevValues.set(key, out)
+    return out
+  }
+
+  /** DataTable header sort and search box shape the server query of its Items */
+  private listView(node: ControlNode, prop: string, ctx: NodeCtx): ListView | undefined {
+    if (prop !== 'Items') return undefined
+    if (node.type !== 'DataTable' && node.type !== 'Dropdown' && node.type !== 'ComboBox') return undefined
+    const out = this.outputsOf(node, ctx)
+    const view: ListView = {}
+    const col = typeof out.SortColumn === 'string' ? out.SortColumn : ''
+    const order = typeof out.SortOrder === 'string' ? out.SortOrder : ''
+    if (col && (order === 'Ascending' || order === 'Descending')) view.sort = { col, dir: order === 'Descending' ? 'desc' : 'asc' }
+    if (typeof out.SearchText === 'string' && out.SearchText.trim()) view.search = out.SearchText
+    if (node.type === 'ComboBox' && view.search) {
+      const fields = [this.evalProp(node, 'SearchField', ctx).value, this.evalProp(node, 'DisplayField', ctx).value]
+        .map((v) => (typeof v === 'string' ? v : '')).find((v) => v.trim() !== '')
+      if (fields) view.searchColumns = fields.split(',').map((x) => x.trim()).filter(Boolean)
+    }
+    return view.sort || view.search ? view : undefined
   }
 
   /** a named formula from App.Formulas, evaluated lazily and cached */
@@ -433,7 +513,9 @@ export class Evaluator {
     try {
       res = this.track(key, () => {
         try {
-              const r = this.engine.evaluate(formula, this.scopeFor(null, ROOT_CTX))
+          const delegated = this.delegate(key, formula, this.scopeFor(null, ROOT_CTX), () => null)
+          if (delegated) return delegated.error ? { ...delegated, error: `${name}: ${delegated.error}` } : delegated
+          const r = this.engine.evaluate(formula, this.scopeFor(null, ROOT_CTX))
           return r.ok ? { value: r.value } : { value: null, error: `${name}: ${r.error.message}` }
         } catch (e) {
           return { value: null, error: e instanceof Error ? e.message : String(e) }
@@ -575,6 +657,17 @@ export class Evaluator {
   /** Errors of every property of the node in its design context. */
   errorsOf(node: ControlNode): Record<string, string> {
     return this.evalNode(node, this.designCtx(node)).errors
+  }
+
+  /** Server mode: non-blocking notes (a table formula that runs in the browser because the table is small). */
+  warningsOf(node: ControlNode): Record<string, string> {
+    const ctx = this.designCtx(node)
+    const out: Record<string, string> = {}
+    for (const m of metaMap(node.type).values()) {
+      const pe = this.evalProp(node, m.name, ctx)
+      if (pe.warning && !pe.error) out[m.name] = pe.warning
+    }
+    return out
   }
 
   /* ---------------------------------------------------------------- scope */

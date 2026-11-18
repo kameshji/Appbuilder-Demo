@@ -253,11 +253,15 @@ their state while you build.
     Change password (server), the demo switch-user list (`platform.security.setCurrentUser`, demo only, plus Manage users for
     admins) and Sign out (server). `useMe()` returns the signed-in (server) or run-as (demo) user. The old `UserMenu` is gone.
 - **Environments API** (`platform.environments`, both backends; contract in `src/platform/contracts.ts`): `list()`,
-  `current()`, `select(id)`, state `environments` / `environmentId`. Today both backends return one built-in environment
-  `{ id: 'default', name: 'Default', type: 'production', builtIn: true }`: the server from `server/core/environments.ts`
-  (`GET /api/v1/environments`, also in `GET /workspace`; administrators get `details: { database, schemaVersion }`), the demo
-  core in `core.ts`. The selected id is remembered per user (`appbuilder-environment:<userId>`, `src/platform/environments.ts`).
-  Creating environments arrives with P0; the UI needs no change when the list grows.
+  `current()`, `select(id)`, state `environments` / `environmentId`. Server mode: the environments the user may enter
+  (`GET /api/v1/environments`, also in `GET /workspace`); `select(id)` posts `/environments/:id/select` (remembered on the user),
+  sets the request environment (`setRequestEnvironment`, `environmentHeaders()` in `src/platform/environments.ts`: every
+  `remote.ts` call and `src/portal/serverApi.ts` / `environmentApi.ts` fetch sends `X-Appbuilder-Environment`) and reloads the
+  workspace. Attachment URLs get `?env=` (`withEnvironment`). Demo mode: one built-in Default. The picker
+  (`EnvironmentPicker.tsx`: `TypeBadge`, `EnvironmentStripe`, `EnvironmentBadge` for the Studio, `switchEnvironment()` which saves
+  the Studio's pending changes first and leaves environment-specific routes) and the admin pages (`AdminEnvironments.tsx`,
+  `SolutionPlan.tsx` with `PlanView` and `DeployDialog`) are the UI. App tabs are keyed per environment (`useWorkspaceKey()` in
+  `workspace.ts`).
 - **Settings** (`src/portal/Settings.tsx`): opened from `SettingsEntry` at the bottom of the sidebar (both modes) or the avatar
   menu, through `openSettings(section?)` (`Profile.tsx`), which remembers the route to return to; `settingsReturnRoute()` is what
   Back, the x and Esc go to. `Frame` renders it in front of the shell like the Studio (the shell stays mounted and hidden, so app
@@ -342,11 +346,23 @@ calls (for example the security preview) and builds on the same session.
   Methods that need a backend wait for init.
 - **Reactive state in React**: `usePlatform((s) => s.tables)` (selector over `WorkspaceState`; uses `useSyncExternalStore` with shallow
   equality, so select the smallest slice you need). `platform.getState()` for non-React code, `platform.subscribe(fn)`.
-- **Rows are lazy**: `platform.tables.rows(name)` returns the cached rows and, when the table is not loaded yet, **returns `[]` and
-  schedules a load**; the state notifies when rows arrive. Call `await platform.tables.ensureLoaded(['Orders', 'Customers'])` when you
-  need the rows first (the runtime does this for an app's `dataSources` in `linkPlatform()` and for tables used by formulas).
-  `ensureLoaded` is idempotent. Row lists are capped at 5,000 rows per table by the server; `WorkspaceState.truncated` lists the table names whose query hit the cap
-  (the UI warns about it).
+- **Queries (server mode reads tables through them)**: `platform.tables.queryState(plan, { pageSize?, owner? })` returns the cached
+  `QueryState` of a Query v2 plan synchronously (`status: 'loading' | 'ready' | 'error'`, `rows`, `count`, `hasMore`, `refreshing`,
+  `loadingMore`, `truncated`) and starts or refreshes the request; `await platform.tables.query(plan)` waits for it;
+  `platform.tables.loadMore(key)` fetches the next page of a paged entry; `platform.tables.onQueryChange((keys) => ...)` fires with the
+  changed cache keys; `platform.tables.releaseQuery(owner)` when a component goes away; `platform.tables.invalidateQueries(table)` for
+  a table-changed message. In React use `useQuery(plan, { owner, pageSize })` from `src/platform/useQuery.ts`. The cache
+  (`src/platform/query-cache.ts`) de-duplicates (one request per plan), keys entries by the plan (a paged list and a whole answer of the
+  same plan are separate entries), cancels a request whose owner moved to another plan (typing in a search box), keeps at most 300
+  entries, overlays pending optimistic writes on cached rows, folds a confirmed write in and then refetches the table's entries in the
+  background while their previous rows stay visible (no flicker). Demo mode answers the same calls with the reference executor over
+  the in-memory rows (`query-local.ts`), so one component works in both modes.
+- **Rows are lazy, and only small tables are held whole**: `platform.tables.rows(name)` returns the cached rows of a table that is
+  loaded, otherwise `[]`. In server mode a table is loaded whole only when it is small: `platform.tables.sizeInfo(name)` counts the
+  rows the user may read (a cached count query) and loads the table when there are at most 2,000 (`SMALL_TABLE_ROWS`);
+  `ensureLoaded(names)` does the same and leaves larger tables alone. Code that needs rows of a possibly large table must use a query.
+  `WorkspaceState.truncated` now lists only tables on connections that cannot run queries (MySQL, data files, Google Sheets) whose
+  last query answer was capped at 5,000 rows.
 - **Writes** are optimistic: `platform.tables.insert(table, values)`, `update(table, rowId, changes)` and `delete(table, ids)` are synchronous. They validate locally (required, unique, type coercion and the mirrored privileges: they throw `PlatformError` `denied` or `invalid`), update the cache immediately and return the row; the request is sent in order afterwards. If the server refuses, the cache is rolled back and listeners of `platform.onDataError(listener)` get a
   `DataErrorEvent { table, op: 'create'|'update'|'delete', rowIds, error }` (`error.code` is the API error code). **Subscribe to
   `onDataError` anywhere you show data changes** and tell the maker what happened; the runtime does so in `linkPlatform()`
@@ -356,6 +372,43 @@ calls (for example the security preview) and builds on the same session.
   the server (see `security-engine.md`).
 - **Demo mode** has no server: functions that need one (connections, data files, attachments, users and passwords) fail with a
   message such as "This needs the local server". Do not assume they work when you add UI; gate with `usePlatform((s) => s.mode)`.
+
+## Formulas over tables in server mode (delegation)
+
+`src/runtime/delegation.ts`, used by the evaluator (`Evaluator.delegate`), the action runner (`runFormulaAsync` in `host.ts`) and the
+controls. Demo mode, collections and formulas without table reads take none of these paths.
+
+- **Properties and named formulas.** For a formula that reads tables (`tableReads`: names of data-source tables, not the first argument
+  of Patch / Collect / Remove / Defaults ...), the evaluator calls `analyze()` (`src/fx/query`) with the platform's schema (column kinds,
+  and for the tables read, `sizeInfo`), its own engine and scope. Plans go to `platform.tables.queryState` (owner = the property key);
+  the evaluator records `q:<cache key>` dependencies, and `linkStore` bumps `runtime.queryVersion` when the cache reports changes, so
+  only formulas that read a changed query re-run (`queryDepsSince`). While a plan loads, the property keeps its previous value
+  (`PropEval.loading`), or the default the first time. The residual formula runs over the bound results.
+- **Errors, never partial results.** An error diagnostic over a table that is not small is the property's error: the message names the
+  sub-expression, the table size and the suggestion; `PropEval.diag` spans the sub-expression. While the table's size is still being
+  counted the property shows loading instead (it may turn out small). A small, fully loaded table evaluates the formula in the browser
+  and `PropEval.warning` says so (Studio data warnings).
+- **Lists.** An unbounded rows plan (Items of a gallery or table) is paged (100 rows, `loadMore()` for more). The array carries a
+  non-enumerable `__query` (`QueryMeta`: exact `count`, `hasMore`, `loadMore`, `columns`, `plan`, `pure`, `view`); read it with
+  `queryMeta(items)`. DataTable (SortColumn / SortOrder / SearchText outputs), Dropdown and ComboBox (SearchText) shape the plan of
+  their Items: the evaluator adds the sort key first and a `contains` search over the text columns (`ListView`). When Items is a list
+  from elsewhere (a named formula) and `pure` (no calculation on top), `deriveList` re-plans it the same way; otherwise the control
+  sorts and searches the rows it holds (`viewMatches` tells which).
+- **Actions.** `needsServer(formula)` (a read of a table that is not held whole) sends the action through `runFormulaAsync`: each
+  top-level step (`a; b; c`) waits for the writes of the earlier steps (`flush`), then `prepareAction` analyses the step with the
+  current variables, fetches its plans and runs the residual with the host. A read the server can't run fails the action with the
+  reason. Other actions stay synchronous.
+- **Controls.** `src/controls/virtual.ts` (`useVirtualRows`, `queryMeta`): DataTable and Gallery render only the rows in view (fixed
+  pitch, spacers) and load the next page near the end (infinite scroll; DataTable's pager mode fetches the pages it shows); both show
+  the exact count (`[data-row-count]`). A new sort or search scrolls to the top. Dropdown with a paged Items becomes a type-ahead combo
+  box; ComboBox searches on the server (250 ms debounce) and keeps selected records that are not among the rows shown. Charts and
+  StatCard need nothing: their aggregate formulas become aggregate plans.
+- **Studio.** `PropEval.delegation` (`DelegationInfo { where: 'server' | 'browser' | 'error', explain, diagnostics }`): the formula bar
+  shows "Runs on server" / "Runs in browser" / "Can't run" (hover: `explain()`), underlines the sub-expression of the first error or
+  warning, and shows the warning chip; `Evaluator.warningsOf(node)` feeds the status bar's data warnings.
+- **Portal grid** (`src/portal/DataGrid.tsx`): server mode pages with `useQuery` (200 rows, scroll or "Show more"), sorts by a header and
+  searches the text columns on the server (300 ms debounce), shows the exact count, reads lookup labels for the rows on screen by id,
+  and exports CSV through `GET /tables/:id/csv`. Demo mode keeps the in-memory grid.
 
 ## Styling
 

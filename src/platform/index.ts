@@ -12,6 +12,7 @@ import { createRemotePlatform } from './remote'
 import { BrowserStorage, MemoryStorage } from './storage'
 import { PlatformError } from './contracts'
 import type { PlatformApi, StorageAdapter, UserDef, WorkspaceState } from './contracts'
+import type { QueryPlan } from './query'
 
 export * from './contracts'
 export { createPlatform } from './core'
@@ -170,10 +171,15 @@ export function createPlatformFacade(deps: {
       }
     },
     apps: group('apps', ['create', 'load', 'save', 'rename', 'duplicate', 'remove', 'exportPackage', 'importPackage'], {}),
-    tables: group('tables', ['create', 'remove', 'addColumn', 'updateColumn', 'removeColumn', 'reload', 'importCsv', 'createFromCsv', 'flush', 'ensureLoaded', 'listSourceTables', 'linkSourceTable', 'moveToConnection'], {
+    tables: group('tables', ['create', 'remove', 'addColumn', 'updateColumn', 'removeColumn', 'reload', 'importCsv', 'createFromCsv', 'flush', 'ensureLoaded', 'listSourceTables', 'linkSourceTable', 'moveToConnection', 'query', 'loadMore'], {
       get: () => undefined,
       rows: () => [],
       exportCsv: () => '',
+      queryState: ((plan: QueryPlan) => ({ key: '', plan, status: 'loading', rows: [], hasMore: false, refreshing: false, loadingMore: false, version: 0 })) as (...a: never[]) => unknown,
+      sizeInfo: () => ({ fullyLoaded: false }),
+      releaseQuery: () => {},
+      onQueryChange: () => () => {},
+      invalidateQueries: () => {},
     }),
     auth: group('auth', ['login', 'logout', 'changePassword', 'updateProfile', 'setupDatabase', 'setupAdmin'], {}),
     attachments: group('attachments', ['upload', 'resolve', 'remove'], { url: ((id: string) => `/api/v1/attachments/${encodeURIComponent(id)}`) as (...a: never[]) => unknown }),

@@ -3,6 +3,7 @@ import type { RouteModule } from '../../core/contracts.ts'
 import { registerAdminRoutes } from './admin.ts'
 import { registerAppRoutes } from './apps.ts'
 import { registerConnectionRoutes } from './connections.ts'
+import { registerEnvironmentRoutes } from './environments.ts'
 import { registerFileRoutes } from './files.ts'
 import { registerSecurityRoutes } from './security.ts'
 import { registerSolutionRoutes } from './solutions.ts'
@@ -16,6 +17,7 @@ export const metaRoutes: RouteModule = (router, services) => {
   registerSolutionRoutes(router, services)
   registerFileRoutes(router, services)
   registerAdminRoutes(router, services)
+  registerEnvironmentRoutes(router, services)
 }
 
 export { migrateLegacyWorkspace } from './migrate.ts'

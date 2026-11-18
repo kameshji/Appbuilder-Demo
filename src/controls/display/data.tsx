@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronsUpDown, List as ListIcon, Search, Table2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronsUpDown, List as ListIcon, Loader2, Search, Table2 } from 'lucide-react'
 import type { ControlRenderProps, ControlType, FxRecord, FxValue } from '@/contracts'
 import { platform, type TableDef } from '@/platform'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,7 @@ import { AttachmentCell } from '@/runtime/AttachmentCell'
 import { attachmentIds, imageSource } from '@/runtime/attachments'
 import { AvatarCircle } from './basics'
 import { DynIcon, fieldText, formatDate, formatNumber, isIsoDateString, pick, prettify, selModeOf } from './helpers'
+import { queryMeta, rowCountText, useVirtualRows, viewMatches } from '../virtual'
 
 /* ------------------------------------------------------------------ DataTable */
 
@@ -121,6 +122,9 @@ function sourceTable(items: FxRecord[]): TableDef | undefined {
 function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRenderProps) {
   const design = mode === 'design'
   const items = useMemo(() => toRecords(props.Items), [props.Items])
+  // server mode: Items is a paged query result; sorting and searching happen on the server (the evaluator re-plans the
+  // query from SortColumn / SortOrder / SearchText), more rows load as the user scrolls
+  const meta = queryMeta(props.Items)
   const colSpecRaw = toText(props.Columns)
   // an explicit Columns list skips columns the (CLS-trimmed) table does not have; other item sources are untouched
   const colSpec = useMemo(() => {
@@ -140,14 +144,18 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
   const pageSize = Math.max(0, Math.round(toNum(props.PageSize, 0)))
   const emptyText = toText(props.EmptyText) || 'No data'
 
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(() => toText(outputs.SearchText))
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (searchTimer.current) clearTimeout(searchTimer.current) }, [])
   const sortCol = toText(outputs.SortColumn)
   const sortDir = toText(outputs.SortOrder) === 'Descending' ? 'desc' : toText(outputs.SortOrder) === 'Ascending' ? 'asc' : ''
   const selectedItems = toRecords(outputs.SelectedItems)
   const selKeys = useMemo(() => new Set(selectedItems.map(keyOf)), [outputs.SelectedItems]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // search -> sort pipeline
+  // search -> sort pipeline (in the browser for plain tables; the server already did both for a query result)
+  const serverView = !!meta && viewMatches(meta, sortCol && sortDir ? { col: sortCol, dir: sortDir as 'asc' | 'desc' } : null, toText(outputs.SearchText))
   const rows = useMemo(() => {
+    if (serverView) return items
     let r = items
     const q = query.trim().toLowerCase()
     if (q) r = r.filter((rec) => cols.some((c) => cellText(pick(rec, c.field), c.kind).toLowerCase().includes(q)))
@@ -167,23 +175,52 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
         .map((x) => x.rec)
     }
     return r
-  }, [items, cols, query, sortCol, sortDir])
+  }, [items, cols, query, sortCol, sortDir, serverView])
 
-  const pageCount = pageSize > 0 ? Math.max(1, Math.ceil(rows.length / pageSize)) : 1
+  // the exact number of rows of the whole result (server count), or the rows we hold
+  const totalRows = serverView ? (meta?.count ?? rows.length) : rows.length
+  const pageCount = pageSize > 0 ? Math.max(1, Math.ceil(totalRows / pageSize)) : 1
   const rawPage = typeof outputs.Page === 'number' ? Math.round(outputs.Page) : 1
   const page = Math.min(pageCount, Math.max(1, rawPage))
   const pageRows = pageSize > 0 ? rows.slice((page - 1) * pageSize, page * pageSize) : rows
+  // a pager over a query result fetches the pages it shows
+  useEffect(() => {
+    if (meta && pageSize > 0 && meta.hasMore && !meta.loadingMore && rows.length < page * pageSize) void meta.loadMore()
+  }, [meta, pageSize, page, rows.length])
 
   useEffect(() => {
     if (rawPage !== page) setOutput('Page', page)
-    if (outputs.VisibleCount !== rows.length) setOutput('VisibleCount', rows.length)
+    if (outputs.VisibleCount !== totalRows) setOutput('VisibleCount', totalRows)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawPage, page, rows.length, outputs.VisibleCount])
+  }, [rawPage, page, totalRows, outputs.VisibleCount])
+
+  // windowed rows (long lists, query results) with infinite scroll
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const rowRef = useRef<HTMLTableRowElement>(null)
+  const [pitch, setPitch] = useState(dense ? 29 : 41)
+  // measure the real row height once rows are on screen (attachment thumbnails make rows taller)
+  const firstRowKey = pageRows[0] ? keyOf(pageRows[0]) : ''
+  useEffect(() => {
+    const h = rowRef.current?.offsetHeight
+    if (h && Math.abs(h - pitch) > 0.5) setPitch(h)
+  }, [firstRowKey, dense, pitch])
+  const virtualOn = !design && pageSize === 0 && (!!meta || rows.length > 300)
+  const win = useVirtualRows({
+    count: pageRows.length, pitch, enabled: virtualOn, scrollRef,
+    onNearEnd: meta && pageSize === 0 && meta.hasMore ? () => void meta.loadMore() : undefined,
+  })
+  const shownRows = virtualOn ? pageRows.slice(win.start, win.end) : pageRows
+  // a new sort or search starts at the top
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
+  }, [sortCol, sortDir, outputs.SearchText])
 
   const setPage = (p: number) => setOutput('Page', Math.min(pageCount, Math.max(1, p)))
 
   const onHeader = (c: Col) => {
     if (!sortable || design) return
+    // a query result sorts on the server: only columns of the table can be sorted
+    if (meta && !meta.columns[c.field]) return
     if (sortCol !== c.field || !sortDir) {
       setOutput('SortColumn', c.field)
       setOutput('SortOrder', 'Ascending')
@@ -227,9 +264,10 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
 
   const pad = dense ? 'px-3 py-1' : 'px-3 py-2.5'
   const showCheck = selMode === 'multiple'
-  const total = rows.length
+  const total = totalRows
   const from = total === 0 ? 0 : pageSize > 0 ? (page - 1) * pageSize + 1 : 1
   const to = pageSize > 0 ? Math.min(total, page * pageSize) : total
+  const busy = !!meta && (meta.refreshing || meta.loadingMore)
 
   return (
     <div className={cn('box-border flex size-full flex-col overflow-hidden rounded-lg border bg-card text-card-foreground', dense ? 'text-xs' : 'text-sm', design && 'pointer-events-none')}>
@@ -243,19 +281,30 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
               className="h-8 pl-8"
               tabIndex={design ? -1 : undefined}
               onChange={(e) => {
-                setQuery(e.target.value)
-                setOutput('SearchText', e.target.value)
-                setOutput('Page', 1)
+                const v = e.target.value
+                setQuery(v)
+                // a query result searches on the server: wait for a pause in typing
+                if (searchTimer.current) clearTimeout(searchTimer.current)
+                if (meta) {
+                  searchTimer.current = setTimeout(() => {
+                    setOutput('SearchText', v)
+                    setOutput('Page', 1)
+                  }, 300)
+                } else {
+                  setOutput('SearchText', v)
+                  setOutput('Page', 1)
+                }
               }}
             />
           </div>
-          <span className="ml-auto text-xs text-muted-foreground">
-            {query.trim() ? `${total} of ${items.length}` : items.length} {items.length === 1 ? 'row' : 'rows'}
+          <span className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground" data-row-count>
+            {busy && <Loader2 className="size-3 animate-spin" aria-label="Loading" />}
+            {meta ? rowCountText(meta.count, items.length) : query.trim() ? `${total} of ${items.length} ${items.length === 1 ? 'row' : 'rows'}` : rowCountText(undefined, items.length)}
           </span>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-auto">
-        {cols.length === 0 || (items.length === 0 && !query) ? (
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto" onScroll={win.onScroll}>
+        {cols.length === 0 || (items.length === 0 && !query && !meta?.count) ? (
           <div className="flex size-full min-h-24 flex-col items-center justify-center gap-2 p-6 text-muted-foreground">
             <Table2 className="size-7 opacity-60" strokeWidth={1.5} />
             <span className="text-sm">{emptyText}</span>
@@ -304,10 +353,13 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
               </tr>
             </thead>
             <tbody>
-              {pageRows.map((rec, ri) => {
+              {win.padTop > 0 && <tr aria-hidden style={{ height: win.padTop }} />}
+              {shownRows.map((rec, i) => {
+                const ri = i + (virtualOn ? win.start : 0)
                 const sel = selKeys.size > 0 && selKeys.has(keyOf(rec))
                 return (
                   <tr
+                    ref={i === 0 ? rowRef : undefined}
                     key={typeof rec.__id === 'string' ? rec.__id : ri}
                     aria-selected={selMode !== 'none' ? sel : undefined}
                     onClick={() => onRow(rec)}
@@ -345,10 +397,11 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
                   </tr>
                 )
               })}
+              {win.padBottom > 0 && <tr aria-hidden style={{ height: win.padBottom }} />}
               {pageRows.length === 0 && (
                 <tr>
                   <td colSpan={cols.length + (showCheck ? 1 : 0)} className="px-3 py-10 text-center text-muted-foreground">
-                    No matching rows
+                    {meta && (meta.refreshing || meta.loadingMore) ? 'Loading…' : 'No matching rows'}
                   </td>
                 </tr>
               )}
@@ -356,6 +409,12 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
           </table>
         )}
       </div>
+      {meta && pageSize === 0 && !searchable && (
+        <div className="flex shrink-0 items-center justify-end gap-1.5 border-t px-3 py-1 text-xs text-muted-foreground" data-row-count>
+          {busy && <Loader2 className="size-3 animate-spin" aria-label="Loading" />}
+          <span className="tabular-nums">{rowCountText(meta.count, items.length)}{meta.truncated ? ' (first rows only)' : ''}</span>
+        </div>
+      )}
       {pageSize > 0 && total > 0 && (
         <div className="flex shrink-0 items-center justify-between gap-3 border-t px-3 py-1.5 text-xs text-muted-foreground">
           <span className="tabular-nums">
@@ -366,7 +425,7 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
             <Button variant="ghost" size="icon-sm" aria-label="Previous page" disabled={page <= 1} onClick={() => setPage(page - 1)}><ChevronLeft /></Button>
             <span className="px-2 tabular-nums">Page {page} of {pageCount}</span>
             <Button variant="ghost" size="icon-sm" aria-label="Next page" disabled={page >= pageCount} onClick={() => setPage(page + 1)}><ChevronRight /></Button>
-            <Button variant="ghost" size="icon-sm" aria-label="Last page" disabled={page >= pageCount} onClick={() => setPage(pageCount)}><ChevronsRight /></Button>
+            <Button variant="ghost" size="icon-sm" aria-label="Last page" disabled={page >= pageCount || (!!meta && meta.hasMore && (meta.count ?? 0) - items.length > 2000)} onClick={() => setPage(pageCount)}><ChevronsRight /></Button>
           </div>
         </div>
       )}

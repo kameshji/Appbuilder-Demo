@@ -5,10 +5,10 @@
  */
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  Activity, Archive, BadgeCheck, ChevronLeft, ChevronRight, FileKey2, Layers, Plus, RefreshCw, ScrollText, ShieldHalf, Upload, Users,
+  Activity, Archive, BadgeCheck, ChevronLeft, ChevronRight, FileKey2, Layers, RefreshCw, ScrollText, ShieldHalf, Upload, Users,
   type LucideIcon,
 } from 'lucide-react'
-import { ENVIRONMENT_TYPE_LABEL, usePlatform, type EnvironmentDef, type UserDef } from '@/platform'
+import { usePlatform, type UserDef } from '@/platform'
 import type { AuditEntry, AuditPageResponse } from '@/platform/http'
 import { go } from '@/router'
 import { cn } from '@/lib/utils'
@@ -17,10 +17,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { ComingSoon, SoonBadge } from './ComingSoon'
-import { TypeBadge } from './EnvironmentPicker'
-import { Empty, Field, PageHeader, Panel, errMsg, fmtDate, fmtRelative } from './kit'
+import { EnvironmentsSection } from './AdminEnvironments'
+import { fetchInstallAuditPage } from './environmentApi'
+import { useCaps } from './security'
+import { Empty, Field, PageHeader, Panel, Segmented, errMsg, fmtDate, fmtRelative } from './kit'
 import { UserAvatar } from './Profile'
-import { fetchAuditPage, fetchServerInfo } from './serverApi'
+import { fetchAuditPage } from './serverApi'
 import { UsersPanel } from './Users'
 
 export type AdminSection = 'environments' | 'users' | 'licences' | 'audit' | 'backups' | 'logs' | 'usage'
@@ -62,7 +64,7 @@ export function AdminConsole({ section }: { section?: string }) {
           ))}
         </nav>
         <section className="min-w-0" data-testid={`admin-section-${current}`}>
-          {current === 'environments' && <EnvironmentsSection />}
+          {current === 'environments' && <EnvironmentsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'users' && <UsersPanel />}
           {current === 'licences' && <LicencesSection />}
           {current === 'audit' && <AuditSection />}
@@ -81,107 +83,6 @@ function SectionTitle({ title, subtitle, actions }: { title: string; subtitle?: 
         {subtitle && <p className="text-sm text-muted-foreground">{subtitle}</p>}
       </div>
       {actions}
-    </div>
-  )
-}
-
-function Fact({ label, children, testId }: { label: string; children: ReactNode; testId?: string }) {
-  return (
-    <div className="grid grid-cols-[150px_minmax(0,1fr)] gap-3 border-b border-border py-2 text-sm last:border-0">
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 break-words" data-testid={testId}>{children}</dd>
-    </div>
-  )
-}
-
-/* ------------------------------------------------------------------ environments */
-
-const PLANNED_TYPES: { type: EnvironmentDef['type']; text: string }[] = [
-  { type: 'production', text: 'Where people do their daily work. Locked against direct edits: changes arrive as solutions, with a previewed upgrade plan and an automatic backup first.' },
-  { type: 'sandbox', text: 'A copy for testing changes with realistic data before they reach production (Test).' },
-  { type: 'developer', text: 'A maker’s own workspace to build in without affecting anyone else.' },
-]
-
-function EnvironmentsSection() {
-  const list = usePlatform((s) => s.environments)
-  const currentId = usePlatform((s) => s.environmentId)
-  const server = usePlatform((s) => s.mode) === 'server'
-  const [selId, setSelId] = useState('')
-  const sel = list.find((e) => e.id === selId) ?? list.find((e) => e.id === currentId) ?? list[0]
-  const [info, setInfo] = useState<Awaited<ReturnType<typeof fetchServerInfo>> | null>(null)
-  useEffect(() => {
-    if (!server) return
-    let alive = true
-    fetchServerInfo().then((i) => alive && setInfo(i)).catch(() => {})
-    return () => { alive = false }
-  }, [server])
-
-  return (
-    <div data-testid="admin-environments">
-      <SectionTitle
-        title="Environments"
-        subtitle="Each environment is a separate workspace of tables, apps and roles on this install."
-        actions={
-          <div className="flex flex-col items-end gap-1">
-            <Button size="sm" disabled data-testid="new-environment" title="Creating environments arrives with P0 Kernel"><Plus /> New environment</Button>
-            <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><SoonBadge /> Creating environments arrives with P0 Kernel.</span>
-          </div>
-        }
-      />
-      <Panel className="overflow-hidden">
-        <table className="w-full text-sm" data-testid="environments-table">
-          <thead>
-            <tr className="border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground">
-              <th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Type</th><th className="px-4 py-2.5">Set up</th><th className="px-4 py-2.5">Database</th>
-            </tr>
-          </thead>
-          <tbody>
-            {list.map((e) => (
-              <tr
-                key={e.id}
-                data-testid={`env-row-${e.id}`}
-                aria-selected={sel?.id === e.id}
-                onClick={() => setSelId(e.id)}
-                className={cn('cursor-pointer border-b border-border last:border-0', sel?.id === e.id ? 'bg-accent/60' : 'hover:bg-accent/40')}
-              >
-                <td className="px-4 py-2.5 font-medium">
-                  <span className="flex items-center gap-2"><Layers className="size-4 text-primary" /> {e.name}{e.builtIn && <Badge variant="outline">Built-in</Badge>}{e.id === currentId && <Badge variant="secondary">Current</Badge>}</span>
-                </td>
-                <td className="px-4 py-2.5"><TypeBadge type={e.type} /></td>
-                <td className="px-4 py-2.5 text-muted-foreground">{e.createdOn ? fmtDate(e.createdOn) : 'Not recorded'}</td>
-                <td className="max-w-80 truncate px-4 py-2.5 text-muted-foreground">{e.details?.database ?? '-'}</td>
-              </tr>
-            ))}
-            {list.length === 0 && <tr><td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">The server did not report any environment.</td></tr>}
-          </tbody>
-        </table>
-      </Panel>
-
-      {sel && (
-        <Panel className="mt-4 p-5" data-testid="environment-details">
-          <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold">{sel.name} <TypeBadge type={sel.type} /></h3>
-          <dl>
-            <Fact label="Name">{sel.name}</Fact>
-            <Fact label="Type">{ENVIRONMENT_TYPE_LABEL[sel.type]}{sel.builtIn ? ' (the built-in environment of this install)' : ''}</Fact>
-            <Fact label="Set up">{sel.createdOn ? `${fmtDate(sel.createdOn)} (when the first account was created)` : server ? 'Not recorded' : 'Demo mode: kept in this browser'}</Fact>
-            <Fact label="Database" testId="env-detail-database">{sel.details?.database ?? '-'}</Fact>
-            {sel.details?.schemaVersion !== undefined && <Fact label="Schema version" testId="env-detail-schema">{sel.details.schemaVersion}</Fact>}
-            {info?.server?.database && <Fact label="Database server">{info.server.database}</Fact>}
-            {info?.databaseError && <Fact label="Database problem"><span className="text-destructive">{info.databaseError}</span></Fact>}
-          </dl>
-        </Panel>
-      )}
-
-      <h3 className="mb-2 mt-6 flex items-center gap-2 text-sm font-semibold">Planned environment types <SoonBadge /></h3>
-      <div className="grid grid-cols-3 gap-3" data-testid="planned-env-types">
-        {PLANNED_TYPES.map((p) => (
-          <Panel key={p.type} className="p-4">
-            <div className="mb-1.5"><TypeBadge type={p.type} /></div>
-            <p className="text-xs leading-relaxed text-muted-foreground">{p.text}</p>
-          </Panel>
-        ))}
-      </div>
-      <p className="mt-3 text-xs text-muted-foreground">Arrives with P0 Kernel: one schema and workspace folder per environment (up to about five), with downloadable backups and restore in place.</p>
     </div>
   )
 }
@@ -289,6 +190,10 @@ function detailsText(d: unknown): string {
 function AuditSection() {
   const server = usePlatform((s) => s.mode) === 'server'
   const users = usePlatform((s) => s.users)
+  const caps = useCaps()
+  const envName = usePlatform((s) => s.environments.find((e) => e.id === s.environmentId)?.name ?? 'this environment')
+  /** env: the current environment's audit log; install: environment lifecycle, access, install administrators */
+  const [scope, setScopeRaw] = useState<'env' | 'install'>('env')
   const [filters, setFilters] = useState({ action: '', user: '', from: '', to: '' })
   const [page, setPage] = useState(1)
   const { action, user, from, to } = filters
@@ -300,17 +205,18 @@ function AuditSection() {
   const [open, setOpen] = useState<number | null>(null)
   const [tick, setTick] = useState(0)
 
+  const setScope = (v: 'env' | 'install') => { setScopeRaw(v); setFilters((f) => ({ ...f, action: '' })); setPage(1); setOpen(null) }
   useEffect(() => {
     if (!server) return
     let alive = true
     setBusy(true)
     setError('')
-    fetchAuditPage({ action, user, from, to, page, pageSize: PAGE_SIZE })
+    ;(scope === 'install' ? fetchInstallAuditPage : fetchAuditPage)({ action, user, from, to, page, pageSize: PAGE_SIZE })
       .then((r) => { if (alive) setData(r) })
       .catch((e) => { if (alive) setError(errMsg(e)) })
       .finally(() => { if (alive) setBusy(false) })
     return () => { alive = false }
-  }, [server, action, user, from, to, page, tick])
+  }, [server, action, user, from, to, page, tick, scope])
 
   if (!server) {
     return (
@@ -330,8 +236,19 @@ function AuditSection() {
     <div data-testid="admin-audit">
       <SectionTitle
         title="Audit log"
-        subtitle="Security-relevant and data-changing actions, newest first. Reading data is not recorded."
-        actions={<Button size="sm" variant="outline" onClick={() => setTick((t) => t + 1)} disabled={busy} data-testid="audit-refresh">{busy ? <Spinner /> : <RefreshCw />} Refresh</Button>}
+        subtitle={scope === 'install'
+          ? 'Install-level actions, newest first: environments created, changed, deleted, access given or removed, install administrators, deployments.'
+          : `Security-relevant and data-changing actions in ${envName}, newest first. Reading data is not recorded.`}
+        actions={
+          <div className="flex items-center gap-2">
+            {caps.isInstallAdmin && (
+              <span data-testid="audit-scope">
+                <Segmented label="Audit log" value={scope} onChange={setScope} options={[{ value: 'env', label: envName }, { value: 'install', label: 'Install' }]} />
+              </span>
+            )}
+            <Button size="sm" variant="outline" onClick={() => setTick((t) => t + 1)} disabled={busy} data-testid="audit-refresh">{busy ? <Spinner /> : <RefreshCw />} Refresh</Button>
+          </div>
+        }
       />
       <Panel className="mb-3 grid grid-cols-[1.2fr_1.2fr_1fr_1fr_auto] items-end gap-3 p-3" data-testid="audit-filters">
         <Field label="Action" htmlFor="audit-action">
@@ -356,7 +273,7 @@ function AuditSection() {
         <table className="w-full table-fixed text-sm" data-testid="audit-table">
           <thead>
             <tr className="border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground">
-              <th className="w-44 px-3 py-2">When (your time)</th><th className="w-48 px-3 py-2">User</th><th className="w-44 px-3 py-2">Action</th><th className="w-32 px-3 py-2">Table / row</th><th className="px-3 py-2">Details</th>
+              <th className="w-44 px-3 py-2">When (your time)</th><th className="w-48 px-3 py-2">User</th><th className="w-44 px-3 py-2">Action</th><th className="w-32 px-3 py-2">{scope === 'install' ? 'Environment' : 'Table / row'}</th><th className="px-3 py-2">Details</th>
             </tr>
           </thead>
           <tbody>
@@ -365,7 +282,7 @@ function AuditSection() {
                 <td className="px-3 py-2 text-xs" title={e.at}>{fmtDate(e.at)}<div className="text-muted-foreground">{fmtRelative(e.at)}</div></td>
                 <td className="truncate px-3 py-2 text-xs"><div className="truncate font-medium">{name(e)}</div>{e.userEmail && <div className="truncate text-muted-foreground">{e.userEmail}</div>}</td>
                 <td className="px-3 py-2"><code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{e.action}</code></td>
-                <td className="truncate px-3 py-2 font-mono text-[11px] text-muted-foreground">{[e.tableId, e.rowId].filter(Boolean).join(' / ') || '-'}</td>
+                <td className="truncate px-3 py-2 font-mono text-[11px] text-muted-foreground">{(scope === 'install' ? e.environmentId : [e.tableId, e.rowId].filter(Boolean).join(' / ')) || '-'}</td>
                 <td className="px-3 py-2">
                   {e.details !== null && e.details !== undefined ? (
                     <button type="button" onClick={() => setOpen(open === e.id ? null : e.id)} className={cn('w-full text-left font-mono text-[11px] text-muted-foreground', open === e.id ? 'whitespace-pre-wrap break-all' : 'truncate')} title={open === e.id ? 'Collapse' : 'Show all'}>

@@ -5,6 +5,8 @@
  * Binding. Do not change without the architect.
  */
 import type { AppDef, FxRecord, FxValue } from '../contracts.ts'
+import type { QueryPlan } from './query.ts'
+import type { QueryOptions, QueryState } from './query-cache.ts'
 
 /* ------------------------------------------------------------------ storage */
 
@@ -46,6 +48,11 @@ export interface ColumnDef {
   type: ColumnType
   required?: boolean
   unique?: boolean
+  /**
+   * Server mode, PostgreSQL tables: keep an index on this column so filters, sorting and paging by it stay fast on large
+   * tables (Query v2 key index). Lookup and unique columns are always indexed.
+   */
+  indexed?: boolean
   /** literal default as text ("0", "true", "Open") */
   default?: string
   /** type 'choice' */
@@ -168,6 +175,13 @@ export interface UserDef {
   /** server mode: an administrator set the password; the user must change it before doing anything else */
   mustChangePassword?: boolean
   lastLogin?: string
+  /**
+   * server mode: install administrator (ab.users.is_install_admin). Manages environments, user accounts and the install;
+   * enters every environment and is an environment administrator in each. See docs/admin/users-and-roles.md.
+   */
+  isInstallAdmin?: boolean
+  /** server mode: the environment the user last switched to (remembered on the user record) */
+  lastEnvironmentId?: string
 }
 
 /**
@@ -175,7 +189,10 @@ export interface UserDef {
  * for UX only (disable buttons, pre-validate). Keyed by table id.
  */
 export interface EffectivePrivileges {
+  /** administrator of the current environment (an Administrator role there, or install administrator) */
   isAdmin: boolean
+  /** install administrator (environments, user accounts, install audit); absent in demo mode */
+  isInstallAdmin?: boolean
   /** may create/edit apps, tables, connections (Maker or Admin) */
   isMaker: boolean
   tables: Record<string, {
@@ -192,26 +209,46 @@ export interface EffectivePrivileges {
 }
 
 /**
- * An environment: one workspace (tables, apps, roles) on this install. Today every install has exactly one built-in
- * environment, "Default" (type production); more environments (Sandbox/Test, Developer) arrive with P0.
+ * An environment: one workspace (tables, apps, roles, connections, solutions, files, attachments, audit) on this install,
+ * stored in its own database schema env_<id> and workspace folder workspace/env/<id>/. Users are install-wide; what
+ * they may do is per environment (docs/admin/environments.md).
  */
 export type EnvironmentType = 'production' | 'sandbox' | 'developer'
+/** ready: usable. creating / deleting: an operation is running. failed: creation, deletion or its migration failed */
+export type EnvironmentState = 'ready' | 'creating' | 'deleting' | 'failed'
 export interface EnvironmentDef {
+  /** slug, also the schema suffix (env_<id>); never changes */
   id: string
   name: string
   type: EnvironmentType
-  /** the install's own environment; cannot be deleted */
+  /** the install's own environment ("Default"); cannot be deleted */
   builtIn: boolean
-  /** when it was set up (server mode: the first account was created); absent when unknown */
+  /** when it was created (Default: when the install was set up); absent when unknown */
   createdOn?: string
-  /** administrators only */
-  details?: { database: string; schemaVersion?: number }
+  description?: string
+  /** server mode: absent means ready */
+  state?: EnvironmentState
+  /** production only: apps, tables and roles change only by solution import (server-enforced) */
+  locked?: boolean
+  /** the signed-in user may manage it (install administrator, or environment administrator of it) */
+  canManage?: boolean
+  /** install administrators and its environment administrators only */
+  details?: {
+    database: string
+    schemaVersion?: number
+    schema?: string
+    createdBy?: string
+    /** why state is failed */
+    error?: string
+  }
 }
 
 export interface Session {
   user: UserDef
   privileges: EffectivePrivileges
   expiresOn: string
+  /** server mode: the environment this session's privileges belong to */
+  environmentId?: string
 }
 export type DataOp = 'create' | 'read' | 'update' | 'delete'
 
@@ -314,10 +351,12 @@ export interface WorkspaceState {
   loading: string[]
   /** tables whose query hit the row cap (names); the UI warns that data is truncated */
   truncated: string[]
-  /** environments the user can open (today one: the built-in Default) and the selected one */
+  /** environments the user can open and the selected one (every request carries it, X-Appbuilder-Environment) */
   environments: EnvironmentDef[]
   environmentId: string
 }
+
+export type { QueryOptions, QueryState } from './query-cache.ts'
 
 export class PlatformError extends Error {
   /** rate_limited = 429 (login / password throttle), method_not_allowed = 405, password_change_required = 403 (the account must set a new password first) */
@@ -402,6 +441,31 @@ export interface PlatformApi {
      * rows() of an unloaded table returns [] and schedules a load; subscribe() fires when it arrives.
      */
     ensureLoaded(tableNames: string[]): Promise<void>
+    /**
+     * Query v2 (docs/dev/query-v2.md): run a plan and wait for the answer. Server mode: POST /api/v1/query through the
+     * client query cache (de-duplicated, cached by plan, invalidated by writes to the table). Demo mode: the reference
+     * executor over the in-memory rows the current user may read. Rejects with the server's PlatformError.
+     */
+    query(plan: QueryPlan, opts?: QueryOptions): Promise<QueryState>
+    /**
+     * The cached state of a plan, synchronously; starts or refreshes the fetch when needed (subscribe with onQueryChange).
+     * `pageSize` pages an unbounded rows plan (first page now, loadMore() for the next); `owner` names who wants it, so a
+     * request nobody wants any more is cancelled.
+     */
+    queryState(plan: QueryPlan, opts?: QueryOptions): QueryState
+    /** paged plans: fetch the next page of the entry with this key */
+    loadMore(key: string): Promise<void>
+    /** an owner no longer reads its plan (control unmounted) */
+    releaseQuery(owner: string): void
+    /** fires with the cache keys whose state changed */
+    onQueryChange(listener: (keys: string[]) => void): () => void
+    /** the rows of a table changed elsewhere (table-changed message): cached queries of it refetch */
+    invalidateQueries(tableName: string): void
+    /**
+     * What the client knows about a table's size: server mode counts the rows the user may read (a cached count query)
+     * and says whether every row is held in memory (small tables). Demo mode: always fully loaded.
+     */
+    sizeInfo(tableName: string): { rowCount?: number; fullyLoaded: boolean }
     /** list tables available inside a connection that are not yet registered (existing database tables, sheets, file sheets) */
     listSourceTables(connectionId: string): Promise<{ source: string; columns: { name: string; type: ColumnType }[]; rowCount?: number }[]>
     /** register an existing source table as a workspace table (columns inferred; system columns added where the source allows) */
@@ -431,15 +495,16 @@ export interface PlatformApi {
   }
 
   /**
-   * Environments (both backends): a real API with, today, one built-in "Default" environment (type production).
-   * The selected id is remembered per user in this browser (localStorage). Creating environments arrives with P0.
+   * Environments (both backends). Server mode: the environments the user was granted (install administrators: all);
+   * select() remembers the choice on the user record (and in this browser) and reloads the workspace of that
+   * environment. Demo mode: one built-in "Default" environment. Managing environments: src/portal/environmentApi.ts.
    */
   environments: {
     /** fetch the list again (server: GET /api/v1/environments) */
     list(): Promise<EnvironmentDef[]>
     /** the selected environment (null before init or while signed out) */
     current(): EnvironmentDef | null
-    /** select an environment by id; PlatformError('not-found') for an unknown id */
+    /** switch to an environment by id (reloads the workspace); PlatformError('not-found') for an unknown id */
     select(id: string): Promise<EnvironmentDef>
   }
 
@@ -506,7 +571,11 @@ export interface PlatformApi {
      * `filesAs` (server mode only; demo mode has no data files): what file components become, 'database' tables
      * (default) or 'file' data files.
      */
-    importPackage(yamlText: string, opts?: { filesAs?: 'database' | 'file' }): Promise<SolutionDef>
+    /**
+     * server mode: a package whose solution or components (same ids) exist here is an in-place upgrade and needs
+     * `confirm` = the token of the reviewed plan (src/portal/environmentApi.ts planImport); asCopy: new instances
+     */
+    importPackage(yamlText: string, opts?: { filesAs?: 'database' | 'file'; confirm?: string; asCopy?: boolean }): Promise<SolutionDef & { warnings?: string[] }>
   }
 }
 

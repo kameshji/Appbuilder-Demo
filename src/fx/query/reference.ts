@@ -5,7 +5,8 @@
  * (package D) must give the same rows, in the same order, for every plan.
  */
 import type { FxRecord, FxValue } from '../../contracts.ts'
-import type { AggregateV2, ColumnKind, CompareOpV2, ConditionV2, QueryLiteral, QueryPlan, SortKeyV2, TableSchemaInfo } from '../../platform/query.ts'
+import type { AggregateV2, ColumnKind, CompareOpV2, ConditionV2, NumExprV2, QueryLiteral, QueryPlan, SortKeyV2, TableSchemaInfo } from '../../platform/query.ts'
+import { roundHalfAway } from '../functions/format.ts'
 import { decodeCursor, encodeCursor, sortKeyValue, compareKeys, type KeyValue } from './cursor.ts'
 
 export interface ReferenceResult {
@@ -15,6 +16,74 @@ export interface ReferenceResult {
 }
 
 export class PlanError extends Error {}
+
+export interface ExecuteOptions {
+  /**
+   * the rows arrive in the source's natural order (data files and Google Sheets keep file / sheet order): use it instead
+   * of (createdOn, id); cursors then seek by the position of their row id
+   */
+  inputOrder?: boolean
+}
+
+/** a well-formed plan whose evaluation fails, as the engine's formula would (division by zero, overflow) */
+export class QueryEvaluationError extends PlanError {}
+
+/* ------------------------------------------------------------------ numeric expressions */
+
+/** RoundUp / RoundDown of the engine: on the shortest decimal form of the number */
+function shiftRound(x: number, d: number, f: (n: number) => number): number {
+  const s = String(Math.abs(x))
+  if (s.includes('e')) {
+    const m = Math.pow(10, d)
+    return f(x * m) / m
+  }
+  const sign = x < 0 ? -1 : 1
+  return sign * Number(f(Number(s + 'e' + d)) + 'e' + -d)
+}
+
+const finite = (x: number): number => {
+  if (!Number.isFinite(x)) throw new QueryEvaluationError("That result isn't a valid number")
+  return x
+}
+
+/** value of a numeric expression for one row (NULL cells read as 0) */
+export function evaluateNumExpr(e: NumExprV2, row: FxRecord, schema: TableSchemaInfo): number {
+  if (typeof e === 'number') {
+    if (!Number.isFinite(e)) throw new PlanError('expression literals must be finite numbers')
+    return e
+  }
+  if (typeof e !== 'object' || e === null) throw new PlanError('malformed expression')
+  if ('col' in e) {
+    const k = kindOf(schema, e.col)
+    const v = cell(row, e.col)
+    if (k === 'number') return isNullCell(v) ? 0 : (v as number)
+    if (k === 'boolean') return v === true ? 1 : 0
+    throw new PlanError(`expressions need number columns; ${e.col} isn't one`)
+  }
+  const a = e.args
+  if (!Array.isArray(a)) throw new PlanError('malformed expression')
+  switch (e.fn) {
+    case 'add': return finite(evaluateNumExpr(a[0], row, schema) + evaluateNumExpr(a[1]!, row, schema))
+    case 'sub': return finite(evaluateNumExpr(a[0], row, schema) - evaluateNumExpr(a[1]!, row, schema))
+    case 'mul': return finite(evaluateNumExpr(a[0], row, schema) * evaluateNumExpr(a[1]!, row, schema))
+    case 'div': {
+      const x = evaluateNumExpr(a[0], row, schema)
+      const y = evaluateNumExpr(a[1]!, row, schema)
+      if (y === 0) throw new QueryEvaluationError("Can't divide by zero")
+      return finite(x / y)
+    }
+    case 'neg': return 0 - evaluateNumExpr(a[0], row, schema)
+    case 'abs': return Math.abs(evaluateNumExpr(a[0], row, schema))
+    case 'round': case 'roundUp': case 'roundDown': {
+      const d = (e as { digits: number }).digits
+      if (!Number.isInteger(d)) throw new PlanError('digits must be a whole number')
+      const x = evaluateNumExpr(a[0], row, schema)
+      if (e.fn === 'round') return finite(roundHalfAway(x, d))
+      return finite(shiftRound(x, d, e.fn === 'roundUp' ? (n) => (n < 0 ? Math.floor(n) : Math.ceil(n)) : Math.trunc))
+    }
+    default: throw new PlanError(`unknown expression function ${String((e as { fn?: unknown }).fn)}`)
+  }
+}
 
 const pad = (n: number, w = 2): string => String(n).padStart(w, '0')
 const day = (d: Date): string => `${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
@@ -74,6 +143,7 @@ export function evaluateConditionV2(c: ConditionV2, row: FxRecord, schema: Table
   if ('and' in c) return c.and.every((x) => evaluateConditionV2(x, row, schema))
   if ('or' in c) return c.or.some((x) => evaluateConditionV2(x, row, schema))
   if ('not' in c) return !evaluateConditionV2(c.not, row, schema)
+  if (c.op === 'cmpExpr') return cmp(c.cmp, evaluateNumExpr(c.left, row, schema), evaluateNumExpr(c.right, row, schema), 'number')
   const kind = kindOf(schema, c.col)
   const v = cell(row, c.col)
   switch (c.op) {
@@ -158,8 +228,14 @@ function aggregate(rows: FxRecord[], a: AggregateV2, schema: TableSchemaInfo): F
         o[m.name] = m.filter ? items.filter((r) => evaluateConditionV2(m.filter!, r, schema)).length : items.length
         continue
       }
-      if (m.col === undefined || kindOf(schema, m.col) !== 'number') throw new PlanError(`${m.fn} needs a number column`)
-      const nums = items.map((r) => cell(r, m.col!)).filter((v): v is number => typeof v === 'number')
+      let nums: number[]
+      if (m.expr !== undefined) {
+        if (m.col !== undefined) throw new PlanError('a measure has a column or an expression, not both')
+        nums = items.map((r) => evaluateNumExpr(m.expr!, r, schema))
+      } else {
+        if (m.col === undefined || kindOf(schema, m.col) !== 'number') throw new PlanError(`${m.fn} needs a number column`)
+        nums = items.map((r) => cell(r, m.col!)).filter((v): v is number => typeof v === 'number')
+      }
       switch (m.fn) {
         case 'sum': o[m.name] = nums.reduce((x, y) => x + y, 0); break
         case 'avg': o[m.name] = nums.length ? nums.reduce((x, y) => x + y, 0) / nums.length : null; break
@@ -189,9 +265,16 @@ function aggregate(rows: FxRecord[], a: AggregateV2, schema: TableSchemaInfo): F
  * Execute a plan over all rows of its table (any order: the executor applies the natural order itself).
  * Throws PlanError for a malformed plan (wrong literal kind, unknown column ...).
  */
-export function executePlan(plan: QueryPlan, allRows: FxRecord[], schema: TableSchemaInfo): ReferenceResult {
+export function executePlan(plan: QueryPlan, allRows: FxRecord[], schema: TableSchemaInfo, opts: ExecuteOptions = {}): ReferenceResult {
   if (plan.version !== 2) throw new PlanError('not a v2 plan')
-  let rows = [...allRows].sort(naturalCompare)
+  // natural position of every row: (createdOn, id), or the input order for sources that keep file / sheet order
+  const position = new Map<FxRecord, number>()
+  const idPosition = new Map<string, number>()
+  let rows: FxRecord[]
+  if (opts.inputOrder) {
+    rows = [...allRows]
+    rows.forEach((r, i) => { position.set(r, i); idPosition.set(String(cell(r, 'id') ?? ''), i) })
+  } else rows = [...allRows].sort(naturalCompare)
   if (plan.filter) rows = rows.filter((r) => evaluateConditionV2(plan.filter!, r, schema))
   if (plan.search && plan.search.text !== '') {
     const needle = plan.search.text.toLowerCase()
@@ -238,6 +321,7 @@ export function executePlan(plan: QueryPlan, allRows: FxRecord[], schema: TableS
       start = rows.findIndex((r) => {
         const d = compareKeys(keysOf(r, sortKeys, kinds), cur.keys, dirs)
         if (d !== 0) return d > 0
+        if (opts.inputOrder) return (position.get(r) ?? -1) > (idPosition.get(cur.id) ?? -1)
         return naturalCompare(r, { createdOn: cur.createdOn === null ? null : new Date(cur.createdOn), id: cur.id }) > 0
       })
       if (start < 0) start = rows.length

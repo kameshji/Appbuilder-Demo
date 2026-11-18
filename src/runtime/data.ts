@@ -179,3 +179,55 @@ export function subscribeDataErrors(fn: (e: DataErrorEvent) => void): () => void
   }
   return () => {}
 }
+
+/* ------------------------------------------------------------------ query feed (server mode, P0 package D) */
+
+let qVersion = 0
+const qLog: { v: number; deps: string[] }[] = []
+const qListeners = new Set<() => void>()
+let qFeed = false
+const COUNT_KEY = /^\{"count":true,"table":("(?:[^"\\]|\\.)*"),"version":2\}$/
+
+/** subscribe once to the platform's query cache (after init picked a backend); cheap to call often */
+export function ensureQueryFeed(): void {
+  if (qFeed) return
+  try {
+    if (!platform.getState().ready) return
+    qFeed = true
+    platform.tables.onQueryChange((keys) => {
+      qVersion++
+      const deps: string[] = []
+      for (const k of keys) {
+        deps.push('q:' + k)
+        const m = COUNT_KEY.exec(k)
+        if (m) deps.push('ts:' + (JSON.parse(m[1]!) as string))
+      }
+      qLog.push({ v: qVersion, deps })
+      if (qLog.length > 1000) qLog.shift()
+      for (const l of [...qListeners]) l()
+    })
+  } catch {
+    qFeed = false
+  }
+}
+
+/** bumps whenever cached query results change */
+export function queryVersion(): number {
+  return qVersion
+}
+
+/** evaluator dependencies ('q:<key>', 'ts:<table>') changed after version `v`; null when the log no longer reaches back */
+export function queryDepsSince(v: number): string[] | null {
+  if (v >= qVersion) return []
+  if (!qLog.length || qLog[0]!.v > v + 1) return null
+  const out = new Set<string>()
+  for (const e of qLog) if (e.v > v) for (const d of e.deps) out.add(d)
+  return [...out]
+}
+
+export function subscribeQueries(fn: () => void): () => void {
+  qListeners.add(fn)
+  return () => {
+    qListeners.delete(fn)
+  }
+}

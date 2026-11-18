@@ -3,30 +3,41 @@
 Appbuilder keeps everything in one **PostgreSQL** database (15 or newer; 17 is what we install, CI and the sandbox run 16).
 Decision D14 in `/home/claude/appbuilder-demo/docs/decisions.md` records the move from MySQL. The database holds:
 
-1. **Schema `ab`**: install-wide objects (settings, users, sessions, the environment registry, the licence placeholder).
-2. **One schema per environment**, `env_<id>`. Today there is exactly one, `env_default`. It holds the environment's
-   metadata tables (`ab_roles`, `ab_tables`, `ab_apps`, `ab_audit`, ...) **and** the data tables of the default connection
-   (`t_orders`, `t_contacts`, ...).
+1. **Schema `ab`**: install-wide objects (settings, users, sessions, the environment registry, who may enter which environment,
+   the install-level audit log, the licence placeholder).
+2. **One schema per environment**, `env_<id>`: the built-in `env_default` and one per environment created in the Admin console
+   (at most `APPBUILDER_MAX_ENVIRONMENTS`, default 5). Each holds the environment's metadata tables (`ab_roles`, `ab_tables`,
+   `ab_apps`, `ab_audit`, ...) **and** the data tables of its default connection (`t_orders`, `t_contacts`, ...).
 
-Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 4`)
+Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 5`),
+`/home/claude/appbuilder-demo/server/core/install-store.ts` (the `ab` registry, access and install audit)
 and, for data tables, `/home/claude/appbuilder-demo/server/connectors/postgres/sql.ts` (`createTableSql`, `sqlType`).
 
 Everything not on this page is not stored in the database: the workspace folder holds `server.json` (database connection,
-password sealed), `.secret-key` (when `APPBUILDER_SECRET_KEY` is not set), `attachments/` (file bytes) and `files/` (data files).
-See `architecture.md`.
+password sealed), `.secret-key` (when `APPBUILDER_SECRET_KEY` is not set), and per environment `env/<id>/attachments/` (file
+bytes) and `env/<id>/files/` (data files). See `architecture.md`.
 
 ## Environments, schemas and how a request finds its schema
 
-- A request carries an **environment id**. `resolveEnvironment(req)` in `/home/claude/appbuilder-demo/server/core/env-context.ts`
-  decides it (today it always answers `default`); `environmentSchema(id)` turns it into the schema name `env_<id>` (the id is
-  validated: `^[a-z][a-z0-9_]{0,39}$`, so the schema name is always a safe identifier).
-- The router runs every handler inside `runInEnvironment(id, ...)` (Node's `AsyncLocalStorage`), and `ctx.environmentId` carries the
-  id. The MetaStore, the security cache, the connection cache and the default connector read `currentEnvironment()`; code that runs
-  outside a request (boot, timers, tests) works in the default environment.
+- A request names its environment: the header `X-Appbuilder-Environment: <id>`, or `?env=<id>` on a GET (attachment links in
+  `<img src>`), never both with different values (400). `requestedEnvironment(req, url)` in
+  `/home/claude/appbuilder-demo/server/core/env-context.ts` reads and validates it (`^[a-z][a-z0-9_]{0,39}$`, so the schema name
+  `env_<id>` is always a safe identifier).
+- The **session resolver** (`userContextFor` in `/home/claude/appbuilder-demo/server/core/auth.ts`) checks it against the user's
+  access (`EnvironmentManager.resolveFor` in `/home/claude/appbuilder-demo/server/core/environments.ts`): unknown id 404, not
+  granted 403, not ready 503 (with the reason). Without one it uses the user's last environment (`ab.users.last_environment_id`),
+  else Default, else the first one they may enter; a user who may enter none gets 403 except on routes marked `noEnvironment`
+  (their session, password, the environment list, an empty workspace). Roles are then read **in** that environment.
+- The router runs the handler inside `runInEnvironment(id, ...)` (Node's `AsyncLocalStorage`), and `ctx.environmentId` carries the
+  id. The MetaStore, the security cache, the connection cache, the default connector and the workspace folders read
+  `currentEnvironment()`; code that runs outside a request (boot, timers, tests) works in the default environment unless it calls
+  `runInEnvironment` itself (boot migration, orphan sweep, environment creation and copy, deploy).
 - Caches are keyed by environment id: the security engine keeps one roles/tables cache per environment, the ConnectionManager one
-  connector instance per `<environment>:<connection>`.
-- `ab.environments` is the registry (`id`, `name`, `schema_name`, `type`, `built_in`, `created_on`). `migrate()` creates the built-in
-  `default` row and every registered environment schema. P0 package E adds create/switch/delete on top of `migrateEnvironment()`.
+  connector instance per `<environment>:<connection>` (`closeEnvironment(id)` drops them when it is deleted), the files connector
+  one store per folder. The registry and access rows are cached for 2 seconds and dropped on every change (and with every security
+  cache invalidation, since access follows roles).
+- `ab.environments` is the registry; `migrateEnvironment()` creates a schema and registers it; `environment-ops.ts` creates, copies,
+  changes and deletes environments.
 
 ### Fully qualified names, never `search_path`
 
@@ -78,10 +89,26 @@ rolled-back or `SET LOCAL` transaction never reaches the next user of the connec
   (`UnsuitableDatabaseError`, "use an empty database");
 - the database encoding must be `UTF8`, otherwise it is refused before anything is created.
 
-Then, in **one transaction** holding `pg_advisory_xact_lock(hashtext('appbuilder.migrate'))` (two servers starting together wait for
-each other), it runs `INSTALL_DDL`, registers and creates `env_default`, completes every other registered environment schema, and
-writes `schemaVersion`. The summary `{ from, to, steps }` is logged and written to the audit log as `schema.migrate` when something
-changed. Future upgrade steps go into that transaction, ordered by version.
+Then two phases:
+
+1. In **one transaction** holding `pg_advisory_xact_lock(hashtext('appbuilder.migrate'))` (two servers starting together wait for
+   each other) it runs `INSTALL_DDL` (`CREATE ... IF NOT EXISTS` and `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`), registers and
+   creates `env_default` when missing, runs the install-level steps by version (`upgradeInstallTo5`), marks environments left in
+   `creating`/`deleting` by a stopped server as `failed`, and writes `schemaVersion`.
+2. Then **every registered environment** in **its own transaction** (`migrateEnvironmentSchema`, advisory lock
+   `appbuilder.migrate.<id>`): downgrade guard on its `schema_version` (above `SCHEMA_VERSION`: refused, nothing touched), then
+   `environmentDdl()`, the `ENVIRONMENT_STEPS` it has not had, and its new `schema_version`. A failure marks only that environment
+   `failed` (`last_error` starts with `Migration failed:`, cleared by the next successful run); the others go on. Environments whose
+   creation never finished (`failed` with `schema_version` 0) are skipped.
+
+The summary `{ from, to, steps, environments: [{ id, from, to, ok, error? }] }` is logged and written to the Default audit log and
+`ab.audit` as `schema.migrate` when something changed. Future upgrade steps go into phase 1 (install) or `ENVIRONMENT_STEPS`
+(per environment), ordered by version.
+
+**4 to 5** (`upgradeInstallTo5`): users holding an `is_admin` role in `env_default` get `is_install_admin = true`; every user gets
+an `ab.environment_access` row for `default` (`is_env_admin` = holds an admin role there); existing environments get
+`schema_version = 4`. At the first start after it, `services.ts` moves `workspace/attachments/*` and `workspace/files/*` into
+`workspace/env/default/` (`moveLegacyWorkspace`: only entries not there yet; nothing is overwritten or deleted).
 
 ## Types and conventions
 
@@ -121,9 +148,11 @@ service layer, as before.
 | `must_change_password` | `boolean NOT NULL DEFAULT false` | true after an administrator set the password |
 | `created_on` | `timestamptz NOT NULL` | |
 | `last_login` | `timestamptz` | |
+| `is_install_admin` | `boolean NOT NULL DEFAULT false` | install administrator (version 5): environments, accounts, install audit; administrator of every environment |
+| `last_environment_id` | `text` | the environment the user last switched to (`POST /environments/:id/select`); requests without a header go there |
 
 Users are install-wide; their **roles are per environment** (`ab_user_roles` in each environment schema). Deleting a user removes
-their role assignments in every registered environment and their sessions.
+their role assignments in every registered environment, their access rows and their sessions.
 
 ### `ab.sessions`
 
@@ -140,12 +169,36 @@ Expired rows are purged hourly by the server.
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `id` | `text` | primary key (`default`) |
-| `name` | `text NOT NULL` | `Default` |
-| `schema_name` | `text NOT NULL UNIQUE` | `env_default` |
+| `id` | `text` | primary key: a slug of the name at creation (`default`, `sales_test`), never changes |
+| `name` | `text NOT NULL` | unique on `lower(name)` (`ab_ux_environments_name`) |
+| `schema_name` | `text NOT NULL UNIQUE` | `env_<id>` |
 | `type` | `text NOT NULL DEFAULT 'production'` | `production`, `sandbox`, `developer` |
-| `built_in` | `boolean NOT NULL DEFAULT false` | |
+| `built_in` | `boolean NOT NULL DEFAULT false` | Default only |
 | `created_on` | `timestamptz NOT NULL` | |
+| `description` | `text` | |
+| `created_by` | `text` | user id |
+| `state` | `text NOT NULL DEFAULT 'ready'` | `ready`, `creating`, `deleting`, `failed` |
+| `schema_version` | `integer NOT NULL DEFAULT 0` | the `SCHEMA_VERSION` the schema was last migrated to (0: creation never finished) |
+| `locked` | `boolean NOT NULL DEFAULT false` | production only: design routes answer 403 (`DESIGN_ROUTES` in `router.ts`) |
+| `last_error` | `text` | why `state` is `failed` |
+
+### `ab.environment_access`: who may enter which environment
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `environment_id`, `user_id` | `text` | primary key; index `ab_ix_environment_access_user` |
+| `is_env_admin` | `boolean NOT NULL DEFAULT false` | holds an `is_admin` role there. Kept in step by the MetaStore (one `UPDATE ... EXISTS` after every role assignment and role change in that environment); never set directly |
+| `granted_on` | `timestamptz NOT NULL` | |
+| `granted_by` | `text` | user id; NULL for rows made by the version 5 upgrade or by a role assignment |
+
+Install administrators enter every environment without a row. Assigning a role to a user in an environment adds the row
+(`setUserRoles`); revoking access deletes the row and the user's `ab_user_roles` there.
+
+### `ab.audit`: the install-level audit log
+
+`id bigint GENERATED ALWAYS AS IDENTITY` primary key, `at timestamptz NOT NULL` (index `ab_ix_install_audit_at`), `user_id text`,
+`action text NOT NULL` (index `ab_ix_install_audit_action`), `environment_id text` (the environment the action was about),
+`details jsonb` (same size and NUL rules as `ab_audit`). Actions: `docs/admin/audit-log.md`.
 
 ### `ab.licence`
 
@@ -230,7 +283,7 @@ created on first use). Losing the key makes stored secrets unreadable; there is 
 | --- | --- | --- |
 | `id` | `text` | primary key (`att_...`) |
 | `table_id`, `col`, `row_id` | `text NOT NULL` | index `ab_ix_attachments_row (table_id, row_id)` (`column` is a reserved word, hence `col`) |
-| `file_name`, `mime`, `sha256`, `storage_key` | `text NOT NULL` | file on disk: `workspace/attachments/<key[0..1]>/<key>` |
+| `file_name`, `mime`, `sha256`, `storage_key` | `text NOT NULL` | file on disk: `workspace/env/<environment>/attachments/<key[0..1]>/<key>` |
 | `size_bytes` | `bigint NOT NULL` | |
 | `created_by` | `text` | |
 | `created_on` | `timestamptz NOT NULL` | index `ab_ix_attachments_created` (orphan sweep) |
@@ -251,7 +304,8 @@ statement: `INSERT ... ON CONFLICT (k) DO UPDATE SET v = c.v + 1 RETURNING v`.
 | `table_id`, `row_id` | `text` | |
 | `details` | `jsonb` | at most 60,000 characters of JSON (longer details are kept as a truncated JSON string). Never holds passwords |
 
-The audit log is per environment (sign-ins of install-wide users are written to the environment the request ran in).
+The audit log is per environment (sign-ins of install-wide users are written to the environment the request ran in: the user's
+environment for a signed-in request, Default for an anonymous one such as a sign-in). Install-level actions go to `ab.audit`.
 
 ## Data tables (default connection, PostgreSQL)
 
@@ -320,7 +374,8 @@ are in `connectors.md`.
 ## Changing the schema
 
 1. Add the change to `INSTALL_DDL` or `environmentDdl()` in `meta-store.ts` (keep `IF NOT EXISTS`, name indexes `ab_...`).
-2. For existing installations add an ordered upgrade step to `migrate()` (inside its transaction) and bump `SCHEMA_VERSION`.
+2. For existing installations add an ordered upgrade step and bump `SCHEMA_VERSION`: install-level steps in phase 1 of `migrate()`
+   (inside its transaction), environment steps in `ENVIRONMENT_STEPS` (each environment runs them in its own transaction).
 3. Qualify every table: `A('x')` for schema `ab`, `E('x')` for the environment schema. Never rely on `search_path`.
 4. Update the `MetaStore` repository code, the `FakeMetaStore` in `/home/claude/appbuilder-demo/server/routes/meta/testing.ts`, the
    contract in `server/core/contracts.ts` if the interface changes, and this page.

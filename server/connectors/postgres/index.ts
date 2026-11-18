@@ -10,15 +10,17 @@ import type { ColumnDef, TableDef } from '../../../src/platform/contracts.ts'
 import type { Condition, Query } from '../../../src/platform/http.ts'
 import { HttpError } from '../../core/contracts.ts'
 import type {
-  Connector, ConnectorEnv, ConnectorFactory, ConnectionRecord, DatabaseSettings, RawRow, SourceColumn, SqlDb,
+  Connector, ConnectorEnv, ConnectorFactory, ConnectionRecord, DatabaseSettings, QueryV2Input, QueryV2Raw, RawRow, SourceColumn, SqlDb,
 } from '../../core/contracts.ts'
+import { cursorFromKeys, type KeyValue } from '../../../src/fx/query/cursor.ts'
+import { buildV2 } from './query-v2.ts'
 import { createPgDb, friendlyConnectionError, mapPgError, withClient, formatServerVersion } from './db.ts'
 import { isPgError } from './db.ts'
 import type { PgError } from './db.ts'
 import {
   SYSTEM_COLUMNS, buildCountById, buildDeletes, buildInserts, buildSelect, buildUpdate, checkSource, columnSql, columnTypesByName,
-  createIndexSql, createTableSql, dropIndexesSql, fromDb, indexName, jsNumberText, kindOf, mapSqlType, physicalName, quoteId,
-  sqlType, tableId, wantedIndex,
+  createIndexSql, createTableSql, dropIndexesSql, fromDb, indexName, jsNumberText, keyIndexesSql, kindOf, mapSqlType, naturalIndexSql,
+  physicalName, quoteId, sqlType, tableId, wantedIndex,
 } from './sql.ts'
 import type { Dialect } from './sql.ts'
 import { rowUid } from '../../core/util.ts'
@@ -147,11 +149,135 @@ export const createPostgresConnector: ConnectorFactory = (conn: ConnectionRecord
       if (k !== want) await d.exec(`DROP INDEX IF EXISTS ${quoteId(dl.schema)}.${quoteId(indexName(table, k, col.name))}`)
     }
     if (want) await d.exec(createIndexSql(dl, def, col, want))
+    const keys = keyIndexesSql(dl, def, col, col.indexed && kindOf(col.type) === 'text' ? await trigramSchema(d) : null)
+    for (const s of [...keys.drop, ...keys.create]) await d.exec(s)
+  }
+
+  /**
+   * Where the pg_trgm extension lives (trigram indexes for searched text columns), installing it when the database user
+   * may (it is a trusted extension: the database owner can). null when unavailable; then searches scan.
+   */
+  let trgm: string | null | undefined
+  async function trigramSchema(d: SqlDb): Promise<string | null> {
+    if (trgm !== undefined) return trgm
+    const find = async () => (await d.query<{ s: string }>("SELECT n.nspname AS s FROM pg_catalog.pg_extension e JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'pg_trgm'"))[0]?.s ?? null
+    let found = await find()
+    if (!found) {
+      try {
+        // a savepoint: a refusal must not abort the surrounding schema change
+        await d.tx(async (t) => {
+          const has = await t.query<{ n: number }>("SELECT count(*)::int AS n FROM pg_catalog.pg_namespace WHERE nspname = 'public'")
+          await t.exec(`CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA ${Number(has[0]?.n) > 0 ? 'public' : quoteId(schema)}`)
+        })
+        found = await find()
+      } catch (e) {
+        env.log('info', `postgres: pg_trgm is not available (${(e as Error).message}); text searches on indexed columns scan the table`)
+      }
+    }
+    trgm = found
+    return trgm
+  }
+
+  /**
+   * Tables created before the natural-order index existed get it in the background (CREATE INDEX CONCURRENTLY: no
+   * write lock), once per process. Only tables Appbuilder manages; a linked table's indexes are its owner's business.
+   */
+  const naturalChecked = new Set<string>()
+  function ensureNaturalIndex(def: TableDef): void {
+    if (!def.managed) return
+    const key = `${schema}.${physicalName(def)}`
+    if (naturalChecked.has(key)) return
+    naturalChecked.add(key)
+    void run(async (d, dl) => {
+      const name = indexName(physicalName(def), 'index', 'natural')
+      const has = await d.query<{ n: number }>('SELECT count(*)::int AS n FROM pg_catalog.pg_indexes WHERE schemaname = $1 AND indexname = $2', [schema, name])
+      if (Number(has[0]?.n ?? 0) > 0) return
+      const sql = naturalIndexSql(dl, def, true)
+      if (!sql) return
+      env.log('info', `postgres: creating the natural-order index of ${physicalName(def)} in the background`)
+      await d.exec(sql)
+    }).catch((e) => {
+      naturalChecked.delete(key)
+      env.log('warn', `postgres: could not create the natural-order index of ${physicalName(def)}: ${(e as Error).message}`)
+    })
+  }
+
+  /** Query v2: one statement, run with a statement timeout inside a short transaction */
+  async function queryV2(def: TableDef, input: QueryV2Input, bound: SqlDb | undefined): Promise<QueryV2Raw> {
+    ensureNaturalIndex(def)
+    return run(async (d, dl) => {
+      const st = buildV2(dl, def, input.plan, input)
+      let raw: Record<string, unknown>[]
+      try {
+        raw = await d.tx(async (t) => {
+          await t.query("SELECT set_config('statement_timeout', $1, true), set_config('extra_float_digits', '1', true)", [String(Math.max(100, Math.trunc(input.timeoutMs)))])
+          return t.query<Record<string, unknown>>(st.sql, st.params)
+        })
+      } catch (e) {
+        const code = String((e as PgError).code ?? '')
+        if (code === '57014') throw new HttpError(503, 'unavailable', `The query took longer than ${Math.round(input.timeoutMs / 1000)} seconds and was stopped. Filter on indexed columns, or narrow the query.`)
+        if (code === '22012') throw new HttpError(422, 'invalid', "Can't divide by zero")
+        if (code === '22003') throw new HttpError(422, 'invalid', "That result isn't a valid number")
+        throw e
+      }
+      const types = new Map(st.columns.map((c) => [c.name, c.type]))
+      const convert = (r: Record<string, unknown>): RawRow => {
+        const out: RawRow = {}
+        for (const c of st.columns) out[c.name] = fromDb(r[c.name], types.get(c.name)!)
+        return out
+      }
+      const res: QueryV2Raw = { rows: [], columns: st.columns }
+      if (st.kind === 'count') {
+        res.count = Number(raw[0]?.__count ?? 0)
+        res.nextCursor = null
+        return res
+      }
+      if (st.withCount) {
+        res.count = Number(raw[0]?.__count ?? 0)
+        raw = raw.filter((r) => r.__row !== null && r.__row !== undefined)
+      }
+      if (st.kind === 'aggregate') {
+        if (st.unpagedLimit !== undefined && raw.length > st.unpagedLimit) {
+          throw new HttpError(422, 'invalid', `This grouping produces more than ${st.unpagedLimit.toLocaleString('en-US')} groups. Filter the rows first, or group by fewer distinct values.`)
+        }
+        res.rows = raw.map(convert)
+        if (input.plan.count) res.count = res.rows.length
+        if (input.plan.single) res.rows = res.rows.slice(0, 1)
+        return res
+      }
+      if (st.pageSize !== undefined) {
+        const more = raw.length > st.pageSize
+        const page = more ? raw.slice(0, st.pageSize) : raw
+        res.rows = page.map(convert)
+        const last = page[page.length - 1]
+        if (more && last) {
+          const keys: KeyValue[] = []
+          for (let i = 0; i < st.cursorKeys; i++) {
+            const v = last[`__c${i}`]
+            keys.push(v === null || v === undefined ? null : typeof v === 'number' ? v : typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v) && kindOfSort(def, input.plan, i) === 'num' ? Number(v) : (v as string))
+          }
+          res.nextCursor = cursorFromKeys(input.plan, keys, (last.__cn as string | null) ?? null, String(last.__ci ?? ''))
+        } else res.nextCursor = null
+        return res
+      }
+      if (st.unpagedLimit !== undefined && raw.length > st.unpagedLimit) {
+        throw new HttpError(422, 'invalid', `This query returns more than ${st.unpagedLimit.toLocaleString('en-US')} rows. Ask for it page by page (page: { size }), or filter it further.`)
+      }
+      res.rows = raw.map(convert)
+      return res
+    }, bound)
+  }
+
+  function kindOfSort(def: TableDef, plan: QueryV2Input['plan'], i: number): string {
+    const k = plan.sort?.[i]
+    const c = k ? def.columns.find((x) => x.name === k.col) : undefined
+    return c ? kindOf(c.type) : 'text'
   }
 
   /** data statements over the pool, or bound to one transaction connection */
-  function dataOps(bound: SqlDb | undefined): Pick<Connector, 'select' | 'insert' | 'update' | 'delete'> {
+  function dataOps(bound: SqlDb | undefined): Pick<Connector, 'select' | 'insert' | 'update' | 'delete' | 'queryV2'> {
     return {
+      queryV2: (def, input) => queryV2(def, input, bound),
       async select(def: TableDef, q: Query) {
         const types = columnTypesByName(def)
         return run(async (d, dl) => {
@@ -213,7 +339,8 @@ export const createPostgresConnector: ConnectorFactory = (conn: ConnectionRecord
     return {
       async createTable(def) {
         await ddl(async (t, dl) => {
-          for (const s of createTableSql(dl, def)) await t.exec(s)
+          const wantsTrgm = def.columns.some((c) => c.indexed && kindOf(c.type) === 'text')
+          for (const s of createTableSql(dl, def, wantsTrgm ? await trigramSchema(t) : null)) await t.exec(s)
         }, bound)
       },
 

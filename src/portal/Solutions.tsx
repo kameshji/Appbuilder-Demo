@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Boxes, Cable, LayoutGrid, Plus, Save, ShieldCheck, Table2, Trash2, Upload, X, type LucideIcon } from 'lucide-react'
+import { ArrowLeft, Boxes, Cable, LayoutGrid, Plus, Rocket, Save, ShieldCheck, Table2, Trash2, Upload, X, type LucideIcon } from 'lucide-react'
 import { platform, usePlatform, type SolutionComponentKind, type SolutionDef } from '@/platform'
 import { go } from '@/router'
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ConfirmDialog, Empty, Field, Panel, PageHeader, fmtDate, useToast } from './kit'
 import { ExportDialog, ImportDialog } from './dialogs'
 import { matches, useSearch } from './Shell'
+import { DeployDialog } from './SolutionPlan'
+import { useCaps } from './security'
 
 const KINDS: { kind: SolutionComponentKind; label: string; icon: LucideIcon; route?: 'apps' | 'tables' | 'roles' | 'connections' }[] = [
   { kind: 'app', label: 'Apps', icon: LayoutGrid },
@@ -80,7 +82,7 @@ export function Solutions() {
       <PageHeader
         icon={Boxes}
         title="Solutions"
-        subtitle="Package apps, tables, roles and connections to move them between workspaces."
+        subtitle="Package apps, tables, roles and connections to move them between environments: deploy a solution from a sandbox to production, where it is upgraded in place."
         actions={
           <>
             <Button variant="outline" size="sm" onClick={() => setDlg('import')} data-testid="import-solution-button"><Upload /> Import solution</Button>
@@ -178,7 +180,10 @@ export function SolutionDetail({ solutionId }: { solutionId: string }) {
   const [f, setF] = useState({ displayName: '', publisher: '', version: '', description: '' })
   const [add, setAdd] = useState<SolutionComponentKind | null>(null)
   const [exp, setExp] = useState(false)
+  const [dep, setDep] = useState(false)
   const [del, setDel] = useState(false)
+  const caps = useCaps()
+  const envCount = usePlatform((s) => s.environments.length)
   useEffect(() => {
     if (solution) setF({ displayName: solution.displayName, publisher: solution.publisher, version: solution.version, description: solution.description ?? '' })
   }, [solution])
@@ -200,7 +205,12 @@ export function SolutionDetail({ solutionId }: { solutionId: string }) {
         icon={Boxes}
         title={solution.displayName}
         subtitle={<span className="font-mono text-xs">{solution.name} · v{solution.version}</span>}
-        actions={<Button size="sm" onClick={() => setExp(true)} data-testid="export-solution-button"><Upload /> Export solution</Button>}
+        actions={
+          <>
+            {caps.server && <Button size="sm" variant="outline" onClick={() => setDep(true)} disabled={envCount < 2} title={envCount < 2 ? 'There is no other environment to deploy to' : undefined} data-testid="deploy-solution-button"><Rocket /> Deploy to…</Button>}
+            <Button size="sm" onClick={() => setExp(true)} data-testid="export-solution-button"><Upload /> Export solution</Button>
+          </>
+        }
       />
       <div className="grid grid-cols-[360px_minmax(0,1fr)] items-start gap-5">
         <Panel className="grid gap-3.5 p-5" data-testid="solution-meta">
@@ -251,6 +261,7 @@ export function SolutionDetail({ solutionId }: { solutionId: string }) {
       </div>
       {add && <AddComponentDialog open onOpenChange={(o) => !o && setAdd(null)} solution={solution} kind={add} label={KINDS.find((k) => k.kind === add)!.label} />}
       <ExportDialog open={exp} onOpenChange={setExp} kind="solution" id={solution.id} title={solution.displayName} />
+      {caps.server && <DeployDialog open={dep} onOpenChange={setDep} solution={solution} />}
       <ConfirmDialog
         open={del}
         onOpenChange={setDel}

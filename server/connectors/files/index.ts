@@ -308,6 +308,31 @@ export async function flushFiles(env: ConnectorEnv): Promise<void> {
   await storeFor(env).flush()
 }
 
+/** persist pending writes of every files folder in use (one per environment), on shutdown */
+export async function flushAllFiles(): Promise<void> {
+  let err: unknown = null
+  for (const s of stores.values()) {
+    try {
+      await s.flush()
+    } catch (e) {
+      err ??= e
+    }
+  }
+  if (err) throw err
+}
+
+/**
+ * forget the files folder (an environment was deleted): pending writes are dropped and loaded files evicted, so
+ * nothing is written back into the removed folder
+ */
+export async function forgetFilesFolder(dir: string): Promise<void> {
+  const key = path.resolve(dir)
+  const s = stores.get(key)
+  if (!s) return
+  stores.delete(key)
+  for (const id of [...s.files.keys()]) await s.evict(id).catch(() => {})
+}
+
 /* ------------------------------------------------------------------ module API (metadata routes) */
 
 function summarise(a: Awaited<ReturnType<typeof analyze>>): InspectedSheet[] {

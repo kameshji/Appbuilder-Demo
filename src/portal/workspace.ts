@@ -3,7 +3,9 @@
  * - the last mode (Dev / User) of makers and admins,
  * - the open app tabs of User mode (app ids, in tab order),
  * - recently opened apps.
- * Keys are per user (`<key>:<userId>`), so two people sharing a browser do not see each other's tabs.
+ * Keys are per user (`<key>:<userId>`), so two people sharing a browser do not see each other's tabs, and the tabs and
+ * recents belong to an environment (`<userId>@<environment>`; Default keeps the plain user key): switching environments
+ * closes the other environment's tabs (their apps do not exist there) and brings back this one's.
  */
 import { create } from 'zustand'
 import { platform, usePlatform } from '@/platform'
@@ -47,6 +49,14 @@ export function useUserKey(): string {
   const sessionUser = usePlatform((s) => s.session?.user.id)
   const demoUser = usePlatform((s) => s.currentUserId)
   return (mode === 'server' ? sessionUser : demoUser) ?? ''
+}
+
+/** the key of the user's tabs and recents in the current environment ('' while signed out) */
+export function useWorkspaceKey(): string {
+  const user = useUserKey()
+  const env = usePlatform((s) => s.environmentId)
+  if (!user) return ''
+  return env && env !== 'default' ? `${user}@${env}` : user
 }
 
 interface WorkspaceState {

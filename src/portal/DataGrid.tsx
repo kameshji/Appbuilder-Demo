@@ -12,7 +12,8 @@ import { CellEditor, buildLookups, compareValues, displayText, draftToValue, isN
 import { TYPE_INFO } from './columnTypes'
 import { AttachmentCell, AttachmentsDialog, isAttachmentCol } from './Attachments'
 import { useMyAccess } from './security'
-import { DEFAULT_ROW_CAP } from '@/platform/http'
+import { QUERY_FALLBACK_ROW_CAP, columnKind, type QueryPlan } from '@/platform/query'
+import { useQuery } from '@/platform/useQuery'
 
 const PAGE = 200
 
@@ -116,6 +117,32 @@ function CsvImportDialog({ open, onOpenChange, table }: { open: boolean; onOpenC
   )
 }
 
+/* ------------------------------------------------------------------ lookup labels (server mode) */
+
+/** labels of the lookup values on screen, read from the target tables (a query per lookup column, by id) */
+function useLookupLabels(cols: ColumnDef[], rows: FxRecord[]) {
+  const lookupCols = cols.filter((c) => c.type === 'lookup' && c.lookupTable)
+  const plans = lookupCols.map((c) => {
+    const target = platform.tables.get(c.lookupTable!)
+    const ids = [...new Set(rows.map((r) => r[c.name]).filter((v): v is string => typeof v === 'string' && v !== ''))].slice(0, 1000)
+    if (!target || !ids.length) return null
+    return { col: c, target, plan: { version: 2, table: target.name, filter: { col: 'id', op: 'in', value: ids }, select: [target.primaryColumn] } as QueryPlan }
+  })
+  const states = plans.map((p, i) => (p ? platform.tables.queryState(p.plan, { owner: `portal-lookup:${lookupCols[i]!.name}` }) : null))
+  const [, bump] = useState(0)
+  const keys = states.map((s) => s?.key ?? '').join('|')
+  useEffect(() => platform.tables.onQueryChange((k) => { if (k.some((x) => keys.includes(x))) bump((n) => n + 1) }), [keys])
+  const out: ReturnType<typeof buildLookups> = {}
+  lookupCols.forEach((c, i) => {
+    const m = new Map<string, string>()
+    const st = states[i]
+    const p = plans[i]
+    if (st && p) for (const r of st.rows) { const label = r[p.target.primaryColumn]; m.set(String(r.__id ?? r.id), label === null || label === undefined ? '(blank)' : String(label)) }
+    out[c.name] = m
+  })
+  return out
+}
+
 /* ------------------------------------------------------------------ grid */
 
 export function DataGrid({ table }: { table: TableDef }) {
@@ -144,10 +171,32 @@ export function DataGrid({ table }: { table: TableDef }) {
     return mod ? [...user, mod] : user
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table])
-  const lookups = useMemo(() => buildLookups(cols), [cols, tables, dataVersion])
-  const rows = useMemo(() => platform.tables.rows(table.name, { secure: false }), [table.name, dataVersion])
+  // server mode: the grid pages through the table with Query v2 (sort, search and the exact count run on the server);
+  // demo mode keeps every row in memory and filters / sorts here, as before
+  const server = usePlatform((s) => s.mode) === 'server'
+  const [search, setSearch] = useState('')
+  useEffect(() => {
+    if (!server) return
+    const t = setTimeout(() => setSearch(filter.trim()), 300)
+    return () => clearTimeout(t)
+  }, [filter, server])
+  const plan = useMemo<QueryPlan | null>(() => {
+    if (!server) return null
+    const searchCols = cols.filter((c) => columnKind(c.type) === 'text' && !c.system && c.type !== 'lookup').map((c) => c.name)
+    const p: QueryPlan = { version: 2, table: table.name, count: true }
+    if (sort && cols.some((c) => c.name === sort.col && columnKind(c.type) !== 'other')) p.sort = [{ col: sort.col, dir: sort.dir }]
+    if (search) p.search = { text: search, columns: searchCols }
+    return p
+  }, [server, table.name, cols, sort, search])
+  const q = useQuery(plan, { owner: `portal-grid:${table.id}`, pageSize: PAGE })
+  const serverLookups = useLookupLabels(server ? cols : [], q?.rows ?? [])
+  const lookups = useMemo(() => (server ? serverLookups : buildLookups(cols)), [server, serverLookups, cols, tables, dataVersion]) // eslint-disable-line react-hooks/exhaustive-deps
+  const rows = useMemo(() => (server ? (q?.rows ?? []) : platform.tables.rows(table.name, { secure: false })), [server, q, table.name, dataVersion]) // eslint-disable-line react-hooks/exhaustive-deps
+  const total = server ? (q?.count ?? rows.length) : rows.length
+  const serverLoading = server && (!q || q.status === 'loading')
 
   const view = useMemo(() => {
+    if (server) return rows
     const n = filter.trim().toLowerCase()
     let r = rows
     if (n) r = r.filter((row) => cols.some((c) => displayText(c, row[c.name], lookups).toLowerCase().includes(n)))
@@ -159,8 +208,8 @@ export function DataGrid({ table }: { table: TableDef }) {
       }
     }
     return r
-  }, [rows, filter, sort, cols, lookups])
-  const shown = view.slice(0, limit)
+  }, [rows, filter, sort, cols, lookups, server])
+  const shown = server ? view : view.slice(0, limit)
   const idOf = (i: number) => String(shown[i].__id ?? shown[i].id)
 
   // drop selection of rows that no longer exist
@@ -264,18 +313,32 @@ export function DataGrid({ table }: { table: TableDef }) {
           <Trash2 /> Delete{selected.size > 0 ? ` (${selected.size})` : ''}
         </Button>
         <div className="ml-auto flex items-center gap-2">
-          <span className="text-xs text-muted-foreground" data-testid="row-count">
-            {filter.trim() ? `${view.length} of ${rows.length} rows` : `${rows.length} ${rows.length === 1 ? 'row' : 'rows'}`}
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="row-count">
+            {server && q && (q.refreshing || q.loadingMore) && <Spinner />}
+            {server
+              ? `${total.toLocaleString('en-US')} ${total === 1 ? 'row' : 'rows'}${search ? ' match' : ''}`
+              : filter.trim() ? `${view.length} of ${rows.length} rows` : `${rows.length} ${rows.length === 1 ? 'row' : 'rows'}`}
             {selected.size > 0 && ` · ${selected.size} selected`}
           </span>
           <Button size="sm" variant="outline" disabled={!access.create} onClick={() => setDlg('import')} data-testid="csv-import-button"><FileUp /> Import CSV</Button>
-          <Button size="sm" variant="outline" onClick={() => setDlg('export')} data-testid="csv-export-button"><FileDown /> Export CSV</Button>
+          {server ? (
+            <Button size="sm" variant="outline" asChild data-testid="csv-export-button">
+              <a href={`/api/v1/tables/${encodeURIComponent(table.id)}/csv`} download={`${table.name}.csv`}><FileDown /> Export CSV</a>
+            </Button>
+          ) : (
+            <Button size="sm" variant="outline" onClick={() => setDlg('export')} data-testid="csv-export-button"><FileDown /> Export CSV</Button>
+          )}
         </div>
       </div>
 
-      {truncated && (
+      {(truncated || q?.truncated) && (
         <div role="status" className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300" data-testid="truncated-warning">
-          <TriangleAlert className="size-3.5 shrink-0" /> Only the first {DEFAULT_ROW_CAP.toLocaleString()} rows are loaded; this table has more than that. Narrow the data at its source (for a linked table, use a view or a smaller source table) or split it into several tables.
+          <TriangleAlert className="size-3.5 shrink-0" /> This table's connection can't run queries itself, so only its first {QUERY_FALLBACK_ROW_CAP.toLocaleString('en-US')} rows are searched, sorted and counted. Move the table to the default database to work with all of its rows.
+        </div>
+      )}
+      {q?.status === 'error' && (
+        <div role="alert" className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive" data-testid="grid-error">
+          <TriangleAlert className="size-3.5 shrink-0" /> {q.error?.message ?? 'The rows could not be loaded.'}
         </div>
       )}
       {access.enforced && !access.isAdmin && (access.readOnlyTable || access.update === 'none' || access.readOnlyColumns.size > 0) && (
@@ -283,9 +346,9 @@ export function DataGrid({ table }: { table: TableDef }) {
           <Lock className="size-3.5 shrink-0" /> {access.readOnlyTable ? 'This table is read-only.' : access.update === 'none' ? 'You can read but not change rows here.' : `Read-only columns for you: ${[...access.readOnlyColumns].map((n) => cols.find((c) => c.name === n)?.displayName ?? n).join(', ')}.`}
         </div>
       )}
-      {rows.length === 0 && loading ? (
+      {rows.length === 0 && (loading || serverLoading) ? (
         <div className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-border py-12 text-sm text-muted-foreground" data-testid="grid-loading"><Spinner /> Loading rows...</div>
-      ) : rows.length === 0 ? (
+) : rows.length === 0 && !(server && search) ? (
         <Empty icon={Rows3} title="No rows yet" description="Add a row, or import a CSV file to fill this table." action={<Button onClick={() => setDlg('add')}><Plus /> Add row</Button>} />
       ) : view.length === 0 ? (
         <Empty icon={Search} title="No rows match the filter" description={`Nothing matches "${filter}".`} action={<Button variant="outline" size="sm" onClick={() => setFilter('')}>Clear filter</Button>} />
@@ -296,8 +359,12 @@ export function DataGrid({ table }: { table: TableDef }) {
             data-testid="data-grid"
             role="grid"
             aria-label={`${table.displayName} data`}
-            aria-rowcount={view.length + 1}
+            aria-rowcount={(server ? total : view.length) + 1}
             tabIndex={0}
+            onScroll={(e) => {
+              const el = e.currentTarget
+              if (server && q?.hasMore && !q.loadingMore && el.scrollTop + el.clientHeight > el.scrollHeight - 400) void platform.tables.loadMore(q.key)
+            }}
             onKeyDown={onGridKey}
             onFocus={(e) => { if (e.target === e.currentTarget && !active && shown.length) setActive({ r: 0, c: 0 }) }}
             className="max-h-[calc(100vh-290px)] min-h-40 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/40"
@@ -396,7 +463,13 @@ export function DataGrid({ table }: { table: TableDef }) {
               </tbody>
             </table>
           </div>
-          {view.length > shown.length && (
+          {server && q?.hasMore && (
+            <div className="flex items-center justify-center gap-3 border-t border-border bg-muted/40 py-2 text-xs text-muted-foreground" data-testid="grid-more">
+              Showing {shown.length.toLocaleString('en-US')} of {total.toLocaleString('en-US')}
+              <Button size="xs" variant="outline" disabled={q.loadingMore} onClick={() => void platform.tables.loadMore(q.key)}>{q.loadingMore ? 'Loading…' : `Show ${Math.min(PAGE, total - shown.length).toLocaleString('en-US')} more`}</Button>
+            </div>
+          )}
+          {!server && view.length > shown.length && (
             <div className="flex items-center justify-center gap-3 border-t border-border bg-muted/40 py-2 text-xs text-muted-foreground">
               Showing {shown.length} of {view.length}
               <Button size="xs" variant="outline" onClick={() => setLimit((l) => l + PAGE)}>Show {Math.min(PAGE, view.length - shown.length)} more</Button>

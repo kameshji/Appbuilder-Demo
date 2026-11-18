@@ -133,7 +133,8 @@ describe.skipIf(!PG_URL)('units of work (PostgreSQL)', () => {
       throw new Error('simulated failure at the end of the import')
     }
     try {
-      const r = await A.post('/solutions/import', { yaml })
+      // asCopy: new instances (the in-place upgrade is covered by environments.integration.test.ts)
+      const r = await A.post('/solutions/import', { yaml, asCopy: true })
       expect(r.status).toBe(500)
     } finally {
       meta.solutions.upsert = upsert
@@ -145,7 +146,7 @@ describe.skipIf(!PG_URL)('units of work (PostgreSQL)', () => {
     expect((await q("SELECT count(*)::int AS n FROM env_default.ab_audit WHERE action = 'solution.import'"))[0]).toEqual({ n: 0 })
 
     // the same package imports cleanly afterwards: the table (with its rows), app, role and solution
-    const ok = await A.post('/solutions/import', { yaml })
+    const ok = await A.post('/solutions/import', { yaml, asCopy: true })
     expect(ok.status, JSON.stringify(ok.data)).toBe(200)
     const after = await snapshot()
     expect(after.physical).toEqual([...before.physical, 't_kititems'].sort())

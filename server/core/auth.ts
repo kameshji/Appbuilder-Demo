@@ -20,6 +20,8 @@ import { SESSION_LIFETIME_MS } from './security.ts'
 import { checkPasswordPolicy, hashPassword, verifyDummy, verifyPassword } from './password.ts'
 import { errText, log } from './util.ts'
 import { SCHEMA_VERSION } from './meta-store.ts'
+import { DEFAULT_ENVIRONMENT_ID, runInEnvironment } from './env-context.ts'
+import { NoEnvironmentError } from './environments.ts'
 
 /** version of the running server (package.json next to server/); read once */
 let appVersion: string | null = null
@@ -134,9 +136,34 @@ export async function createSession(services: CoreServices, ctx: Ctx, userId: st
   return expiresOn
 }
 
-/** cookie -> UserContext (sliding expiry, touched at most every 10 minutes) */
+/**
+ * The security context of a user in the environment a request works in: `requested` (checked against the user's
+ * access: 404 unknown, 403 not granted, 503 not ready) or, when none is named, the user's last environment, else
+ * Default, else the first they may enter. allowNoEnvironment: a user with no environment at all gets a context in
+ * Default without any role (they can see their session, change their password, read the empty environment list).
+ */
+export async function userContextFor(
+  services: CoreServices, rec: UserRecord, requested: string | null, expires?: Date, o: { allowNoEnvironment?: boolean } = {},
+): Promise<UserContext> {
+  let envId: string
+  let none = false
+  try {
+    envId = (await services.environments.resolveFor(toUserDef(rec), requested)).id
+  } catch (e) {
+    if (!(e instanceof NoEnvironmentError) || !o.allowNoEnvironment) throw e
+    envId = DEFAULT_ENVIRONMENT_ID
+    none = true
+  }
+  return runInEnvironment(envId, async () => {
+    // roles are per environment: read them in the environment itself
+    const inEnv = none ? { ...rec, roleIds: [] } : envId === DEFAULT_ENVIRONMENT_ID ? rec : ((await services.meta.users.get(rec.id)) ?? rec)
+    return services.security.forUser(toUserDef(inEnv), expires)
+  })
+}
+
+/** cookie -> UserContext (sliding expiry, touched at most every 10 minutes) in the request's environment */
 export function sessionResolver(services: CoreServices) {
-  return async (ctx: Ctx): Promise<UserContext | null> => {
+  return async (ctx: Ctx, o: { allowNoEnvironment?: boolean } = {}): Promise<UserContext | null> => {
     const token = cookieValue(ctx.req, SESSION_COOKIE)
     if (!token || token.length > 200) return null
     const meta = services.meta
@@ -157,7 +184,7 @@ export function sessionResolver(services: CoreServices) {
       ctx.setSessionCookie(token, next)
       expires = next
     }
-    return services.security.forUser(toUserDef(user), expires)
+    return userContextFor(services, user, ctx.requestedEnvironment ?? null, expires, o)
   }
 }
 
@@ -344,14 +371,18 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
       if ((await services.meta.users.count()) > 0) throw new HttpError(409, 'conflict', 'Setup is already complete. Please sign in.')
       await ensureBuiltinRoles(services)
       const id = services.uid('user')
-      await services.meta.users.insert({ id, name, email, roleIds: [ROLE_ADMIN], status: 'active', passwordHash: hash, lastLogin: new Date().toISOString() }) // setup signs the administrator in
+      // the first administrator administers the install (environments, accounts) and holds the Administrator role in
+      // Default, which also gives them access to it (MetaStore: a role in an environment grants access)
+      await services.meta.users.insert({ id, name, email, roleIds: [ROLE_ADMIN], status: 'active', passwordHash: hash, lastLogin: new Date().toISOString(), isInstallAdmin: true, lastEnvironmentId: DEFAULT_ENVIRONMENT_ID }) // setup signs the administrator in
       services.security.invalidate()
+      services.environments.invalidate()
       return id
     })
     services.markSetupComplete()
     services.setupCode.issue({ print: false }) // rotate: the printed code is useless from now on
     await audit(services, userId, 'setup.admin', { email })
     await audit(services, userId, 'user.create', { id: userId, email, roleIds: [ROLE_ADMIN], status: 'active', via: 'setup' })
+    await services.install.audit({ userId, action: 'install.admin_grant', environmentId: null, details: { id: userId, email, via: 'setup' } }).catch((e) => log('error', `audit write failed (install.admin_grant): ${errText(e)}`))
     try {
       const r = await migrateLegacyWorkspace(services, userId)
       if (r.migrated) log('info', `legacy workspace migrated: ${r.summary}`)
@@ -363,7 +394,7 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     const expires = await createSession(services, ctx, userId)
     const rec = await services.meta.users.get(userId)
     if (!rec) throw new HttpError(500, 'storage', 'The administrator could not be created.')
-    return (await services.security.forUser(toUserDef(rec), expires)).session()
+    return (await userContextFor(services, rec, DEFAULT_ENVIRONMENT_ID, expires)).session()
   }, { auth: 'none', loopbackOnly: true })
 
   router.add('POST', '/auth/login', async (ctx): Promise<Session> => {
@@ -397,7 +428,10 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     const expires = await createSession(services, ctx, user.id)
     await audit(services, user.id, 'auth.login', user.mustChangePassword ? { mustChangePassword: true } : undefined)
     const fresh = (await services.meta.users.get(user.id)) ?? user
-    return (await services.security.forUser(toUserDef(fresh), expires)).session()
+    // the session's privileges in the environment the client asked for (or the user's last one)
+    let requested = ctx.requestedEnvironment ?? null
+    if (requested && !(await services.environments.accessible(toUserDef(fresh))).some((e) => e.id === requested && e.state === 'ready')) requested = null
+    return (await userContextFor(services, fresh, requested, expires, { allowNoEnvironment: true })).session()
   }, { auth: 'none' })
 
   router.add('POST', '/auth/logout', async (ctx) => {
@@ -408,7 +442,7 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     return { ok: true }
   }, { auth: 'none' })
 
-  router.add('GET', '/auth/session', (ctx) => ctx.user!.session(), { auth: 'user', allowPendingPasswordChange: true })
+  router.add('GET', '/auth/session', (ctx) => ctx.user!.session(), { auth: 'user', allowPendingPasswordChange: true, noEnvironment: true })
 
   router.add('POST', '/auth/password', async (ctx) => {
     const b = obj(ctx.body) as Partial<ChangePasswordRequest> & Record<string, unknown>
@@ -431,5 +465,5 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     await createSession(services, ctx, me.id) // and keeps this one signed in with a fresh token
     await audit(services, me.id, 'auth.password_changed', rec.mustChangePassword ? { forced: true } : undefined)
     return { ok: true }
-  }, { auth: 'user', allowPendingPasswordChange: true })
+  }, { auth: 'user', allowPendingPasswordChange: true, noEnvironment: true })
 }

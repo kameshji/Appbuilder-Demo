@@ -73,6 +73,11 @@ function fromBase64Url(s: string): string {
   return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
 }
 
+/** a cursor from already-normalised keys (the PostgreSQL executor computes them in SQL) */
+export function cursorFromKeys(plan: QueryPlan, keys: KeyValue[], createdOn: string | null, id: string): string {
+  return 'c2.' + toBase64Url(JSON.stringify({ s: sortSpec(plan.sort), k: keys, c: createdOn, i: id }))
+}
+
 /** the cursor that points just after `row` in `plan`'s order */
 export function encodeCursor(plan: QueryPlan, row: FxRecord, schema: TableSchemaInfo): string {
   const keys = (plan.sort ?? []).map((k) => {

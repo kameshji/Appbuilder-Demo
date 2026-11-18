@@ -97,7 +97,9 @@ This runs the Vitest suite. Integration tests run when `APPBUILDER_TEST_DB` (a s
 - Runs on one PC: the server listens on 127.0.0.1 only. Hosting for several PCs (a PHP gateway on shared hosting) is planned.
 - Security (sign-in, roles, row filters, column access) is enforced by the local server. The browser-only demo page simulates it and is not secure.
 - Writes are optimistic: the screen updates before the server confirms; a refused write is rolled back with an error.
-- Apps load up to 5,000 rows per table and warn when data is cut off.
+- Formulas over tables run in the database (filter, search, sort, paging, exact counts, totals), so tables of a million rows work; a
+  formula that can't run there is an error on large tables, never a partial result. MySQL, data file and Google Sheets tables are
+  queried over their first 5,000 rows.
 - Connectors: PostgreSQL, MySQL/MariaDB, data files (CSV, Excel, JSON; device only) and Google Sheets. Google Sheets has not been tested against a live Google account yet.
 - Verified on PostgreSQL 16 (the MySQL connector on MariaDB 10.11). One environment per install for now.
 - Flows (automation) are not built yet. No installer, auto-update, built-in backup, password-reset email or two-factor sign-in yet.

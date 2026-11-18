@@ -11,6 +11,7 @@ import type {
 } from '../../src/platform/contracts.ts'
 import type { AppDef } from '../../src/contracts.ts'
 import type { Condition, Query, QueryValue } from '../../src/platform/http.ts'
+import type { QueryPlan, QueryV2Response } from '../../src/platform/query.ts'
 
 /* ------------------------------------------------------------------ http */
 
@@ -58,10 +59,13 @@ export interface Ctx {
   /** present when the route's auth level is not 'none' */
   user?: UserContext
   /**
-   * the environment this request works in (resolveEnvironment() in env-context.ts; 'default' for now). The router runs
-   * the handler inside that environment, so services.meta, the security cache and the connection cache all use it.
+   * the environment this request works in: the X-Appbuilder-Environment header (or ?env= on GET) checked against the
+   * session's access, else the user's last environment (environments.ts resolveFor). The router runs the handler inside
+   * it, so services.meta, the security cache, the connection cache and the workspace folders all use it.
    */
   environmentId: string
+  /** the environment the request asked for (validated format), null when it named none */
+  requestedEnvironment?: string | null
   services: Services
   /** set or clear the session cookie */
   setSessionCookie(token: string | null, expires?: Date): void
@@ -90,6 +94,13 @@ export interface RouteOptions {
   loopbackOnly?: boolean
   /** reachable by a user whose password must be changed first (otherwise 403 password_change_required) */
   allowPendingPasswordChange?: boolean
+  /**
+   * changes the design of the environment (apps, tables, columns, roles, solutions, data files): refused with 403 in a
+   * locked environment. The router sets it for the routes in DESIGN_ROUTES (router.ts); a route may set it too.
+   */
+  design?: boolean
+  /** usable by a signed-in user who has no environment to enter (own session, password, environment list) */
+  noEnvironment?: boolean
 }
 
 export interface Router {
@@ -178,7 +189,32 @@ export interface Connector {
    * at link time); a missing id is added and filled with UUIDv7 values.
    */
   ensureSystemColumns?(source: string): Promise<{ added: string[]; filled: number }>
+  /**
+   * Query v2 pushdown (PostgreSQL): runs a validated plan as one statement with the caller's row filter ANDed in.
+   * Connectors without it are served by the DataService fallback (reference executor over a capped read).
+   */
+  queryV2?(def: TableDef, input: QueryV2Input): Promise<QueryV2Raw>
   close(): Promise<void>
+}
+
+/** what the DataService hands a connector for a Query v2 plan (already validated and security-checked) */
+export interface QueryV2Input {
+  plan: QueryPlan
+  /** the caller's row filter (v1 Condition); undefined = every row */
+  rowFilter?: Condition
+  /** columns returned when the plan has no select */
+  visible: string[]
+  maxUnpagedRows: number
+  maxGroups: number
+  timeoutMs: number
+}
+
+/** typed result rows (Date for date/datetime) plus the type of every output column */
+export interface QueryV2Raw {
+  rows: RawRow[]
+  columns: { name: string; type: ColumnDef['type'] }[]
+  count?: number
+  nextCursor?: string | null
 }
 
 /** Server-side connection record (includes the decrypted secret only in memory). */
@@ -213,17 +249,72 @@ export type ConnectorFactory = (conn: ConnectionRecord, env: ConnectorEnv) => Co
 /** an environment: its id (in requests and cache keys) and its schema in the system database (env_<slug>) */
 export interface EnvironmentRef { id: string; schema: string }
 
+export type EnvironmentType = 'production' | 'sandbox' | 'developer'
+export type EnvironmentState = 'ready' | 'creating' | 'deleting' | 'failed'
+/** a row of ab.environments */
 export interface EnvironmentRecord extends EnvironmentRef {
   name: string
-  type: 'production' | 'sandbox' | 'developer'
+  type: EnvironmentType
   builtIn: boolean
   createdOn: string
+  description?: string
+  createdBy?: string
+  state: EnvironmentState
+  /** the SCHEMA_VERSION its schema was last migrated to (0: never) */
+  schemaVersion: number
+  locked: boolean
+  /** why state is failed */
+  lastError?: string
+}
+
+/** a row of ab.environment_access: the user may enter the environment */
+export interface EnvironmentAccessRecord {
+  environmentId: string
+  userId: string
+  /** holds an administrator role there (kept in step with ab_user_roles by the MetaStore) */
+  isEnvAdmin: boolean
+  grantedOn: string
+  grantedBy?: string
+}
+
+/**
+ * Install-wide registry in schema `ab` (install-store.ts): environments, who may enter them, the install-level audit.
+ * Never depends on the current environment.
+ */
+export interface InstallStore {
+  environments: {
+    list(): Promise<EnvironmentRecord[]>
+    get(id: string): Promise<EnvironmentRecord | null>
+    insert(e: Omit<EnvironmentRecord, 'createdOn' | 'schemaVersion'> & { createdOn?: string; schemaVersion?: number }): Promise<void>
+    update(id: string, patch: Partial<Pick<EnvironmentRecord, 'name' | 'description' | 'type' | 'state' | 'locked' | 'lastError' | 'schemaVersion'>>): Promise<void>
+    /** the registry row, its access rows, and users' last-environment pointers (not the schema) */
+    remove(id: string): Promise<void>
+  }
+  access: {
+    list(): Promise<EnvironmentAccessRecord[]>
+    forEnvironment(id: string): Promise<EnvironmentAccessRecord[]>
+    grant(environmentId: string, userId: string, by: string | null): Promise<void>
+    revoke(environmentId: string, userId: string): Promise<void>
+  }
+  /** install admins that are active */
+  activeInstallAdmins(): Promise<number>
+  audit(entry: { userId: string | null; action: string; environmentId?: string | null; details?: unknown }): Promise<void>
+  auditPage(filter: AuditFilter & { environmentId?: string }): Promise<{ items: (AuditRecord & { environmentId: string | null })[]; total: number }>
+  auditActions(): Promise<string[]>
+  /** table count, row estimate and size of the data in one environment schema */
+  schemaSizes(schema: string): Promise<{ tables: number; rowEstimate: number; databaseBytes: number }>
 }
 
 export interface UserRecord extends UserDef { passwordHash: string | null }
 
 /** result of MetaStore.migrate(): the schema version before and after, and what each upgrade step did */
-export interface MigrationSummary { from: number; to: number; steps: string[] }
+export interface MigrationSummary {
+  from: number
+  to: number
+  steps: string[]
+  /** per environment schema (each in its own transaction; a failing one is marked failed and the others go on) */
+  environments?: { id: string; from: number; to: number; ok: boolean; error?: string }[]
+}
 export interface AttachmentRecord {
   id: string
   tableId: string
@@ -365,6 +456,8 @@ export interface AuditRecord {
 /* ------------------------------------------------------------------ security */
 
 export interface UserContext {
+  /** the environment these privileges belong to */
+  environmentId: string
   user: UserDef
   roles: RoleDef[]
   privileges: EffectivePrivileges
@@ -385,8 +478,8 @@ export interface UserContext {
 export interface SecurityEngine {
   /** loads roles once per request (cache keyed by environment id, invalidated by invalidate()) */
   forUser(user: UserDef): Promise<UserContext>
-  /** call after any role/user/table change: drops the cache of the current environment (all: every environment) */
-  invalidate(scope?: 'all'): void
+  /** call after any role/user/table change: drops the cache of the current environment (all: every environment; or a named one) */
+  invalidate(scope?: 'all' | { environment: string }): void
 }
 
 /* ------------------------------------------------------------------ data service */
@@ -394,6 +487,8 @@ export interface SecurityEngine {
 /** `ctx` null = system (migration, packages import, seeding): no RBAC/RLS/CLS, still validated. */
 export interface DataService {
   query(ctx: UserContext | null, table: TableDef, q: Query): Promise<{ rows: Record<string, QueryValue>[]; total?: number; truncated: boolean }>
+  /** Query v2 (POST /api/v1/query): RBAC, row filters and column security applied inside the one statement */
+  queryV2(ctx: UserContext | null, table: TableDef, plan: unknown): Promise<QueryV2Response>
   insert(ctx: UserContext | null, table: TableDef, values: Record<string, QueryValue>): Promise<Record<string, QueryValue>>
   update(ctx: UserContext | null, table: TableDef, id: string, changes: Record<string, QueryValue>): Promise<Record<string, QueryValue>>
   delete(ctx: UserContext | null, table: TableDef, ids: string[]): Promise<number>
@@ -463,6 +558,10 @@ export interface Services {
   env: ConnectorEnv
   /** the environment of the current request (env-context.ts): id and schema */
   environment(): EnvironmentRef
+  /** environments: registry, access, lifecycle (environments.ts); absent in the metadata test harness */
+  environments?: EnvironmentManager
+  /** pre-upgrade snapshots (backup.ts; package J implements it) */
+  backup?: BackupService
   /**
    * unit of work: everything fn does on the system database (MetaStore writes, and DDL and rows through the default
    * connection) commits together or not at all (transactional DDL). Other connectors (files, Google Sheets, external
@@ -472,4 +571,38 @@ export interface Services {
   /** small helpers */
   uid(prefix?: string): string
   now(): string
+}
+
+/* ------------------------------------------------------------------ environments */
+
+/** paths of one environment's workspace folder: workspace/env/<id>/{files,attachments} */
+export interface EnvironmentDirs { root: string; files: string; attachments: string }
+
+export interface EnvironmentManager {
+  /** registry rows (short cache) */
+  list(): Promise<EnvironmentRecord[]>
+  get(id: string): Promise<EnvironmentRecord | null>
+  /** environments the user may enter (install admins: all) */
+  accessible(user: UserDef): Promise<EnvironmentRecord[]>
+  /**
+   * the environment a request of this user works in: `requested` when given (404 unknown, 403 no access, 503 not
+   * ready), else the user's last one, else Default, else the first they may enter. 403 when there is none.
+   */
+  resolveFor(user: UserDef, requested: string | null): Promise<EnvironmentRecord>
+  /** locked production environment: design changes are refused */
+  isLocked(id: string): Promise<boolean>
+  dirs(id: string): EnvironmentDirs
+  /** drop cached registry / access rows (after a change) */
+  invalidate(): void
+  /** the configured limit (APPBUILDER_MAX_ENVIRONMENTS, default 5) */
+  max(): number
+}
+
+/** result of a snapshot: package J (backup/restore) will take real ones; until then nothing is taken and the plan says so */
+export interface SnapshotResult { taken: boolean; message: string; id?: string }
+export interface BackupService {
+  /** can snapshot() take a backup now? */
+  available(): boolean
+  /** called before an in-place solution upgrade (and other destructive environment operations) */
+  snapshot(env: EnvironmentRef, reason: string): Promise<SnapshotResult>
 }

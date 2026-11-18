@@ -62,7 +62,8 @@ describe('solutions', () => {
     expect(yaml).toContain('appbuilder/solution')
     expect(yaml).toContain(Buffer.from('Code,Rate').toString('base64').slice(0, 8))
     expect(yaml).not.toContain('topsecret')
-    const imp = await h.call(A, 'POST', '/api/v1/solutions/import', { yaml, filesAs: 'file' })
+    // asCopy: new instances (the solution itself exists here, so a plain import would be an in-place upgrade)
+    const imp = await h.call(A, 'POST', '/api/v1/solutions/import', { yaml, filesAs: 'file', asCopy: true })
     expect(imp.status, JSON.stringify(imp.body)).toBe(200)
     expect(imp.body.displayName).toBe('Kit (2)')
     const kinds = imp.body.components.map((c: { kind: string }) => c.kind).sort()
@@ -96,7 +97,7 @@ describe('solutions', () => {
     await h.call(M, 'DELETE', `/api/v1/files/${x.file.id}?dropTables=1`)
     await h.call(M, 'DELETE', `/api/v1/tables/${x.child.id}?dropSource=1`)
     await h.call(M, 'DELETE', `/api/v1/tables/${x.tbl.id}?dropSource=1`)
-    const imp = await h.call(A, 'POST', '/api/v1/solutions/import', { yaml, filesAs: 'database' })
+    const imp = await h.call(A, 'POST', '/api/v1/solutions/import', { yaml, filesAs: 'database', asCopy: true })
     expect(imp.status, JSON.stringify(imp.body)).toBe(200)
     expect(imp.body.components.some((c: { kind: string }) => c.kind === 'file')).toBe(false)
     expect(await h.meta.files.list()).toHaveLength(0)
@@ -108,7 +109,7 @@ describe('solutions', () => {
     const clients = (await h.meta.tables.get('Clients'))!
     expect((await h.services.data.query(null, clients, {})).rows).toEqual([])
     // default is database
-    const again = await h.call(A, 'POST', '/api/v1/solutions/import', { yaml })
+    const again = await h.call(A, 'POST', '/api/v1/solutions/import', { yaml, asCopy: true })
     expect(again.body.components.some((c: { kind: string }) => c.kind === 'file')).toBe(false)
     expect((await h.call(A, 'POST', '/api/v1/solutions/import', { yaml, filesAs: 'both' })).status).toBe(422)
   })
@@ -118,7 +119,7 @@ describe('solutions', () => {
     const { yaml } = (await h.call(M, 'GET', `/api/v1/solutions/${x.sol.id}/package`)).body
     const roleCount = (await h.meta.roles.list()).length
     const connCount = (await h.meta.connections.list()).length
-    const imp = await h.call(M, 'POST', '/api/v1/solutions/import', { yaml, filesAs: 'file' })
+    const imp = await h.call(M, 'POST', '/api/v1/solutions/import', { yaml, filesAs: 'file', asCopy: true })
     expect(imp.status, JSON.stringify(imp.body)).toBe(200)
     expect((await h.meta.roles.list()).length).toBe(roleCount)
     expect((await h.meta.connections.list()).length).toBe(connCount)
@@ -134,9 +135,50 @@ describe('solutions', () => {
     const sol = (await h.call(M, 'POST', '/api/v1/solutions', { displayName: 'Boss kit' })).body
     await h.call(M, 'POST', `/api/v1/solutions/${sol.id}/components`, { kind: 'role', id: adminRole.id })
     const { yaml } = (await h.call(M, 'GET', `/api/v1/solutions/${sol.id}/package`)).body
-    const imp = await h.call(A, 'POST', '/api/v1/solutions/import', { yaml })
+    const imp = await h.call(A, 'POST', '/api/v1/solutions/import', { yaml, asCopy: true })
     const r = (await h.meta.roles.get(imp.body.components[0].id))!
     expect(r.isAdmin).toBeUndefined()
     expect(imp.body.warnings.join(' ')).toContain('administrator flag')
+  })
+
+  it('stable ids: a re-import is an in-place upgrade with a plan; destructive changes are flagged; confirm by token', async () => {
+    const sol = (await h.call(M, 'POST', '/api/v1/solutions', { displayName: 'Up', version: '1.0.0' })).body
+    const tbl = (await h.call(M, 'POST', '/api/v1/tables', { displayName: 'Items', columns: [{ displayName: 'Label', type: 'text' }] })).body
+    const app = (await h.call(M, 'POST', '/api/v1/apps', { name: 'Items app', width: 1920, height: 1080 })).body
+    for (const [kind, id] of [['table', tbl.id], ['app', app.id]]) await h.call(M, 'POST', `/api/v1/solutions/${sol.id}/components`, { kind, id })
+    const { yaml } = (await h.call(M, 'GET', `/api/v1/solutions/${sol.id}/package`)).body
+    expect(yaml).toContain(`id: ${sol.id}`)
+    // nothing changed since the export: an upgrade with nothing to do
+    let plan = (await h.call(A, 'POST', '/api/v1/solutions/import/plan', { yaml })).body
+    expect(plan).toMatchObject({ mode: 'upgrade', destructive: false, problems: [], backup: { available: false, message: expect.stringMatching(/No backup/) } })
+    expect(plan.items.map((i: { kind: string; change: string }) => `${i.kind}:${i.change}`).sort()).toEqual(['app:unchanged', 'table:unchanged'])
+    // here a column was added after the export: importing the older package drops it (data loss, flagged)
+    await h.call(M, 'POST', `/api/v1/tables/${tbl.id}/columns`, { displayName: 'Extra', type: 'text' })
+    await h.call(M, 'PATCH', `/api/v1/apps/${app.id}`, { name: 'Renamed here' })
+    plan = (await h.call(A, 'POST', '/api/v1/solutions/import/plan', { yaml })).body
+    const t = plan.items.find((i: { kind: string }) => i.kind === 'table')
+    expect(t).toMatchObject({ change: 'changed', destructive: true, columns: [{ name: 'Extra', change: 'removed', destructive: true }] })
+    expect(plan.items.find((i: { kind: string }) => i.kind === 'app')).toMatchObject({ change: 'changed', note: 'renamed from "Renamed here"' })
+    expect(plan.destructive).toBe(true)
+    // makers may plan; only administrators upgrade in place
+    const mplan = (await h.call(M, 'POST', '/api/v1/solutions/import/plan', { yaml })).body
+    expect(mplan.problems.join(' ')).toMatch(/only administrators/)
+    expect((await h.call(M, 'POST', '/api/v1/solutions/import', { yaml, confirm: mplan.token })).status).toBe(422)
+    // no token, a wrong token: refused, nothing changed
+    expect((await h.call(A, 'POST', '/api/v1/solutions/import', { yaml })).status).toBe(409)
+    expect((await h.call(A, 'POST', '/api/v1/solutions/import', { yaml, confirm: 'x' })).status).toBe(409)
+    expect((await h.meta.tables.get(tbl.id))!.columns.some((c) => c.name === 'Extra')).toBe(true)
+    const done = await h.call(A, 'POST', '/api/v1/solutions/import', { yaml, confirm: plan.token })
+    expect(done.status, JSON.stringify(done.body)).toBe(200)
+    expect(done.body).toMatchObject({ id: sol.id, version: '1.0.0', backup: { taken: false } })
+    expect((await h.meta.tables.get(tbl.id))!.columns.some((c) => c.name === 'Extra')).toBe(false)
+    expect((await h.meta.apps.get(app.id))!.meta.name).toBe('Items app')
+    expect(h.meta.auditLog.some((e) => e.action === 'solution.upgrade')).toBe(true)
+    // the same solution under another id in the package: never matched (new instances, as an install)
+    const other = yaml.replace(`id: ${sol.id}`, 'id: sol_other').replace(new RegExp(tbl.id, 'g'), 'tbl_other').replace(new RegExp(app.id, 'g'), 'app_other')
+    const p2 = (await h.call(A, 'POST', '/api/v1/solutions/import/plan', { yaml: other })).body
+    expect(p2.mode).toBe('install')
+    // a table with the same name and another identity is used as it is
+    expect(p2.items.find((i: { kind: string }) => i.kind === 'table')).toMatchObject({ change: 'unchanged', id: tbl.id })
   })
 })

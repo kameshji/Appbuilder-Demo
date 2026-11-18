@@ -1,13 +1,12 @@
 /**
- * Self-service profile, environments and the admin audit viewer.
+ * Self-service profile and the admin audit viewer (environments: environments.ts).
  *   PATCH /api/v1/auth/profile   { name }  any signed-in user, own display name only -> UserDef
- *   GET   /api/v1/environments           any signed-in user -> { items }  (details for administrators)
- *   GET   /api/v1/audit                  administrators -> AuditPageResponse (newest first, page size 1-200, default 50)
+ *   GET   /api/v1/audit                  administrators of the current environment -> AuditPageResponse (that environment's
+ *                                        audit log; newest first, page size 1-200, default 50)
  */
 import type { UserDef } from '../../../src/platform/contracts.ts'
-import type { AuditPageResponse, EnvironmentsResponse } from '../../../src/platform/http.ts'
-import type { Router, Services } from '../../core/contracts.ts'
-import { listEnvironments } from '../../core/environments.ts'
+import type { AuditPageResponse } from '../../../src/platform/http.ts'
+import type { Ctx, Router, Services } from '../../core/contracts.ts'
 import { bodyObj, invalid, me, notFound, reqString } from './util.ts'
 import { audit } from './tables-core.ts'
 
@@ -29,6 +28,19 @@ function intParam(v: string | null, field: string, def: number, min: number, max
   return n
 }
 
+/** the filters of an audit page request (shared by GET /audit and GET /install/audit) */
+export function auditQuery(ctx: Ctx): { action?: string; userId?: string; from?: string; to?: string; page: number; pageSize: number } {
+  const q = ctx.query
+  const action = (q.get('action') ?? '').trim()
+  if (action.length > 64 || (action && !/^[a-z0-9_.]+$/i.test(action))) throw invalid('"action" must be an action name such as auth.login, or a prefix such as auth.', 'action')
+  const userId = (q.get('user') ?? '').trim()
+  if (userId.length > 64) throw invalid('"user" is not a user id.', 'user')
+  return {
+    action: action || undefined, userId: userId || undefined, from: isoParam(q.get('from'), 'from'), to: isoParam(q.get('to'), 'to'),
+    page: intParam(q.get('page'), 'page', 1, 1, 1_000_000), pageSize: intParam(q.get('pageSize'), 'pageSize', AUDIT_PAGE_SIZE, 1, AUDIT_MAX_PAGE_SIZE),
+  }
+}
+
 export function registerAdminRoutes(router: Router, s: Services): void {
   router.add('PATCH', '/api/v1/auth/profile', async (ctx): Promise<UserDef> => {
     const b = bodyObj(ctx)
@@ -47,22 +59,10 @@ export function registerAdminRoutes(router: Router, s: Services): void {
     return { ...rest, status: rec.status ?? 'active', hasPassword: !!passwordHash }
   }, { auth: 'user' })
 
-  router.add('GET', '/api/v1/environments', async (ctx): Promise<EnvironmentsResponse> => {
-    return { items: await listEnvironments(s, me(ctx)) }
-  }, { auth: 'user' })
-
   router.add('GET', '/api/v1/audit', async (ctx): Promise<AuditPageResponse> => {
-    const q = ctx.query
-    const action = (q.get('action') ?? '').trim()
-    if (action.length > 64 || (action && !/^[a-z0-9_.]+$/i.test(action))) throw invalid('"action" must be an action name such as auth.login, or a prefix such as auth.', 'action')
-    const userId = (q.get('user') ?? '').trim()
-    if (userId.length > 64) throw invalid('"user" is not a user id.', 'user')
-    const from = isoParam(q.get('from'), 'from')
-    const to = isoParam(q.get('to'), 'to')
-    const page = intParam(q.get('page'), 'page', 1, 1, 1_000_000)
-    const pageSize = intParam(q.get('pageSize'), 'pageSize', AUDIT_PAGE_SIZE, 1, AUDIT_MAX_PAGE_SIZE)
+    const { action, userId, from, to, page, pageSize } = auditQuery(ctx)
     const [{ items, total }, actions, users] = await Promise.all([
-      s.meta.auditPage({ action: action || undefined, userId: userId || undefined, from, to, offset: (page - 1) * pageSize, limit: pageSize }),
+      s.meta.auditPage({ action, userId, from, to, offset: (page - 1) * pageSize, limit: pageSize }),
       s.meta.auditActions(),
       s.meta.users.list(),
     ])

@@ -116,11 +116,18 @@ export function useMyAccess(table: TableDef | undefined): MyAccess {
 }
 
 /** capabilities of the signed-in user for portal navigation */
-export function useCaps(): { server: boolean; isAdmin: boolean; isMaker: boolean } {
+/**
+ * isAdmin: administrator of the current environment; isInstallAdmin: install administrator (environments, user
+ * accounts, install audit). Demo mode: the person at the keyboard is everything.
+ */
+export function useCaps(): { server: boolean; isAdmin: boolean; isMaker: boolean; isInstallAdmin: boolean } {
   const session = usePlatform((s) => s.session)
   const mode = usePlatform((s) => s.mode)
-  if (mode !== 'server') return { server: false, isAdmin: true, isMaker: true }
-  return { server: true, isAdmin: !!session?.privileges.isAdmin, isMaker: !!session?.privileges.isAdmin || !!session?.privileges.isMaker }
+  if (mode !== 'server') return { server: false, isAdmin: true, isMaker: true, isInstallAdmin: true }
+  return {
+    server: true, isAdmin: !!session?.privileges.isAdmin, isMaker: !!session?.privileges.isAdmin || !!session?.privileges.isMaker,
+    isInstallAdmin: !!session?.privileges.isInstallAdmin,
+  }
 }
 
 /* ------------------------------------------------------------------ passwords */

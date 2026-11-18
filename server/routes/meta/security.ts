@@ -4,7 +4,7 @@
  */
 import type { AccessScope, ColumnAccess, RoleDef, RowCondition, TableDef, TablePrivilege, UserDef } from '../../../src/platform/contracts.ts'
 import { HttpError } from '../../core/contracts.ts'
-import type { Router, Services, UserContext } from '../../core/contracts.ts'
+import type { Ctx, Router, Services, UserContext } from '../../core/contracts.ts'
 import { checkPasswordPolicy, hashPassword } from '../../core/password.ts'
 import type { UserRecord } from '../../core/contracts.ts'
 import { bodyObj, conflict, invalid, isObj, notFound, optString, reqString } from './util.ts'
@@ -97,6 +97,30 @@ export function assertAdminRemains(users: UserDef[], roles: RoleDef[]): void {
   }
 }
 
+/**
+ * User accounts are install-wide: creating, deleting, renaming, disabling them, setting their password and the
+ * install-administrator flag need an install administrator. Roles are per environment: assigning them needs an
+ * administrator of the current environment (the route's auth level).
+ */
+function requireInstallAdmin(ctx: Ctx, what: string): void {
+  if (!ctx.user?.privileges.isInstallAdmin) throw new HttpError(403, 'denied', `Only install administrators can ${what}. Environment administrators assign roles.`)
+}
+
+/** at least one active install administrator must remain (users after the change) */
+export function assertInstallAdminRemains(users: UserDef[]): void {
+  if (!users.some((u) => u.isInstallAdmin && u.status !== 'disabled')) throw conflict('At least one active user must remain an install administrator.')
+}
+
+async function installAuditOf(s: Services, ctx: Ctx, action: string, details: unknown): Promise<void> {
+  const install = (s as Services & { install?: { audit(e: { userId: string | null; action: string; environmentId?: string | null; details?: unknown }): Promise<void> } }).install
+  if (!s.environments || !install) return
+  try {
+    await install.audit({ userId: ctx.user?.user.id ?? null, action, environmentId: null, details })
+  } catch {
+    /* the environment audit has the change too */
+  }
+}
+
 /** field-by-field before/after of a role for the audit log (privileges per table; only what changed) */
 export function roleDiff(before: RoleX | null, after: RoleX | null): Record<string, { before: unknown; after: unknown }> {
   const out: Record<string, { before: unknown; after: unknown }> = {}
@@ -120,9 +144,9 @@ export function roleDiff(before: RoleX | null, after: RoleX | null): Record<stri
 /** before/after of the audited user fields (never the password hash) */
 function userDiff(before: UserRecord, after: UserRecord): Record<string, { before: unknown; after: unknown }> {
   const out: Record<string, { before: unknown; after: unknown }> = {}
-  for (const k of ['name', 'email', 'status', 'roleIds'] as const) {
-    const x = k === 'status' ? (before.status ?? 'active') : before[k]
-    const y = k === 'status' ? (after.status ?? 'active') : after[k]
+  for (const k of ['name', 'email', 'status', 'roleIds', 'isInstallAdmin'] as const) {
+    const x = k === 'status' ? (before.status ?? 'active') : k === 'isInstallAdmin' ? !!before[k] : before[k]
+    const y = k === 'status' ? (after.status ?? 'active') : k === 'isInstallAdmin' ? !!after[k] : after[k]
     if (JSON.stringify(x) !== JSON.stringify(y)) out[k] = { before: x, after: y }
   }
   return out
@@ -218,7 +242,7 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
 
   /* users */
   const readUserBody = async (b: Record<string, unknown>, existing?: UserRecord) => {
-    const out: { name?: string; email?: string; roleIds?: string[]; status?: 'active' | 'disabled' } = {}
+    const out: { name?: string; email?: string; roleIds?: string[]; status?: 'active' | 'disabled'; isInstallAdmin?: boolean } = {}
     if (!existing || b.name !== undefined) out.name = reqString(b, 'name', 'A user needs a name.', 100)
     if (!existing || b.email !== undefined) {
       const email = reqString(b, 'email', 'A user needs an email address.', 190).toLowerCase()
@@ -238,14 +262,25 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
       if (b.status !== 'active' && b.status !== 'disabled') throw invalid('Status must be active or disabled.', 'status')
       out.status = b.status
     }
+    if (b.isInstallAdmin !== undefined) {
+      if (typeof b.isInstallAdmin !== 'boolean') throw invalid('isInstallAdmin must be true or false.', 'isInstallAdmin')
+      out.isInstallAdmin = b.isInstallAdmin
+    }
     return out
+  }
+  const touched = () => {
+    s.security.invalidate()
+    s.environments?.invalidate()
   }
 
   router.add('POST', '/api/v1/users', async (ctx) => {
+    requireInstallAdmin(ctx, 'create user accounts')
     const b = bodyObj(ctx)
     const f = await readUserBody(b)
+    // roles are those of the current environment: a new user with roles may enter it (MetaStore adds the access)
     const rec: UserRecord = {
       id: s.uid('user'), name: f.name!, email: f.email!, roleIds: f.roleIds ?? [], status: f.status ?? 'active', passwordHash: null,
+      ...(f.isInstallAdmin ? { isInstallAdmin: true } : {}),
     }
     if (b.password !== undefined) {
       rec.passwordHash = await hashPassword(checkPasswordPolicy(b.password, rec.email))
@@ -253,8 +288,9 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
       rec.mustChangePassword = true
     }
     await s.meta.users.insert(rec)
-    s.security.invalidate()
+    touched()
     await audit(s, ctx, 'user.create', { id: rec.id, email: rec.email, name: rec.name, roleIds: rec.roleIds, status: rec.status, passwordSet: !!rec.passwordHash })
+    await installAuditOf(s, ctx, 'install.user_create', { id: rec.id, email: rec.email, environment: ctx.environmentId, isInstallAdmin: !!rec.isInstallAdmin })
     return publicUser(rec)
   }, { auth: 'admin' })
 
@@ -264,37 +300,49 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
     const f = await readUserBody(bodyObj(ctx), user)
     const next: UserRecord = { ...user, ...f }
     const self = ctx.user?.user.id === user.id
+    const account = (['name', 'email', 'status', 'isInstallAdmin'] as const).some((k) => f[k] !== undefined && (k === 'isInstallAdmin' ? !!f[k] !== !!user[k] : f[k] !== (k === 'status' ? (user.status ?? 'active') : user[k])))
+    if (account) requireInstallAdmin(ctx, 'change user accounts')
     if (self && next.status === 'disabled') throw conflict('You cannot disable your own account.')
+    if (self && user.isInstallAdmin && f.isInstallAdmin === false) throw conflict('You cannot remove your own install administrator flag; ask another install administrator.')
     const roles = await s.meta.roles.list()
     const users = (await s.meta.users.list()).map((u) => (u.id === user.id ? next : u))
     assertAdminRemains(users, roles)
+    if (s.environments && (user.isInstallAdmin || f.isInstallAdmin)) assertInstallAdminRemains(users)
     await s.meta.users.update(user.id, f)
     if (next.status === 'disabled' && user.status !== 'disabled') await s.meta.sessions.removeForUser(user.id)
-    s.security.invalidate()
+    touched()
     const changes = userDiff(user, next)
     await audit(s, ctx, 'user.update', { id: user.id, email: next.email, roleIds: next.roleIds, status: next.status, changes })
     if (changes.status) await audit(s, ctx, next.status === 'disabled' ? 'user.disable' : 'user.enable', { id: user.id, email: next.email })
     if (changes.roleIds) await audit(s, ctx, 'user.roles', { id: user.id, email: next.email, before: changes.roleIds.before, after: changes.roleIds.after })
+    if (changes.isInstallAdmin) await installAuditOf(s, ctx, next.isInstallAdmin ? 'install.admin_grant' : 'install.admin_revoke', { id: user.id, email: next.email })
+    if (changes.status) await installAuditOf(s, ctx, next.status === 'disabled' ? 'install.user_disable' : 'install.user_enable', { id: user.id, email: next.email })
     return publicUser(next)
   }, { auth: 'admin' })
 
   router.add('DELETE', '/api/v1/users/:id', async (ctx) => {
     const user = await s.meta.users.get(ctx.params.id)
     if (!user) throw notFound('User not found.')
+    requireInstallAdmin(ctx, 'delete user accounts')
     if (ctx.user?.user.id === user.id) throw conflict('You cannot delete your own account.')
-    assertAdminRemains((await s.meta.users.list()).filter((u) => u.id !== user.id), await s.meta.roles.list())
+    const rest = (await s.meta.users.list()).filter((u) => u.id !== user.id)
+    assertAdminRemains(rest, await s.meta.roles.list())
+    if (s.environments && user.isInstallAdmin) assertInstallAdminRemains(rest)
     await s.meta.sessions.removeForUser(user.id)
     await s.meta.users.remove(user.id)
-    s.security.invalidate()
+    s.security.invalidate('all')
+    s.environments?.invalidate()
     await audit(s, ctx, 'user.delete', { id: user.id, email: user.email, roleIds: user.roleIds, status: user.status ?? 'active' })
+    await installAuditOf(s, ctx, 'install.user_delete', { id: user.id, email: user.email })
     return { ok: true }
   }, { auth: 'admin' })
 
   router.add('POST', '/api/v1/users/:id/password', async (ctx) => {
     const user = await s.meta.users.get(ctx.params.id)
     if (!user) throw notFound('User not found.')
-    const password = checkPasswordPolicy(bodyObj(ctx).password, user.email)
     const self = ctx.user?.user.id === user.id
+    if (!self) requireInstallAdmin(ctx, "set other people's passwords")
+    const password = checkPasswordPolicy(bodyObj(ctx).password, user.email)
     // set by an administrator for someone else: temporary, the user must change it at the next sign-in
     await s.meta.users.update(user.id, { passwordHash: await hashPassword(password), mustChangePassword: !self })
     if (!self) await s.meta.sessions.removeForUser(user.id)

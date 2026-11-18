@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { queryMeta, useVirtualRows } from './virtual'
 import { LayoutList } from 'lucide-react'
 import type { ControlRenderProps, ControlType, FxRecord } from '@/contracts'
 import { cn } from '@/lib/utils'
@@ -26,6 +27,19 @@ function GalleryRender({ props, mode, outputs, setOutput, fire, renderTemplate }
 
   // In design with no data, still show one blank template row so the maker can edit the template.
   const rows: FxRecord[] = design && items.length === 0 ? [{}] : items
+  // server mode: Items may be a paged query result; long lists render only the rows in view and load more on scroll
+  const meta = queryMeta(props.Items)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const perLine = layout === 'grid' ? columns : 1
+  const virtualOn = !design && layout !== 'horizontal' && (!!meta || rows.length > 200)
+  const win = useVirtualRows({
+    count: rows.length, pitch: rowH + gap, perLine, enabled: virtualOn, scrollRef,
+    onNearEnd: meta?.hasMore ? () => void meta.loadMore() : undefined,
+  })
+  const onHorizontalScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget
+    if (meta?.hasMore && !meta.loadingMore && el.scrollLeft + el.clientWidth > el.scrollWidth - 4 * (rowW + gap)) void meta.loadMore()
+  }
 
   // AllItems / VisibleCount outputs; written only when the content really changed (avoids loops).
   const sig = tableSignature(items)
@@ -35,9 +49,10 @@ function GalleryRender({ props, mode, outputs, setOutput, fire, renderTemplate }
       lastSig.current = sig
       setOutput('AllItems', items)
     }
-    if (outputs.VisibleCount !== items.length) setOutput('VisibleCount', items.length)
+    const visible = meta?.count ?? items.length
+    if (outputs.VisibleCount !== visible) setOutput('VisibleCount', visible)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sig, outputs.VisibleCount])
+  }, [sig, outputs.VisibleCount, meta?.count])
 
   const select = (item: FxRecord, i: number) => {
     if (!selectable) return
@@ -67,11 +82,16 @@ function GalleryRender({ props, mode, outputs, setOutput, fire, renderTemplate }
       ? 'overflow-x-auto overflow-y-hidden'
       : 'overflow-y-auto overflow-x-hidden'
 
+  const shown = virtualOn ? rows.slice(win.start, win.end) : rows
+  const spacer = (h: number) => (h > 0 ? <div aria-hidden style={{ height: Math.max(0, h - gap), flexShrink: 0, gridColumn: '1 / -1' }} /> : null)
   return (
     <div
+      ref={scrollRef}
       data-gallery-layout={layout}
+      data-row-count={meta?.count}
       className={cn('relative box-border size-full', overflow, !showBar && '[&::-webkit-scrollbar]:hidden')}
       style={containerStyle}
+      onScroll={layout === 'horizontal' ? onHorizontalScroll : win.onScroll}
     >
       {rows.length === 0 ? (
         <div
@@ -81,7 +101,10 @@ function GalleryRender({ props, mode, outputs, setOutput, fire, renderTemplate }
           {emptyText}
         </div>
       ) : (
-        rows.map((item, i) => {
+        <>
+        {virtualOn && spacer(win.padTop)}
+        {shown.map((item, j) => {
+          const i = j + (virtualOn ? win.start : 0)
           const selected = selectable && selectedIndex === i + 1
           return (
             <div
@@ -100,7 +123,9 @@ function GalleryRender({ props, mode, outputs, setOutput, fire, renderTemplate }
               {renderTemplate ? renderTemplate(item, i) : null}
             </div>
           )
-        })
+        })}
+        {virtualOn && spacer(win.padBottom)}
+        </>
       )}
     </div>
   )

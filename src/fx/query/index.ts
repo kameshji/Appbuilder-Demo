@@ -4,6 +4,7 @@
  */
 export { analyze, type AnalyzeOptions, type AnalyzeResult, type PlannedQuery, type QueryDiagnostic, type ResultShape } from './translate.ts'
 export { explain, describePlan, describeCondition, bindResult, residualScope } from './explain.ts'
-export { executePlan, evaluateConditionV2, naturalCompare, PlanError, type ReferenceResult } from './reference.ts'
-export { encodeCursor, decodeCursor, sortKeyValue, compareKeys, sortSpec, CursorError, type DecodedCursor, type KeyValue } from './cursor.ts'
+export { executePlan, evaluateConditionV2, evaluateNumExpr, naturalCompare, PlanError, QueryEvaluationError, type ReferenceResult } from './reference.ts'
+export { checkPlan, aggregateOutputKinds, type CheckedPlan } from './validate.ts'
+export { encodeCursor, decodeCursor, cursorFromKeys, sortKeyValue, compareKeys, sortSpec, CursorError, type DecodedCursor, type KeyValue } from './cursor.ts'
 export type { DiagCode } from './conditions.ts'

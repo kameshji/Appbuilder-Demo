@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { ChevronRight, CircleAlert, Loader2, Maximize, Minus, Monitor, Plus, Trash2, TriangleAlert } from 'lucide-react'
 import { usePlatform } from '@/platform'
-import { tableRows } from '@/runtime/data'
+import { QUERY_FALLBACK_ROW_CAP } from '@/platform/query'
 import { evaluatorOf, useStore } from '@/runtime/store'
 import { useUi } from '@/runtime/ui'
 import { pathTo, walk } from '@/runtime/util'
@@ -94,12 +94,14 @@ function ViewportSelect() {
   )
 }
 
-/** tables of this app whose query hit the server row cap: the app sees only the rows that were loaded */
+/**
+ * tables of this app on a connection that can't run queries itself (MySQL external, data files, Google Sheets): the
+ * server answers from their first rows only. PostgreSQL tables are never truncated.
+ */
 function useTruncatedWarnings(): string[] {
   const sources = useStore((s) => s.app.dataSources)
   const truncated = usePlatform((s) => s.truncated)
-  usePlatform((s) => s.dataVersion)
-  return (truncated ?? []).filter((t) => (sources ?? []).includes(t)).map((t) => `Data truncated at ${tableRows(t).length} rows: ${t} has more rows than the server returns to apps`)
+  return (truncated ?? []).filter((t) => (sources ?? []).includes(t)).map((t) => `${t}: its connection can't run queries, so formulas only see its first ${QUERY_FALLBACK_ROW_CAP.toLocaleString('en-US')} rows. Move it to the default database to use every row.`)
 }
 
 /** small spinner while the app's tables load from the server */
@@ -133,7 +135,16 @@ function ErrorList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [app, rt, env, ev])
   const runtimeErrors = log.filter((l) => l.kind === 'error')
-  const warnings = useTruncatedWarnings()
+  // server mode: table formulas evaluated in the browser because the table is small (they will fail once it grows)
+  const delegationWarnings = useMemo(() => {
+    const out: ErrItem[] = []
+    walk(app.screens, (node) => {
+      for (const [prop, message] of Object.entries(ev.warningsOf(node))) out.push({ id: `w:${node.id}:${prop}`, nodeId: node.id, nodeType: node.type, prop, label: `${node.name}.${prop}`, message })
+    })
+    return out
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [app, rt, env, ev])
+  const warnings = [...useTruncatedWarnings(), ...delegationWarnings.map((w) => `${w.label}: ${w.message}`)]
   const n = formulaErrors.length + runtimeErrors.length
   return (
     <Popover>

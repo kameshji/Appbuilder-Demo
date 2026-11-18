@@ -23,6 +23,14 @@ import type { AppDef } from '../contracts.ts'
 export const API_BASE = '/api/v1'
 export const CSRF_HEADER = 'X-Appbuilder'
 export const SESSION_COOKIE = 'ab_session'
+/**
+ * Every request names the environment it works in (the id of an EnvironmentDef). The server checks it against the
+ * session's access (403 when the user may not enter it, 404 when it does not exist); without it the server uses the
+ * user's last environment, else Default, else the first one they may enter. GET requests may send `?env=<id>` instead
+ * (attachment links in <img src>), never both with different values.
+ */
+export const ENVIRONMENT_HEADER = 'X-Appbuilder-Environment'
+export const ENVIRONMENT_QUERY = 'env'
 /** server default row cap per query; responses set `truncated` when more rows matched */
 export const DEFAULT_ROW_CAP = 5000
 
@@ -112,10 +120,45 @@ export interface ChangePasswordRequest { current: string; next: string }
 export interface ProfileRequest { name: string }
 
 /**
- * GET /api/v1/environments (any signed-in user) -> { items }. Today one built-in "Default" environment (type
- * production); `details` (database, schema version) for administrators only. More environments arrive with P0.
+ * Environments (docs/dev/data-api.md, docs/admin/environments.md)
+ *   GET    /api/v1/environments                    any signed-in user -> { items, max, canCreate }  (only the ones they may enter)
+ *   POST   /api/v1/environments/:id/select         any signed-in user with access -> EnvironmentDef  (remembered on the user)
+ *   POST   /api/v1/environments                    install admin  EnvironmentCreateRequest -> EnvironmentDef
+ *   GET    /api/v1/environments/:id                install admin or its environment admin -> EnvironmentDetails
+ *   PATCH  /api/v1/environments/:id                install admin  { name?, description?, type?, locked? } -> EnvironmentDef
+ *   DELETE /api/v1/environments/:id                install admin  { confirmName } -> { ok }  (not Default, not the last production)
+ *   GET    /api/v1/environments/:id/access         install admin or its environment admin -> { items: EnvironmentAccessEntry[] }
+ *   PUT    /api/v1/environments/:id/access/:user   same  { isEnvAdmin? } -> EnvironmentAccessEntry
+ *   DELETE /api/v1/environments/:id/access/:user   same -> { ok }  (also removes the user's roles there)
+ *   GET    /api/v1/install/audit                   install admin -> AuditPageResponse (install-level audit: environments, install admins)
  */
-export interface EnvironmentsResponse { items: EnvironmentDef[] }
+export interface EnvironmentsResponse {
+  items: EnvironmentDef[]
+  /** the install's limit (APPBUILDER_MAX_ENVIRONMENTS, default 5) */
+  max?: number
+  /** the caller may create one now (install admin, below the limit, not demo) */
+  canCreate?: boolean
+  /** why canCreate is false, in words */
+  createBlocked?: string
+}
+export interface EnvironmentCreateRequest {
+  name: string
+  type: EnvironmentDef['type']
+  description?: string
+  /** seed the sample tables and app (ignored with copyFrom) */
+  sampleData?: boolean
+  /** id of an environment to copy */
+  copyFrom?: string
+  /** schema: tables, apps, roles, solutions, connections without secrets; data: also rows, attachments, data files */
+  copy?: 'schema' | 'data'
+}
+export interface EnvironmentSizes { tables: number; rowEstimate: number; databaseBytes: number; attachmentBytes: number; attachments: number; files: number }
+export interface EnvironmentDetails extends EnvironmentDef {
+  sizes?: EnvironmentSizes
+  /** users who may enter it */
+  accessCount?: number
+}
+export interface EnvironmentAccessEntry { userId: string; name: string; email: string; isEnvAdmin: boolean; isInstallAdmin?: boolean; grantedOn?: string; grantedBy?: string; status?: 'active' | 'disabled' }
 
 /**
  * GET /api/v1/audit (administrators) -> one page of the audit log, newest first.
@@ -133,6 +176,8 @@ export interface AuditEntry {
   tableId: string | null
   rowId: string | null
   details: unknown
+  /** install-level audit (GET /install/audit): the environment the action was about */
+  environmentId?: string | null
 }
 export interface AuditPageResponse { items: AuditEntry[]; total: number; page: number; pageSize: number; actions: string[] }
 
@@ -235,5 +280,39 @@ export interface SourceTableInfo { source: string; columns: { name: string; type
  *   POST/PATCH/DELETE /api/v1/solutions[/:id]
  *   POST   /api/v1/solutions/:id/components            { kind, id } ; DELETE /api/v1/solutions/:id/components/:kind/:cid
  *   GET    /api/v1/solutions/:id/package?data=1        -> { yaml }   (file components embed their file, base64)
- *   POST   /api/v1/solutions/import                    { yaml, filesAs?: 'database' | 'file' (default 'database') } -> SolutionDef
+ *   POST   /api/v1/solutions/import/plan               { yaml } -> SolutionPlan   (nothing is changed)
+ *   POST   /api/v1/solutions/import                    { yaml, filesAs?, confirm?: SolutionPlan['token'], asCopy? } -> SolutionImportResult
+ *          A package whose solution (same id) or components (same ids) already exist in this environment is an UPGRADE in
+ *          place: it needs `confirm` = the token of the plan the admin reviewed (409 with the plan otherwise, or when the
+ *          environment changed since). asCopy: the old behaviour, new ids for everything.
+ *   POST   /api/v1/solutions/:id/deploy                { target, plan?: true, confirm?, includeData? } -> SolutionPlan | SolutionImportResult
+ *          exports from the current environment and imports into `target` (an environment id) in one step
  */
+export type PlanChange = 'new' | 'changed' | 'unchanged' | 'removed'
+export interface PlanColumnChange { name: string; change: 'added' | 'removed' | 'type' | 'changed'; from?: string; to?: string; destructive?: boolean }
+export interface PlanItem {
+  kind: 'app' | 'table' | 'role' | 'connection' | 'file'
+  id: string
+  name: string
+  change: PlanChange
+  /** dropping a table or column (data loss), or a type change that may not convert */
+  destructive?: boolean
+  /** words for the admin: what will happen */
+  note?: string
+  columns?: PlanColumnChange[]
+}
+export interface SolutionPlan {
+  mode: 'install' | 'upgrade' | 'copy'
+  solution: { id: string; name: string; displayName: string; version: string; fromVersion?: string }
+  target: { id: string; name: string; type: EnvironmentDef['type']; locked?: boolean }
+  items: PlanItem[]
+  destructive: boolean
+  /** blocking problems: the import is refused while there are any */
+  problems: string[]
+  warnings: string[]
+  /** pre-upgrade snapshot: whether one will be taken (package J); otherwise a visible "no backup taken" warning */
+  backup: { available: boolean; message: string }
+  /** pass back as `confirm` to apply exactly this plan */
+  token: string
+}
+export type SolutionImportResult = SolutionDef & { warnings?: string[]; plan?: SolutionPlan; backup?: { taken: boolean; message: string } }

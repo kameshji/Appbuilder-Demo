@@ -1,4 +1,4 @@
-# Data API v1
+# Data API v1 (and the v2 query)
 
 This is the HTTP contract between the browser and a backend. The local Node server implements it today
 (`/home/claude/appbuilder-demo/server/core/*`, `/home/claude/appbuilder-demo/server/routes/meta/*`). **The planned PHP gateway for
@@ -11,9 +11,9 @@ Sources of truth, in order: the code in `server/core/router.ts` and the `router.
 written by hand from them. Where a doc comment in `http.ts` disagrees with the code, the code is described here (see the
 "Known differences" list at the end).
 
-What is not supported: there is no API for per-row sharing, no bulk update, no server-side aggregation (`GroupBy`, `Sum` run in the
-browser over at most 5,000 rows), no websockets or server push, no pagination cursors (use `skip` and `top`), and no API tokens
-(session cookie only).
+What is not supported: there is no API for per-row sharing, no bulk update, no websockets or server push, and no API tokens (session
+cookie only). Filtering, sorting, search, keyset paging, exact counts and aggregates run on the server through
+[`POST /api/v1/query`](#post-query-user-data-api-v2) (Query v2, P0 package D); `POST /data/:table/query` (v1) stays for one phase.
 
 ## Conventions
 
@@ -56,9 +56,20 @@ browser over at most 5,000 rows), no websockets or server push, no pagination cu
   `currency` is rounded to 4 decimals, `number` must be an integer, `decimal` is a double. Booleans accept `true/false/1/0/yes/no/y/n`
   on input. `text`, `email`, `phone`, `choice`, `url` are limited to 255 chars (`url` 1024), `multiline` to 16,000,000. Attachment cells
   hold an attachment id or a JSON array of ids. Details: `/home/claude/appbuilder-demo/server/core/values.ts`.
-- **Row cap.** A query returns at most `DEFAULT_ROW_CAP` = 5000 rows. If more rows match, the server returns 5000 and
-  `truncated: true`. The client never pages through; it works on the first 5,000 rows (decision D10).
+- **Row cap (v1 only).** A v1 query returns at most `DEFAULT_ROW_CAP` = 5000 rows. If more rows match, the server returns 5000 and
+  `truncated: true`. Since package D the browser uses v1 only to hold small tables (at most 2,000 readable rows) whole; everything
+  else goes through `POST /query`, which pages with a keyset cursor (decision D10 is superseded by D15).
 - **Timestamps in metadata** (`createdOn`, `modifiedOn`, `lastLogin`, `expiresOn`) are ISO-8601 strings.
+- **Environment.** Every request works in one [environment](../admin/environments.md). Name it with the header
+  `X-Appbuilder-Environment: <id>` (or `?env=<id>` on a `GET`, for links such as attachment URLs; both with different values: 400).
+  The server checks it against the session: an unknown id 404, one the user may not enter 403, one that is not ready (failed,
+  being created or deleted) 503 with the reason, a malformed id 400. Without it the server uses the user's last environment
+  (`POST /environments/:id/select`), else Default, else the first one they may enter. A user who may enter no environment gets 403
+  except on `GET /auth/session`, `POST /auth/password`, `GET /environments`, `POST /environments/:id/select`, `GET /workspace` (an
+  empty workspace) and the environment admin routes. `Session.environmentId` says which one the privileges belong to.
+- **Locked environments.** In a locked production environment the routes that change its design (apps, tables, columns, roles,
+  solutions and their components, data files, linking a table; `DESIGN_ROUTES` in `server/core/router.ts`) answer 403 `denied`
+  ("This environment is locked ..."), for everybody. Data, users, connections, `POST /solutions/import` and deploying into it work.
 
 ### curl setup used by every example
 
@@ -85,10 +96,11 @@ Every later example uses `-b $JAR` (and `-c $JAR` where the cookie changes).
 | `GET /auth/session` | user | none | `Session` |
 | `POST /auth/password` | user | `{ current, next }` | `Session` (a new cookie; every other session of that user is removed) |
 | `PATCH /auth/profile` | user | `{ name }` | `UserDef`. Self-service: only the caller's own display name (1-100 characters, trimmed); any other field is refused with 422. Audited as `user.profile` when the name changed |
-| `GET /environments` | user | none | `{ items: EnvironmentDef[] }`: today one built-in environment `{ id: 'default', name: 'Default', type: 'production', builtIn: true, createdOn? }`; administrators also get `details: { database, schemaVersion }`. `GET /workspace` carries the same list as `environments` |
+| `GET /environments` | user | none | `{ items: EnvironmentDef[], max, canCreate, createBlocked? }`: see [Environments](#environments). `GET /workspace` carries the same list as `environments` |
 
-`Session` is `{ user: UserDef, privileges: EffectivePrivileges, expiresOn }`.
-`EffectivePrivileges` is `{ isAdmin, isMaker, tables: { [tableId]: { create, read, update, delete, columns, filtered } }, apps: string[] | 'all' }` where
+`Session` is `{ user: UserDef, privileges: EffectivePrivileges, expiresOn, environmentId }`.
+`EffectivePrivileges` is `{ isAdmin, isInstallAdmin?, isMaker, tables: { [tableId]: { create, read, update, delete, columns, filtered } }, apps: string[] | 'all' }`
+(`isAdmin`: administrator of the session's environment; `isInstallAdmin`: install administrator) where
 `columns` lists only columns whose effective access is not `update`, and `filtered` is true when a granting role carries a row filter.
 
 Errors and rules:
@@ -148,6 +160,41 @@ curl -sS -b $JAR $BASE/workspace
 A table is addressed by **id or name** (`:table`). A caller who has no privilege on a table at all gets 404, not 403, so table
 names do not leak (`ensureTableVisible` in `/home/claude/appbuilder-demo/server/core/data-routes.ts`). Semantics of the checks are in
 `security-engine.md`.
+
+### `POST /query` (user): Data API v2
+
+Body `{ plan: QueryPlan }` (`src/platform/query.ts`; semantics in `query-v2.md`). The table is `plan.table` (name or id); a caller
+with no privilege on it gets 404 as for v1. Response `QueryV2Response`: `{ rows, count?, nextCursor?, truncated? }`.
+
+- **Plan.** `filter` (ConditionV2: `isNull`, `eq ne lt le gt ge` with a literal of the column's kind, `in`, `contains`, `startsWith`,
+  `endsWith`, `cmpCol`, `cmpExpr` over computed numbers, `and`, `or`, `not`, `const`), `search { text, columns }`, `sort [{ col, dir }]`,
+  `take { n, from }`, `aggregate { groupBy, measures, sort?, as? }` (measures `sum avg min max` over a number column or an expression,
+  `count` with an optional filter), `select`, `count`, `single`, `page { size, cursor? }`. Stages: filter and search, sort, take,
+  aggregate, select, count / single / page.
+- **Rows.** Values as in v1 (dates `YYYY-MM-DD`, datetimes ISO). Rows plans always include `id`; without `select` every column the
+  caller may read. Aggregate rows have the group columns (renamed by `as`) and the measures (numbers; `avg` of nothing is `null`).
+- **Paging.** `page.size` 0..500; `nextCursor` is the opaque cursor of the next page or `null` on the last one. Send the same plan with
+  `page.cursor` for the next page. `count: true` adds the exact number of result rows (after take and aggregate, before paging).
+- **Security.** RBAC, the caller's row scope and role row filters are part of the one SQL statement on PostgreSQL, so rows, counts
+  and aggregates only cover rows the caller may read. A column the caller may not read (column access `none`) named anywhere in the
+  plan (select, filter, sort, search, groupBy, measures, measure filters) is 403 `denied` with `field` = the column.
+- **Errors.** 422 `invalid` for a malformed plan (unknown column or operator, a literal of the wrong kind, `page.size` above 500, a
+  cursor for another sort or a forged one), an unpaged rows plan with more than 5,000 rows, an aggregate with more than 5,000 groups,
+  division by zero or an out-of-range number ("That result isn't a valid number"); 503 `unavailable` when the query runs longer than
+  the statement timeout (15 s, `APPBUILDER_QUERY_TIMEOUT_MS`).
+- **Connectors.** PostgreSQL tables (the default connection and external PostgreSQL connections) run the plan in the database. MySQL,
+  data files and Google Sheets run it over at most the first 5,000 readable rows and say `truncated: true` when there were more
+  (`query-v2.md` section 14).
+
+```bash
+curl -sS -b $JAR -H "$H" -H "$JSON" \
+  -d '{"plan":{"version":2,"table":"Tickets","filter":{"col":"Status","op":"eq","value":"open"},"sort":[{"col":"Due","dir":"asc"}],"count":true,"page":{"size":50}}}' \
+  $BASE/query
+# next page: the same plan with "page":{"size":50,"cursor":"<nextCursor>"}
+curl -sS -b $JAR -H "$H" -H "$JSON" \
+  -d '{"plan":{"version":2,"table":"Orders","aggregate":{"groupBy":["Region"],"measures":[{"name":"Revenue","fn":"sum","expr":{"fn":"mul","args":[{"col":"Qty"},{"col":"Price"}]}}]}}}' \
+  $BASE/query
+```
 
 ### `POST /data/:table/query` (user)
 
@@ -246,8 +293,10 @@ curl -sS -b $JAR -o tickets.csv $BASE/tables/Tickets/csv
 
 ## Attachments (user)
 
-Attachment cells (`file`, `image`) hold ids of the form `att_<random>`. Bytes live in the attachment store
-(`workspace/attachments/<xx>/<key>`), metadata in `ab_attachments`.
+Attachment cells (`file`, `image`) hold ids of the form `att_<random>`. Bytes live in the attachment store of the environment
+(`workspace/env/<environment>/attachments/<xx>/<key>`), metadata in its `ab_attachments`. `AttachmentRef.url` names the environment
+(`/api/v1/attachments/<id>?env=<environment>`), so a link opened without the header reads from the right one; an id from another
+environment answers 404.
 
 | Method and path | Request | Response |
 | --- | --- | --- |
@@ -389,8 +438,8 @@ curl -sS -b $JAR -H "$H" -X POST $BASE/connections/conn_abc/test
 | `POST /roles` | `{ name, description?, isAdmin?, isMaker?, privileges?, apps? }` | `RoleDef` |
 | `PATCH /roles/:id` | any of the same fields | `RoleDef` |
 | `DELETE /roles/:id` | none | `{ ok: true }` |
-| `POST /users` | `{ name, email, roleIds?, status?, password? }` | `UserDef` |
-| `PATCH /users/:id` | `{ name?, email?, roleIds?, status? }` | `UserDef` |
+| `POST /users` | `{ name, email, roleIds?, status?, password?, isInstallAdmin? }` (install admin) | `UserDef` |
+| `PATCH /users/:id` | `{ name?, email?, roleIds?, status?, isInstallAdmin? }` | `UserDef` |
 | `DELETE /users/:id` | none | `{ ok: true }` |
 | `POST /users/:id/password` | `{ password }` | `{ ok: true }` |
 | `GET /security/preview?user=<userId>` | none | `{ user, isAdmin, isMaker, status, items, tables }` |
@@ -400,8 +449,12 @@ curl -sS -b $JAR -H "$H" -X POST $BASE/connections/conn_abc/test
   access map and `rowFilter` conditions). Validation: table ids must exist, scopes and column access must be valid, the `id` column
   cannot be hidden, `rowFilter` columns must exist, and the tokens must be exactly `@me` or `@myEmail`. Admin roles store no
   privileges. `apps` is `'all'` or a list of existing app ids.
-- Guard (`assertAdminRemains`): after any change at least one active user must still hold an admin role (409 otherwise); a user
-  cannot disable or delete themselves. Role and user names/emails are unique (409).
+- Accounts are install-wide: `POST /users`, `DELETE /users/:id`, setting someone else's password, and changing `name`, `email`,
+  `status` or `isInstallAdmin` need an **install administrator** (403 otherwise). `roleIds` are the roles in the request's
+  environment and need its administrator (the route's `admin` level); giving a user a role there also gives them access to it.
+- Guards: `assertAdminRemains`, after any change at least one active user must still hold an admin role in the environment;
+  `assertInstallAdminRemains`, at least one active install administrator must remain (409 otherwise); a user cannot disable or
+  delete themselves or remove their own install-admin flag. Role and user names/emails are unique (409).
 - A password set by an admin removes all sessions of that user (unless it is the admin's own).
 - `audit`: `action` is an exact action name or a prefix ending in `.` (`auth.`); `user` a user id; `from` (inclusive) and
   `to` (exclusive) a date (`2026-11-18`) or an ISO timestamp; `page` from 1; `pageSize` 1-200 (default 50). Bad values
@@ -427,14 +480,80 @@ curl -sS -b $JAR "$BASE/security/preview?user=user_abc"
 | `POST /solutions/:id/components` | `{ kind: 'app'\|'table'\|'role'\|'connection'\|'file', id }` | `SolutionDef` |
 | `DELETE /solutions/:id/components/:kind/:cid` | none | `SolutionDef` |
 | `GET /solutions/:id/package?data=1` | none | `{ yaml }` (file components embed the file as base64) |
-| `POST /solutions/import` | `{ yaml, filesAs?: 'database' \| 'file' }` (default `database`) | `SolutionDef`, plus `warnings` when something was skipped |
+| `POST /solutions/import/plan` | `{ yaml, asCopy? }` | `SolutionPlan` (nothing is changed) |
+| `POST /solutions/import` | `{ yaml, filesAs?: 'database' \| 'file', confirm?, asCopy? }` (default `database`) | `SolutionImportResult`: the `SolutionDef`, `warnings?`, `plan`, `backup?: { taken, message }` |
+| `POST /solutions/:id/deploy` | `{ target, plan?: true, confirm?, includeData?, filesAs? }` | `plan: true`: the `SolutionPlan` in `target`; otherwise `SolutionImportResult` |
 
-Import creates new instances only; roles and connections are imported only when the caller is an admin (the admin flag is not
-imported, and connections arrive without secrets, with a warning). `POST /solutions/import` accepts bodies up to 40 MB
-(`maxBodyMB: 40`).
+**Stable ids** (`server/routes/meta/alm.ts`). A package carries the solution's id (`solution.id`) and its components' ids. Importing
+matches them in the request's environment:
+
+- nothing matches: **install** (`plan.mode: 'install'`), components are created with the package's ids; no `confirm` needed;
+- the solution or any app or table matches by id: **upgrade in place** (`'upgrade'`). The request needs `confirm` equal to
+  `plan.token` of a plan computed for the same package and the same state of the environment (409 `conflict` without it or when
+  something changed meanwhile), and an administrator of the environment (a problem in the plan otherwise). Roles matching by id do
+  not make it an upgrade (the built-in ones have the same ids everywhere).
+
+`SolutionPlan` is `{ mode, solution: { id, name, displayName, version, fromVersion? }, target: { id, name, type, locked? }, items,
+destructive, problems, warnings, backup: { available, message }, token }`. Each item `{ kind, id, name, change: 'new' | 'changed' |
+'unchanged' | 'removed', destructive?, note?, columns? }`; `columns` (tables) are `{ name, change: 'added' | 'removed' | 'type' |
+'changed', from?, to?, destructive? }`. Dropped tables and columns are `destructive`. `removed` comes from the previous version of
+the solution in that environment (its components the package no longer has). Any `problems` refuse the import with 422.
+
+Applying runs in **one transaction** (`Services.transaction`; PostgreSQL DDL included): new tables are created (rows from the
+package only into them), changed tables get their columns dropped, added (with defaults and autonumbers filled), and converted
+(every value is checked first; one that does not convert stops everything, 422), apps are replaced, roles get their privileges on
+the solution's tables and their apps replaced (others kept, the admin flag never imported), removed apps, roles and tables are
+deleted. Before it, `backup.snapshot(environment)` is called (`server/core/backup.ts`): today it takes no backup and the plan and
+the result say so. Audited as `solution.install` / `solution.upgrade` in the environment and, for a deployment, `solution.deploy`
+in `ab.audit`.
+
+`asCopy: true`, and packages without a solution id (exported before 0.5), keep the old behaviour: new instances only (new ids, unique
+names, tables reused by name), audited as `solution.import`. Roles and connections are imported only when the caller is an admin
+(the admin flag is not imported, and connections arrive without secrets, with a warning). Bodies up to 40 MB (`maxBodyMB: 40`).
+
+`deploy` exports the solution from the request's environment (`includeData`: rows for tables the deployment creates) and imports it
+into `target` in one request; the caller needs access to the target and the Maker role there (an upgrade: its administrator).
 
 ```bash
 curl -sS -b $JAR "$BASE/solutions/sol_abc/package?data=1" -o pkg.json
+```
+
+## Environments
+
+| Method and path | Who | Request | Response |
+| --- | --- | --- | --- |
+| `GET /environments` | user | none | `{ items: EnvironmentDef[], max, canCreate, createBlocked? }`: only the environments the caller may enter (install admins: all) |
+| `POST /environments/:id/select` | user with access | none | `EnvironmentDef`; stored as the user's last environment |
+| `POST /environments` | install admin | `{ name, type, description?, sampleData?, copyFrom?, copy?: 'schema' \| 'data' }` | `EnvironmentDef` |
+| `GET /environments/:id` | install admin or its environment admin | none | `EnvironmentDetails`: the def plus `sizes: { tables, rowEstimate, databaseBytes, attachmentBytes, attachments, files }`, `accessCount` |
+| `PATCH /environments/:id` | install admin | `{ name?, description?, type?, locked? }` | `EnvironmentDef` |
+| `DELETE /environments/:id` | install admin | `{ confirmName }` (the environment's name, exactly) | `{ ok: true }` |
+| `GET /environments/:id/access` | install admin or its environment admin | none | `{ items: EnvironmentAccessEntry[] }` (`userId, name, email, isEnvAdmin, isInstallAdmin?, grantedOn?, grantedBy?, status`; install admins are listed without `grantedOn`) |
+| `PUT /environments/:id/access/:userId` | same | `{ isEnvAdmin? }` | `{ ok: true }` |
+| `DELETE /environments/:id/access/:userId` | same | none | `{ ok: true }` |
+| `GET /install/audit?action=&user=&environment=&from=&to=&page=&pageSize=` | install admin | none | like `GET /audit`; items also carry `environmentId` |
+
+`EnvironmentDef` is `{ id, name, type: 'production' | 'sandbox' | 'developer', builtIn, createdOn?, description?, state?
+('creating' | 'deleting' | 'failed'; absent: ready), locked?, canManage?, details?: { database, schemaVersion, schema, createdBy?,
+error? } }` (`details` for install admins and the environment's admins).
+
+- **Create**: the id is a slug of the name (unique; the schema is `env_<id>`). 409 for a duplicate name or at the limit
+  (`APPBUILDER_MAX_ENVIRONMENTS`, default 5); 404 for an unknown `copyFrom`. The schema, built-in roles and connections, the copy
+  (`INSERT ... SELECT` inside the database; files copied with the data) or the sample, and the creator's Administrator role are
+  made in one transaction; on failure nothing is left and the environment is listed as `failed` with the reason. A copy takes no
+  user roles, no audit and no secrets of connections to other systems.
+- **Patch**: the last production environment cannot change type (409); `locked` only for production (422); a type other than
+  production unlocks.
+- **Delete**: refused (409) for Default, the last production environment, an environment that is being created or deleted, and
+  from a request that works in it (switch first). Drops the schema, removes the folder `workspace/env/<id>/` and the access rows.
+- **Access**: `PUT` adds the access row; `isEnvAdmin: true` gives the user the Administrator role there, `false` takes their admin
+  roles there away (the last one is guarded). `DELETE` removes the row and every role the user held there.
+- Every change is audited in `ab.audit` (`environment.*`).
+
+```bash
+curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"name":"Sales test","type":"sandbox","copyFrom":"default","copy":"schema"}' $BASE/environments
+curl -sS -b $JAR -H "$H" -H 'X-Appbuilder-Environment: sales_test' $BASE/workspace
+curl -sS -b $JAR -H "$H" -H "$JSON" -H 'X-Appbuilder-Environment: sales_test' -d '{"target":"default","plan":true}' $BASE/solutions/sol_abc/deploy
 ```
 
 ## Data files (maker, device only)

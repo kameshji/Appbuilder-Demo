@@ -81,14 +81,15 @@ planned modules; they open a short page about what they will do and in which pha
 The right end of the top bar, in this order:
 
 - **Chat**: opens and closes the chat panel.
-- **Environment**: shows the environment you work in, for example *Default · Production*. Today every installation has
-  one, the built-in *Default*; separate Dev, Test and Prod environments are planned (P0). Administrators find
+- **Environment**: shows the environment you work in, for example *Default* with a red *Production* badge. Every
+  installation has the built-in *Default*; administrators can add Sandbox and Developer environments, and the list shows the
+  ones you may enter. Pick one to switch (see [Environments](../admin/environments.md)). Administrators find
   **Manage environments** at the bottom of this menu.
 - **Your avatar** (the circle with your initials, last): hover for your name and email; click for **Profile settings**,
   **Settings**, **Change password** and **Sign out**. In demo mode this menu lists the people you can switch to instead.
 
 ![Avatar menu](../images/shell-avatar-menu.png)
-![Environment picker](../images/shell-environment-picker.png)
+![Environment picker](../images/environments-picker.png)
 
 **Settings** is at the bottom of the left menu (your name and a gear), in both modes; the avatar menu opens it too,
 also from the Studio. It fills the window, has its own list of sections (Profile, Appearance, Language and region,

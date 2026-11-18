@@ -68,8 +68,8 @@ export function checkSource(n: string): string {
 export const tableId = (d: Dialect, def: Pick<TableDef, 'name' | 'source'>): string => `${quoteId(d.schema)}.${quoteId(physicalName(def))}`
 
 /** an index name, unique inside the schema (PostgreSQL index names are per schema, not per table) */
-export function indexName(table: string, kind: 'unique' | 'index', col: string): string {
-  const base = `${kind === 'unique' ? 'uq' : 'ix'}_${table}_${col}`
+export function indexName(table: string, kind: 'unique' | 'index' | 'key' | 'keydesc' | 'trgm', col: string): string {
+  const base = `${kind === 'unique' ? 'uq' : kind === 'key' ? 'kx' : kind === 'keydesc' ? 'kd' : kind === 'trgm' ? 'tg' : 'ix'}_${table}_${col}`
   if (base.length <= 63) return base
   const h = createHash('sha1').update(`${table}\u0000${col}`).digest('hex').slice(0, 10)
   return `${base.slice(0, 52)}_${h}`
@@ -144,6 +144,73 @@ export function fold(d: Dialect, expr: string): string {
 }
 
 /**
+ * Query v2: the normalised sort key of a column (docs/dev/query-v2.md section 5). v2 conditions compare this same
+ * expression (plus `col IS NOT NULL`), so one index on (key, natural order) serves filters, sorts and keyset seeks.
+ */
+export function sortKeyExpr(d: Dialect, type: ColumnType, q: string): string {
+  switch (kindOf(type)) {
+    case 'text': return `COALESCE(${fold(d, q)}, '') COLLATE "C"`
+    case 'num': return `COALESCE(${q}, 0)`
+    case 'bool': return `COALESCE(${q}::int, 0)`
+    case 'date': return `COALESCE(${q}, '-infinity'::date)`
+    case 'datetime': return `COALESCE(${q}, '-infinity'::timestamptz)`
+  }
+}
+
+/** Query v2 natural order tie-breakers: createdOn (NULL first) then id (code point order) */
+export function naturalTerms(def: Pick<TableDef, 'missingSystem'>, prefix = ''): string[] {
+  const missing = new Set(def.missingSystem ?? [])
+  const out: string[] = []
+  if (!missing.has('createdOn')) out.push(`COALESCE(${prefix}"createdOn", '-infinity'::timestamptz)`)
+  if (!missing.has('id')) out.push(`${prefix}"id" COLLATE "C"`)
+  return out
+}
+
+/** the natural-order index of a table (unsorted pages and every tie-break) */
+export function naturalIndexSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 'missingSystem'>, concurrently = false): string | null {
+  const nat = naturalTerms(def)
+  if (!nat.length) return null
+  return `CREATE INDEX ${concurrently ? 'CONCURRENTLY ' : ''}IF NOT EXISTS ${quoteId(indexName(physicalName(def), 'index', 'natural'))} ON ${tableId(d, def)} (${nat.join(', ')})`
+}
+
+/**
+ * Query v2 key index of a column: (sort key, createdOn, id). Created by default for lookup and unique columns and for
+ * columns a maker marks `indexed`.
+ */
+export function wantsKeyIndex(col: ColumnDef): boolean {
+  if (col.system || NO_INDEX.includes(col.type)) return false
+  return col.type === 'lookup' || !!col.unique || !!col.indexed
+}
+
+export function keyIndexSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 'missingSystem'>, col: ColumnDef, desc = false): string {
+  const key = sortKeyExpr(d, col.type, quoteId(col.name)) + (desc ? ' DESC' : '')
+  return `CREATE INDEX IF NOT EXISTS ${quoteId(indexName(physicalName(def), desc ? 'keydesc' : 'key', col.name))} ON ${tableId(d, def)} (${[key, ...naturalTerms(def)].join(', ')})`
+}
+
+/**
+ * Key indexes a column wants: (key, natural) for filters, ascending sorts and seeks; for columns marked `indexed` also
+ * (key DESC, natural), because a descending sort still breaks ties by natural order ASCENDING, which a backward scan of
+ * the first index cannot give.
+ */
+export function keyIndexesSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 'missingSystem'>, col: ColumnDef, trgmSchema?: string | null): { create: string[]; drop: string[] } {
+  const table = physicalName(def)
+  const dropOf = (k: 'key' | 'keydesc' | 'trgm') => `DROP INDEX IF EXISTS ${quoteId(d.schema)}.${quoteId(indexName(table, k, col.name))}`
+  if (!wantsKeyIndex(col)) return { create: [], drop: [dropOf('key'), dropOf('keydesc'), dropOf('trgm')] }
+  if (!col.indexed) return { create: [keyIndexSql(d, def, col)], drop: [dropOf('keydesc'), dropOf('trgm')] }
+  const create = [keyIndexSql(d, def, col), keyIndexSql(d, def, col, true)]
+  const drop: string[] = []
+  // text columns marked indexed: a trigram index makes "contains" and Search fast (needs the pg_trgm extension)
+  if (kindOf(col.type) === 'text' && trgmSchema) create.push(trigramIndexSql(d, def, col, trgmSchema))
+  else drop.push(dropOf('trgm'))
+  return { create, drop }
+}
+
+/** GIN trigram index on a text column's key (pg_trgm installed in `trgmSchema`) */
+export function trigramIndexSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 'missingSystem'>, col: ColumnDef, trgmSchema: string): string {
+  return `CREATE INDEX IF NOT EXISTS ${quoteId(indexName(physicalName(def), 'trgm', col.name))} ON ${tableId(d, def)} USING gin ((${sortKeyExpr(d, col.type, quoteId(col.name))}) ${quoteId(trgmSchema)}.gin_trgm_ops)`
+}
+
+/**
  * CREATE INDEX for a column. Text kinds are indexed on their lowercased form, which is what conditions compare
  * (case-insensitive uniqueness like MySQL's _ci collations; lookups and owner filters use the index).
  */
@@ -156,7 +223,7 @@ export function createIndexSql(d: Dialect, def: Pick<TableDef, 'name' | 'source'
 /** DROP INDEX for both possible index names of a column (before a type change or rename) */
 export function dropIndexesSql(d: Dialect, def: Pick<TableDef, 'name' | 'source'>, colName: string): string[] {
   const table = physicalName(def)
-  return (['unique', 'index'] as const).map((k) => `DROP INDEX IF EXISTS ${quoteId(d.schema)}.${quoteId(indexName(table, k, colName))}`)
+  return (['unique', 'index', 'key', 'keydesc', 'trgm'] as const).map((k) => `DROP INDEX IF EXISTS ${quoteId(d.schema)}.${quoteId(indexName(table, k, colName))}`)
 }
 
 /** Columns of the physical table: system columns first, then the user columns (a def that already lists them wins). */
@@ -172,8 +239,8 @@ export function allColumns(def: TableDef): ColumnDef[] {
   return out
 }
 
-/** CREATE TABLE plus its indexes (run them in one transaction) */
-export function createTableSql(d: Dialect, def: TableDef): string[] {
+/** CREATE TABLE plus its indexes (run them in one transaction); `trgmSchema`: where pg_trgm is installed, if it is */
+export function createTableSql(d: Dialect, def: TableDef, trgmSchema?: string | null): string[] {
   const cols = allColumns(def)
   const lines: string[] = []
   const seen = new Set<string>()
@@ -187,7 +254,10 @@ export function createTableSql(d: Dialect, def: TableDef): string[] {
   for (const c of cols) {
     const w = wantedIndex(c)
     if (w) out.push(createIndexSql(d, def, c, w))
+    out.push(...keyIndexesSql(d, def, c, trgmSchema).create)
   }
+  const nat = naturalIndexSql(d, def)
+  if (nat) out.push(nat)
   return out
 }
 
@@ -284,7 +354,7 @@ class Cols {
 }
 
 /** parameter list with typed placeholders */
-class Params {
+export class Params {
   list: unknown[] = []
   add(v: unknown, cast: string): string {
     this.list.push(v)

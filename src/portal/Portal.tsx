@@ -25,7 +25,7 @@ import { useChatDock } from '@/chat/dock'
 import { MyApps, useTabSync } from './UserMode'
 import { moduleByKey, type ShellMode } from './modules'
 import { useCaps } from './security'
-import { readMode, useUserKey, useWorkspace, writeMode } from './workspace'
+import { readMode, useUserKey, useWorkspace, useWorkspaceKey, writeMode } from './workspace'
 
 function DevPage({ route }: { route: PortalRoute }) {
   const caps = useCaps()
@@ -89,6 +89,7 @@ function Frame({ route }: { route: Route }) {
   const caps = useCaps()
   const canDev = caps.isAdmin || caps.isMaker
   const user = useUserKey()
+  const wsKey = useWorkspaceKey()
   // the user's preferences first: the start mode below depends on them (first render; later user changes in an effect)
   useState(() => usePrefs.getState().load(user))
   useEffect(() => usePrefs.getState().load(user), [user])
@@ -109,9 +110,12 @@ function Frame({ route }: { route: Route }) {
   const first = useRef(true)
 
   useEffect(() => {
-    useWorkspace.getState().load(user)
     if (canDev) setMode(startMode())
   }, [user, canDev])
+  // app tabs belong to the environment: another environment's tabs are closed (unmounted) and its own come back
+  useEffect(() => {
+    useWorkspace.getState().load(wsKey)
+  }, [wsKey])
 
   // redirects: end users only have User mode; a maker opening the bare address returns to the last mode
   const bare = first.current && (location.hash === '' || location.hash === '#')

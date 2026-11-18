@@ -7,6 +7,7 @@ import { HttpError } from './contracts.ts'
 import type { Ctx, UserContext } from './contracts.ts'
 import type { DataFileDef, TableDef } from '../../src/platform/contracts.ts'
 import type { QueryResponse, RowResponse, WorkspaceResponse } from '../../src/platform/http.ts'
+import type { QueryV2Response } from '../../src/platform/query.ts'
 import type { ApiRouter } from './router.ts'
 import type { CoreServices } from './services.ts'
 import { hasAnyTableAccess } from './security.ts'
@@ -36,6 +37,21 @@ function csvFileName(name: string): string {
 }
 
 export function dataRoutes(router: ApiRouter, services: CoreServices): void {
+  /**
+   * Data API v2 query (docs/dev/data-api.md, docs/dev/query-v2.md): body { plan }. The table is plan.table (name or id).
+   * RBAC, the caller's row scope and row filters, and column-level security are applied by the DataService.
+   */
+  router.add('POST', '/query', async (ctx): Promise<QueryV2Response> => {
+    const b = body(ctx)
+    const plan = b.plan
+    if (!plan || typeof plan !== 'object' || Array.isArray(plan)) throw new HttpError(422, 'invalid', 'The body must be { plan }.', 'plan')
+    const name = (plan as { table?: unknown }).table
+    if (typeof name !== 'string' || !name) throw new HttpError(422, 'invalid', 'The plan needs a table.', 'plan.table')
+    const t = await tableParam(services, name)
+    ensureTableVisible(ctx.user!, t)
+    return services.data.queryV2(ctx.user!, t, plan)
+  }, { auth: 'user' })
+
   router.add('POST', '/data/:table/query', async (ctx): Promise<QueryResponse> => {
     const t = await tableParam(services, ctx.params.table)
     ensureTableVisible(ctx.user!, t)
@@ -122,5 +138,5 @@ export function dataRoutes(router: ApiRouter, services: CoreServices): void {
       storage: { kind: 'postgres', location: isAdmin ? (services.state.location ?? '') : 'Server database' },
       environments,
     }
-  }, { auth: 'user' })
+  }, { auth: 'user', noEnvironment: true })
 }

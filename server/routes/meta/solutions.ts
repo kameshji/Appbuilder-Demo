@@ -16,6 +16,12 @@ import { audit, plainTableDef, resolveConnection } from './tables-core.ts'
 import { canReadWholeTable, deleteDataFile, registerDataFile } from './files.ts'
 import { moveTable } from './tables.ts'
 import { forgetApp } from './apps.ts'
+import { importStable, planSolution, readSolutionPkg } from './alm.ts'
+import type { SolutionImportResult, SolutionPlan } from '../../../src/platform/http.ts'
+import { HttpError } from '../../core/contracts.ts'
+import type { CoreServices } from '../../core/services.ts'
+import { userContextFor } from '../../core/auth.ts'
+import { runInEnvironment } from '../../core/env-context.ts'
 
 const KINDS: SolutionComponentKind[] = ['app', 'table', 'role', 'connection', 'file']
 const MAX_FILE_BYTES = 25 * 1024 * 1024
@@ -120,12 +126,75 @@ export function registerSolutionRoutes(router: Router, s: Services): void {
 
   router.add('GET', '/api/v1/solutions/:id/package', async (ctx) => ({ yaml: await exportSolutionPackage(s, ctx, ctx.params.id, ctx.query.get('data') === '1') }), { auth: 'maker' })
 
-  router.add('POST', '/api/v1/solutions/import', (ctx) => s.transaction(async () => {
+  /** what importing this package here would do (nothing is changed) */
+  router.add('POST', '/api/v1/solutions/import/plan', async (ctx): Promise<SolutionPlan> => {
+    const b = bodyObj(ctx)
+    const pkg = readSolutionPkg(b.yaml, s)
+    if (!pkg || b.asCopy === true) return copyPlan(s, b.yaml)
+    return (await planSolution(s, me(ctx), pkg)).plan
+  }, { auth: 'maker', maxBodyMB: 40 })
+
+  router.add('POST', '/api/v1/solutions/import', async (ctx): Promise<SolutionImportResult> => {
     const b = bodyObj(ctx)
     const filesAs = b.filesAs ?? 'database'
     if (filesAs !== 'database' && filesAs !== 'file') throw invalid('filesAs must be "database" or "file".', 'filesAs')
-    return importSolutionPackage(s, ctx, b.yaml, filesAs)
-  }), { auth: 'maker', maxBodyMB: 40 })
+    const pkg = readSolutionPkg(b.yaml, s)
+    // an old package (no solution id) or "import as a copy": new instances of everything, as before
+    if (!pkg || b.asCopy === true) return s.transaction(() => importSolutionPackage(s, ctx, b.yaml, filesAs))
+    return importStable(s, ctx, pkg, { confirm: b.confirm, filesAs })
+  }, { auth: 'maker', maxBodyMB: 40 })
+
+  /**
+   * Deploy to another environment: export from this one and import into `target` in one step (plan: true answers the
+   * plan for the target only). The caller needs access to the target; an upgrade needs its administrator.
+   */
+  router.add('POST', '/api/v1/solutions/:id/deploy', async (ctx): Promise<SolutionPlan | SolutionImportResult> => {
+    const b = bodyObj(ctx)
+    const target = typeof b.target === 'string' ? b.target.trim() : ''
+    if (!target) throw invalid('Choose the environment to deploy to.', 'target')
+    if (target === ctx.environmentId) throw invalid('The solution is already in this environment: choose another one.', 'target')
+    if (!s.environments) throw new HttpError(503, 'unavailable', 'Environments are not available here.')
+    const sol = await needSolution(s, ctx.params.id)
+    const yaml = await exportSolutionPackage(s, ctx, sol.id, b.includeData === true)
+    const pkg = readSolutionPkg(yaml, s)!
+    const core = s as CoreServices
+    const rec = await s.meta.users.get(me(ctx).user.id)
+    if (!rec) throw new HttpError(401, 'unauthenticated', 'Please sign in.')
+    // the caller's context in the target: access checked like a request that names it
+    const there = await userContextFor(core, rec, target)
+    if (!there.privileges.isMaker) throw new HttpError(403, 'denied', 'You are not a maker in the target environment.')
+    const tctx: Ctx = { ...ctx, user: there, environmentId: target }
+    const out = await runInEnvironment(target, async () => {
+      if (b.plan === true) return (await planSolution(s, there, pkg)).plan
+      return importStable(s, tctx, pkg, { confirm: b.confirm, filesAs: b.filesAs === 'file' ? 'file' : 'database' })
+    })
+    if (b.plan !== true) {
+      await core.install.audit({ userId: rec.id, action: 'solution.deploy', environmentId: target, details: { solution: sol.id, name: sol.name, version: sol.version, from: ctx.environmentId, to: target, includeData: b.includeData === true } }).catch(() => {})
+    }
+    return out
+  }, { auth: 'maker', maxBodyMB: 1 })
+}
+
+/** the plan of an "import as a copy": everything is new */
+async function copyPlan(s: Services, text: unknown): Promise<SolutionPlan> {
+  const doc = parsePackage(text, 'appbuilder/solution')
+  const head = isObj(doc.solution) ? doc.solution : {}
+  const list = (v: unknown) => (Array.isArray(v) ? v.filter(isObj) : [])
+  const env = s.environments ? await s.environments.get(s.environment().id) : null
+  const items: SolutionPlan['items'] = [
+    ...list(doc.tables).map((t) => ({ kind: 'table' as const, id: '', name: String((isObj(t.schema) && t.schema.displayName) || (isObj(t.schema) && t.schema.name) || 'Table'), change: 'new' as const, note: 'reused when a table of the same name exists' })),
+    ...list(doc.apps).map((a) => ({ kind: 'app' as const, id: '', name: String(a.name ?? 'App'), change: 'new' as const })),
+    ...list(doc.roles).map((r) => ({ kind: 'role' as const, id: '', name: String(r.name ?? 'Role'), change: 'new' as const })),
+    ...list(doc.connections).map((c) => ({ kind: 'connection' as const, id: '', name: String(c.name ?? 'Connection'), change: 'new' as const })),
+    ...list(doc.files).map((f) => ({ kind: 'file' as const, id: '', name: String(f.fileName ?? 'File'), change: 'new' as const })),
+  ]
+  return {
+    mode: 'copy',
+    solution: { id: '', name: String(head.name ?? ''), displayName: String(head.displayName ?? 'Solution'), version: String(head.version ?? '') },
+    target: { id: s.environment().id, name: env?.name ?? 'Default', type: env?.type ?? 'production', ...(env?.locked ? { locked: true } : {}) },
+    items, destructive: false, problems: [], warnings: ['Everything is imported as new copies with new identities; a later import of the same solution will not upgrade them.'],
+    backup: { available: false, message: 'Nothing here is changed: everything in the package is new.' }, token: '',
+  }
 }
 
 /* ------------------------------------------------------------------ export */
@@ -176,16 +245,17 @@ export async function exportSolutionPackage(s: Services, ctx: Ctx, id: string, i
   for (const t of tableDefs) tables.push(await tableEntry(s, u, t, includeData))
   return toYaml({
     kind: 'appbuilder/solution', packageVersion: PACKAGE_VERSION, exportedOn: s.now(),
-    solution: { name: sol.name, displayName: sol.displayName, publisher: sol.publisher, version: sol.version, ...(sol.description ? { description: sol.description } : {}) },
+    // the solution's id makes a later import of a newer version an in-place upgrade (alm.ts)
+    solution: { id: sol.id, name: sol.name, displayName: sol.displayName, publisher: sol.publisher, version: sol.version, ...(sol.description ? { description: sol.description } : {}) },
     apps, tables, roles, connections, files: fileEntries,
   })
 }
 
 /* ------------------------------------------------------------------ import */
 
-interface PkgFile { oldId: string; fileName: string; bytes: Buffer; tables: { id: string; name?: string; displayName?: string; description?: string; sheet?: string; primaryColumn?: string }[] }
+export interface PkgFile { oldId: string; fileName: string; bytes: Buffer; tables: { id: string; name?: string; displayName?: string; description?: string; sheet?: string; primaryColumn?: string }[] }
 
-function readPkgFiles(v: unknown): PkgFile[] {
+export function readPkgFiles(v: unknown): PkgFile[] {
   if (v === undefined) return []
   if (!Array.isArray(v)) throw invalid('The package "files" must be a list.')
   return v.map((e) => {
@@ -229,40 +299,7 @@ export async function importSolutionPackage(s: Services, ctx: Ctx, text: unknown
     const components: SolutionDef['components'] = []
     for (const t of tables) components.push({ kind: 'table', id: tableMap.get(t.def.id)! })
 
-    for (const f of files) {
-      const hints: Record<string, { name?: string; displayName?: string; description?: string; primaryColumn?: string }> = {}
-      for (const t of f.tables) if (t.sheet) hints[t.sheet] = { name: t.name, displayName: t.displayName, description: t.description, primaryColumn: t.primaryColumn }
-      let reg = await registerDataFile(s, f.fileName, f.bytes, { hints })
-      undo.push(async () => { const cur = await s.meta.files.get(reg.file.id); if (cur) await deleteDataFile(s, cur, true) })
-      for (const t of reg.tables) {
-        const old = f.tables.find((x) => x.sheet === t.origin?.sheet)
-        if (old) tableMap.set(old.id, t.id)
-      }
-      if (filesAs === 'file') {
-        components.push({ kind: 'file', id: reg.file.id })
-      } else {
-        const { record, connector } = await resolveConnection(s)
-        const moved: TableDef[] = []
-        try {
-          for (const t of reg.tables) {
-            const m = await moveTable(s, t, record, connector)
-            moved.push(m)
-            components.push({ kind: 'table', id: m.id })
-          }
-        } catch (e) {
-          for (const m of moved) {
-            await connector.dropTable(m).catch(() => {})
-            await s.meta.tables.remove(m.id).catch(() => {})
-          }
-          throw e
-        }
-        // the temporary file is no longer needed (its tables now live in the database)
-        const cur = await s.meta.files.get(reg.file.id)
-        if (cur) await deleteDataFile(s, cur, true).catch(() => {})
-        reg = { ...reg, tables: moved }
-        undo.push(async () => { for (const m of moved) await connector.dropTable(m).catch(() => {}); for (const m of moved) await s.meta.tables.remove(m.id).catch(() => {}) })
-      }
-    }
+    await installPkgFiles(s, files, filesAs, tableMap, components, undo)
 
     const appMap = new Map<string, string>()
     for (const a of apps) {
@@ -336,6 +373,51 @@ export async function importSolutionPackage(s: Services, ctx: Ctx, text: unknown
     for (const f of undo.reverse()) await f().catch(() => {})
     throw e
   }
+}
+
+
+/**
+ * Data files of a package: each becomes a new data file (new ids), kept as a file or moved into the default database
+ * (filesAs). Old table ids are mapped to the new ones in tableMap; undo steps go to `undo` (files live on disk).
+ */
+export async function installPkgFiles(
+  s: Services, files: PkgFile[], filesAs: 'database' | 'file', tableMap: Map<string, string>, components: SolutionDef['components'], undo: (() => Promise<void>)[],
+): Promise<void>  {
+  for (const f of files) {
+    const hints: Record<string, { name?: string; displayName?: string; description?: string; primaryColumn?: string }> = {}
+    for (const t of f.tables) if (t.sheet) hints[t.sheet] = { name: t.name, displayName: t.displayName, description: t.description, primaryColumn: t.primaryColumn }
+    let reg = await registerDataFile(s, f.fileName, f.bytes, { hints })
+    undo.push(async () => { const cur = await s.meta.files.get(reg.file.id); if (cur) await deleteDataFile(s, cur, true) })
+    for (const t of reg.tables) {
+      const old = f.tables.find((x) => x.sheet === t.origin?.sheet)
+      if (old) tableMap.set(old.id, t.id)
+    }
+    if (filesAs === 'file') {
+      components.push({ kind: 'file', id: reg.file.id })
+    } else {
+      const { record, connector } = await resolveConnection(s)
+      const moved: TableDef[] = []
+      try {
+        for (const t of reg.tables) {
+          const m = await moveTable(s, t, record, connector)
+          moved.push(m)
+          components.push({ kind: 'table', id: m.id })
+        }
+      } catch (e) {
+        for (const m of moved) {
+          await connector.dropTable(m).catch(() => {})
+          await s.meta.tables.remove(m.id).catch(() => {})
+        }
+        throw e
+      }
+      // the temporary file is no longer needed (its tables now live in the database)
+      const cur = await s.meta.files.get(reg.file.id)
+      if (cur) await deleteDataFile(s, cur, true).catch(() => {})
+      reg = { ...reg, tables: moved }
+      undo.push(async () => { for (const m of moved) await connector.dropTable(m).catch(() => {}); for (const m of moved) await s.meta.tables.remove(m.id).catch(() => {}) })
+    }
+  }
+
 }
 
 export { plainTableDef }

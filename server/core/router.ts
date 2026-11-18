@@ -11,7 +11,7 @@ import type { Ctx, Handler, RawResponse, RouteOptions, Router, Services, UserCon
 import { API_BASE, CSRF_HEADER, SESSION_COOKIE } from '../../src/platform/http.ts'
 import { mapDbError } from '../connectors/mysql/index.ts'
 import { isPgError, mapPgError } from '../connectors/postgres/db.ts'
-import { resolveEnvironment, runInEnvironment } from './env-context.ts'
+import { DEFAULT_ENVIRONMENT_ID, requestedEnvironment, runInEnvironment } from './env-context.ts'
 import { errText, log } from './util.ts'
 
 /** default JSON body limit; a route's maxBodyMB overrides it (JSON and raw bodies alike) */
@@ -27,8 +27,29 @@ interface Route {
   opts: RouteOptions
 }
 
-/** resolves the signed-in user (null = no valid session); provided by auth.ts */
-export type SessionResolver = (ctx: Ctx) => Promise<UserContext | null>
+/**
+ * resolves the signed-in user (null = no valid session) and the environment the request works in (checked against the
+ * user's access; ctx.requestedEnvironment is what the request named); provided by auth.ts. allowNoEnvironment: a user
+ * who may enter no environment still gets a context (in Default, without roles) instead of a 403.
+ */
+export type SessionResolver = (ctx: Ctx, o?: { allowNoEnvironment?: boolean }) => Promise<UserContext | null>
+
+/**
+ * Routes that change an environment's design (apps, tables and columns, roles, solutions and their components, data
+ * files, linking a source table). In a locked production environment they answer 403: changes arrive by solution
+ * import only (POST /solutions/import, /solutions/:id/deploy into it). Data, users, connections and access stay usable.
+ */
+export const DESIGN_ROUTES: ReadonlySet<string> = new Set([
+  'POST /apps', 'PUT /apps/:id', 'PATCH /apps/:id', 'DELETE /apps/:id', 'POST /apps/:id/duplicate', 'POST /apps/import',
+  'POST /tables', 'POST /tables/from-csv', 'PATCH /tables/:id', 'DELETE /tables/:id', 'POST /tables/:id/columns',
+  'PATCH /tables/:id/columns/:name', 'DELETE /tables/:id/columns/:name', 'POST /tables/:id/move',
+  'POST /roles', 'PATCH /roles/:id', 'DELETE /roles/:id',
+  'POST /solutions', 'PATCH /solutions/:id', 'DELETE /solutions/:id', 'POST /solutions/:id/components', 'DELETE /solutions/:id/components/:kind/:cid',
+  'POST /files', 'POST /files/:id/replace', 'DELETE /files/:id',
+  'POST /connections/:id/link',
+])
+
+export const LOCKED_MESSAGE = 'This environment is locked: apps, tables and roles change only by importing or deploying a solution into it. An install administrator can unlock it in Admin console > Environments.'
 
 export const SECURITY_HEADERS: Record<string, string> = {
   'X-Content-Type-Options': 'nosniff',
@@ -263,7 +284,8 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
     let p = pattern.trim()
     if (p.startsWith(API_BASE)) p = p.slice(API_BASE.length)
     const segments = p.split('/').filter(Boolean)
-    routes.push({ method, segments, literalCount: segments.filter((s) => !s.startsWith(':')).length, handler, opts: o })
+    const design = o.design ?? DESIGN_ROUTES.has(`${method} /${segments.join('/')}`)
+    routes.push({ method, segments, literalCount: segments.filter((s) => !s.startsWith(':')).length, handler, opts: design ? { ...o, design } : o })
   }
 
   function match(method: string, segs: string[]): { route: Route; params: Record<string, string> } | null | 'method' {
@@ -290,21 +312,17 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
     return best
   }
 
-  /** every request runs inside its environment (env-context.ts): meta store, caches and the default connector follow it */
+  /**
+   * every handler runs inside its environment (env-context.ts): meta store, caches, the default connector and the
+   * workspace folders follow it. The environment is decided with the session (resolveSession checks the user's access).
+   */
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const url = new URL(req.url ?? '/', 'http://localhost')
     if (url.pathname !== '/api' && !url.pathname.startsWith('/api/')) return false
-    let environmentId: string
-    try {
-      environmentId = resolveEnvironment(req)
-    } catch (e) {
-      sendError(res, e, req)
-      return true
-    }
-    return runInEnvironment(environmentId, () => handleIn(req, res, url, environmentId))
+    return handleIn(req, res, url)
   }
 
-  async function handleIn(req: IncomingMessage, res: ServerResponse, url: URL, environmentId: string): Promise<boolean> {
+  async function handleIn(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
     /** a streamBody route answered without reading its body: close instead of draining the upload */
     let unreadStream = false
     const closeIfUnread = () => {
@@ -334,6 +352,7 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
       if (route.opts.loopbackOnly && !isLoopbackAddress(req.socket?.remoteAddress)) {
         throw new HttpError(403, 'denied', 'This can only be done on the computer that runs Appbuilder (open it at http://localhost).')
       }
+      const requested = requestedEnvironment(req, url)
 
       const ctx: Ctx = {
         req,
@@ -343,7 +362,8 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
         params,
         query: url.searchParams,
         body: undefined,
-        environmentId,
+        environmentId: DEFAULT_ENVIRONMENT_ID,
+        requestedEnvironment: requested,
         services,
         setSessionCookie(token, expires) {
           const prev = res.getHeader('Set-Cookie')
@@ -379,26 +399,31 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
         }
       }
 
-      // auth
+      // auth (and the environment: the session's access decides which one the request may work in)
       if (route.opts.auth !== 'none') {
         if (!services.ready()) throw new HttpError(503, 'unavailable', 'The database is not configured yet.')
-        const user = await resolveSession(ctx)
+        const user = await resolveSession(ctx, { allowNoEnvironment: route.opts.noEnvironment })
         if (!user) throw new HttpError(401, 'unauthenticated', 'Please sign in.')
+        ctx.environmentId = user.environmentId
         if (route.opts.auth === 'maker' && !user.privileges.isMaker) throw new HttpError(403, 'denied', 'Only makers can do this.')
         if (user.user.mustChangePassword && !route.opts.allowPendingPasswordChange) {
           throw new HttpError(403, 'password_change_required', 'You must change your password before you can continue.')
         }
         if (route.opts.auth === 'admin' && !user.privileges.isAdmin) throw new HttpError(403, 'denied', 'Only administrators can do this.')
         ctx.user = user
+        if (route.opts.design && method !== 'GET' && (await services.environments?.isLocked(ctx.environmentId))) {
+          throw new HttpError(403, 'denied', LOCKED_MESSAGE)
+        }
       } else if (services.ready() && cookieValue(req, SESSION_COOKIE)) {
         try {
-          ctx.user = (await resolveSession(ctx)) ?? undefined
+          ctx.user = (await resolveSession(ctx, { allowNoEnvironment: true })) ?? undefined
         } catch {
           ctx.user = undefined
         }
+        if (ctx.user) ctx.environmentId = ctx.user.environmentId
       }
 
-      const out = await route.handler(ctx)
+      const out = await runInEnvironment(ctx.environmentId, () => route.handler(ctx))
       closeIfUnread()
       if (res.writableEnded) return true
       if (isRaw(out)) {

@@ -9,7 +9,7 @@ Appbuilder is a desktop low-code app builder. Makers design apps on a canvas wit
 - **Server**: Node (22.18 or newer) running TypeScript directly through type stripping (`node server/main.ts`); no build step, no
   framework. It serves the Data API under `/api/v1` and the built app from `dist/`.
 - **Storage**: one PostgreSQL database (schema `ab` for install-wide objects, one schema `env_<id>` per environment with its
-  metadata tables `ab_*` and its data tables; see `schema.md`) and the **workspace folder** on disk.
+  metadata tables `ab_*` and its data tables; see `schema.md`) and the **workspace folder** on disk (`env/<id>/` per environment).
 - **Demo mode**: the same browser build can run with no server at all, simulating the platform over IndexedDB.
 
 What is not supported: multi-tenant hosting, horizontal scaling of the Node server (it keeps session throttling, security caches and
@@ -72,9 +72,9 @@ flowchart TB
   end
 
   subgraph Storage["Storage"]
-    DB[("PostgreSQL<br/>schema ab + env_default<br/>(ab_* tables + data tables)")]
+    DB[("PostgreSQL<br/>schema ab + env_&lt;id&gt; per environment<br/>(ab_* tables + data tables)")]
     ExtDB[("Customer databases<br/>MySQL / MariaDB / PostgreSQL")]
-    WS[("Workspace folder<br/>server.json, .secret-key,<br/>attachments/, files/")]
+    WS[("Workspace folder<br/>server.json, .secret-key,<br/>env/&lt;id&gt;/attachments, env/&lt;id&gt;/files")]
     Google[("Google Sheets API")]
   end
 
@@ -270,6 +270,32 @@ then writes `LastSubmit` or `Error` and fires `OnSuccess` or `OnFailure`. Design
 empty until `ensureTablesLoaded` (called from `linkPlatform()` for `app.dataSources`) brings it in; the store's `dataKey`
 (`platformDataKey()`) changes whenever rows or table definitions change, which invalidates the `t:<name>` entries.
 
+## Environments
+
+An install has one or more environments (`docs/admin/environments.md`): the built-in Default and those an install administrator
+creates. Each is a schema `env_<id>` (metadata and data tables) plus a folder `workspace/env/<id>/` (attachments, data files);
+users, sessions, the registry (`ab.environments`), access (`ab.environment_access`) and the install audit (`ab.audit`) are in schema
+`ab`.
+
+- **Per request**: the browser sends `X-Appbuilder-Environment` with every call (`environmentHeaders()` in
+  `src/platform/environments.ts`; attachment links carry `?env=`). The router reads it, the session resolver checks it against the
+  user's access and reads the user's roles in that environment, and the handler runs inside `runInEnvironment()`. Everything below
+  follows `currentEnvironment()`: MetaStore table names, the security cache, connector instances (`<env>:<connection>`), the default
+  connection's schema, the attachment store and the data files folder (`ConnectorEnv.filesDir` is a getter on the current
+  environment). See `schema.md` for the resolution rules.
+- **Server modules**: `server/core/env-context.ts` (the context), `environments.ts` (registry and access cache, `resolveFor`, folders,
+  the client's `EnvironmentDef`), `environment-ops.ts` (create, copy, update, delete, access), `install-store.ts` (schema `ab`
+  repositories), `backup.ts` (the snapshot hook), `routes/meta/environments.ts` (API), `routes/meta/alm.ts` (solution plans,
+  in-place upgrades, deploy).
+- **Locked production**: the router refuses `DESIGN_ROUTES` (403) in a locked environment after auth, before the handler.
+- **Client**: `platform.environments.select(id)` posts `/environments/:id/select`, switches the request header and reloads the
+  workspace (rows of the old environment are dropped). The shell keys app tabs and recents by `<user>@<environment>` (Default keeps the
+  user key), so tabs of another environment are unmounted on a switch; the top bar shows the environment's name and type colour, also
+  in the Studio, which opens read-only (no autosave) in a locked environment. Admin pages: `src/portal/AdminEnvironments.tsx`,
+  `src/portal/SolutionPlan.tsx`, calls in `src/portal/environmentApi.ts`.
+- **Boot**: `migrate()` upgrades `ab` in one transaction, then each environment in its own (a failing one is marked failed); the
+  built-in connections and the orphan-attachment sweep run per environment.
+
 ## Request lifecycles
 
 ### A query (read)
@@ -279,9 +305,9 @@ empty until `ensureTablesLoaded` (called from `linkPlatform()` for `app.dataSour
    `POST /api/v1/data/Tickets/query` with `{ top: 5000 }`, and notifies subscribers when the rows arrive (the runtime's `dataKey`
    changes and formulas re-evaluate). If a write finished while the load was in flight, it re-reads (at most twice). The server's
    `truncated` flag is recorded so the UI can warn. `Filter`, `Sum`, `Sort` and the rest run in the browser over those rows.
-3. **Server side** (`server/core/router.ts`, `data-routes.ts`, `data.ts`): the router resolves the request's **environment**
-   (`env-context.ts`; today always `default`, schema `env_default`) and runs the handler inside it, checks Host, Origin and the
-   session cookie (resolving the user and loading their roles from the environment's cached roles); `dataRoutes` finds the table (404 if the user has no privilege on it at all);
+3. **Server side** (`server/core/router.ts`, `data-routes.ts`, `data.ts`): the router checks Host, Origin and the session cookie,
+   resolves the request's **environment** with the session (the header, checked against the user's access; see Environments
+   above), loads the user's roles from that environment's cached roles, and runs the handler inside it; `dataRoutes` finds the table (404 if the user has no privilege on it at all);
    `DataService.query` validates the query, rejects columns the user may not read (403), ANDs the user's **row predicate** into
    `where`, narrows `select` to visible columns, asks the connector for `cap + 1` rows (cap 5000) to know whether to set `truncated`,
    and removes hidden columns from the output (`rowOut`). Dates leave as ISO text, numbers as numbers.
@@ -341,8 +367,10 @@ Boot (`services.boot()`, `app.ts`):
   problems (undecryptable password, incompatible schema) and on `close()`.
 - A database whose schema version is above `SCHEMA_VERSION` is not used at all (`state.incompatible`, `SchemaTooNewError`):
   data routes answer 503, setup is refused, no retry.
-- `migrate()` creates or completes schema `ab` and every environment schema in one transaction (`schema.md`); its summary is
-  logged and audited (`schema.migrate`). A database with an old MySQL-era schema version, or not UTF8, is refused with a clear
+- `migrate()` creates or completes schema `ab` in one transaction, then each environment schema in its own (a failing environment
+  is marked failed, the others go on; `schema.md`); its summary is logged and audited (`schema.migrate`). Then the built-in
+  connections of every ready environment are rewritten from the database settings, and an older install's `workspace/files` and
+  `workspace/attachments` move into `workspace/env/default/`. A database with an old MySQL-era schema version, or not UTF8, is refused with a clear
   message.
 - The system pool (`createPgDb` in `server/connectors/postgres/db.ts`, 10 connections) is shared by the MetaStore and the default
   connection (`conn_default`, through `ConnectorEnv.systemDb`); `services.transaction(fn)` runs a unit of work on it.
@@ -351,8 +379,9 @@ Boot (`services.boot()`, `app.ts`):
   `req.socket.remoteAddress`). It rotates when the administrator is created. Tests pass `printSetupCode: false` to
   `createApp` and read `services.setupCode.current()`.
 
-At boot the server also sweeps attachments that no row references (older than an hour, at most 5000 per run) and purges expired
-sessions hourly. `SIGINT`/`SIGTERM` flush the files connector, close connections and the database pool, then exit.
+At boot the server also sweeps, in every ready environment, attachments that no row references (older than an hour, at most 5000 per
+run) and purges expired sessions hourly. `SIGINT`/`SIGTERM` flush the files connector (every environment's folder), close
+connections and the database pool, then exit.
 `server.requestTimeout` is 10 minutes (large uploads).
 
 ## Packaging
@@ -370,7 +399,9 @@ sessions hourly. `SIGINT`/`SIGTERM` flush the files connector, close connections
   at the keyboard (**not a security boundary**), persists with a 300 ms debounce, and fails features that need the server (connections,
   data files, attachments, passwords) with "This needs the local server".
 - **Packages**: apps and solutions export as YAML (`kind: appbuilder/app` or `appbuilder/solution`, `packageVersion: 1`), see
-  `data-api.md`. Import always creates new instances, never overwrites.
+  `data-api.md`. An app package import creates new instances. A solution package carries stable ids: importing it where the
+  solution or its components exist is an in-place upgrade after a confirmed plan (one transaction); `asCopy` and packages without
+  a solution id create new instances.
 - Not packaged: an installer for the Node server itself (Node must be installed), a Docker image, a PHP gateway (planned).
 
 ## Where to read next

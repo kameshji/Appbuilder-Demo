@@ -5,13 +5,16 @@
 import { randomInt, timingSafeEqual } from 'node:crypto'
 import { HttpError } from './contracts.ts'
 import type {
-  ConnectorEnv, DatabaseSettings, MetaStore, MigrationSummary, ServerConfig, Services, SqlDb,
+  ConnectorEnv, DatabaseSettings, InstallStore, MetaStore, MigrationSummary, ServerConfig, Services, SqlDb,
 } from './contracts.ts'
 import { createPgDb, friendlyConnectionError, isPgError, withClient } from '../connectors/postgres/db.ts'
-import { flushFiles } from '../connectors/files/index.ts'
+import { flushAllFiles } from '../connectors/files/index.ts'
 import { createSecretBox, loadSecretKey } from './secrets.ts'
 import { SchemaTooNewError, UnsuitableDatabaseError, createMetaStore } from './meta-store.ts'
-import { currentEnvironment } from './env-context.ts'
+import { DEFAULT_ENVIRONMENT_ID, currentEnvironment, runInEnvironment } from './env-context.ts'
+import { createInstallStore } from './install-store.ts'
+import { createEnvironmentManager, maxEnvironments, moveLegacyWorkspace } from './environments.ts'
+import { createNoBackupService } from './backup.ts'
 import { createSecurityEngine } from './security.ts'
 import { createConnectionManager, DEFAULT_CONNECTION_ID, FILES_CONNECTION_ID } from './connections.ts'
 import { createDataService } from './data.ts'
@@ -24,7 +27,11 @@ export type SqlDbFactory = (settings: DatabaseSettings, password: string) => Sql
 export interface CoreState {
   db: SqlDb | null
   meta: MetaStore | null
+  /** schema ab: environment registry, access, install audit */
+  install: InstallStore | null
   settings: DatabaseSettings | null
+  /** the password of the system database (the default connection of every environment uses it) */
+  password?: string
   /** e.g. "PostgreSQL 16.4 at 127.0.0.1:5432/appbuilder" */
   location: string | null
   databaseError?: string
@@ -88,6 +95,12 @@ function createSetupCode(port: number): SetupCode {
 
 export type CoreServices = Services & {
   state: CoreState
+  environments: ReturnType<typeof createEnvironmentManager>
+  backup: NonNullable<Services['backup']>
+  /** the install store (503 while no database is configured) */
+  install: InstallStore
+  /** (re)writes the built-in connections (default database, data files) of the current environment */
+  ensureBuiltinConnections(): Promise<void>
   security: ReturnType<typeof createSecurityEngine>
   data: ReturnType<typeof createDataService>
   connections: ReturnType<typeof createConnectionManager>
@@ -132,7 +145,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   const procEnv = opts.env ?? process.env
   const sqlDbFactory = opts.sqlDbFactory ?? defaultFactory
   const secrets = createSecretBox(loadSecretKey(config.workspaceDir, procEnv))
-  const state: CoreState = { db: null, meta: null, settings: null, location: null }
+  const state: CoreState = { db: null, meta: null, install: null, settings: null, location: null }
   let purgeTimer: NodeJS.Timeout | null = null
   let retryTimer: NodeJS.Timeout | null = null
   let retryPromise: Promise<void> | null = null
@@ -145,18 +158,32 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     return state.meta
   }
 
+  const environments = createEnvironmentManager({ install: () => state.install, workspaceDir: config.workspaceDir, max: maxEnvironments(procEnv) })
+  const backup = createNoBackupService()
+  // the data files folder is the current environment's (workspace/env/<id>/files); the ConnectionManager copies this
+  // object per environment and connection, so each connector instance keeps the folder of its own environment
   const env: ConnectorEnv = {
     systemDb: () => state.db,
     workspaceDir: config.workspaceDir,
-    filesDir: config.filesDir,
+    get filesDir() {
+      return environments.dirs(currentEnvironment().id).files
+    },
     fetch: opts.fetch ?? globalThis.fetch,
     log: (level, msg) => log(level, msg),
   }
   const security = createSecurityEngine(getMeta)
+  // every role / user / table change invalidates the security cache: access to environments follows roles, so the
+  // environment registry cache goes with it
+  const invalidateSecurity = security.invalidate
+  security.invalidate = (scope) => {
+    invalidateSecurity(scope)
+    environments.invalidate()
+  }
   const connections = createConnectionManager(getMeta, env)
-  const attachments = createAttachmentStore(config.attachmentsDir)
+  const attachments = createAttachmentStore(() => environments.dirs(currentEnvironment().id).attachments, () => currentEnvironment().id)
   const data = createDataService({ meta: getMeta, connections, attachments, log: env.log })
 
+  /** every environment's conn_default points at the system database (its tables live in that environment's schema) */
   async function ensureBuiltinConnections(meta: MetaStore, settings: DatabaseSettings, password: string): Promise<void> {
     const all = await meta.connections.list()
     const current = all.find((c) => c.id === DEFAULT_CONNECTION_ID)
@@ -220,10 +247,20 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
       throw new HttpError(422, 'invalid', friendlyConnectionError(e, settings, password))
     }
     const meta = createMetaStore(db, secrets)
+    const install = createInstallStore(db)
     let migration: MigrationSummary | undefined
     try {
       migration = (await meta.migrate()) ?? undefined
-      await ensureBuiltinConnections(meta, settings, password)
+      // the built-in connections of every usable environment (password or host may have changed)
+      for (const e of await install.environments.list()) {
+        if (e.state !== 'ready') continue
+        try {
+          await runInEnvironment(e.id, () => ensureBuiltinConnections(meta, settings, password))
+        } catch (err) {
+          if (e.id === DEFAULT_ENVIRONMENT_ID) throw err
+          log('error', `environment ${e.id}: could not update its built-in connections: ${errText(err)}`)
+        }
+      }
     } catch (e) {
       await db.close().catch(() => {})
       if (e instanceof SchemaTooNewError) {
@@ -241,20 +278,32 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
         log('info', `system schema migrated from version ${migration.from} to ${migration.to}: ${migration.steps.join('; ') || 'no changes'}`)
         try {
           await meta.audit({ userId: null, action: 'schema.migrate', details: migration })
+          await install.audit({ userId: null, action: 'schema.migrate', details: migration })
         } catch (e) {
           log('error', `audit write failed (schema.migrate): ${errText(e)}`)
         }
       } else log('info', `system schema version ${migration.to} (up to date)`)
+      for (const f of migration.environments ?? []) {
+        if (!f.ok) log('error', `ENVIRONMENT ${f.id} NOT AVAILABLE: ${f.error}`)
+      }
+      if ((migration.environments ?? []).some((f) => !f.ok)) {
+        await install.audit({ userId: null, action: 'environment.migrate_failed', details: (migration.environments ?? []).filter((f) => !f.ok) }).catch(() => {})
+      }
     }
+    // version 5 layout: the files of an older install belong to the Default environment
+    moveLegacyWorkspace({ filesDir: config.filesDir, attachmentsDir: config.attachmentsDir }, environments.dirs(DEFAULT_ENVIRONMENT_ID), (l, m) => log(l, m))
     const old = state.db
     state.db = db
     state.meta = meta
+    state.install = install
     state.settings = settings
+    state.password = password
+    environments.invalidate()
     state.location = `${version} at ${settings.host}:${settings.port}/${settings.database}`
     delete state.databaseError
     delete state.unavailable
-    security.invalidate()
-    await connections.reset(DEFAULT_CONNECTION_ID)
+    security.invalidate('all')
+    for (const e of await install.environments.list().catch(() => [])) await runInEnvironment(e.id, () => connections.reset(DEFAULT_CONNECTION_ID)).catch(() => {})
     if (old && old !== db) await old.close().catch(() => {})
     if (o.persist) {
       const prev = readServerJson(config)
@@ -379,7 +428,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     if (purgeTimer) clearInterval(purgeTimer)
     purgeTimer = null
     try {
-      await flushFiles(env)
+      await flushAllFiles()
     } catch (e) {
       log('warn', `flushing data files failed: ${errText(e)}`)
     }
@@ -387,6 +436,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     const db = state.db
     state.db = null
     state.meta = null
+    state.install = null
     if (db) await db.close().catch(() => {})
   }
 
@@ -406,6 +456,16 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     attachments,
     env,
     environment: currentEnvironment,
+    environments,
+    backup,
+    get install() {
+      if (!state.install) throw new HttpError(503, 'unavailable', 'The database is not configured yet.')
+      return state.install
+    },
+    async ensureBuiltinConnections() {
+      if (!state.settings) throw new HttpError(503, 'unavailable', 'The database is not configured yet.')
+      await ensureBuiltinConnections(getMeta(), state.settings, state.password ?? '')
+    },
     async transaction<T>(fn: () => Promise<T>): Promise<T> {
       const db = state.db
       if (!db) return fn()

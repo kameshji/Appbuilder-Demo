@@ -30,9 +30,22 @@ no time-limited grants, and no security on `files`-connector tables beyond the s
 | System columns | `id`, `createdOn`, `modifiedOn`, `createdBy`, `owner`. Server-assigned; never writable by clients. |
 | Row filter | A list of `RowCondition { column, op, value? }`, ANDed together. Value tokens: `@me` (the user's id) and `@myEmail` (the user's email). |
 
+## Environments, install administrators
+
+Roles, privileges and the security cache belong to an **environment** (`ab_roles`, `ab_user_roles`, `ab_role_tables` live in its
+schema `env_<id>`). The engine always works on the roles and tables of the request's environment (`currentEnvironment()`), and the
+`UserContext` carries its `environmentId`. Before roles are read, the session resolver checks that the user may enter the
+environment the request names (`ab.environment_access`, see `schema.md`): unknown 404, not granted 403.
+
+- **Install administrator** (`ab.users.is_install_admin`, `privileges.isInstallAdmin`): `buildUserContext` treats them as admin in
+  every environment (whatever their roles there), and they enter every environment without an access row. The install-level
+  routes (environments, accounts, install audit) check this flag, not `isAdmin`.
+- **Environment administrator**: a user with an `isAdmin` role in that environment; `privileges.isAdmin` in requests there.
+  `ab.environment_access.is_env_admin` mirrors it for the install-level views.
+
 ## Admin and maker
 
-- **Admin** (`isAdmin` on any of the user's roles): everything is allowed. Row predicate is `{ const: true }`, scopes are all `all`,
+- **Admin** (`isAdmin` on any of the user's roles in the environment, or install administrator): everything is allowed. Row predicate is `{ const: true }`, scopes are all `all`,
   create is allowed, every non-system column has access `update`, system columns `read`. Privileges stored on an admin role are
   ignored (the API stores an empty list for admin roles).
 - **Maker** (`isMaker` on any role, or admin): may use the metadata API (apps, tables, columns, solutions, data files, connection
@@ -101,6 +114,17 @@ All data routes call `DataService`, which receives the `UserContext`.
    through `rowOut` so hidden columns never leave the server.
 4. Cap and `truncated` as in `data-api.md`.
 
+**Query v2** (`queryV2`, `POST /api/v1/query`)
+1. The plan is validated against every column of the table (`checkPlan`, 422); then every column it reads (select, filter including
+   `cmpCol` and calculation columns, search, sort, groupBy, measures and measure filters) must not be `none` for the user (403 naming
+   the column). `id` is always readable.
+2. The read predicate (`rowPredicate(T, 'read')`, a v1 `Condition`) is handed to the connector, which ANDs it into the WHERE of the one
+   statement (PostgreSQL: translated by the v1 builder, so row filters keep their v1 semantics). `{ const: false }` becomes `FALSE`:
+   empty rows, count 0, and an aggregate without groups still returns its one row (sum 0). Counts and aggregates therefore never
+   include rows the user may not read.
+3. Without `select`, the returned columns are the visible ones. Connectors without `queryV2` read through `select` with the same
+   predicate (at most 5,000 rows, `truncated`) and run the reference executor; the same checks apply.
+
 **Insert**
 1. `canCreate(T)` else 403. The table and connector must be writable (`readOnly` tables and non-`write` connectors: 403).
 2. Each supplied column: system columns are ignored (except a client-supplied UUID `id`); autonumber is server-assigned; any other
@@ -145,8 +169,10 @@ or delete) gets 404 for every data route on that table, and the table is absent 
 
 ## Sessions and cache
 
-- `createSecurityEngine(getMeta, ttlMs = 5000)` caches the roles and tables for 5 seconds; `invalidate()` clears the cache and is
-  called by every role, user and table change route in the same process. The per-request context is rebuilt from the cached roles
+- `createSecurityEngine(getMeta, ttlMs = 5000)` caches the roles and tables **per environment** for 5 seconds; `invalidate()` clears
+  the current environment's cache (`'all'`: every environment; `{ environment: id }`: one, used when it is deleted) and is called by
+  every role, user and table change route in the same process. In `services.ts` it also drops the environment registry and access
+  cache (access follows roles). The per-request context is rebuilt from the cached roles
   each time, so a role edit takes effect on the next request (not on the next login). A change made behind the server's back
   (directly in the database) is seen after at most 5 seconds.
 - The session cookie identifies the user; on every request the session row and the user record (including `roleIds`, `status`

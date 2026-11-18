@@ -14,7 +14,7 @@
  * the caller's scope and engine and embedded as literals.
  */
 import type { FxEngine, FxScope, FxValue } from '../../contracts.ts'
-import type { ColumnKind, ConditionV2, MeasureFn, MeasureV2, QueryPlan, SchemaInfo, SortKeyV2, TableSchemaInfo } from '../../platform/query.ts'
+import type { ColumnKind, CompareOpV2, ConditionV2, MeasureFn, MeasureV2, NumExprV2, QueryLiteral, QueryPlan, SchemaInfo, SortKeyV2, TableSchemaInfo } from '../../platform/query.ts'
 import { freeIdentifiers, type CallNode, type IdNode, type Node } from '../ast.ts'
 import { createEngine } from '../engine.ts'
 import { FxError } from '../errors.ts'
@@ -22,7 +22,7 @@ import { parse } from '../parser.ts'
 import { printNode } from '../print.ts'
 import { describe as describeValue, hasOwn, isRecord, toBool, toNumber, toText } from '../values.ts'
 import {
-  and, compareColumnLiteral, compareColumns, inList, isNull, not, or, Refusal, textMatch, type CmpOp, type DiagCode,
+  and, compareColumnLiteral, compareColumns, inList, isNull, not, numericOfText, or, Refusal, textMatch, withNull, type CmpOp, type DiagCode,
 } from './conditions.ts'
 
 /* ------------------------------------------------------------------ public types */
@@ -144,6 +144,10 @@ const BULK_WRITE = new Set(['UpdateIf', 'RemoveIf'])
 const PASS_THROUGH = new Set(['AddColumns', 'DropColumns', 'ShowColumns', 'RenameColumns'])
 
 const ORDINAL_FIRST = 0
+/** functions a server-side calculation may use */
+const ARITH_FNS = new Set(['Abs', 'Round', 'RoundUp', 'RoundDown'])
+const FLIP_CMP: Record<CmpOp, CmpOp> = { '=': '=', '<>': '<>', '<': '>', '>': '<', '<=': '>=', '>=': '<=' }
+const CMP_V2: Record<CmpOp, CompareOpV2> = { '=': 'eq', '<>': 'ne', '<': 'lt', '>': 'gt', '<=': 'le', '>=': 'ge' }
 const MEASURE_FNS: Record<string, MeasureFn> = { Sum: 'sum', Average: 'avg', Min: 'min', Max: 'max' }
 
 /* ------------------------------------------------------------------ analyzer */
@@ -531,9 +535,15 @@ class Analyzer {
         if (s.agg) return boundary(`${n.name} over grouped rows can't run on the server`)
         if (n.args.length !== 2) throw new Refusal('not-delegable-function', `${n.name} on the server needs a table and a number column`, n, `${n.name}(table, Column)`)
         const col = this.columnRef(n.args[1]!, rc)
-        if (col === null) throw new Refusal('not-delegable-expression', `${n.name} on the server works on a column, not a calculation`, n.args[1]!, 'Add the calculated column to the table, or sum the parts separately')
-        if (s.cols.get(col) !== 'number') throw new Refusal('unsupported-column', `${n.name} on the server needs a number column; ${col} isn't one`, n.args[1]!)
-        s.agg = { groupBy: [], measures: [{ name: 'Value', fn: MEASURE_FNS[n.name]!, col }], out: new Map([['Value', 'number']]) }
+        let m: MeasureV2
+        if (col === null) {
+          // a calculation per row: Sum(Orders, Qty * Price)
+          m = { name: 'Value', fn: MEASURE_FNS[n.name]!, expr: this.numExpr(n.args[1]!, rc) }
+        } else {
+          if (s.cols.get(col) !== 'number') throw new Refusal('unsupported-column', `${n.name} on the server needs a number column; ${col} isn't one`, n.args[1]!)
+          m = { name: 'Value', fn: MEASURE_FNS[n.name]!, col }
+        }
+        s.agg = { groupBy: [], measures: [m], out: new Map([['Value', 'number']]) }
         s.shape = 'scalar'
         s.measure = 'Value'
         return out(s)
@@ -646,7 +656,8 @@ class Analyzer {
     const fn = MEASURE_FNS[e.name]
     if (fn && e.args.length === 2) {
       const col = this.columnRef(e.args[1]!, rc)
-      if (col === null || s.cols.get(col) !== 'number') throw new Refusal('not-delegable-expression', `${e.name} over ${g} on the server needs a number column`, e.args[1]!)
+      if (col === null) return { name, fn, expr: this.numExpr(e.args[1]!, rc) }
+      if (s.cols.get(col) !== 'number') throw new Refusal('not-delegable-expression', `${e.name} over ${g} on the server needs a number column`, e.args[1]!)
       return { name, fn, col }
     }
     throw why
@@ -740,6 +751,8 @@ class Analyzer {
       if (kind === 'number') return { col, op: 'ne', value: 0 }
       throw new Refusal('type-mismatch', `${col} isn't true/false, so it can't be used as a condition on the server`, n, `Compare it, like ${col} = "..."`)
     }
+    // a calculation used as a condition: true when it is not 0
+    if (this.isArith(n)) return { op: 'cmpExpr', cmp: 'ne', left: this.numExpr(n, rc), right: 0 }
     switch (n.t) {
       case 'unary':
         if (n.op === '!') return not(this.cond(n.arg, rc))
@@ -795,6 +808,11 @@ class Analyzer {
     }
     if (lc !== null && !this.rowDependent(r, rc)) return compareColumnLiteral(lc, rc.s.cols.get(lc)!, op, this.scalar(r), false, at)
     if (rcol !== null && !this.rowDependent(l, rc)) return compareColumnLiteral(rcol, rc.s.cols.get(rcol)!, op, this.scalar(l), true, at)
+    const ly = this.yearOf(l, rc)
+    if (ly && !this.rowDependent(r, rc)) return this.yearCompare(ly, op, this.scalar(r), at)
+    const ry = this.yearOf(r, rc)
+    if (ry && !this.rowDependent(l, rc)) return this.yearCompare(ry, FLIP_CMP[op], this.scalar(l), at)
+    if (!ly && !ry && (this.isArith(l) || this.isArith(r))) return this.exprCompare(op, l, r, rc)
     const calc = lc === null ? l : r
     throw new Refusal('not-delegable-expression', `Calculations on a column (${this.text(calc)}) can't run on the server`, calc,
       'Compare the column itself with a value, moving the calculation to the other side (Due < DateAdd(Today(), -7, "Days"))')
@@ -804,6 +822,172 @@ class Analyzer {
     const v = this.fold(n)
     if (Array.isArray(v) || isRecord(v)) throw new Refusal('type-mismatch', `Can't compare a column with ${describeValue(v)}`, n)
     return v
+  }
+
+  /* -------------------------------------------------------------- computed numbers (P0 package D) */
+
+  /** + - * / unary minus, %, Abs, Round, RoundUp, RoundDown: the forms numExpr may translate */
+  isArith(n: Node): boolean {
+    switch (n.t) {
+      case 'bin': return n.op === '+' || n.op === '-' || n.op === '*' || n.op === '/'
+      case 'unary': return n.op === '-'
+      case 'pct': return true
+      case 'call': return ARITH_FNS.has(n.name)
+      default: return false
+    }
+  }
+
+  /** a row-independent part of a calculation, as the engine's toNumber would read it */
+  foldArith(n: Node): number {
+    const v = this.fold(n)
+    if (v instanceof Date) throw new Refusal('not-delegable-expression', "Date arithmetic with a column can't run on the server", n, 'Compare the date column with a date computed outside, like Due < DateAdd(Today(), 7, "Days")')
+    if (Array.isArray(v) || isRecord(v)) throw new Refusal('type-mismatch', `Can't calculate with ${describeValue(v)}`, n)
+    let x: number
+    try {
+      x = toNumber(v, n)
+    } catch {
+      throw new Refusal('evaluation-error', `Can't use ${describeValue(v)} as a number`, n)
+    }
+    if (!Number.isFinite(x)) throw new Refusal('evaluation-error', "That result isn't a valid number", n)
+    return x
+  }
+
+  /**
+   * A calculation over the current row -> NumExprV2. Blank number cells read as 0, as in the engine. Division only by a
+   * value from outside the row that is not 0 (dividing by a column could hit 0 in rows the engine never evaluates, so
+   * the failure would differ).
+   */
+  numExpr(n: Node, rc: RowCtx): NumExprV2 {
+    if (!this.rowDependent(n, rc)) return this.foldArith(n)
+    const col = this.columnRef(n, rc)
+    if (col !== null) {
+      const kind = rc.s.cols.get(col)!
+      if (kind === 'number' || kind === 'boolean') return { col }
+      throw new Refusal('type-mismatch', `${col} isn't a number, so it can't be used in a calculation on the server`, n, 'Calculate with number columns only')
+    }
+    const unsupported = (): never => {
+      throw new Refusal('not-delegable-expression', `This calculation on a column (${this.text(n)}) can't run on the server`, n,
+        'On the server, calculations may use + - * /, Abs, Round, RoundUp and RoundDown on number columns; move other calculations outside the table expression or store the value in a column')
+    }
+    switch (n.t) {
+      case 'unary':
+        if (n.op === '-') return { fn: 'sub', args: [0, this.numExpr(n.arg, rc)] }
+        return unsupported()
+      case 'pct': return { fn: 'div', args: [this.numExpr(n.arg, rc), 100] }
+      case 'bin': {
+        if (n.op === '/') {
+          if (this.rowDependent(n.right, rc)) {
+            throw new Refusal('not-delegable-expression', `Dividing by a column (${this.text(n.right)}) can't run on the server`, n.right,
+              'Divide by a value from outside the table, or compare by multiplying instead (Price > 2 * Cost rather than Price / Cost > 2)')
+          }
+          const d = this.foldArith(n.right)
+          if (d === 0) throw new Refusal('evaluation-error', "Can't divide by zero", n.right)
+          return { fn: 'div', args: [this.numExpr(n.left, rc), d] }
+        }
+        const fn = n.op === '+' ? 'add' : n.op === '-' ? 'sub' : n.op === '*' ? 'mul' : null
+        if (!fn) return unsupported()
+        return { fn, args: [this.numExpr(n.left, rc), this.numExpr(n.right, rc)] }
+      }
+      case 'call': {
+        if (n.name === 'Abs' && n.args.length === 1) return { fn: 'abs', args: [this.numExpr(n.args[0]!, rc)] }
+        if ((n.name === 'Round' || n.name === 'RoundUp' || n.name === 'RoundDown') && (n.args.length === 1 || n.args.length === 2)) {
+          let digits = 0
+          if (n.args.length === 2) {
+            if (this.rowDependent(n.args[1]!, rc)) throw new Refusal('not-delegable-expression', `The number of digits of ${n.name} must come from outside the table to run on the server`, n.args[1]!)
+            digits = Math.trunc(this.foldArith(n.args[1]!))
+            if (Math.abs(digits) > 100) throw new Refusal('not-delegable-expression', `${n.name} with ${digits} digits can't run on the server`, n.args[1]!)
+          }
+          const fn = n.name === 'Round' ? 'round' : n.name === 'RoundUp' ? 'roundUp' : 'roundDown'
+          return { fn, args: [this.numExpr(n.args[0]!, rc)], digits }
+        }
+        return unsupported()
+      }
+      default: return unsupported()
+    }
+  }
+
+  /** one side of a comparison with a calculation: a calculation, a number column, or an outside value */
+  exprSide(n: Node, op: CmpOp, rc: RowCtx): NumExprV2 | { const: boolean } {
+    if (this.isArith(n) && this.rowDependent(n, rc)) return this.numExpr(n, rc)
+    const col = this.columnRef(n, rc)
+    if (col !== null) {
+      // a blank number cell compares like 0 with a number (= and ordering alike)
+      if (rc.s.cols.get(col) === 'number') return { col }
+      throw new Refusal('type-mismatch', `${col} isn't a number, so comparing it with a calculation can't run on the server`, n)
+    }
+    if (this.rowDependent(n, rc)) {
+      throw new Refusal('not-delegable-expression', `This calculation on a column (${this.text(n)}) can't run on the server`, n,
+        'On the server, calculations may use + - * /, Abs, Round, RoundUp and RoundDown on number columns')
+    }
+    const v = this.fold(n)
+    if (v === null) return 0
+    if (typeof v === 'number') {
+      if (!Number.isFinite(v)) throw new Refusal('evaluation-error', "That result isn't a valid number", n)
+      return v
+    }
+    if (typeof v === 'boolean') {
+      // the engine: a number never equals true/false; in ordering a boolean reads as 0 / 1
+      if (op === '=') return { const: false }
+      if (op === '<>') return { const: true }
+      return v ? 1 : 0
+    }
+    if (typeof v === 'string') {
+      const x = numericOfText(v)
+      if (x === undefined || !Number.isFinite(x)) throw new Refusal('type-mismatch', `Comparing a calculation with the text "${v.slice(0, 30)}" can't run on the server`, n, 'Compare with a number')
+      return x
+    }
+    throw new Refusal('type-mismatch', `Can't compare a calculation with ${describeValue(v)} on the server`, n)
+  }
+
+  exprCompare(op: CmpOp, l: Node, r: Node, rc: RowCtx): ConditionV2 {
+    const a = this.exprSide(l, op, rc)
+    const b = this.exprSide(r, op, rc)
+    if (typeof a === 'object' && 'const' in a) return a
+    if (typeof b === 'object' && 'const' in b) return b
+    return { op: 'cmpExpr', cmp: CMP_V2[op], left: a, right: b }
+  }
+
+  /** Year(DateColumn) */
+  yearOf(n: Node, rc: RowCtx): { col: string; kind: 'date' | 'datetime' } | null {
+    if (n.t !== 'call' || n.name !== 'Year' || n.args.length !== 1) return null
+    const col = this.columnRef(n.args[0]!, rc)
+    if (col === null) return null
+    const kind = rc.s.cols.get(col)
+    return kind === 'date' || kind === 'datetime' ? { col, kind } : null
+  }
+
+  /**
+   * Year(col) <op> n as a range on the column (local calendar years, like the engine's Year()). A blank cell has no year:
+   * the engine compares blank with n as 0 with n.
+   */
+  yearCompare(y: { col: string; kind: 'date' | 'datetime' }, op: CmpOp, v: FxValue, at: Node): ConditionV2 {
+    let n: number
+    if (v === null) n = 0
+    else if (typeof v === 'number') n = v
+    else if (typeof v === 'string' && numericOfText(v) !== undefined) n = numericOfText(v)!
+    else throw new Refusal('type-mismatch', `Can't compare a year with ${describeValue(v)} on the server`, at, 'Compare Year(...) with a number')
+    if (!Number.isFinite(n)) throw new Refusal('evaluation-error', "That result isn't a valid number", at)
+    const lit = (Y: number): QueryLiteral => {
+      if (y.kind === 'date') return { $date: `${String(Y).padStart(4, '0')}-01-01` }
+      const d = new Date(2000, 0, 1)
+      d.setFullYear(Y, 0, 1)
+      return { $datetime: d.toISOString() }
+    }
+    const nn: ConditionV2 = { not: isNull(y.col) }
+    /** year < Y, for non-blank cells */
+    const before = (Y: number): ConditionV2 => (Y <= 1 ? { const: false } : Y > 9999 ? nn : { col: y.col, op: 'lt', value: lit(Y) })
+    const from = (Y: number): ConditionV2 => (Y <= 1 ? nn : Y > 9999 ? { const: false } : { col: y.col, op: 'ge', value: lit(Y) })
+    let part: ConditionV2
+    switch (op) {
+      case '=': part = Number.isInteger(n) ? and([from(n), before(n + 1)]) : { const: false }; break
+      case '<>': part = Number.isInteger(n) ? or([before(n), from(n + 1)]) : nn; break
+      case '<': part = before(Math.ceil(n)); break
+      case '<=': part = before(Math.floor(n) + 1); break
+      case '>': part = from(Math.floor(n) + 1); break
+      case '>=': part = from(Math.ceil(n)); break
+    }
+    const blank = op === '=' ? n === 0 : op === '<>' ? n !== 0 : op === '<' ? 0 < n : op === '<=' ? 0 <= n : op === '>' ? 0 > n : 0 >= n
+    return withNull(y.col, part, blank)
   }
 
   inOp(l: Node, r: Node, exact: boolean, rc: RowCtx, at: Node): ConditionV2 {

@@ -16,6 +16,9 @@ import type {
 } from './contracts'
 import Papa from 'papaparse'
 import { matchesCondition } from './rowfilter'
+import type { QueryPlan } from './query'
+import { planKey, type QueryState } from './query-cache'
+import { localQueryState } from './query-local'
 import { csvToRows, parseCsvText, rowsToCsv } from './csv'
 import { Persister } from './persister'
 import { DEFAULT_ENVIRONMENT_ID, pickEnvironment, readSelectedEnvironment, selectEnvironment } from './environments'
@@ -1103,6 +1106,21 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
   const tablesUpdate = ((a: string, b: unknown, c?: FxRecord, d?: { secure?: boolean }) =>
     typeof b === 'string' ? updateRow(a, b, c ?? {}, d) : updateTableDef(a, (b ?? {}) as Parameters<typeof updateTableDef>[1])) as PlatformApi['tables']['update']
 
+  /** demo-mode query results, recomputed when the data changes (stable identity in between) */
+  const queryMemo = new Map<string, { version: number; state: QueryState }>()
+  function demoQueryState(plan: QueryPlan): QueryState {
+    const key = planKey(plan)
+    const hit = queryMemo.get(key)
+    if (hit && hit.version === state.dataVersion) return hit.state
+    const def = tablesApi.get(plan.table)
+    const st = def
+      ? localQueryState(plan, tablesApi.rows(plan.table), def, state.dataVersion)
+      : { key, plan, status: 'error' as const, rows: [], hasMore: false, refreshing: false, loadingMore: false, version: state.dataVersion, error: new PlatformError('not-found', `Table "${plan.table}" was not found.`) }
+    queryMemo.set(key, { version: state.dataVersion, state: st })
+    if (queryMemo.size > 300) queryMemo.delete(queryMemo.keys().next().value!)
+    return st
+  }
+
   const tablesApi: PlatformApi['tables'] = {
     update: tablesUpdate,
     async create(input) {
@@ -1357,6 +1375,32 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
 
     async ensureLoaded() {
       /* demo mode holds every table in memory */
+    },
+    // Query v2 in demo mode: the reference executor over the rows the run-as user may read (same API as server mode)
+    async query(plan) {
+      const st = demoQueryState(plan)
+      if (st.status === 'error') throw st.error
+      return st
+    },
+    queryState: (plan) => demoQueryState(plan),
+    async loadMore() {},
+    releaseQuery() {},
+    onQueryChange(listener) {
+      // every data change may change every result: report the keys computed so far
+      const l = () => {
+        if (queryMemo.size) listener([...queryMemo.keys()])
+      }
+      listeners.add(l)
+      return () => {
+        listeners.delete(l)
+      }
+    },
+    invalidateQueries() {
+      queryMemo.clear()
+    },
+    sizeInfo(tableName) {
+      const rt = findTable(tableName)
+      return { rowCount: rt?.rows.length, fullyLoaded: true }
     },
     async listSourceTables() {
       return []

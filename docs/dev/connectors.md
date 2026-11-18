@@ -23,6 +23,8 @@ interface Connector {
   readonly kind: ConnectorKind
   readonly capabilities: ConnectorCapabilities   // { ddl, write, pushdown, transactions }
   test(): Promise<{ ok: true; message: string } | { ok: false; message: string }>
+  /** optional (PostgreSQL): run a Query v2 plan as one statement; others are served by the DataService fallback */
+  queryV2?(def: TableDef, input: QueryV2Input): Promise<QueryV2Raw>
   listSourceTables(): Promise<{ source: string; columns: SourceColumn[]; rowCount?: number }[]>
   describe(source: string): Promise<SourceColumn[]>
   createTable(def: TableDef): Promise<void>
@@ -147,6 +149,18 @@ Details:
   chunks of 5,000. Several chunks run in one transaction.
 - `listSourceTables` excludes `ab_%` tables and counts rows exactly only when there are 50 tables or fewer (otherwise
   `pg_class.reltuples`).
+- **Query v2** (`queryV2(def, { plan, rowFilter, visible, maxUnpagedRows, maxGroups, timeoutMs })`, P0 package D): the validated
+  plan becomes one statement (`query-v2.ts`, `buildV2`), run in a short transaction with `SET LOCAL statement_timeout` and
+  `extra_float_digits = 1`. The caller's row filter (a v1 `Condition`) is translated by `buildWhere` into the same `WHERE`, so v1
+  and v2 lowercase and compare identically (`fold()`). Returns typed rows plus the type of each output column, the count and the
+  next cursor. Statement shapes, the sort-key trick and the limits: `query-v2.md` sections 12-13.
+- **Indexes for Query v2** (created with the table and by column changes; names per schema): `ix_<t>_natural` on
+  `(COALESCE("createdOn", '-infinity'), id COLLATE "C")`; `kx_<t>_<col>` on `(sort key, natural)` for lookup, unique and
+  **indexed** columns; `kd_<t>_<col>` (descending key) and, for text with `pg_trgm` available, `tg_<t>_<col>` (GIN trigram) for indexed
+  columns. `ColumnDef.indexed` changes go through `alterColumn` (indexes dropped and created in its transaction). Managed tables
+  created before package D get the natural index in the background (`CREATE INDEX CONCURRENTLY`) on their first v2 query. The
+  connector installs `pg_trgm` (`CREATE EXTENSION IF NOT EXISTS pg_trgm`, in a savepoint) when the first indexed text column needs it
+  and the database user may; otherwise it logs once and searches scan.
 
 ### Parity with the reference
 
@@ -197,6 +211,15 @@ Documented differences that remain (each has a test that pins it down):
 Compared with the MySQL store (before D14) these behaviours changed: comparison is no longer accent- or width-insensitive and no longer
 ignores trailing spaces (`utf8mb4_unicode_ci` and `PAD SPACE`), text ordering is by code point instead of by collation, and
 `contains` on numbers uses JavaScript's number formatting. All of these now agree with the reference and with the browser.
+
+### Query v2 on connectors without `queryV2`
+
+MySQL, files and Google Sheets do not implement `queryV2`. `DataService.queryV2` reads at most `QUERY_FALLBACK_ROW_CAP` (5,000) rows
+the caller may see through `select` (MySQL pushes the row filter into SQL; files and Sheets apply it in memory), runs the reference
+executor (`src/fx/query/reference.ts`; files and Sheets keep file / sheet order as the natural order) and marks the answer
+`truncated: true` when more rows exist. The same validation and column security apply. A connector that wants full support implements
+`queryV2` (translate the plan, AND the row filter in, return typed rows, count and cursor) and runs the parity corpus against it the
+way `server/connectors/postgres/query-v2.integration.test.ts` does.
 
 ## MySQL connector (external databases)
 

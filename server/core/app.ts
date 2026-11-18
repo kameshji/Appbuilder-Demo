@@ -15,6 +15,7 @@ import { attachmentRoutes, sweepOrphanAttachments } from './attachments.ts'
 import { registerConnectors } from '../connectors/index.ts'
 import { metaRoutes } from '../routes/meta/index.ts'
 import { errText, log } from './util.ts'
+import { runInEnvironment } from './env-context.ts'
 
 export interface AppServer {
   services: CoreServices
@@ -56,9 +57,18 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   if (opts.boot !== false) {
     await services.boot()
     if (services.ready()) {
-      sweepOrphanAttachments(services)
-        .then((n) => n && log('info', `removed ${n} orphaned attachment(s)`))
-        .catch((e) => log('warn', `orphan sweep failed: ${errText(e)}`))
+      // every usable environment has its own attachments
+      ;(async () => {
+        for (const e of await services.environments.list()) {
+          if (e.state !== 'ready') continue
+          try {
+            const n = await runInEnvironment(e.id, () => sweepOrphanAttachments(services))
+            if (n) log('info', `environment ${e.id}: removed ${n} orphaned attachment(s)`)
+          } catch (err) {
+            log('warn', `orphan sweep of environment ${e.id} failed: ${errText(err)}`)
+          }
+        }
+      })().catch((e) => log('warn', `orphan sweep failed: ${errText(e)}`))
     }
     // while setup is needed: a one-time code, printed here, that the setup screen must send
     let needsSetup = !services.setupComplete()

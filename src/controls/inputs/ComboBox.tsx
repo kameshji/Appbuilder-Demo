@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { queryMeta } from '../virtual'
 import { Check, ChevronsUpDown, ListFilter, X } from 'lucide-react'
 import type { ControlRenderProps, ControlType } from '@/contracts'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -10,7 +11,7 @@ import { useItemSelection } from './selection'
 
 const MAX_VISIBLE = 200
 
-function ComboBoxRender({ props, mode, outputs, setOutput, fire, focusToken }: ControlRenderProps) {
+export function ComboBoxRender({ props, mode, outputs, setOutput, fire, focusToken }: ControlRenderProps) {
   const design = mode === 'design'
   const dm = toDisplayMode(props.DisplayMode)
   const multiple = isMultiple(props.SelectionMode)
@@ -20,15 +21,31 @@ function ComboBoxRender({ props, mode, outputs, setOutput, fire, focusToken }: C
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
   useFocusToken(root, focusToken, design)
-  const search = outputs.SearchText == null ? '' : toText(outputs.SearchText)
+  // server mode: a table's rows arrive page by page and the search runs on the server (type-ahead)
+  const meta = queryMeta(props.Items)
+  const searchOut = outputs.SearchText == null ? '' : toText(outputs.SearchText)
+  const [typed, setTyped] = useState(searchOut)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => { if (!timer.current) setTyped(searchOut) }, [searchOut])
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
+  const search = meta ? typed : searchOut
+  const setSearch = (v: string) => {
+    if (!meta) return setOutput('SearchText', v)
+    setTyped(v)
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(() => {
+      timer.current = null
+      setOutput('SearchText', v)
+    }, 250)
+  }
   const editable = !design && dm === 'Edit'
   const clearable = toBool(props.Clearable, true)
   const placeholder = toText(props.Placeholder)
 
   const visible = useMemo(() => {
-    const q = search.trim().toLowerCase()
+    const q = meta ? '' : search.trim().toLowerCase()
     const out: number[] = []
-    for (let i = 0; i < sel.items.length && out.length < MAX_VISIBLE; i++) {
+    for (let i = 0; i < sel.items.length && (meta || out.length < MAX_VISIBLE); i++) {
       if (q === '') { out.push(i); continue }
       const rec = sel.items[i]
       const hay = searchFields.length > 0 ? searchFields.map((f) => toText(rec[f])).join(' ') : itemText(rec, displayField || undefined)
@@ -36,22 +53,25 @@ function ComboBoxRender({ props, mode, outputs, setOutput, fire, focusToken }: C
     }
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sel.items, search, displayField, searchFields.join(',')])
+  }, [sel.items, search, displayField, searchFields.join(','), meta])
 
+  // the label comes from the selected records themselves (they may not be among the rows loaded now)
   const label =
-    sel.selected.length === 0
+    sel.current.length === 0
       ? ''
-      : multiple && sel.selected.length > 2
-        ? `${sel.selected.length} selected`
-        : sel.selected.map((i) => sel.texts[i]).join(', ')
+      : multiple && sel.current.length > 2
+        ? `${sel.current.length} selected`
+        : sel.current.map((r) => itemText(r, displayField || undefined)).join(', ')
 
   const toggle = (i: number) => {
     if (!editable) return
     if (multiple) {
-      sel.set(sel.selected.includes(i) ? sel.selected.filter((x) => x !== i) : [...sel.selected, i])
+      sel.set(sel.selected.includes(i) ? sel.selected.filter((x) => x !== i) : [...sel.selected, i], true)
     } else {
       sel.set([i])
       setOpen(false)
+      if (timer.current) { clearTimeout(timer.current); timer.current = null }
+      setTyped('')
       setOutput('SearchText', '')
     }
     fire('OnChange')
@@ -64,7 +84,11 @@ function ComboBoxRender({ props, mode, outputs, setOutput, fire, focusToken }: C
         onOpenChange={(o) => {
           if (!editable) return
           setOpen(o)
-          if (!o) setOutput('SearchText', '')
+          if (!o) {
+            if (timer.current) { clearTimeout(timer.current); timer.current = null }
+            setTyped('')
+            setOutput('SearchText', '')
+          }
         }}
       >
         <PopoverTrigger asChild>
@@ -82,9 +106,14 @@ function ComboBoxRender({ props, mode, outputs, setOutput, fire, focusToken }: C
         </PopoverTrigger>
         <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] min-w-56 p-0">
           <Command shouldFilter={false}>
-            <CommandInput placeholder="Search..." value={search} onValueChange={(v) => setOutput('SearchText', v)} />
-            <CommandList>
-              <CommandEmpty>No results.</CommandEmpty>
+            <CommandInput placeholder="Search..." value={search} onValueChange={setSearch} />
+            <CommandList
+              onScroll={(e) => {
+                const el = e.currentTarget
+                if (meta?.hasMore && !meta.loadingMore && el.scrollTop + el.clientHeight > el.scrollHeight - 120) void meta.loadMore()
+              }}
+            >
+              <CommandEmpty>{meta && (meta.refreshing || timer.current) ? 'Searching…' : 'No results.'}</CommandEmpty>
               <CommandGroup>
                 {visible.map((i) => (
                   <CommandItem key={i} value={String(i)} onSelect={() => toggle(i)}>
@@ -93,6 +122,7 @@ function ComboBoxRender({ props, mode, outputs, setOutput, fire, focusToken }: C
                   </CommandItem>
                 ))}
               </CommandGroup>
+              {meta?.hasMore && <div className="px-2 py-1.5 text-xs text-muted-foreground">{meta.loadingMore ? 'Loading…' : `${sel.items.length.toLocaleString('en-US')} of ${(meta.count ?? 0).toLocaleString('en-US')}: scroll or type to narrow`}</div>}
             </CommandList>
           </Command>
         </PopoverContent>

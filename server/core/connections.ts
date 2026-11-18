@@ -25,7 +25,7 @@ function fingerprint(c: ConnectionRecord): string {
     .digest('hex')
 }
 
-export function createConnectionManager(getMeta: () => MetaStore, env: ConnectorEnv): ConnectionManager & { closeAll(): Promise<void> } {
+export function createConnectionManager(getMeta: () => MetaStore, env: ConnectorEnv): ConnectionManager & { closeAll(): Promise<void>; closeEnvironment(id: string): Promise<void> } {
   const factories = new Map<ConnectorKind, ConnectorFactory>()
   const cache = new Map<string, { fp: string; connector: Connector }>()
   const creating = new Map<string, Promise<Connector>>()
@@ -84,6 +84,14 @@ export function createConnectionManager(getMeta: () => MetaStore, env: Connector
       const all = [...cache.values()]
       cache.clear()
       for (const h of all) await closeQuietly(h.connector)
+    },
+    /** closes and forgets every connector instance of one environment (it is being deleted) */
+    async closeEnvironment(id: string) {
+      for (const [key, h] of [...cache.entries()]) {
+        if (!key.startsWith(`${id}:`)) continue
+        cache.delete(key)
+        await closeQuietly(h.connector)
+      }
     },
   }
 }

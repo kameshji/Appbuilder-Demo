@@ -292,7 +292,8 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (PostgreSQL)' : `se
     expect(up.data).toMatchObject({ fileName: 'quote é.pdf', mime: 'application/pdf', sizeBytes: bytes.length })
     attC = up.data.id
     expect(attC).toMatch(/^att_/)
-    expect(up.data.url).toBe(`/api/v1/attachments/${attC}`)
+    // the link names its environment (an <img src> cannot send the environment header)
+    expect(up.data.url).toBe(`/api/v1/attachments/${attC}?env=default`)
     const up2 = await rep.req('POST', `/api/v1/attachments?table=Deals&column=Docs&rowId=${rowC}&name=b.txt`, undefined, { data: Buffer.from('second'), type: 'text/plain' })
     expect(up2.status).toBe(200)
     const row = await rep.post('/api/v1/data/Deals/query', { where: { col: 'id', op: 'eq', value: rowC } })
@@ -343,7 +344,8 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (PostgreSQL)' : `se
     // deleting the row removes its remaining attachments (Photo)
     const rec = (await app.services.meta.attachments.forRows(deals.id, [rowC]))
     expect(rec.length).toBe(1)
-    const storage = path.join(tmp, 'attachments', rec[0].storageKey.slice(0, 2), rec[0].storageKey)
+    // workspace/env/<environment>/attachments
+    const storage = path.join(tmp, 'env', 'default', 'attachments', rec[0].storageKey.slice(0, 2), rec[0].storageKey)
     expect(fs.existsSync(storage)).toBe(true)
     expect((await rep.post('/api/v1/data/Deals/delete', { ids: [rowC] })).data).toEqual({ deleted: 1 })
     expect(await app.services.meta.attachments.forRows(deals.id, [rowC])).toEqual([])

@@ -3,6 +3,10 @@ import { createRemotePlatform } from './remote'
 import { createPlatformFacade, probeServer } from './index'
 import { PlatformError } from './contracts'
 import type { DataErrorEvent, PlatformApi, Session, TableDef, WorkspaceState } from './contracts'
+import type { QueryPlan } from './query'
+import { executePlan } from '../fx/query/reference.ts'
+import { rowsFromWire } from './query-wire'
+import { schemaInfoOf } from './query-local'
 
 /* ------------------------------------------------------------------ fake server */
 
@@ -60,6 +64,7 @@ function makeServer(opts: { signedIn?: boolean; session?: Session; rowCount?: nu
   const log: Req[] = []
   const rules = { rejectNext: null as null | { status: number; code: string; message: string }, delayQuery: 0, expire: false }
   let queries = 0
+  let v2 = 0
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
   const err = (status: number, code: string, message: string) => json(status, { error: { code, message } })
 
@@ -85,6 +90,24 @@ function makeServer(opts: { signedIn?: boolean; session?: Session; rowCount?: nu
     if (!session || rules.expire) { rules.expire = false; session = null; return err(401, 'unauthenticated', 'Sign in required') }
     if (p === '/workspace') {
       return json(200, { apps: [], tables: [CONTACTS], roles: [], users: [session.user], connections: [], solutions: [], dataFiles: [], session, storage: { kind: 'postgres', location: 'test' } })
+    }
+    if (p === '/query' && method === 'POST') {
+      // Query v2 with the reference executor (dates and instants converted like the real server)
+      v2++
+      if (rules.rejectNext) { const r = rules.rejectNext; rules.rejectNext = null; return err(r.status, r.code, r.message) }
+      const plan = (body as { plan: QueryPlan }).plan
+      const types = Object.fromEntries(CONTACTS.columns.map((c) => [c.name, c.type]))
+      const fx = rowsFromWire({ version: 2, table: 'Contacts' }, rows, types)
+      const res = executePlan(plan, fx, schemaInfoOf(CONTACTS), { inputOrder: true })
+      const out = res.rows.map((r) => {
+        const o: J = {}
+        for (const [k, v] of Object.entries(r)) {
+          if (k === '__id') { o.id = v as string; continue }
+          o[k] = v instanceof Date ? (types[k] === 'date' ? `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}` : v.toISOString()) : (v as J[string])
+        }
+        return o
+      })
+      return json(200, { rows: out, ...(res.count !== undefined ? { count: res.count } : {}), ...(plan.page ? { nextCursor: res.nextCursor ?? null } : {}) })
     }
     const m = /^\/data\/([^/]+)(\/.*)?$/.exec(p)
     if (m) {
@@ -125,7 +148,7 @@ function makeServer(opts: { signedIn?: boolean; session?: Session; rowCount?: nu
     if (p === '/files/file_1/download') return new Response('a,b\n1,2\n', { status: 200 })
     return err(404, 'not-found', `no route ${method} ${p}`)
   })
-  return { fetch: fetchStub as unknown as typeof fetch, rows, log, rules, queryCount: () => queries, setSession: (s: Session | null) => { session = s } }
+  return { fetch: fetchStub as unknown as typeof fetch, rows, log, rules, queryCount: () => queries, v2Count: () => v2, setSession: (s: Session | null) => { session = s } }
 }
 
 async function boot(opts: Parameters<typeof makeServer>[0] = {}, extra: Parameters<typeof createRemotePlatform>[0] = {}) {
@@ -201,7 +224,10 @@ describe('RemotePlatform: lazy rows and typed conversion', () => {
     await p.tables.ensureLoaded(['Contacts'])
     expect(p.getState().loading).toEqual([])
     expect(srv.queryCount()).toBe(1)
-    const q = srv.log.find((r) => r.path.endsWith('/query'))!
+    // a small table: its size is counted first (Query v2), then it is held whole
+    const count = srv.log.find((r) => r.path === '/api/v1/query')!
+    expect(count.body).toEqual({ plan: { version: 2, table: 'Contacts', count: true, page: { size: 0 } } })
+    const q = srv.log.find((r) => r.path.endsWith('/data/Contacts/query'))!
     expect(q.body).toEqual({ top: 5000 })
     expect(notified).toBeGreaterThan(1)
     const r = p.tables.rows('Contacts')[0]
@@ -481,5 +507,97 @@ describe('platform facade', () => {
     expect(await probeServer(800, ok('{}', 'application/json', 404))).toBe(false)
     expect(await probeServer(800, (async () => { throw new Error('down') }) as unknown as typeof fetch)).toBe(false)
     expect(await probeServer(20, (() => new Promise(() => {})) as unknown as typeof fetch)).toBe(false)
+  })
+})
+
+describe('RemotePlatform: Query v2 cache (package D)', () => {
+  const plan = (extra: Partial<QueryPlan> = {}): QueryPlan => ({ version: 2, table: 'Contacts', ...extra })
+
+  it('a large table is never loaded whole; queries page through it with an exact count', async () => {
+    const { p, srv } = await boot({ rowCount: 2501 })
+    await p.tables.ensureLoaded(['Contacts'])
+    expect(p.tables.rows('Contacts')).toEqual([])
+    expect(srv.queryCount()).toBe(0) // no v1 "load everything" read
+    expect(p.tables.sizeInfo('Contacts')).toEqual({ rowCount: 2501, fullyLoaded: false })
+    const st0 = p.tables.queryState(plan({ sort: [{ col: 'Age', dir: 'desc' }] }), { pageSize: 50, owner: 'grid' })
+    expect(st0.status).toBe('loading')
+    const st = await p.tables.query(plan({ sort: [{ col: 'Age', dir: 'desc' }] }), { pageSize: 50, owner: 'grid' })
+    expect(st.rows).toHaveLength(50)
+    expect(st.count).toBe(2501)
+    expect(st.hasMore).toBe(true)
+    expect(st.rows[0]!.Age).toBe(30 + 2500)
+    await p.tables.loadMore(st.key)
+    const st2 = p.tables.queryState(plan({ sort: [{ col: 'Age', dir: 'desc' }] }), { pageSize: 50, owner: 'grid' })
+    expect(st2.rows).toHaveLength(100)
+    expect(st2.rows[50]!.Age).toBe(30 + 2450)
+  })
+
+  it('de-duplicates concurrent requests and notifies changed keys', async () => {
+    const { p, srv } = await boot()
+    const keys: string[][] = []
+    p.tables.onQueryChange((k) => keys.push(k))
+    const before = srv.v2Count()
+    const a = p.tables.query(plan({ filter: { col: 'Age', op: 'gt', value: 30 } }))
+    const b = p.tables.query(plan({ filter: { col: 'Age', op: 'gt', value: 30 } }))
+    const [ra, rb] = await Promise.all([a, b])
+    expect(srv.v2Count() - before).toBe(1)
+    expect(ra.rows.map((r) => r.Name)).toEqual(['Person 2', 'Person 3'])
+    expect(rb).toBe(ra)
+    expect(keys.flat()).toContain(ra.key)
+  })
+
+  it('writes are optimistic on cached results, then the results refetch the server truth', async () => {
+    const { p, srv } = await boot()
+    const q = plan({ filter: { col: 'Age', op: 'ge', value: 30 }, count: true })
+    await p.tables.query(q, { pageSize: 10, owner: 'g' })
+    const before = srv.v2Count()
+    p.tables.update('Contacts', 'row-2', { Name: 'Renamed' })
+    // visible at once in the cached result
+    expect(p.tables.queryState(q, { pageSize: 10, owner: 'g' }).rows[1]!.Name).toBe('Renamed')
+    await p.tables.flush()
+    await tick()
+    await tick()
+    expect(srv.v2Count()).toBeGreaterThan(before) // refetched after the confirmed write
+    const after = p.tables.queryState(q, { pageSize: 10, owner: 'g' })
+    expect(after.rows[1]!.Name).toBe('Renamed')
+    p.tables.delete('Contacts', ['row-1'])
+    expect(p.tables.queryState(q, { pageSize: 10, owner: 'g' }).rows.map((r) => r.__id)).toEqual(['row-2', 'row-3'])
+    await p.tables.flush()
+    await tick()
+    await tick()
+    expect(p.tables.queryState(q, { pageSize: 10, owner: 'g' }).count).toBe(2)
+  })
+
+  it('a refused write disappears from cached results (rollback) and errors surface on the state', async () => {
+    const { p, srv } = await boot()
+    const q = plan()
+    await p.tables.query(q, { pageSize: 10, owner: 'g' })
+    srv.rules.rejectNext = { status: 403, code: 'denied', message: 'No' }
+    p.tables.update('Contacts', 'row-1', { Name: 'Nope' })
+    expect(p.tables.queryState(q, { pageSize: 10, owner: 'g' }).rows[0]!.Name).toBe('Nope')
+    await p.tables.flush().catch(() => {})
+    await tick()
+    await tick()
+    expect(p.tables.queryState(q, { pageSize: 10, owner: 'g' }).rows[0]!.Name).toBe('Person 1')
+    srv.rules.rejectNext = { status: 422, code: 'invalid', message: 'Column "Nope" does not exist' }
+    await expect(p.tables.query(plan({ filter: { col: 'Nope', op: 'eq', value: 1 } }))).rejects.toMatchObject({ code: 'invalid' })
+  })
+
+  it('an owner that moves to another plan cancels the request nobody wants any more', async () => {
+    const { p, srv } = await boot()
+    srv.rules.delayQuery = 0
+    const signals: AbortSignal[] = []
+    const orig = srv.fetch
+    const spy = (async (input: string, init: RequestInit = {}) => {
+      if (String(input).endsWith('/query') && init.signal) signals.push(init.signal)
+      return (orig as unknown as (i: string, n: RequestInit) => Promise<Response>)(input, init)
+    }) as unknown as typeof fetch
+    const p2 = createRemotePlatform({ fetch: spy, reloadOnFocus: false })
+    await p2.init()
+    p2.tables.queryState(plan({ search: { text: 'p', columns: ['Name'] } }), { pageSize: 20, owner: 'box' })
+    p2.tables.queryState(plan({ search: { text: 'pe', columns: ['Name'] } }), { pageSize: 20, owner: 'box' })
+    expect(signals[0]!.aborted).toBe(true)
+    expect(signals[1]!.aborted).toBe(false)
+    void p
   })
 })

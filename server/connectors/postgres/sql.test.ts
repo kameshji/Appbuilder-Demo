@@ -61,8 +61,13 @@ describe('DDL', () => {
     expect(ix).toEqual([
       'CREATE INDEX IF NOT EXISTS "ix_t_orders_owner" ON "env_default"."t_orders" ((lower(("owner") COLLATE pg_catalog."und-x-icu")))',
       'CREATE UNIQUE INDEX IF NOT EXISTS "uq_t_orders_title" ON "env_default"."t_orders" ((lower(("title") COLLATE pg_catalog."und-x-icu")))',
+      'CREATE INDEX IF NOT EXISTS "kx_t_orders_title" ON "env_default"."t_orders" (COALESCE(lower(("title") COLLATE pg_catalog."und-x-icu"), \'\') COLLATE "C", COALESCE("createdOn", \'-infinity\'::timestamptz), "id" COLLATE "C")',
       'CREATE INDEX IF NOT EXISTS "ix_t_orders_cust" ON "env_default"."t_orders" ((lower(("cust") COLLATE pg_catalog."und-x-icu")))',
+      'CREATE INDEX IF NOT EXISTS "kx_t_orders_cust" ON "env_default"."t_orders" (COALESCE(lower(("cust") COLLATE pg_catalog."und-x-icu"), \'\') COLLATE "C", COALESCE("createdOn", \'-infinity\'::timestamptz), "id" COLLATE "C")',
       'CREATE UNIQUE INDEX IF NOT EXISTS "uq_t_orders_n" ON "env_default"."t_orders" ("n")',
+      'CREATE INDEX IF NOT EXISTS "kx_t_orders_n" ON "env_default"."t_orders" (COALESCE("n", 0), COALESCE("createdOn", \'-infinity\'::timestamptz), "id" COLLATE "C")',
+      // Query v2: natural order (unsorted pages, tie-breaks)
+      'CREATE INDEX IF NOT EXISTS "ix_t_orders_natural" ON "env_default"."t_orders" (COALESCE("createdOn", \'-infinity\'::timestamptz), "id" COLLATE "C")',
     ])
     expect(createTableSql(NO_ICU, def([col('title', 'text', { unique: true })]))[2]).toContain('(lower("title"))')
   })

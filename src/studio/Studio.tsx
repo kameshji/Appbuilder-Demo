@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
-import { CircleAlert, Loader2 } from 'lucide-react'
+import { CircleAlert, Loader2, Lock } from 'lucide-react'
+import { usePlatform } from '@/platform'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import { controls } from '@/controls'
@@ -140,8 +141,23 @@ function usePrefs(appId: string) {
   }, [appId, ready])
 }
 
+/** the current environment is a locked production environment: the Studio opens read-only (the server refuses saves) */
+export function useEnvironmentLocked(): boolean {
+  return usePlatform((s) => !!s.environments.find((e) => e.id === s.environmentId)?.locked)
+}
+
+function LockedBanner() {
+  return (
+    <div role="status" data-testid="studio-locked" className="flex shrink-0 items-center gap-2 border-b border-rose-500/30 bg-rose-500/10 px-4 py-1.5 text-xs text-rose-800 dark:text-rose-200">
+      <Lock className="size-3.5 shrink-0" />
+      <span><b>Read-only.</b> This production environment is locked: apps change only by deploying a solution into it. Changes you make here are not saved; make them in a sandbox and deploy.</span>
+    </div>
+  )
+}
+
 export function Studio({ appId }: { appId: string }) {
   const theme = useUi((s) => s.theme)
+  const locked = useEnvironmentLocked()
   const loadState = useStore((s) => s.loadState)
   const loadedId = useStore((s) => s.appId)
   const loadError = useStore((s) => s.loadError)
@@ -160,13 +176,14 @@ export function Studio({ appId }: { appId: string }) {
       useStore.getState().loadApp(appId, def)
       useUi.setState({ viewSize: null, locked: [] })
       useUi.getState().requestFit()
-      stop = startStudioSession(appId)
+      // locked environment: no autosave (it would be refused); the banner says so
+      if (!locked) stop = startStudioSession(appId)
     })
     return () => {
       alive = false
       stop?.()
     }
-  }, [appId])
+  }, [appId, locked])
 
   if (loadState === 'missing' || loadState === 'error') {
     return (
@@ -192,6 +209,7 @@ export function Studio({ appId }: { appId: string }) {
     <TooltipProvider delayDuration={300}>
       <div data-testid="studio-root" className="flex h-full min-w-[900px] flex-col overflow-hidden bg-background text-foreground">
         <CommandBar />
+        {locked && <LockedBanner />}
         <FormulaBar />
         <div className="flex min-h-0 flex-1">
           <LeftRail />

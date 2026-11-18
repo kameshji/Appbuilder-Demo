@@ -9,6 +9,7 @@ import { useUi } from '@/runtime/ui'
 import { summarize, typeName } from '@/runtime/util'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
+import { Cloud, Monitor, TriangleAlert } from 'lucide-react'
 
 const GROUPS = ['Content', 'Data', 'Layout', 'Style', 'Behaviour'] as const
 
@@ -288,6 +289,17 @@ function FormulaEditor({ node, prop, ev, multi }: { node: ControlNode; prop: str
     return { type: typeName(pe.value), text: summarize(pe.value, 90) }
   }, [pe, message])
 
+  // server mode: where a table formula runs, and the sub-expression that can't run on the server (wavy underline)
+  const dlg = pe?.delegation
+  const squiggle = useMemo(() => {
+    if (!dlg || syntaxErr || draft !== body(stored)) return null
+    const d = dlg.diagnostics.find((x) => x.severity === 'error') ?? dlg.diagnostics.find((x) => x.severity === 'warning')
+    if (!d || d.end <= d.start) return null
+    // diagnostics count the leading '=' (the bar shows the formula without it)
+    return { start: Math.max(0, d.start - 1), end: Math.max(0, d.end - 1), error: d.severity === 'error', title: `${d.message}${d.suggestion ? `. ${d.suggestion}` : ''}` }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dlg, syntaxErr, draft, stored])
+
   return (
     <div className="relative h-[26px] min-w-0 flex-1">
       <div
@@ -298,6 +310,21 @@ function FormulaEditor({ node, prop, ev, multi }: { node: ControlNode; prop: str
         )}
       >
         <span className="select-none pl-2 pr-1 font-mono text-[13px] leading-[24px] text-muted-foreground">=</span>
+        <div className="relative min-w-0 flex-1">
+        {squiggle && (
+          <div
+            aria-hidden
+            data-testid="delegation-squiggle"
+            className={cn(
+              'pointer-events-none absolute inset-0 overflow-hidden py-[3px] pr-2 font-mono text-[13px] leading-[18px] text-transparent',
+              focused ? 'whitespace-pre-wrap break-words' : 'whitespace-nowrap',
+            )}
+          >
+            {draft.slice(0, squiggle.start)}
+            <span className={cn('underline decoration-wavy decoration-[1.5px] underline-offset-[3px]', squiggle.error ? 'decoration-destructive' : 'decoration-amber-500')}>{draft.slice(squiggle.start, squiggle.end)}</span>
+            {draft.slice(squiggle.end)}
+          </div>
+        )}
         <textarea
           ref={ta}
           data-testid="formula-input"
@@ -309,10 +336,11 @@ function FormulaEditor({ node, prop, ev, multi }: { node: ControlNode; prop: str
           disabled={multi}
           placeholder={multi ? 'Multiple controls selected' : 'Type a formula'}
           className={cn(
-            'min-w-0 flex-1 resize-none bg-transparent py-[3px] pr-2 font-mono text-[13px] leading-[18px] outline-none placeholder:text-muted-foreground/60',
+            'block w-full min-w-0 resize-none bg-transparent py-[3px] pr-2 font-mono text-[13px] leading-[18px] outline-none placeholder:text-muted-foreground/60',
             !focused && 'overflow-hidden whitespace-nowrap text-ellipsis',
           )}
           style={{ height: 26 }}
+          title={squiggle?.title}
           onFocus={() => setFocused(true)}
           onBlur={() => {
             setFocused(false)
@@ -365,6 +393,21 @@ function FormulaEditor({ node, prop, ev, multi }: { node: ControlNode; prop: str
             if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) refreshSuggestions(draft, e.currentTarget.selectionStart)
           }}
         />
+        </div>
+        {dlg && (
+          <span
+            data-testid="delegation-indicator"
+            data-where={dlg.where}
+            title={dlg.explain}
+            className={cn(
+              'mr-1 mt-[3px] flex h-[18px] shrink-0 select-none items-center gap-1 rounded px-1.5 text-[10.5px] font-medium',
+              dlg.where === 'server' ? 'bg-primary/10 text-primary' : dlg.where === 'browser' ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400' : 'bg-destructive/10 text-destructive',
+            )}
+          >
+            {dlg.where === 'server' ? <Cloud className="size-3" /> : dlg.where === 'browser' ? <Monitor className="size-3" /> : <TriangleAlert className="size-3" />}
+            {dlg.where === 'server' ? 'Runs on server' : dlg.where === 'browser' ? 'Runs in browser' : "Can't run"}
+          </span>
+        )}
         {tip && focused && !sugg && (
           <div data-testid="call-tip" className="absolute left-0 top-full z-50 mt-1 max-w-[640px] rounded-md border border-border bg-popover px-2.5 py-1.5 text-popover-foreground shadow-lg">
             <div className="font-mono text-xs">
@@ -395,11 +438,15 @@ function FormulaEditor({ node, prop, ev, multi }: { node: ControlNode; prop: str
           </div>
         )}
       </div>
-      {(message || chip) && !(focused && draft.includes('\n')) && (
+      {(message || chip || pe?.warning) && !(focused && draft.includes('\n')) && (
         <div className="pointer-events-none absolute left-0 top-[31px] z-30 flex max-w-full items-center gap-1.5">
           {message ? (
             <span data-testid="formula-error" className="max-w-[640px] truncate rounded bg-destructive px-1.5 py-0.5 text-[11px] font-medium text-white shadow">
               {message}
+            </span>
+          ) : pe?.warning ? (
+            <span data-testid="formula-warning" className="max-w-[640px] truncate rounded bg-amber-500 px-1.5 py-0.5 text-[11px] font-medium text-white shadow">
+              {pe.warning}
             </span>
           ) : (
             chip && (

@@ -21,7 +21,7 @@ src/**/*.test.ts   server/**/*.test.ts   scripts/**/*.test.ts
 | Server hardening | `server/core/hardening.test.ts`, `server/routes/meta/hardening.test.ts` | Loopback-only setup routes (a real LAN socket when the machine has one), host list, setup code, CSP hashes, Secure cookie, `password_change_required` gate, CSV escaping, per-email backoff, audit diffs; table delete/column unmap on linked tables, owners of imported rows, assign-owner, audit entries | no |
 | Server metadata routes | `server/routes/meta/{meta,connections,files,migrate,security,solutions,tables}.test.ts` | Apps, tables, columns, connections, roles and users, solutions, packages, legacy migration, data files. They use the in-memory `FakeMetaStore` harness `server/routes/meta/testing.ts` with the **real** `SecurityEngine`, `DataService` and `ConnectionManager` | no |
 | Connectors | `server/connectors/postgres/sql.test.ts` and `server/connectors/mysql/sql.test.ts` (pure SQL builders, error mapping), `files/files.test.ts` (temp directory), `gsheets/gsheets.test.ts` (injected fake Google API) | Each connector in isolation | no |
-| Integration (PostgreSQL) | `server/connectors/postgres/postgres.integration.test.ts`, `server/core/{integration,fixes,hardening,admin,transactions}.integration.test.ts`, `server/routes/meta/meta.integration.test.ts` | The PostgreSQL connector against a real server including SQL-versus-reference **parity**, pooled-connection settings and transactions; the whole HTTP API end to end (cookie jars per user, RBAC/RLS/CLS, attachments); units of work (a failed import or schema change leaves nothing behind); the metadata API | **yes**, `APPBUILDER_TEST_DB` |
+| Integration (PostgreSQL) | `server/connectors/postgres/postgres.integration.test.ts`, `server/core/{integration,fixes,hardening,admin,transactions,environments}.integration.test.ts`, `server/routes/meta/meta.integration.test.ts` | The PostgreSQL connector against a real server including SQL-versus-reference **parity**, pooled-connection settings and transactions; the whole HTTP API end to end (cookie jars per user, RBAC/RLS/CLS, attachments); units of work (a failed import or schema change leaves nothing behind); the metadata API; environments (access by header, isolation of same-named objects, create/copy/delete, locked production, in-place solution upgrade with rollback, per-environment boot migration, the upgrade from a version 4 database, `_env_` and `_v4_` databases) | **yes**, `APPBUILDER_TEST_DB` |
 | Integration (MySQL connector) | `server/connectors/mysql/mysql.integration.test.ts` | The MySQL connector (external databases) against MySQL/MariaDB including parity | **yes**, `APPBUILDER_TEST_MYSQL` |
 | Generated docs | `scripts/docs/generate.test.ts` | Staleness of `docs/reference/*.md` (below) | no |
 | Licence classifier | `scripts/licences.test.ts` | The licence allow-list logic used by `npm run licences` and `npm run notices` (SPDX expressions, arrays, missing, exceptions, forbidden imports) | no |
@@ -221,3 +221,10 @@ service image).
 - Import-boundary rules (`architecture.md`) are not checked by a tool.
 - The integration tests run in CI against PostgreSQL 16 and (MySQL connector) MariaDB 10.11 only; other versions are tested by hand.
 - `scripts/docs/generate.test.ts` is matched by the `scripts/**/*.test.ts` glob; other scripts have no tests.
+
+## The environments walkthrough (headless browser)
+
+`scripts/docs-shots/environments.mjs` drives a real server through the environments flow (create a sandbox copied from
+Default, switch, change an app and a table there, Default unchanged, deploy with the plan dialog, lock Default, edits refused,
+delete the sandbox) and writes the screenshots of `docs/admin/environments.md`. It needs puppeteer-core, Chrome and an empty
+sandbox database; the header of the script has the commands. It exits 1 on the first failed check.

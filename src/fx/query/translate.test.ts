@@ -130,7 +130,11 @@ describe('analyze: diagnostics', () => {
     expect(diag('=Filter(Tickets, Code < "5")').diagnostics[0]!.code).toBe('numeric-text')
     expect(diag('=Filter(Tickets, Code = 10)').diagnostics[0]!.code).toBe('type-mismatch')
     expect(diag('=Concat(Filter(Tickets, Active), Title)').diagnostics[0]).toMatchObject({ code: 'unbounded-consumer', text: 'Filter(Tickets, Active)' })
-    expect(diag('=Sum(Tickets, Priority * 2)').diagnostics[0]!.code).toBe('not-delegable-expression')
+    expect(diag('=Sum(Tickets, Priority ^ 2)').diagnostics[0]!.code).toBe('not-delegable-expression')
+    expect(diag('=Filter(Tickets, Priority / Score > 1)').diagnostics[0]).toMatchObject({ code: 'not-delegable-expression', text: 'Score' })
+    expect(diag('=Filter(Tickets, Priority / 0 > 1)').diagnostics[0]).toMatchObject({ code: 'evaluation-error', message: "Can't divide by zero" })
+    expect(diag('=Filter(Tickets, Month(Due) = 3)').diagnostics[0]!.code).toBe('not-delegable-expression')
+    expect(diag('=Filter(Tickets, Priority * 2 > "x")').diagnostics[0]!.code).toBe('type-mismatch')
     expect(diag('=RemoveIf(Tickets, Active)').diagnostics[0]!.code).toBe('not-delegable-function')
     expect(diag('=Filter(Tickets, Owner = LookUp(Customers, Name = "Asha", Email))').diagnostics[0]!.code).toBe('nested-table')
     expect(diag('=Filter(Tickets, ').diagnostics[0]!.code).toBe('parse-error')
@@ -221,3 +225,34 @@ describe('keyset cursors', () => {
     expect(engine.evaluate(r.residual!.formula, residualScope({ [q.id]: v }, scope))).toEqual(engine.evaluate('=First(Sort(Tickets, Priority)).Title', scope))
   })
 })
+
+describe('analyze: computed numbers and years (package D)', () => {
+  const plan = (f: string) => {
+    const r = analyze(f, SCHEMA, { scope })
+    expect(r.diagnostics, f).toEqual([])
+    return r.plans[0]!.plan
+  }
+  it('arithmetic in a comparison becomes cmpExpr with blank-as-zero columns and folded outside values', () => {
+    expect(plan('=Filter(Tickets, Priority * Score > 1000)').filter).toEqual({ op: 'cmpExpr', cmp: 'gt', left: { fn: 'mul', args: [{ col: 'Priority' }, { col: 'Score' }] }, right: 1000 })
+    expect(plan('=Filter(Tickets, Score < -Priority + Slider1.Value * 2)').filter).toEqual({
+      op: 'cmpExpr', cmp: 'lt', left: { col: 'Score' }, right: { fn: 'add', args: [{ fn: 'sub', args: [0, { col: 'Priority' }] }, 6] },
+    })
+    expect(plan('=Filter(Tickets, Round(Priority / 3, 1) = 0.3)').filter).toEqual({
+      op: 'cmpExpr', cmp: 'eq', left: { fn: 'round', args: [{ fn: 'div', args: [{ col: 'Priority' }, 3] }], digits: 1 }, right: 0.3,
+    })
+    // a calculation used as a condition is true when not 0; a boolean never equals a number
+    expect(plan('=Filter(Tickets, Priority - 1)').filter).toEqual({ op: 'cmpExpr', cmp: 'ne', left: { fn: 'sub', args: [{ col: 'Priority' }, 1] }, right: 0 })
+    expect(plan('=Filter(Tickets, Priority * 2 = true)').filter).toEqual({ const: false })
+  })
+  it('measures over calculations', () => {
+    expect(plan('=Sum(Tickets, Priority * Score)').aggregate).toEqual({ groupBy: [], measures: [{ name: 'Value', fn: 'sum', expr: { fn: 'mul', args: [{ col: 'Priority' }, { col: 'Score' }] } }] })
+    expect(plan('=DropColumns(AddColumns(GroupBy(Tickets, "Status", "G"), "Rev", Sum(G, Priority * 2)), "G")').aggregate!.measures)
+      .toEqual([{ name: 'Rev', fn: 'sum', expr: { fn: 'mul', args: [{ col: 'Priority' }, 2] } }])
+  })
+  it('Year(date column) compares as a date range in the browser time zone', () => {
+    expect(plan('=Filter(Tickets, Year(Due) = 2026)').filter).toEqual({ and: [{ col: 'Due', op: 'ge', value: { $date: '2026-01-01' } }, { col: 'Due', op: 'lt', value: { $date: '2027-01-01' } }] })
+    expect(plan('=Filter(Tickets, Year(Due) < 2026)').filter).toEqual({ or: [{ col: 'Due', op: 'lt', value: { $date: '2026-01-01' } }, { col: 'Due', op: 'isNull' }] })
+    expect(plan('=Filter(Tickets, 2026 <= Year(Updated))').filter).toEqual({ col: 'Updated', op: 'ge', value: { $datetime: new Date(2026, 0, 1).toISOString() } })
+  })
+})
+

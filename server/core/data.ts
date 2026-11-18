@@ -15,6 +15,14 @@ import { attachmentIds, cellOut, coerceIn, csvExportText, defaultIn, isBlank } f
 import { SYSTEM_COLUMN_NAMES } from './security.ts'
 import { errText, isUuid, rowUid } from './util.ts'
 import { DEFAULT_CONNECTION_ID } from './connections.ts'
+import type { FxRecord } from '../../src/contracts.ts'
+import type { ColumnKind, QueryPlan, QueryV2Response, TableSchemaInfo } from '../../src/platform/query.ts'
+import {
+  QUERY_FALLBACK_ROW_CAP, QUERY_MAX_GROUPS, QUERY_MAX_UNPAGED_ROWS, QUERY_TIMEOUT_MS, columnKind,
+} from '../../src/platform/query.ts'
+import { checkPlan } from '../../src/fx/query/validate.ts'
+import { executePlan, PlanError } from '../../src/fx/query/reference.ts'
+import { CursorError } from '../../src/fx/query/cursor.ts'
 
 type JsonRow = Record<string, QueryValue>
 type Cell = RawRow[string]
@@ -642,8 +650,130 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     return n
   }
 
+  /* ---------------------------------------------------------------- query v2 */
+
+  const queryTimeoutMs = (() => {
+    const n = Number(process.env.APPBUILDER_QUERY_TIMEOUT_MS)
+    return Number.isFinite(n) && n >= 100 ? n : QUERY_TIMEOUT_MS
+  })()
+
+  /** every column of the physical table by formula kind (the plan is validated against all, CLS is checked after) */
+  function schemaOf(def: TableDef): TableSchemaInfo {
+    const columns: Record<string, ColumnKind> = {}
+    for (const c of allColumns(def)) columns[c.name] = columnKind(c.type)
+    return { columns }
+  }
+
+  const pad2 = (n: number, w = 2) => String(n).padStart(w, '0')
+  /** a connector cell -> the formula value the reference executor expects (date cells at local midnight) */
+  function fxCell(col: ColumnDef, v: Cell): FxRecord[string] {
+    if (v === null || v === undefined) return null
+    if (col.type === 'date' && v instanceof Date) return new Date(v.getUTCFullYear(), v.getUTCMonth(), v.getUTCDate())
+    return v as FxRecord[string]
+  }
+  function fxOut(type: ColumnDef['type'], v: unknown): QueryValue {
+    if (v === null || v === undefined) return null
+    if (type === 'date' && v instanceof Date) return `${pad2(v.getFullYear(), 4)}-${pad2(v.getMonth() + 1)}-${pad2(v.getDate())}`
+    return cellOut({ name: '', displayName: '', type }, v)
+  }
+
+  /**
+   * Fallback for connectors without SQL pushdown (MySQL external connections, data files, Google Sheets): read at most
+   * QUERY_FALLBACK_ROW_CAP rows the caller may see (row filter pushed down where the connector can), run the plan with
+   * the reference executor, flag `truncated` when the read hit the cap.
+   */
+  async function fallbackV2(connector: Connector, def: TableDef, plan: QueryPlan, rowFilter: Condition | undefined, visible: string[]): Promise<QueryV2Response> {
+    const cols = allColumns(def)
+    const read = await runSelect(connector, def, { where: rowFilter, top: QUERY_FALLBACK_ROW_CAP + 1 })
+    const truncated = read.rows.length > QUERY_FALLBACK_ROW_CAP
+    const rows: FxRecord[] = read.rows.slice(0, QUERY_FALLBACK_ROW_CAP).map((r) => {
+      const o: FxRecord = {}
+      for (const c of cols) o[c.name] = fxCell(c, r[c.name])
+      return o
+    })
+    const schema = schemaOf(def)
+    const agg = !!plan.aggregate
+    const run = agg ? plan : { ...plan, select: undefined }
+    let res
+    try {
+      res = executePlan(run, rows, schema, { inputOrder: !connector.capabilities.pushdown })
+    } catch (e) {
+      if (e instanceof PlanError || e instanceof CursorError) throw new HttpError(422, 'invalid', e.message)
+      throw e
+    }
+    const out: QueryV2Response = { rows: [] }
+    if (agg) {
+      const a = plan.aggregate!
+      const types = new Map<string, ColumnDef['type']>()
+      for (const g of a.groupBy) types.set(a.as?.[g] ?? g, cols.find((c) => c.name === g)?.type ?? 'text')
+      for (const m of a.measures) types.set(m.name, m.fn === 'count' ? 'number' : 'decimal')
+      if (res.rows.length > QUERY_MAX_GROUPS) throw new HttpError(422, 'invalid', `This grouping produces more than ${QUERY_MAX_GROUPS.toLocaleString('en-US')} groups. Filter the rows first, or group by fewer distinct values.`)
+      out.rows = res.rows.map((r) => {
+        const o: Record<string, QueryValue> = {}
+        for (const [k, v] of Object.entries(r)) o[k] = fxOut(types.get(k) ?? 'text', v)
+        return o
+      })
+    } else {
+      const names = [...new Set([...(plan.select ?? visible), ...(hasSystemColumn(def, 'id') ? ['id'] : [])])]
+      const byName = new Map(cols.map((c) => [c.name, c]))
+      if (!plan.page && !plan.single && res.rows.length > QUERY_MAX_UNPAGED_ROWS) {
+        throw new HttpError(422, 'invalid', `This query returns more than ${QUERY_MAX_UNPAGED_ROWS.toLocaleString('en-US')} rows. Ask for it page by page (page: { size }), or filter it further.`)
+      }
+      out.rows = res.rows.map((r) => {
+        const o: Record<string, QueryValue> = {}
+        for (const n of names) o[n] = fxOut(byName.get(n)?.type ?? 'text', r[n] ?? null)
+        return o
+      })
+    }
+    if (res.count !== undefined) out.count = res.count
+    if (plan.page) out.nextCursor = res.nextCursor ?? null
+    if (truncated) out.truncated = true
+    return out
+  }
+
+  async function queryV2(ctx: UserContext | null, table: TableDef, input: unknown): Promise<QueryV2Response> {
+    const def = physical(table)
+    let plan: QueryPlan
+    let referenced: Set<string>
+    try {
+      const checked = checkPlan(input, schemaOf(def), def.displayName || def.name)
+      plan = checked.plan
+      referenced = checked.columns
+    } catch (e) {
+      if (e instanceof PlanError) throw new HttpError(422, 'invalid', e.message)
+      throw e
+    }
+    // column-level security: a hidden column may not be selected, filtered, sorted, searched, grouped or aggregated
+    if (ctx) {
+      for (const name of referenced) {
+        if (name !== 'id' && ctx.columnAccess(def, name) === 'none') throw new HttpError(403, 'denied', `You do not have access to the column "${name}".`, name)
+      }
+    }
+    const visible = visibleColumns(ctx, def).map((c) => c.name)
+    let rowFilter: Condition | undefined
+    if (ctx) {
+      const pred = ctx.rowPredicate(def, 'read')
+      if (!('const' in pred && pred.const)) rowFilter = pred
+    }
+    const connector = await connectorFor(def)
+    if (!connector.queryV2) return fallbackV2(connector, def, plan, rowFilter, visible)
+    const raw = await connector.queryV2(def, { plan, rowFilter, visible, maxUnpagedRows: QUERY_MAX_UNPAGED_ROWS, maxGroups: QUERY_MAX_GROUPS, timeoutMs: queryTimeoutMs })
+    const types = new Map(raw.columns.map((c) => [c.name, c.type]))
+    const out: QueryV2Response = {
+      rows: raw.rows.map((r) => {
+        const o: Record<string, QueryValue> = {}
+        for (const [k, v] of Object.entries(r)) o[k] = cellOut({ name: k, displayName: k, type: types.get(k) ?? 'text' }, v)
+        return o
+      }),
+    }
+    if (raw.count !== undefined) out.count = raw.count
+    if (plan.page) out.nextCursor = raw.nextCursor ?? null
+    return out
+  }
+
   return {
     query: (ctx, table, q) => doQuery(ctx, table, q, DEFAULT_ROW_CAP),
+    queryV2,
     insert: (ctx, table, values) => insertOne(ctx, table, asObject(values, 'values'), { preserve: true }),
     update,
     delete: del,
