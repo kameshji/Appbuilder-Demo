@@ -1,5 +1,5 @@
 /**
- * Auth (docs/SPEC3.md section 4): sessions, login throttle, setup flow, status endpoint.
+ * Auth (docs/internal/specs/SPEC3.md section 4): sessions, login throttle, setup flow, status endpoint.
  *   GET  /status            POST /setup/database      POST /setup/admin
  *   POST /auth/login        POST /auth/logout         GET  /auth/session      POST /auth/password
  */

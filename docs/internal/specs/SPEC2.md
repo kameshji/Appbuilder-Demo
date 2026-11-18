@@ -1,6 +1,6 @@
 # Appbuilder phase 2: build spec
 
-Read first: `src/contracts.ts`, `src/platform/contracts.ts`, `src/router.ts`, `docs/SPEC.md` (phase 1, still valid where not overridden here).
+Read first: `src/contracts.ts`, `src/platform/contracts.ts`, `src/router.ts`, `docs/internal/specs/SPEC.md` (phase 1, still valid where not overridden here).
 
 Product: a **desktop** low-code app builder with a modern look. Apps are landscape only, designed at Full HD (1920×1080) or 2K (2560×1440) and adapt to any landscape aspect ratio. No portrait, no phone layouts. Flows are out of scope. Own identity ("Appbuilder", indigo); layout patterns may follow familiar maker-portal conventions but no Microsoft names, assets or colours.
 

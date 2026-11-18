@@ -1,5 +1,5 @@
 /**
- * MetaStore over the ab_* system tables (docs/SPEC3.md section 3). Portable SQL: MySQL 5.7+, 8.x, MariaDB 10.4+
+ * MetaStore over the ab_* system tables (docs/internal/specs/SPEC3.md section 3). Portable SQL: MySQL 5.7+, 8.x, MariaDB 10.4+
  * (no JSON type, no CHECK, VALUES() in ON DUPLICATE KEY, utf8mb4_unicode_ci, DATETIME(3) in UTC, InnoDB).
  */
 import type {

@@ -1,5 +1,5 @@
 /**
- * DataService (docs/SPEC3.md section 6): validation, coercion, autonumber, lookups, attachment checks,
+ * DataService (docs/internal/specs/SPEC3.md section 6): validation, coercion, autonumber, lookups, attachment checks,
  * RLS/CLS enforcement around the connectors, truncation cap, pushdown vs applyQuery, file-table modified flag.
  */
 import Papa from 'papaparse'

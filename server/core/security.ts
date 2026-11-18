@@ -1,5 +1,5 @@
 /**
- * SecurityEngine: RBAC + RLS + CLS (docs/SPEC3.md section 5). Pure computation over roles and tables;
+ * SecurityEngine: RBAC + RLS + CLS (docs/internal/specs/SPEC3.md section 5). Pure computation over roles and tables;
  * the engine caches roles/tables between requests (invalidate() after any role/user/table change).
  */
 import type { MetaStore, SecurityEngine, UserContext } from './contracts.ts'

@@ -1,7 +1,7 @@
 # Appbuilder phase 3: connectors, connections, server-side data and security
 
 Read first: `src/platform/contracts.ts` (extended), `src/platform/http.ts` (Data API v1), `server/core/contracts.ts`
-(server internals), `server/core/condition.ts` (reference semantics). Then `docs/SPEC2.md` for context.
+(server internals), `server/core/condition.ts` (reference semantics). Then `docs/internal/specs/SPEC2.md` for context.
 
 ## 0. What changes and why
 - Data moves server-side. The browser no longer owns rows or rules: the local Node server talks to MySQL
