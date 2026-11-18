@@ -89,7 +89,24 @@ note that MySQL 8.4 ships with `mysql_native_password` disabled by default.
 
 ## First-run setup
 
-Open `http://localhost:5174`. The setup has two steps.
+Open `http://localhost:5174` **on the PC that runs the server** (the setup screen refuses requests from any other
+computer, whatever address or `Host` header they use). The setup has two steps, and both ask for the **setup code**.
+
+**The setup code.** While setup is needed, the server prints a one-time code in its window when it starts:
+
+```
+============================================================
+  FIRST-RUN SETUP CODE:  K7QD-M2XP
+  Open Appbuilder on THIS computer (http://localhost:5174/) and
+  type this code in the setup screen. It changes on every start.
+============================================================
+```
+
+Type it in the field *Setup code (shown in the server window)*, with or without the dash. It is 8 characters from an
+alphabet without look-alikes (no `0/O`, `1/I/L`), changes at every start, and is replaced (and no longer printed) as soon
+as the administrator exists. 20 wrong codes within 15 minutes block further tries for a while. If you started the server
+through Task Scheduler, the code is in the log file (`appbuilder.log` in the example below). The API takes it as
+`setupCode` in the JSON body or in the `X-Appbuilder-Setup-Code` header.
 
 1. **Connect your database.** Enter Host, Port, Database, User and Password. The box *Create the database if it does not
    exist* needs a user with the `CREATE` privilege (if that fails, the server carries on and the connection test
@@ -105,9 +122,20 @@ What else happens at step 2:
 - Otherwise a **sample** is created in your database: tables *Contacts* and *Orders* (stored as `t_contacts` and
   `t_orders`) with example rows, and a *Contacts app*. Delete them from the Tables and Apps pages if you do not want them.
 
-**Whoever reaches the setup screen first becomes the administrator.** Until step 2 is done, the setup endpoints need no
-sign-in. Finish the setup yourself right after starting the server for the first time, and do it before anyone else can
-use the PC. After step 2, setup can no longer create an administrator, and changing the database needs an administrator.
+**Only someone at this PC who can read the server window can do the setup.** The two setup requests need no sign-in,
+but they need the setup code and must come from the PC itself (the server checks the connection's real address,
+127.0.0.1 or ::1, not a header). Still, finish the setup right after the first start.
+
+After step 2:
+
+- setup can no longer create an administrator, the code is rotated and `"setupComplete": true` is written to
+  `workspace/server.json`;
+- the database can be changed only by a signed-in administrator calling `POST /api/v1/setup/database` from this PC (the
+  portal has no screen for it), **even while the database is unreachable**: then nobody can sign in, so re-pointing
+  Appbuilder means editing `workspace/server.json` (or setting `APPBUILDER_DB_*`) and restarting. Before this change an
+  unreachable database at start made the setup screen open again for anyone.
+- If an administrator points Appbuilder at an empty database, the marker is cleared and a new setup code is printed, so
+  a first administrator can be created there.
 
 You can skip step 1 by setting the `APPBUILDER_DB_*` environment variables (see below). Step 2 is still needed.
 
@@ -128,6 +156,9 @@ All are optional. Set them before starting the server (`npm start` or `node serv
 | `APPBUILDER_DB_USER` | none | |
 | `APPBUILDER_DB_PASSWORD` | empty | The database password, in plain text in the process environment. |
 | `APPBUILDER_DB_SSL` | off | `true` turns SSL on (TLS 1.2 or newer, certificate **must verify**). |
+| `APPBUILDER_ALLOWED_HOSTS` | none | Extra host names (comma-separated) that the `Host` and `Origin` headers may name, besides `localhost`, `127.0.0.1`, `::1` and the `APPBUILDER_HOST` address. Only needed behind a reverse proxy with its own name. These names are **not** proof that a request is local. |
+| `APPBUILDER_SECURE_COOKIE` | off | `1`: the session cookie `ab_session` always carries `Secure` (the browser sends it only over HTTPS). Set it when users reach Appbuilder through an HTTPS reverse proxy. Without HTTPS in front, sign-in then stops working, because browsers drop `Secure` cookies on plain `http://` (except on `localhost` in current Chrome and Firefox). |
+| `APPBUILDER_TRUST_PROXY` | off | `1`: trust the `X-Forwarded-Proto` header from a reverse proxy; when it says `https`, the cookie gets `Secure`. Only set it when a proxy you control is the only way to reach the port (otherwise any client can send the header; harmless for `Secure`, but nothing else is derived from it). |
 
 Notes:
 
@@ -145,7 +176,7 @@ Default: `workspace\` next to `package.json` (listed in `.gitignore`, so git nev
 
 | Path | What it is | Back it up? |
 | --- | --- | --- |
-| `server.json` | The saved default database login: host, port, database, user, SSL, and the password encrypted. Written only by the setup screen. Absent when you use `APPBUILDER_DB_*`. | Yes |
+| `server.json` | The saved default database login: host, port, database, user, SSL, and the password encrypted, plus `"setupComplete": true` once the first administrator exists. Written by the setup. Without `APPBUILDER_DB_*` it holds the login; with them only the marker. | Yes |
 | `.secret-key` | The encryption key (64 hex characters), created on first start. **If you lose it, every saved connection password and Google key becomes unreadable.** Absent when you use `APPBUILDER_SECRET_KEY`. | **Yes, and keep it safe** |
 | `files/` | One sub-folder per data file you added (the copy Appbuilder edits). | Yes |
 | `attachments/` | Files uploaded into file and image columns, in sub-folders named after the first two characters of a random key. The database knows which file belongs to which row. | Yes |
@@ -160,9 +191,12 @@ workspace inside a folder only the Appbuilder user can read.
 Without this, someone must run `scripts\start.ps1` (or `npm start`) after every restart. Appbuilder has no installer
 and no Windows service. Task Scheduler works; we have not tested these exact commands on Windows, so check them once.
 
-1. Make sure the database starts **before** Appbuilder. If the server starts while the database is down, it does not
-   retry: it comes up unconfigured and shows the setup screen until you restart it. (Start MySQL as a Windows service
-   set to Automatic, and keep the delay below.)
+1. Preferably start the database **before** Appbuilder. If the server starts while the database is down, it keeps
+   retrying in the background (after 1 s, 2 s, 4 s ... then every 30 s) and picks the database up when it comes; no
+   restart is needed. Meanwhile the browser shows "The database is not reachable" with a *Try again* button, and
+   `GET /api/v1/status` reports `setup.unavailable: true`. (Start MySQL as a Windows service set to Automatic.) Retrying
+   stops only for problems that waiting cannot fix: a password that cannot be decrypted, or a database upgraded by a newer
+   Appbuilder ([Upgrades](upgrades.md#running-an-older-version-against-a-newer-database)).
 2. In PowerShell, as the user who will use Appbuilder (adjust `$repo`):
 
    ```powershell
@@ -201,10 +235,10 @@ still need a valid Appbuilder login, but the protection is the application's own
 `APPBUILDER_HOST` exists, but setting it (for example to `0.0.0.0`, or the PC's LAN address) is **not supported** and
 makes the system less safe:
 
-- The server's check that "requests must be made to localhost" looks only at the `Host` header the client sends. We
-  tested a server started with `APPBUILDER_HOST=0.0.0.0`: a request to the PC's LAN address was refused, but the same
-  request with the header `Host: localhost` was accepted, including the unauthenticated first-run setup that created an
-  administrator. Anyone on your network can send that header.
+- The server's Host check compares the `Host` header with the configured host names, and a client chooses its headers.
+  With `APPBUILDER_HOST=0.0.0.0` a computer on your network that sends `Host: localhost` passes that check and reaches the
+  sign-in page and the API. (Before this version it could also run the first-run setup and make itself administrator;
+  the setup now checks the connection's real address and needs the setup code, see [First-run setup](#first-run-setup).)
 - There is no TLS, so passwords and session cookies would travel in clear text.
 - The login throttle (below) would be the only brake on password guessing.
 
@@ -214,7 +248,8 @@ Do not expose the port.
 ## Not supported yet
 
 - Windows service or installer, automatic start without Task Scheduler.
-- HTTPS and serving other computers.
+- HTTPS and serving other computers. (Behind your own HTTPS reverse proxy, set `APPBUILDER_SECURE_COOKIE=1` or
+  `APPBUILDER_TRUST_PROXY=1` so the session cookie is marked `Secure`; this setup is not tested by us.)
 - Setting up the database from the portal after the first setup (once configured, the setup screen no longer appears;
   see [Connections](connections.md#the-default-database)).
 - Checking Node.js or database versions at start: an unsupported version fails with whatever error it produces.

@@ -14,9 +14,10 @@ import {
 } from './util.ts'
 import type { RoleX } from './util.ts'
 import {
-  audit, createPhysical, friendly, grantDefaults, lookupReferrers, pickSource, requireTable, resolveConnection,
+  audit, createPhysical, friendly, grantDefaults, isPlatformManaged, lookupReferrers, pickSource, requireTable, resolveConnection,
   resolver, unregisterTable,
 } from './tables-core.ts'
+import { denied } from './util.ts'
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -188,7 +189,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
     await createPhysical(s, record, connector, def)
     try {
       const normalized = unparseCsv(pairs.map((x) => x.col.name), records.map((r) => pairs.map((x) => r[x.h] ?? '')))
-      await s.data.importCsv(null, def, normalized, 'replace')
+      await s.data.importCsv(null, def, normalized, 'replace', { actorId: ctx.user?.user.id })
     } catch (e) {
       await rollbackCreate(s, connector, def)
       throw e
@@ -225,8 +226,11 @@ export function registerTableRoutes(router: Router, s: Services): void {
     const def = await requireTable(s, ctx.params.id)
     const refs = await lookupReferrers(s, def)
     if (refs.length) throw conflict(`"${def.displayName}" is used by lookup columns in: ${refs.map((t) => t.displayName).join(', ')}. Remove those columns first.`)
-    const drop = ctx.query.get('dropSource') === '1'
+    // default: only the registration goes; the physical table is dropped only on explicit request, and only when
+    // Appbuilder created it (a linked table belongs to whoever made it)
+    const drop = ctx.query.get('dropSource') === '1' || ctx.query.get('dropSource') === 'true'
     if (drop) {
+      if (!isPlatformManaged(def)) throw invalid(`"${def.displayName}" is a linked table: Appbuilder never deletes it in the database. Delete it without dropping the source (only Appbuilder's registration is removed).`, 'dropSource')
       if (def.readOnly) throw invalid(`"${def.displayName}" is linked read-only; its source cannot be dropped from here.`)
       const { connector } = await connectorOf(s, def)
       try {
@@ -363,23 +367,52 @@ export function registerTableRoutes(router: Router, s: Services): void {
     const col = def.columns.find((c) => c.name === ctx.params.name)
     if (!col) throw new HttpError(404, 'not-found', `Column "${ctx.params.name}" was not found.`)
     if (col.system) throw invalid(`"${col.displayName}" is a system column and cannot be removed.`)
-    const connector = await connectorForDdl(s, def)
     const columns = def.columns.filter((c) => c.name !== col.name)
     const next: TableDef = {
       ...clone(def), columns, modifiedOn: s.now(),
       primaryColumn: def.primaryColumn === col.name ? (columns.find((c) => !c.system)?.name ?? 'id') : def.primaryColumn,
     }
-    try {
-      await connector.dropColumn(next, col.name)
-    } catch (e) {
-      throw friendly(e, 'Could not remove the column')
+    // linked tables: the column is only unmapped (Appbuilder stops showing and writing it); the customer's table keeps it
+    const unmapOnly = !isPlatformManaged(def)
+    if (!unmapOnly) {
+      const connector = await connectorForDdl(s, def)
+      try {
+        await connector.dropColumn(next, col.name)
+      } catch (e) {
+        throw friendly(e, 'Could not remove the column')
+      }
     }
     await s.meta.tables.upsert(next)
     await dropColumnFromRoles(s, def.id, col.name)
     s.security.invalidate()
-    await audit(s, ctx, 'column.remove', { table: def.name, column: col.name }, def.id)
+    await audit(s, ctx, 'column.remove', { table: def.name, column: col.name, ...(unmapOnly ? { unmappedOnly: true } : {}) }, def.id)
     return next
   }, { auth: 'maker' })
+
+  /* admin: rows without an owner (linked rows that existed before) get one, so Own-scope roles can see them */
+  router.add('POST', '/api/v1/tables/:id/assign-owner', async (ctx) => {
+    const def = await requireTable(s, ctx.params.id)
+    needWritable(def, 'assigning owners')
+    if ((def.missingSystem ?? []).includes('owner')) throw invalid(`"${def.displayName}" has no owner column.`)
+    const b = ctx.body === undefined ? {} : bodyObj(ctx)
+    const userId = optString(b, 'userId') || ctx.user?.user.id
+    if (!userId) throw denied('Not signed in.')
+    if (!(await s.meta.users.get(userId))) throw new HttpError(404, 'not-found', 'User not found.')
+    const internals = (s.data as unknown as { internals?: { connectorFor(t: TableDef): Promise<Connector>; writeCells(c: null, t: TableDef, id: string, ch: Record<string, string>): Promise<number> } }).internals
+    if (!internals) throw invalid('Not available.')
+    const connector = await internals.connectorFor(def)
+    let updated = 0
+    for (;;) {
+      const r = await connector.select(def, { select: ['id'], where: { col: 'owner', op: 'isBlank' }, top: 500 })
+      if (!r.rows.length) break
+      let n = 0
+      for (const row of r.rows) n += await internals.writeCells(null, def, String(row.id), { owner: userId })
+      updated += n
+      if (!n || r.rows.length < 500) break
+    }
+    await audit(s, ctx, 'table.assign_owner', { table: def.name, owner: userId, rows: updated }, def.id)
+    return { updated }
+  }, { auth: 'admin' })
 
   /* move to another connection (copy rows through the DataService as system) */
   router.add('POST', '/api/v1/tables/:id/move', async (ctx) => {
@@ -400,8 +433,9 @@ export function registerTableRoutes(router: Router, s: Services): void {
 /** copy a table's rows into a new physical table on another connection; the table id and name stay (apps keep working) */
 export async function moveTable(s: Services, def: TableDef, record: ConnectionRecord, connector: Connector): Promise<TableDef> {
   const connectionName = record.name
-  const fresh: TableDef = { ...clone(def), connectionId: record.id, modifiedOn: s.now() }
+  const fresh: TableDef = { ...clone(def), connectionId: record.id, modifiedOn: s.now(), managed: true }
   delete fresh.origin
+  delete fresh.missingSystem
   fresh.source = await pickSource(s, record, connector, def.name)
   try {
     await connector.createTable(fresh)

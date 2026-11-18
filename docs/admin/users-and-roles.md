@@ -47,8 +47,9 @@ Read-only tables (for example linked read-only) never grant write access by defa
 ## Create a user
 
 1. **Security roles** > *Users* > **Add user**. Enter name, email and the role(s).
-2. After adding, use the key button on the user's row to **Set password**. Give the password to the person; they can
-   change it from the account menu (**Change password**).
+2. After adding, use the key button on the user's row to **Set password**. Give the password to the person. It is
+   temporary: at their first sign-in Appbuilder shows only *Choose a new password* (no way around it except signing
+   out) until they have set their own.
 
 A user with no password cannot sign in. Users created without a role can sign in but see nothing: a user with no roles
 has no apps and gets "table does not exist" for every table (confirmed by running the server).
@@ -75,17 +76,24 @@ Password changes:
 - **User changes own password** (account menu): must give the current password and a different new one. All the user's
   *other* sessions (other browsers) are signed out; this one stays signed in. Wrong current passwords count towards the
   login throttle.
-- **Administrator sets or resets a password** (key button on the user): the new password must meet the policy. The
-  user's sessions are signed out (unless the administrator is changing their own). There is **no "must change at next
-  sign-in"** option: tell the person to change it themselves.
+- **Administrator sets or resets a password** (key button on the user, or a password given when creating the user): the
+  new password must meet the policy. The user's sessions are signed out and the account is marked **must change
+  password** (`ab_users.must_change_password`). At the next sign-in the user gets a session that can only change the
+  password, sign out and read its own session (`/auth/password`, `/auth/logout`, `/auth/session`, plus `/status`);
+  every other request answers 403 with the code `password_change_required`, and the portal shows the change dialog
+  without a *Cancel* button. Changing it clears the mark. An administrator setting their **own** password this way is not
+  marked.
 - **No self-service reset.** There is no "forgot password" link and no email is sent. An administrator resets it. If the
   only administrator forgets the password, see [Locked out](#locked-out).
 
 ### Locked out by the login throttle
 
-After 8 failed sign-ins for the same email within 15 minutes the server refuses further attempts (even the correct
-password) with "Too many attempts. Try again in a few minutes." The counter is kept in memory: it clears by itself
-after 15 minutes, or when the server restarts. Details in [Security model](security-model.md#sign-in-throttle).
+After 8 failed sign-ins for the same email from the same address within 15 minutes the server refuses further attempts
+from there (even the correct password) with "Too many attempts. Try again in a few minutes." In addition, from the 10th
+failed sign-in for an email within an hour (from any address) each further attempt must wait 1, 2, 4 ... seconds (at
+most 5 minutes) after the previous failure, and 50 failures in an hour block the email until the oldest is an hour old.
+The counters are kept in memory: they clear by themselves, or when the server restarts. Anyone can trigger the
+per-account wait for a known email; see [Security model](security-model.md#sign-in-throttle).
 
 ### Locked out
 
@@ -134,15 +142,18 @@ Taken from the sign-in level each API route requires (`auth: 'user' | 'maker' | 
 Things a Maker can do that you may not expect. **Treat Maker as a trusted role.**
 
 - **Makers see the structure of the whole database.** Listing "source tables" of a MySQL connection shows every table
-  and column in that database except those starting with `ab_`.
-- **Makers can bypass table privileges by linking the same table again.** A newly linked table gets default
-  privileges (above), and the Maker role gets full access. We confirmed this: after removing a Maker role's access to a
-  table, a Maker linked the same physical table again through another connection and could read all its rows. If you do
-  not want someone to read a table, do not give them the Maker flag.
-- **Makers can destroy data.** In the portal, **Delete table** drops the underlying database table and all its rows by
-  default (the confirmation says "permanently deletes N rows and the schema"; the portal sends `dropSource` unless told
-  otherwise). That includes tables that were linked from an existing database, unless they were linked read-only.
-  Removing a column issues `ALTER TABLE ... DROP COLUMN` on the real table. There is no recycle bin. Back up first ([Backup and restore](backup-and-restore.md)).
+  and column in that database except those starting with `ab_` and those already linked. There is no per-connection
+  permission: every maker can list and link through every connection.
+- **Linking a table that is already linked is refused** (409, naming the existing table), also through a second
+  connection to the same database or spreadsheet. A maker can still *link a table nobody has linked yet* and then gets
+  full access to it by default, or delete a registration and link the table again: if you do not want someone to read a
+  table in a connected database, do not give them the Maker flag, and do not share that database with other
+  applications.
+- **Makers can destroy data in tables Appbuilder created.** **Delete table** only removes Appbuilder's registration
+  unless the maker ticks *Also delete the table in the database*, which the dialog offers only for tables Appbuilder
+  created; for those, removing a column also issues `ALTER TABLE ... DROP COLUMN`. **Linked tables are never dropped**,
+  and removing one of their columns only unmaps it. Makers can still add and change columns of a writable linked table
+  (`ALTER TABLE ... ADD/MODIFY`). There is no recycle bin. Back up first ([Backup and restore](backup-and-restore.md)).
 - **Makers can open every app** and read its definition (formulas, text, constants), whatever the app-access list says.
 
 ## Table privileges
@@ -159,7 +170,12 @@ For every table, a role sets (`server/core/security.ts`):
 | Row filter | list of conditions | Further limits the rows, for Read, Update and Delete. |
 
 - **Own** means rows whose `owner` is the user. `owner` is a system column that Appbuilder sets to the person who
-  created the row. Clients cannot change it. Rows created by an import or by a script belong to whoever created them.
+  created the row. Clients cannot change it. Rows imported through Appbuilder (CSV import, a new table from CSV, a
+  solution or app package with data) get the importing user as `owner` and `createdBy`. Rows that existed in a **linked**
+  table before it was linked have no owner, so **Own-scope roles cannot see them**; an administrator can fix that with
+  **Assign to me** (*Tables* > the table > *Settings* > *Assign owner to rows without owner*, or
+  `POST /api/v1/tables/:id/assign-owner`, optional `{ "userId": ... }`). A linked table without an `owner` column grants
+  nothing to Own-scope roles.
 - **Row filter** conditions are all required (AND). Operators: *is*, *is not*, *is one of*, *contains*, *starts with*,
   *is less than*, *is at most*, *is greater than*, *is at least*, *is empty*, *is not empty*. For
   *is*, *is not*, *contains* and *starts with* the value can be **Current user** (`@me`, the user's id) or **Current
@@ -171,11 +187,12 @@ For every table, a role sets (`server/core/security.ts`):
 
 ### Known limits of row filters
 
-- **They control what is seen and changed, not what is written.** Row filters are applied to existing rows when
-  reading, updating and deleting. They are *not* applied to the values of a new row or to a change: we confirmed that a
-  user restricted to `Region = West` could create a row with `Region = East` (which they then could not see) and could
-  change one of their West rows to East (which then disappeared from their view). If that matters, give the role no
-  Create/Update on the filtered columns (set the column to *Read*), or restrict through Own scope instead.
+- **Row filters also check what is written.** A new row must match the row filter of a role that grants Create (the
+  filter is resolved for the user, so `@me` and `@myEmail` work); otherwise the server refuses it. A change to a row must
+  satisfy the Update rule both before and after the change, so a user restricted to `Region = West` cannot create a row
+  with `Region = East` or edit a West row into East. Administrators are not checked. One exception is deliberate: a
+  permitted update may move a row *out of the user's read visibility* (for example a role that can update every row but
+  only read West rows); the row then simply disappears from that user's view.
 - **Column access is checked on use.** A query that mentions a hidden column is refused with "You do not have access
   to the column"; hidden columns are never returned.
 - **Truncation.** Apps load at most 5,000 rows per table at once; filters are applied first, so the 5,000 are the rows the
@@ -271,7 +288,7 @@ with their account, or a test account that has the same roles.
 - Denying access that another role grants (roles only add).
 - Sign-in by anything other than email and password: no multi-factor, no single sign-on, no directory (Active
   Directory, Google, Microsoft) integration.
-- Password expiry, complexity rules, "change at next sign-in", account lockout other than the 15-minute throttle.
+- Password expiry, complexity rules, account lockout other than the throttles described above.
 - Seeing or ending other people's active sessions.
 - Permissions on individual apps beyond "may open", or on individual columns of a linked Google Sheet beyond what the
   table definition shows (Appbuilder, not Google, enforces access to the sheet's data).

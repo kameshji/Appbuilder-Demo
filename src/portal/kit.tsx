@@ -6,6 +6,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { CheckCircle2, CircleAlert, Copy, Download, Info, X } from 'lucide-react'
 import { PlatformError } from '@/platform'
 import { cn } from '@/lib/utils'
+import { CODE_MESSAGES } from '@/platform/errorMessages'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -14,7 +15,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 /* ------------------------------------------------------------------ errors + formatting */
 
 export function errMsg(e: unknown): string {
-  if (e instanceof PlatformError) return e.message
+  if (e instanceof PlatformError) return CODE_MESSAGES[e.code] ?? e.message
   if (e instanceof Error) return e.message
   return String(e)
 }

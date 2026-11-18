@@ -5,6 +5,7 @@
  */
 import type { FxRecord, FxValue } from '@/contracts'
 import { platform, PlatformError, userRecord, type ColumnDef, type DataErrorEvent, type Row, type TableDef, type WorkspaceState } from '@/platform'
+import { CODE_MESSAGES } from '@/platform/errorMessages'
 
 export const SYSTEM_COLUMNS = new Set(['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner'])
 
@@ -103,7 +104,7 @@ export function dataVersion(): number {
 }
 
 export function errorMessage(e: unknown): string {
-  if (e instanceof PlatformError) return e.message
+  if (e instanceof PlatformError) return CODE_MESSAGES[e.code] ?? e.message
   if (e instanceof Error) return e.message
   return String(e)
 }

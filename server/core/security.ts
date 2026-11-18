@@ -31,7 +31,8 @@ function resolveToken(v: unknown, user: UserDef): QueryValue {
 /** RowCondition list -> Condition (ANDed); null when it references a column the table does not have */
 export function rowFilterCondition(filter: RowCondition[] | undefined, table: TableDef, user: UserDef): Condition | null {
   if (!filter || !filter.length) return TRUE
-  const names = new Set([...table.columns.map((c) => c.name), ...SYSTEM_COLUMN_NAMES])
+  const missing = new Set(table.missingSystem ?? [])
+  const names = new Set([...table.columns.map((c) => c.name), ...SYSTEM_COLUMN_NAMES].filter((n) => !missing.has(n)))
   const parts: Condition[] = []
   for (const f of filter) {
     if (!f || typeof f.column !== 'string' || !names.has(f.column)) return null
@@ -95,6 +96,7 @@ export function buildUserContext(user: UserDef, allRoles: RoleDef[], tables: Tab
       if (!p || s === 'none') continue
       const filter = rowFilterCondition(p.rowFilter, table, user)
       if (filter === null) continue // filter on a missing column: this role grants nothing
+      if (s === 'own' && (table.missingSystem ?? []).includes('owner')) continue // no owner column: no row is anyone's own
       const base: Condition = s === 'all' ? TRUE : { col: 'owner', op: 'eq', value: user.id }
       const term = simplifyAnd(base, filter)
       if ('const' in term && term.const) return TRUE

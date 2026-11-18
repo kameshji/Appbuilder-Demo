@@ -86,23 +86,62 @@ describe('connections', () => {
     expect(list.body.items.map((i: { source: string }) => i.source).sort()).toEqual(['legacy_orders', 'no_id'])
     expect(list.body.items[0].columns[0]).toHaveProperty('type')
 
+    // a source that has id but lacks the other system columns links read-only (no consent) and its queries work
     const ok = await h.call(M, 'POST', '/api/v1/connections/conn_default/link', { source: 'legacy_orders', displayName: 'Legacy orders' })
     expect(ok.status, JSON.stringify(ok.body)).toBe(200)
-    expect(ok.body).toMatchObject({ name: 'LegacyOrders', source: 'legacy_orders', connectionId: 'conn_default' })
-    expect(ok.body.readOnly).toBeUndefined()
+    expect(ok.body).toMatchObject({ name: 'LegacyOrders', source: 'legacy_orders', connectionId: 'conn_default', readOnly: true, missingSystem: ['createdOn', 'modifiedOn', 'createdBy', 'owner'] })
+    expect(ok.body.managed).toBeUndefined()
     expect(ok.body.columns.map((c: { name: string }) => c.name)).toEqual(['id', 'total', 'who'])
-    expect((await h.call(M, 'POST', '/api/v1/connections/conn_default/link', { source: 'legacy_orders' })).status).toBe(409)
+    const q = await h.call(A, 'POST', `/api/v1/data/${ok.body.id}/query`, {})
+    expect(q.status, JSON.stringify(q.body)).toBe(200)
+    expect(q.body.rows).toEqual([{ id: '11111111-1111-4111-8111-111111111111', total: 5, who: 'a' }])
+    expect((await h.call(A, 'POST', `/api/v1/data/${ok.body.id}/rows`, { values: { who: 'b' } })).status).toBe(403)
+    // re-linking the same physical table is refused, naming the existing table
+    const again = await h.call(M, 'POST', '/api/v1/connections/conn_default/link', { source: 'legacy_orders' })
+    expect(again.status).toBe(409)
+    expect(again.body.error.message).toContain('Legacy orders')
     expect((await h.call(M, 'POST', '/api/v1/connections/conn_default/link', { source: 'missing' })).status).toBe(404)
 
     const ro = await h.call(M, 'POST', '/api/v1/connections/conn_default/link', { source: 'no_id' })
     expect(ro.body.readOnly).toBe(true)
+    expect(ro.body.missingSystem).toEqual(['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner'])
+    expect((await h.call(A, 'POST', `/api/v1/data/${ro.body.id}/query`, {})).status).toBe(200)
     // read-only tables get read-only default privileges, schema changes are refused
     expect((await h.meta.roles.get('role_maker'))!.privileges.find((p) => p.table === ro.body.id)).toMatchObject({ create: false, update: 'none', read: 'all' })
     expect((await h.call(M, 'POST', `/api/v1/tables/${ro.body.id}/columns`, { displayName: 'x', type: 'text' })).status).toBe(422)
-    // a mysql table without an id stays read-only even with consent
+    // with consent the missing system columns (id included) are added and the table links writable
     await h.call(M, 'DELETE', `/api/v1/tables/${ro.body.id}`)
+    h.mem.external.get('no_id')!.rows.push({ total: 7 })
     const consent = await h.call(M, 'POST', '/api/v1/connections/conn_default/link', { source: 'no_id', ensureIdColumn: true })
-    expect(consent.body.readOnly).toBe(true)
+    expect(consent.status, JSON.stringify(consent.body)).toBe(200)
+    expect(consent.body.readOnly).toBeUndefined()
+    expect(consent.body.missingSystem).toBeUndefined()
+    expect(h.mem.ops).toContain('ensureSystemColumns:no_id:id,createdOn,modifiedOn,createdBy,owner')
+    expect(consent.body.columns.map((c: { name: string }) => c.name)).toEqual(['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner', 'total'])
+    const ins = await h.call(A, 'POST', `/api/v1/data/${consent.body.id}/rows`, { values: { total: 9 } })
+    expect(ins.status, JSON.stringify(ins.body)).toBe(200)
+    expect(ins.body.row.owner).toBe(A)
+  })
+
+  it('refuses linking a table already linked through another connection to the same database', async () => {
+    h.mem.external.set('shared_tbl', { columns: [{ name: 'x', type: 'text' }], rows: [] })
+    expect((await h.call(M, 'POST', '/api/v1/connections/conn_default/link', { source: 'shared_tbl', displayName: 'Shared' })).status).toBe(200)
+    // an administrator added a second connection to the very same database (host spelled differently)
+    const alias = (await h.call(A, 'POST', '/api/v1/connections', { name: 'Alias', connector: 'mysql', settings: { host: 'X', port: '3306', database: 'x', user: 'other' }, secret: 'pw' })).body
+    const r = await h.call(M, 'POST', `/api/v1/connections/${alias.id}/link`, { source: 'shared_tbl' })
+    expect(r.status).toBe(409)
+    expect(r.body.error.message).toMatch(/already linked as the table "Shared"/)
+    const list = await h.call(M, 'GET', `/api/v1/connections/${alias.id}/source-tables`)
+    expect(list.body.items.map((i: { source: string }) => i.source)).not.toContain('shared_tbl')
+    // viewers cannot list source tables at all
+    expect((await h.call('user_viewer', 'GET', '/api/v1/connections/conn_default/source-tables')).status).toBe(403)
+  })
+
+  it('the default database connection cannot be edited (managed by setup / server.json)', async () => {
+    const r = await h.call(A, 'PATCH', '/api/v1/connections/conn_default', { name: 'Renamed', settings: { host: 'elsewhere' } })
+    expect(r.status).toBe(400)
+    expect(r.body.error.message).toMatch(/managed by the setup/)
+    expect((await h.meta.connections.get('conn_default'))!.name).toBe('Default database')
   })
 
   it('files connection lists nothing to link and refuses linking', async () => {

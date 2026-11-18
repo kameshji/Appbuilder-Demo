@@ -102,7 +102,7 @@ describe.skipIf(!URL_ENV)('docs review fixes (MariaDB/MySQL)', () => {
 
   beforeAll(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ab-fx-'))
-    app = await createApp({ env: {}, config: { workspaceDir: tmp } })
+    app = await createApp({ env: {}, config: { workspaceDir: tmp }, printSetupCode: false })
     server = http.createServer((req, res) => {
       app.handle(req, res).then((h) => {
         if (!h) res.writeHead(404).end()
@@ -111,8 +111,8 @@ describe.skipIf(!URL_ENV)('docs review fixes (MariaDB/MySQL)', () => {
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
     A = new Client(base)
-    expect((await A.post('/setup/database', { host: conn!.host, port: conn!.port, database: dbName, user: conn!.user, password: conn!.password, createDatabase: true })).status).toBe(200)
-    expect((await A.post('/setup/admin', { name: 'Ada', email: 'ada@example.com', password: 'admin-password-1' })).status).toBe(200)
+    expect((await A.post('/setup/database', { setupCode: app.services.setupCode.current() ?? '', host: conn!.host, port: conn!.port, database: dbName, user: conn!.user, password: conn!.password, createDatabase: true })).status).toBe(200)
+    expect((await A.post('/setup/admin', { setupCode: app.services.setupCode.current() ?? '', name: 'Ada', email: 'ada@example.com', password: 'admin-password-1' })).status).toBe(200)
   }, 60000)
 
   afterAll(async () => {
@@ -324,7 +324,7 @@ describe.skipIf(!URL_ENV)('docs review fixes (MariaDB/MySQL)', () => {
     await db.exec("UPDATE ab_meta SET v = '1' WHERE k = 'schemaVersion'")
     await app.services.meta.migrate()
     expect((await db.query<{ email: string }>("SELECT email FROM ab_users WHERE id = 'user_mixed'"))[0].email).toBe('mixed.case@example.com')
-    expect((await db.query<{ v: string }>("SELECT v FROM ab_meta WHERE k = 'schemaVersion'"))[0].v).toBe('2')
+    expect((await db.query<{ v: string }>("SELECT v FROM ab_meta WHERE k = 'schemaVersion'"))[0].v).toBe('3')
     expect((await app.services.meta.users.byEmail('MIXED.case@example.com'))?.id).toBe('user_mixed')
     await app.services.meta.users.update('user_mixed', { email: 'New.Address@Example.com' })
     expect((await app.services.meta.users.get('user_mixed'))?.email).toBe('new.address@example.com')

@@ -59,14 +59,21 @@ run. Forms wait for the server before reporting success. (decision D9 in [decisi
   `HttpOnly; SameSite=Strict; Path=/; Expires=<7 days>`. We confirmed this on a running server.
   - `HttpOnly`: scripts in the page cannot read it.
   - `SameSite=Strict`: browsers do not send it with cross-site requests.
-  - **`Secure` is added only when the connection is TLS.** The built-in server speaks plain HTTP only, so in practice
-    the cookie is never marked `Secure`.
+  - **`Secure`** is added when the connection is TLS, when `APPBUILDER_SECURE_COOKIE=1`, or when
+    `APPBUILDER_TRUST_PROXY=1` and the request carries `X-Forwarded-Proto: https` (an HTTPS reverse proxy in front). The
+    built-in server speaks plain HTTP, so on a plain loopback install the cookie is not marked `Secure`
+    (`cookieIsSecure` in `server/core/router.ts`).
 - **Lifetime 7 days, sliding**: each use extends the expiry to 7 days from now, but the database and cookie are updated
   at most every 10 minutes.
 - A session ends on: sign-out, expiry, the user being disabled or deleted (sessions removed at once and the user is
   re-checked on every request), a password change by the user (all *other* sessions are removed), an administrator
   resetting the user's password (all the user's sessions removed). Signing in replaces the old session token of that
   browser.
+- **Forced password change.** A password set by an administrator (when creating the user or with *Set password*, for
+  someone else) marks the account `must_change_password`. Its sessions can only call `GET /auth/session`,
+  `POST /auth/password`, `POST /auth/logout` and `GET /status`; every other route answers 403 with the code
+  `password_change_required` (the router checks this before any route handler, `allowPendingPasswordChange` in
+  `server/core/router.ts`). Changing the password clears the mark.
 - Sessions survive a server restart (they are in the database). Expired sessions are deleted at start and then every
   hour.
 - A session is not tied to an IP address or browser. There is no limit on the number of sessions per user and no screen
@@ -74,30 +81,59 @@ run. Forms wait for the server before reporting success. (decision D9 in [decisi
 
 ### Sign-in throttle
 
-(`LoginThrottle` in `server/core/auth.ts`)
+(`LoginThrottle` and `EmailBackoff` in `server/core/auth.ts`)
 
-- **8 failed sign-ins within 15 minutes** for the same *email + client address* block further attempts for that pair,
-  with "Too many attempts. Try again in a few minutes.", even if the next password is correct. The block ends 15 minutes
-  after the failures. A successful sign-in clears the count.
-- Changing your own password has the same limit, counted per user.
+- **Per email + client address: 8 failed sign-ins within 15 minutes** block further attempts for that pair with "Too many
+  attempts. Try again in a few minutes." (429 `rate_limited`), even if the next password is correct. The block ends 15
+  minutes after the failures. A successful sign-in clears the count.
+- **Per email, from every address together** (counted over an hour): the first 9 failures cost nothing; from the 10th
+  each further attempt must wait 1 s, 2 s, 4 s ... after the previous failure, at most 5 minutes; 50 failures within the
+  hour block the email until the oldest is an hour old. Attempts during a wait are refused (429) **without checking the
+  password**. A successful sign-in clears it.
+- Changing your own password has the 8-per-15-minutes limit, counted per user.
 - The counters are **in memory**: a restart clears them. Blocked attempts are recorded in the audit log
-  (`auth.login_throttled`).
-- Limits of this design: because every local program connects from `127.0.0.1`, the "client address" is the same for
-  everyone on the PC, so (a) a local program can lock a known email out by failing 8 times, and (b) it can try 8 passwords
-  per email per 15 minutes for *each different email*, with no overall limit. It is a brake on guessing, not an account
-  lockout system.
+  (`auth.login_throttled`, with `perEmail: true` for the second brake).
+- **Trade-off (local lockout).** Every local program connects from `127.0.0.1`, and the per-email brake ignores the
+  address anyway, so anyone who can reach the port and knows an email can make that account wait: at most about 5 minutes
+  per attempt, or up to an hour after 50 failures. They cannot learn the password that way, and the owner of the
+  account gets in once the waits stop. We accepted this to close the previous gap: 8 guesses per email *per address*,
+  with no overall limit. There is still no limit across emails (one guess for each of many accounts).
 
 ### First-run setup
 
-Until the database is configured, and until the first user exists, the setup endpoints need **no sign-in**:
-`POST /setup/database` and `POST /setup/admin` (`server/core/auth.ts`). Whoever calls `/setup/admin` first becomes the
-administrator. Afterwards `/setup/admin` returns "Setup is already complete" and `/setup/database` needs an
-administrator. **One more case:** if the saved database cannot be reached when the server starts (database stopped,
-`.secret-key` replaced), the server behaves as unconfigured and `/setup/database` is open again, so anyone who can reach
-the port could point Appbuilder at a different database. Keep the database running before the server starts, and do not
-expose the port.
+(`server/core/auth.ts`, `server/core/services.ts`, `server/core/router.ts`)
 
-`GET /status` also needs no sign-in and tells any caller which database server, host, port and database name is in use.
+Until the database is configured and the first user exists, the setup endpoints need **no sign-in**:
+`POST /setup/database` and `POST /setup/admin`. They are guarded by two things that do not depend on headers:
+
+- **This computer only.** Both routes are `loopbackOnly`: the router compares the TCP peer address of the connection
+  (`req.socket.remoteAddress`) with 127.0.0.0/8, `::1` and `::ffff:127.x.y.z`, before reading the body. A request from
+  another computer is refused with 403, whatever `Host` or `Origin` it sends. (Before, with `APPBUILDER_HOST=0.0.0.0`, a
+  LAN client sending `Host: localhost` could create the administrator.)
+- **A one-time setup code.** While setup is needed the server generates 8 random characters (alphabet without
+  look-alikes, `crypto.randomInt`) at start and prints them in a banner on its console. Both routes require it
+  (`setupCode` in the body or the `X-Appbuilder-Setup-Code` header; case, spaces and dashes ignored; compared in
+  constant time). 20 wrong codes in 15 minutes give 429 for a while; each is audited (`setup.code_rejected`). After the
+  administrator is created the code is replaced by a new one that is never printed. So a local program that cannot read
+  the server's console (or its log file) cannot do the setup.
+
+Whoever passes both and calls `/setup/admin` first becomes the administrator. Afterwards:
+
+- `/setup/admin` answers "Setup is already complete" (409).
+- The server writes `"setupComplete": true` to `workspace/server.json`. From then on `/setup/database` needs an
+  administrator's session (no code), **also when the database is unreachable at start**: the server then answers 409
+  ("Setup is complete, but the database is not reachable right now ...") instead of offering the setup again. With
+  nobody able to sign in in that state, re-pointing the database means editing `server.json` or `APPBUILDER_DB_*` on
+  disk, which needs access to the PC's files anyway. Installations from before this change get the marker the first
+  time the server opens a database that has users.
+- If the server cannot tell whether an administrator exists (the database stops answering during the request), it
+  refuses (503).
+
+**`GET /status`** needs no sign-in and returns **state flags only**: `setup.needsDatabase`, `setup.needsAdmin`,
+`setup.unavailable` (configured but not reachable; the server retries), `setup.incompatible` (schema newer than the
+server, see [Upgrades](upgrades.md)), `ok`, and the caller's own session. The database host, port, name, server version
+and error text (`storage`, `databaseError`) are included **only for a signed-in administrator**. The workspace payload
+also shows the location only to administrators (others see "Server database").
 
 ## Request guards
 
@@ -105,13 +141,18 @@ expose the port.
 
 - **CSRF header.** Every request other than `GET`/`HEAD` must carry `X-Appbuilder: 1`, otherwise 403 "Missing X-Appbuilder
   header." A web page on another site cannot add this header without a cross-origin permission the server never grants.
-- **Host check (DNS rebinding).** The `Host` header must be `localhost`, `127.0.0.1` or `::1`, otherwise 403 "Requests
-  must be made to localhost."
-- **Origin check.** If an `Origin` header is sent it must name the same host and port, otherwise 403 "Cross-origin
-  requests are not allowed." (`Origin: null` is refused too, as is `Sec-Fetch-Site: cross-site`.)
+- **Host check (DNS rebinding).** The `Host` header must name one of the configured host names: `localhost`,
+  `127.0.0.1`, `::1`, the `APPBUILDER_HOST` address unless it is a wildcard such as `0.0.0.0`, and the names in
+  `APPBUILDER_ALLOWED_HOSTS` (`allowedHostList` in `server/core/config.ts`). Otherwise 403 "Requests must be made to a
+  configured host name."
+- **Origin check.** If an `Origin` header is sent it must name one of those hosts with the same host and port as `Host`,
+  otherwise 403 "Cross-origin requests are not allowed." (`Origin: null` is refused too, as is
+  `Sec-Fetch-Site: cross-site`.)
 - **Important limit:** the Host and Origin checks read *headers the client supplies*. They stop a web page in your browser
-  (which cannot forge them); they do **not** stop a program or another computer that sets the headers itself. That is why
-  the address must stay `127.0.0.1` ([Installation](installation.md#changing-the-listening-address-is-not-supported)).
+  (which cannot forge them); they do **not** stop a program or another computer that sets the headers itself, and the
+  server never treats them as proof that a request is local: the only "this computer" check is the TCP peer address,
+  used for the setup routes. That is why the address must stay `127.0.0.1`
+  ([Installation](installation.md#changing-the-listening-address-is-not-supported)).
 - **Body limits.** JSON bodies: **2 MB** (`JSON_LIMIT_BYTES`), 413 above that. Raw uploads: **25 MB** by default; data files
   25 MB, app and table-from-CSV imports 25 MB, solution packages 40 MB. Attachment uploads are read up to 200 MB at the
   route and then refused if they exceed the column's limit (25 MB by default; see [Attachments](#attachments)). JSON requests must be `Content-Type: application/json` (415
@@ -128,13 +169,23 @@ and `Cache-Control: no-store`. The HTML page is served with:
 
 ```
 Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline';
-                         script-src 'self' 'unsafe-inline'; connect-src 'self'
+                         script-src 'self' 'sha256-<hash of each inline script>'; connect-src 'self';
+                         object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'
 ```
 
-(`HTML_CSP` in `server/core/router.ts`; set by `server/core/static.ts`.) Effects: the page can load only its own
-resources, **cannot load images from other sites** and cannot send requests to other sites, so an app cannot phone home
-through the browser. Weakness: `script-src` and `style-src` allow `'unsafe-inline'` because the web app is built as one
-file with inline script, so the CSP is a weaker defence against injected script than a strict policy would be.
+(`htmlCsp` in `server/core/router.ts`; `cspForHtmlFile` in `server/core/static.ts`.) The web app is one HTML file with
+its JavaScript inline (vite-plugin-singlefile). When serving an HTML file the server computes the SHA-256 of every inline
+`<script>` element's text and lists exactly those hashes in `script-src`; the result is cached per file and recomputed
+when the file's modification time or size changes (a new build). **`script-src` has no `'unsafe-inline'`**, so a script
+injected into the page (an inline `<script>`, an event-handler attribute, a `javascript:` URL) does not run. Effects
+otherwise unchanged: the page can load only its own resources, **cannot load images from other sites** and cannot send
+requests to other sites, so an app cannot phone home through the browser.
+
+`style-src` keeps `'unsafe-inline'`. We tried without it: the built page then logs CSP violations at once (the inlined
+stylesheet is a `<style>` element, and React and Radix set `style` attributes at run time for positions and sizes, which
+hashes cannot cover). Injected CSS can restyle the page but cannot run script. We verified the built app under the new
+policy in headless Chrome: setup wizard, sign-in, portal pages, the Studio, a running app and the forced password change,
+with no CSP violation in the console.
 
 ## Secrets at rest
 
@@ -167,14 +218,26 @@ file with inline script, so the CSP is a weaker defence against injected script 
   (`server/connectors/mysql/sql.test.ts`).
 - **Tables whose names start with `ab_` are never exposed or used for user data**: they are hidden from the list of
   linkable tables, and any attempt to use one is refused ("Tables starting with "ab_" are reserved for the platform").
+- **One registration per physical table.** Linking a source that is already linked (same connection, or another
+  connection to the same host, port and database, or the same spreadsheet) is refused with 409 naming the existing table,
+  so a maker cannot get a second copy with fresh default privileges. Already linked tables are not listed.
+- **Linked tables are never dropped or altered by removals.** Only tables Appbuilder created (`managed` in the table
+  definition, or data-file tables) may be dropped, and only when `dropSource=1` is sent explicitly; the portal offers it as
+  an unticked box. Removing a column of a linked table only unmaps it.
+- **Linked tables lacking system columns** are read-only unless the maker consented to adding them, and no query names a
+  column the source does not have (`missingSystem` in the table definition). Without an `owner` column, Own-scope roles
+  get nothing.
 - A user who may not know a table exists gets "does not exist" (404), and a row they may not see gets "Row not found",
   not "not allowed", so existence is not revealed.
 - **Row cap:** the server returns at most **5,000 rows** per query (`DEFAULT_ROW_CAP`); apps are told when results were
   truncated. CSV export is capped at 1,000,000 rows. This is a performance limit, not a security feature, and applies
   after the user's own filters.
-- Formulas in the exported CSV are **not** neutralised: a cell whose text starts with `=`, `+`, `-` or `@` will be
-  evaluated if the file is opened in Excel. Google Sheets writes use `RAW` mode, so values you save into a sheet are
-  never turned into formulas (`server/connectors/gsheets/index.ts`).
+- **CSV exports are neutralised against formula injection** (OWASP): in `GET /tables/:id/csv` and in the download of a
+  CSV data file, a text cell starting with `=`, `+`, `-`, `@`, tab or carriage return gets a leading `'`, so a spreadsheet
+  shows it as text instead of running it. Plain numbers (`-5`, `+1.5e3`) and number/boolean cells are left as they are
+  (`csvSafeText` in `server/core/values.ts`). The `'` stays in the file: importing such an export again keeps it in the
+  value. XLSX data files are written with typed cells by ExcelJS, so text never becomes a formula. Google Sheets writes
+  use `RAW` mode, so values you save into a sheet are never turned into formulas (`server/connectors/gsheets/index.ts`).
 
 ## Attachments
 
@@ -195,9 +258,12 @@ file with inline script, so the CSP is a weaker defence against injected script 
 
 ## Audit log
 
-Changes are recorded in `ab_audit`: who, when, what. Reads are not. Not tamper-evident: anyone with database write access
-can alter it, and an audit write that fails is logged and **ignored**, not retried. Details, actions and SQL queries
-are on the [Audit log](audit-log.md) page.
+Changes are recorded in `ab_audit`: who, when, what. Bulk deletes list the row ids (up to 1,000 per entry, the count is
+always complete); role changes carry a before/after diff of every changed field and table privilege; user creation,
+disabling, role changes and password resets have their own entries; schema migrations are recorded. Reads are not. Not
+tamper-evident: anyone with database write access can alter it, and an audit write that fails does not fail the request:
+it is logged on the console as `ERROR audit write failed (<action>): <reason>` and not retried. Details, actions and SQL
+queries are on the [Audit log](audit-log.md) page.
 
 ## Demo mode is not secure
 
@@ -219,7 +285,11 @@ beyond their role. Web pages the user visits are not trusted.
 | An ordinary user reading or changing data beyond their role (including by calling the API directly) | Server-side table, row and column rules on every request |
 | An ordinary user doing admin or maker actions | Route-level sign-in levels |
 | A malicious web page making the browser call the local server (CSRF, DNS rebinding, cross-site cookie use) | `SameSite=Strict`, `X-Appbuilder` header, Host and Origin checks |
-| Guessing passwords through the sign-in form | scrypt, uniform errors, 8-per-15-minutes throttle |
+| Script injected into the portal page | CSP `script-src` with hashes, no `'unsafe-inline'` |
+| Another computer, or a local program without access to the server console, taking over the first-run setup | Loopback-only setup routes (TCP peer address), one-time setup code, setup locked once an administrator exists |
+| Guessing passwords through the sign-in form | scrypt, uniform errors, 8-per-15-minutes throttle per email and address, exponential per-email backoff |
+| Spreadsheet formulas planted in data and opened from a CSV export | Leading `'` on formula-like text cells |
+| An older server corrupting a database upgraded by a newer one | Downgrade guard: the database is not used at all |
 | Theft of a database dump | Password hashes, hashed session tokens, encrypted connection secrets (key kept elsewhere) |
 | Uploaded files running script | Sandboxed CSP and `nosniff` on downloads |
 | SQL injection through values and names | Parameters, identifier validation and quoting |
@@ -229,10 +299,12 @@ beyond their role. Web pages the user visits are not trusted.
 - **Anyone who controls the PC.** An administrator of the operating system, or malware running as the user, can read the
   workspace folder (including `.secret-key`), the database files, the process memory and the environment, and can
   change the code. Anyone with the database login can read and change all data, **and the audit log**.
-- **Other users of the same PC.** Every local account can reach `127.0.0.1:5174` and the sign-in and setup pages.
+- **Other users of the same PC.** Every local account can reach `127.0.0.1:5174` and the sign-in page; during the first
+  run, those who can read the server's console or log file can also complete the setup.
 - **The network.** No TLS: if the port were reachable, passwords and sessions would be visible. Do not expose it.
 - **Physical access** to the PC or to unencrypted backups. Use disk encryption (BitLocker) and protect backups.
-- **A compromised maker.** A maker can read every table in the connected database through linking, and drop tables.
+- **A compromised maker.** A maker can list and link every not-yet-linked table in a connected database and so read it,
+  drop tables Appbuilder created, and change columns of writable linked tables.
 - **Weak passwords.** Only the length rule exists.
 - **The Google service-account key** is stored encrypted, but with a key on the same machine; whoever gets both can use
   the key against Google (it grants access to the sheets shared with it).
@@ -241,21 +313,25 @@ beyond their role. Web pages the user visits are not trusted.
 
 - Single machine; no network, multi-server or high-availability use.
 - No TLS by default on localhost, and none at all in the built-in server.
-- No multi-factor sign-in, no single sign-on, no password reset by email (administrators reset passwords).
-- **No rate limiting other than the sign-in throttle**: other API calls are not limited; a signed-in user can send as
-  many requests as the PC can handle.
-- Row filters and the Own scope control what is read, changed and deleted but **do not check the values written**
-  (see [Users and roles](users-and-roles.md#known-limits-of-row-filters)).
-- Makers can bypass table privileges by re-linking a table, and can drop tables and columns.
+- No multi-factor sign-in, no single sign-on, no password reset by email (administrators reset passwords; the user must
+  then choose a new one).
+- **No rate limiting other than the sign-in throttles and the setup-code limit**: other API calls are not limited; a
+  signed-in user can send as many requests as the PC can handle. The per-email sign-in brake can be triggered by anyone
+  who knows an email (see [Sign-in throttle](#sign-in-throttle)).
+- Row filters are checked on writes too: a new row must match the filter of a role that grants Create, and a changed
+  row must still match the Update rule afterwards (administrators bypass). A permitted update may move a row out of the
+  user's *read* visibility (see [Users and roles](users-and-roles.md#known-limits-of-row-filters)).
+- Makers can link any table of a connected database that is not linked yet (no per-connection permission), and can drop
+  tables and columns that Appbuilder created. Sharing the database with other applications exposes those applications'
+  tables to makers.
 - Writes from the browser are optimistic (see above).
 - Query results are capped at 5,000 rows.
 - Data is not encrypted at rest; backups are not encrypted.
 - The audit log is not tamper-proof, does not record reads, and has no viewer or retention.
-- The Content-Security-Policy allows inline script and style.
-- Unauthenticated `GET /status` reveals database host, port and name to local callers.
+- The Content-Security-Policy allows inline style (not inline script).
 - Anyone who may open an app can read its definition.
-- No built-in backup, no integrity check of the workspace, no check when an older version is run against a newer
-  database.
+- Rows of linked tables that existed before linking have no owner until an administrator assigns one.
+- No built-in backup, no integrity check of the workspace.
 
 ## Evidence
 
@@ -265,20 +341,27 @@ beyond their role. Web pages the user visits are not trusted.
 | Password policy | Test: `unit.test.ts` ("enforces the policy"); run |
 | Throttle: 8 failures, 15 minutes | Test: `unit.test.ts` ("throttles after 8 failures"); run (9th attempt answered 429) |
 | Same message for unknown, wrong and disabled | Test: `integration.test.ts` ("login errors are uniform"); run |
-| Session cookie flags and 7-day expiry | **Run** only (curl `Set-Cookie`); no test |
+| Session cookie flags and 7-day expiry | **Run** (curl `Set-Cookie`); `Secure` with `APPBUILDER_SECURE_COOKIE` / trusted proxy: tests `hardening.test.ts`, `hardening.integration.test.ts` |
+| Setup only from loopback, setup code, setup locked after the admin / while the database is unreachable | Tests: `hardening.test.ts` (a LAN client with `Host: localhost` gets 403), `hardening.integration.test.ts` |
+| Anonymous `/status` without database details | Tests: `integration.test.ts`, `hardening.integration.test.ts` |
+| Forced password change (`password_change_required`) | Tests: `hardening.test.ts` (router), `hardening.integration.test.ts`, `routes/meta/hardening.test.ts`; run in headless Chrome |
+| Per-email login backoff | Test: `hardening.test.ts` |
+| Re-link refused (also through a second connection), linked tables never dropped, columns only unmapped | Tests: `routes/meta/connections.test.ts`, `routes/meta/hardening.test.ts`, `hardening.integration.test.ts` (MariaDB) |
+| CSV formula escaping, XLSX text cells | Tests: `hardening.test.ts`, `routes/meta/hardening.test.ts` |
+| Audit: bulk delete ids, role/user diffs, failures logged | Test: `routes/meta/hardening.test.ts` |
+| Downgrade guard, boot retry, migration summary in the audit log | Test: `hardening.integration.test.ts` (MariaDB) |
 | Sliding expiry, 10-minute touch interval | **Code only** (`auth.ts`); no test |
 | Sessions removed on disable, password change, reset | Test: `integration.test.ts` ("password change rotates sessions"), `security.test.ts`; run |
 | Sessions survive restart; throttle does not | Run |
 | CSRF header, Host and Origin checks, body limits | Tests: `unit.test.ts` "router guards"; run (also for spoofed Host on `0.0.0.0`) |
 | Security headers on API | Test: `unit.test.ts` (nosniff, referrer, no-store); X-Frame-Options by run |
-| HTML Content-Security-Policy | **Run** only (curl); no test |
+| HTML Content-Security-Policy (hashes, no inline script) | Test: `hardening.test.ts` (`serveStatic`); built app run in headless Chrome without CSP violations |
 | AES-256-GCM, key file mode, env key, tamper detection | Test: `unit.test.ts` "SecretBox" |
 | Secrets never returned, removed from errors | Test: `connections.test.ts` ("never returns the secret"); run |
 | Lost key makes saved password unreadable | Run |
 | RBAC, RLS, CLS and role union | Tests: `unit.test.ts` "security engine", `integration.test.ts`; run on all worked examples |
 | `ab_` tables never exposed | Run and code (`sql.ts`, `util.ts`); tested in `connections.test.ts` ("skip registered and system tables") |
 | Attachment permissions and sandbox CSP | Test: `integration.test.ts` (attachments) |
-| Row filters not applied to written values; Maker re-link bypass | **Run** only; no test (these are limitations) |
-| Setup endpoints open while unconfigured | Run |
+| Row filters checked on create and update (WITH CHECK) | Server and demo tests (`demo.test.ts`) |
 | Audit actions and contents | Run and code |
 | Windows ignores file modes | Code comment in `secrets.ts`; not tested on Windows |

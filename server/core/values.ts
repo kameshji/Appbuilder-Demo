@@ -215,6 +215,24 @@ export function csvText(v: QueryValue): string {
   return String(v)
 }
 
+const FORMULA_START = /^[=+\-@\t\r]/
+const PLAIN_NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/
+
+/**
+ * CSV injection guard (OWASP): text that a spreadsheet program would read as a formula (starts with =, +, -, @, tab or
+ * carriage return) gets a leading single quote. Plain numbers ("-5", "+1.5e3") are left alone: they are read as numbers,
+ * never as formulas. Numbers and booleans are not text and stay as they are.
+ */
+export function csvSafeText(text: string): string {
+  return FORMULA_START.test(text) && !PLAIN_NUMBER.test(text) ? `'${text}` : text
+}
+
+/** csvText for exports: text cells neutralised with csvSafeText */
+export function csvExportText(v: QueryValue): string {
+  if (typeof v === 'string') return csvSafeText(v)
+  return csvText(v)
+}
+
 /**
  * Column type change check: the stored cell of `from` as the JSON value a client reads (cellOut), coerced to `to`
  * exactly like a client write (coerceIn). `from` undefined = the cell is client-style text/number already.

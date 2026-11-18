@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Columns3, Lock, Settings2, ShieldCheck, Table2, Trash2 } from 'lucide-react'
+import { ArrowLeft, Columns3, Link2, Lock, Settings2, ShieldCheck, Table2, Trash2, UserCheck } from 'lucide-react'
 import { platform, usePlatform } from '@/platform'
 import { go } from '@/router'
 import { Button } from '@/components/ui/button'
@@ -12,6 +12,14 @@ import { ColumnsPanel } from './ColumnsPanel'
 import { TableSecurity } from './TableSecurity'
 import { ConnectionFlags, connectorInfo } from './ConnectionBits'
 import { Badge } from '@/components/ui/badge'
+import { Checkbox } from '@/components/ui/checkbox'
+import { useCaps } from './security'
+import { assignOwnerToUnownedRows } from './serverApi'
+
+/** server mode: Appbuilder created the physical table (only then may it be dropped); demo tables are always its own */
+function isPlatformTable(t: { managed?: boolean; origin?: { kind: string }; connectionId?: string }, server: boolean): boolean {
+  return !server || t.managed === true || t.origin?.kind === 'file'
+}
 
 export function TableDesigner({ tableId }: { tableId: string }) {
   const table = usePlatform((s) => s.tables.find((t) => t.id === tableId))
@@ -22,6 +30,9 @@ export function TableDesigner({ tableId }: { tableId: string }) {
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   const [del, setDel] = useState(false)
+  const [dropSource, setDropSource] = useState(false)
+  const [assigning, setAssigning] = useState(false)
+  const caps = useCaps()
   useEffect(() => { setName(table?.displayName ?? ''); setDesc(table?.description ?? '') }, [table?.id, table?.displayName, table?.description])
   useEffect(() => { setTab('data') }, [tableId])
 
@@ -51,6 +62,21 @@ export function TableDesigner({ tableId }: { tableId: string }) {
   }
   const rowCount = platform.tables.rows(table.name, { secure: false }).length
   void dataVersion
+  const own = isPlatformTable(table, caps.server)
+  const linked = caps.server && !own
+  const hasOwner = !(table.missingSystem ?? []).includes('owner')
+  const assignOwners = async () => {
+    setAssigning(true)
+    try {
+      const n = await assignOwnerToUnownedRows(table.id)
+      await platform.tables.reload(table.name).catch(() => {})
+      toast(n ? `You are now the owner of ${n} ${n === 1 ? 'row' : 'rows'} that had none` : 'Every row already has an owner', 'success')
+    } catch (e) {
+      fail(e)
+    } finally {
+      setAssigning(false)
+    }
+  }
 
   return (
     <div data-testid="page-table" className="flex min-h-0 flex-col">
@@ -82,6 +108,7 @@ export function TableDesigner({ tableId }: { tableId: string }) {
             {conn && <span className="flex items-center gap-1" data-testid="table-connection">{(() => { const I = connectorInfo(conn.connector).icon; return <I className="size-3.5" /> })()}{conn.name}</span>}
             <ConnectionFlags conn={conn?.isDefault ? undefined : conn} />
             {table.origin?.kind === 'file' && <Badge variant="secondary" title={`From file ${table.origin.fileName}`}>File</Badge>}
+            {linked && <Badge variant="secondary" title="This table existed in the database before; Appbuilder never deletes it there"><Link2 /> Linked</Badge>}
             {table.readOnly && <Badge variant="outline"><Lock /> Read-only</Badge>}
           </div>
           <div className="font-mono">{table.name}</div>
@@ -119,12 +146,23 @@ export function TableDesigner({ tableId }: { tableId: string }) {
                 <Field label="Created"><Input readOnly value={fmtDate(table.createdOn)} /></Field>
               </div>
             </Panel>
+            {caps.server && caps.isAdmin && hasOwner && !table.readOnly && (
+              <Panel className="flex items-center gap-4 p-5" data-testid="assign-owner-panel">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold">Assign owner to rows without owner</div>
+                  <p className="mt-0.5 text-sm text-muted-foreground">Rows that existed before the table was linked have no owner, so roles limited to their own rows cannot see them. This makes you their owner; reassign rows afterwards if needed.</p>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => void assignOwners()} disabled={assigning} data-testid="assign-owner-button"><UserCheck /> Assign to me</Button>
+              </Panel>
+            )}
             <Panel className="flex items-center gap-4 border-destructive/30 p-5">
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-semibold">Delete this table</div>
-                <p className="mt-0.5 text-sm text-muted-foreground">Removes the table definition and all {rowCount} rows. Apps that use it will stop working.</p>
+                <p className="mt-0.5 text-sm text-muted-foreground">{linked
+                  ? 'Removes the table from Appbuilder. The table and its rows stay in the database. Apps that use it will stop working.'
+                  : 'Removes the table from Appbuilder. Apps that use it will stop working.'}</p>
               </div>
-              <Button variant="destructive" size="sm" onClick={() => setDel(true)} data-testid="delete-table-button"><Trash2 /> Delete table</Button>
+              <Button variant="destructive" size="sm" onClick={() => { setDropSource(false); setDel(true) }} data-testid="delete-table-button"><Trash2 /> Delete table</Button>
             </Panel>
           </div>
         </TabsContent>
@@ -134,9 +172,23 @@ export function TableDesigner({ tableId }: { tableId: string }) {
         open={del}
         onOpenChange={setDel}
         title={`Delete table "${table.displayName}"?`}
-        description={`This permanently deletes ${rowCount} ${rowCount === 1 ? 'row' : 'rows'} and the schema. This cannot be undone.`}
+        description={!caps.server
+          ? `This permanently deletes ${rowCount} ${rowCount === 1 ? 'row' : 'rows'} and the schema. This cannot be undone.`
+          : (
+            <div className="grid gap-3">
+              <p>{linked
+                ? 'Appbuilder forgets this linked table. The table and its rows stay in the database, untouched.'
+                : 'Appbuilder forgets this table. Unless you tick the box, the table and its rows stay in the database.'}</p>
+              {!linked && (
+                <label className="flex items-start gap-2.5 text-sm text-foreground">
+                  <Checkbox checked={dropSource} onCheckedChange={(v) => setDropSource(v === true)} className="mt-0.5" data-testid="delete-table-drop-source" />
+                  <span>Also delete the table in the database<span className="block text-xs text-muted-foreground">Permanently deletes {rowCount} {rowCount === 1 ? 'row' : 'rows'}. This cannot be undone.</span></span>
+                </label>
+              )}
+            </div>
+          )}
         onConfirm={async () => {
-          await platform.tables.remove(table.id)
+          await platform.tables.remove(table.id, { dropSource: caps.server ? (!linked && dropSource) : true })
           toast(`Deleted table "${table.displayName}"`, 'success')
           go({ page: 'tables' })
         }}

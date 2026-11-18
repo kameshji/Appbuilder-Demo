@@ -3,7 +3,7 @@
  * (no JSON type, no CHECK, VALUES() in ON DUPLICATE KEY, utf8mb4_unicode_ci, DATETIME(3) in UTC, InnoDB).
  */
 import type {
-  AttachmentRecord, ConnectionRecord, MetaStore, SecretBox, SqlDb, UserRecord,
+  AttachmentRecord, ConnectionRecord, MetaStore, MigrationSummary, SecretBox, SqlDb, UserRecord,
 } from './contracts.ts'
 import type {
   AccessScope, AppMeta, ColumnAccess, ConnectionRef, DataFileDef, RoleDef, RowCondition, SolutionDef, TableDef, TablePrivilege,
@@ -11,8 +11,71 @@ import type {
 import type { AppDef } from '../../src/contracts.ts'
 import { parseJson, toDate, toIso } from './util.ts'
 
-/** 1: initial schema; 2: ab_users.email normalised to trimmed lowercase */
-export const SCHEMA_VERSION = 2
+/**
+ * 1: initial schema; 2: ab_users.email normalised to trimmed lowercase; 3: ab_users.must_change_password (an administrator
+ * set the password, the user must change it at the next sign-in)
+ */
+export const SCHEMA_VERSION = 3
+
+/** the database was upgraded by a newer server: this one must not touch it (downgrade guard) */
+export class SchemaTooNewError extends Error {
+  database: number
+  server: number
+  constructor(database: number, server: number) {
+    super(`The database schema is version ${database}, but this Appbuilder only knows version ${server}. It was upgraded by a newer Appbuilder; run that version (or restore a backup taken before the upgrade).`)
+    this.database = database
+    this.server = server
+  }
+}
+
+/** MySQL 5.7 has no ADD COLUMN IF NOT EXISTS: look the column up in information_schema first */
+async function hasColumn(db: SqlDb, table: string, column: string): Promise<boolean> {
+  const rows = await db.query<Record<string, unknown>>(
+    'SELECT COUNT(*) AS n FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+    [table, column],
+  )
+  return Number(rows[0]?.n) > 0
+}
+
+const SYSTEM_COLUMN_LIST = ['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner']
+
+/**
+ * v3: provenance of existing tables. A table the audit log records as linked (action table.link) stays unmanaged
+ * (Appbuilder never drops it or its columns); if its definition lacks system columns it becomes read-only with
+ * missingSystem (before, such a table was writable but every query failed). Every other table (created by Appbuilder,
+ * no file origin) is marked managed. A linked table whose audit entry is gone is treated as created by Appbuilder.
+ */
+export async function markTableProvenance(db: SqlDb): Promise<{ managed: number; linked: number; readOnly: number }> {
+  const linked = new Set(
+    (await db.query<{ table_id: string }>("SELECT DISTINCT table_id FROM ab_audit WHERE action = 'table.link' AND table_id IS NOT NULL")).map((r) => String(r.table_id)),
+  )
+  const out = { managed: 0, linked: 0, readOnly: 0 }
+  for (const r of await db.query<{ id: string; def: string }>('SELECT id, def FROM ab_tables')) {
+    const def = parseJson<TableDef | null>(r.def, null)
+    if (!def || typeof def !== 'object' || def.managed !== undefined || def.origin?.kind === 'file') continue
+    if (linked.has(String(r.id))) {
+      out.linked++
+      const names = new Set((def.columns ?? []).map((c) => c.name))
+      const missing = SYSTEM_COLUMN_LIST.filter((n) => !names.has(n))
+      if (!missing.length) continue
+      def.missingSystem = missing
+      def.readOnly = true
+      out.readOnly++
+    } else {
+      def.managed = true
+      out.managed++
+    }
+    await db.exec('UPDATE ab_tables SET def = ? WHERE id = ?', [JSON.stringify(def), r.id])
+  }
+  return out
+}
+
+/** v3: ab_users.must_change_password TINYINT NOT NULL DEFAULT 0 (existing users: 0) */
+export async function addMustChangePassword(db: SqlDb): Promise<boolean> {
+  if (await hasColumn(db, 'ab_users', 'must_change_password')) return false
+  await db.exec('ALTER TABLE ab_users ADD COLUMN must_change_password TINYINT NOT NULL DEFAULT 0')
+  return true
+}
 
 /** RoleDef as stored: the optional maker flag (ab_roles.is_maker) travels with the role. */
 export type StoredRole = RoleDef & { isMaker?: boolean }
@@ -55,6 +118,7 @@ export const DDL: string[] = [
     email VARCHAR(191) NOT NULL,
     password_hash VARCHAR(255) NULL,
     status VARCHAR(16) NOT NULL DEFAULT 'active',
+    must_change_password TINYINT NOT NULL DEFAULT 0,
     created_on DATETIME(3) NOT NULL,
     last_login DATETIME(3) NULL,
     UNIQUE KEY ux_ab_users_email (email)
@@ -223,12 +287,13 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
       roleIds: roles.get(id) ?? [],
       status: r.status === 'disabled' ? 'disabled' : 'active',
       hasPassword: !!hash,
+      ...(bool(r.must_change_password) ? { mustChangePassword: true } : {}),
       ...(lastLogin ? { lastLogin } : {}),
       passwordHash: hash,
     }
   }
   async function usersWhere(where: string, params: unknown[]): Promise<UserRecord[]> {
-    const rows = await db.query<Row>(`SELECT id, name, email, password_hash, status, created_on, last_login FROM ab_users ${where}`, params)
+    const rows = await db.query<Row>(`SELECT id, name, email, password_hash, status, must_change_password, created_on, last_login FROM ab_users ${where}`, params)
     const roles = await userRoles(rows.map((r) => str(r.id)))
     return rows.map((r) => toUser(r, roles))
   }
@@ -355,15 +420,35 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
   const store: MetaStore = {
     db,
 
-    async migrate() {
+    async migrate(): Promise<MigrationSummary> {
+      // downgrade guard first: a newer server's schema is never touched (not even CREATE TABLE IF NOT EXISTS)
+      let current = 0
+      try {
+        const rows = await db.query<Row>("SELECT v FROM ab_meta WHERE k = 'schemaVersion'")
+        current = rows.length ? Number(rows[0].v) || 0 : 0
+      } catch (e) {
+        if ((e as { code?: string }).code !== 'ER_NO_SUCH_TABLE') throw e
+      }
+      if (current > SCHEMA_VERSION) throw new SchemaTooNewError(current, SCHEMA_VERSION)
       for (const stmt of DDL) await db.exec(stmt)
-      const rows = await db.query<Row>("SELECT v FROM ab_meta WHERE k = 'schemaVersion'")
-      const current = rows.length ? Number(rows[0].v) || 0 : 0
-      if (current < SCHEMA_VERSION) {
+      const steps: string[] = []
+      if (current === 0) steps.push(`created the system tables (schema version ${SCHEMA_VERSION})`)
+      else if (current < SCHEMA_VERSION) {
         // upgrades, ordered by version
-        if (current < 2) await normaliseUserEmails(db)
+        if (current < 2) {
+          const r = await normaliseUserEmails(db)
+          steps.push(`v2: lowercased ${r.changed} user email(s)${r.skipped.length ? `, ${r.skipped.length} left as they were (duplicates)` : ''}`)
+        }
+        if (current < 3) {
+          steps.push(`v3: ${(await addMustChangePassword(db)) ? 'added' : 'kept'} ab_users.must_change_password`)
+          const t = await markTableProvenance(db)
+          steps.push(`v3: tables marked created-by-Appbuilder: ${t.managed}, linked: ${t.linked} (${t.readOnly} made read-only: system columns missing)`)
+        }
+      } else await addMustChangePassword(db) // same version, defensive (a column dropped by hand)
+      if (current < SCHEMA_VERSION) {
         await db.exec('INSERT INTO ab_meta (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)', ['schemaVersion', String(SCHEMA_VERSION)])
       }
+      return { from: current, to: SCHEMA_VERSION, steps }
     },
 
     users: {
@@ -381,8 +466,8 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
       async insert(u) {
         await db.tx(async (tx) => {
           await tx.exec(
-            'INSERT INTO ab_users (id, name, email, password_hash, status, created_on, last_login) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [u.id, u.name, u.email.trim().toLowerCase(), u.passwordHash ?? null, u.status ?? 'active', new Date(), toDate(u.lastLogin)],
+            'INSERT INTO ab_users (id, name, email, password_hash, status, must_change_password, created_on, last_login) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [u.id, u.name, u.email.trim().toLowerCase(), u.passwordHash ?? null, u.status ?? 'active', u.mustChangePassword ? 1 : 0, new Date(), toDate(u.lastLogin)],
           )
           await setUserRoles(tx, u.id, u.roleIds ?? [])
         })
@@ -395,6 +480,7 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox): MetaStore {
           if (patch.email !== undefined) (sets.push('email = ?'), params.push(patch.email.trim().toLowerCase()))
           if (patch.passwordHash !== undefined) (sets.push('password_hash = ?'), params.push(patch.passwordHash))
           if (patch.status !== undefined) (sets.push('status = ?'), params.push(patch.status))
+          if (patch.mustChangePassword !== undefined) (sets.push('must_change_password = ?'), params.push(patch.mustChangePassword ? 1 : 0))
           if (patch.lastLogin !== undefined) (sets.push('last_login = ?'), params.push(toDate(patch.lastLogin)))
           if (sets.length) await tx.exec(`UPDATE ab_users SET ${sets.join(', ')} WHERE id = ?`, [...params, id])
           if (patch.roleIds !== undefined) await setUserRoles(tx, id, patch.roleIds)

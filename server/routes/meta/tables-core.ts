@@ -9,6 +9,7 @@ import type { QueryValue } from '../../../src/platform/http.ts'
 import { HttpError } from '../../core/contracts.ts'
 import type { Connector, ConnectionRecord, Ctx, Services, UserContext } from '../../core/contracts.ts'
 import { clone, conflict, csvCellToJson, invalid, isObj, notFound, parseCsvText } from './util.ts'
+import { errText, log } from '../../core/util.ts'
 import type { RoleX } from './util.ts'
 
 export const FILES_CONNECTION_ID = 'conn_files'
@@ -119,8 +120,15 @@ export async function grantDefaults(s: Services, tables: TableDef[]): Promise<vo
 /* ------------------------------------------------------------------ registering */
 
 /** creates the physical table, stores the definition and grants default privileges; rolls back the DDL on failure */
+/**
+ * Did Appbuilder create this table's physical source (so it may drop it, and remove its columns)? Linked tables existed
+ * before and belong to someone else: Appbuilder only unregisters them. File tables live in Appbuilder's own copy.
+ */
+export const isPlatformManaged = (def: TableDef): boolean => def.managed === true || def.origin?.kind === 'file'
+
 export async function createPhysical(s: Services, record: ConnectionRecord, connector: Connector, def: TableDef): Promise<void> {
   if (!connector.capabilities.ddl) throw invalid(`The connection "${record.name}" cannot create tables.`)
+  def.managed = true
   try {
     await connector.createTable(def)
   } catch (e) {
@@ -178,7 +186,7 @@ export async function lookupReferrers(s: Services, def: TableDef): Promise<Table
 /** every row the context may read, paged */
 export async function queryAll(s: Services, ctx: UserContext | null, def: TableDef): Promise<Record<string, QueryValue>[]> {
   const out: Record<string, QueryValue>[] = []
-  const ordered = !ctx || ctx.columnAccess(def, 'createdOn') !== 'none'
+  const ordered = (!ctx || ctx.columnAccess(def, 'createdOn') !== 'none') && !(def.missingSystem ?? []).includes('createdOn')
   let skip = 0
   for (;;) {
     const r = await s.data.query(ctx, def, { top: DEFAULT_ROW_CAP, skip, ...(ordered ? { orderBy: [{ col: 'createdOn', dir: 'asc' as const }] } : {}) })
@@ -218,7 +226,7 @@ const lc = (s: string) => s.toLowerCase()
  * Inserts rows into freshly created tables as system, keeping ids. Tables are processed in lookup order;
  * lookups to a table that is not populated yet (cycles, self references) are filled in afterwards.
  */
-export async function importRowsSystem(s: Services, items: TableRows[]): Promise<number> {
+export async function importRowsSystem(s: Services, items: TableRows[], actorId?: string): Promise<number> {
   const names = new Set(items.map((i) => lc(i.def.name)))
   const remaining = [...items]
   const order: TableRows[] = []
@@ -234,6 +242,11 @@ export async function importRowsSystem(s: Services, items: TableRows[]): Promise
     const lazy = it.def.columns.filter((c) => c.type === 'lookup' && c.lookupTable && (lc(c.lookupTable) === lc(it.def.name) || (names.has(lc(c.lookupTable)) && !populated.has(lc(c.lookupTable)))))
     for (const [i, row0] of it.rows.entries()) {
       const row = { ...row0 }
+      // imported on behalf of a user: that user created and owns the rows (package values are not kept)
+      if (actorId) {
+        row.createdBy = actorId
+        row.owner = actorId
+      }
       const id = typeof row.id === 'string' ? row.id : undefined
       const changes: Record<string, QueryValue> = {}
       for (const c of lazy) {
@@ -268,6 +281,8 @@ export function plainTableDef(def: TableDef): TableDef {
   delete c.source
   delete c.readOnly
   delete c.origin
+  delete c.managed
+  delete c.missingSystem
   return c
 }
 
@@ -281,7 +296,8 @@ export const needCtx = (ctx: Ctx): UserContext => {
 export async function audit(s: Services, ctx: Ctx | null, action: string, details?: unknown, tableId?: string): Promise<void> {
   try {
     await s.meta.audit({ userId: ctx?.user?.user.id ?? null, action, ...(tableId ? { tableId } : {}), ...(details !== undefined ? { details } : {}) })
-  } catch {
-    /* auditing must never break the operation */
+  } catch (e) {
+    // auditing must never break the operation, but a lost entry is always reported on the console
+    log('error', `audit write failed (${action}): ${errText(e)}`)
   }
 }

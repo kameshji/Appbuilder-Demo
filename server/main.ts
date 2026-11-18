@@ -4,6 +4,7 @@
  * Serves the Data API v1 under /api/v1 and the built app from dist/ (SPA fallback).
  *   PORT (5174)   APPBUILDER_HOST (127.0.0.1)   APPBUILDER_WORKSPACE (./workspace)   APPBUILDER_SECRET_KEY
  *   APPBUILDER_DB_HOST / _PORT / _NAME / _USER / _PASSWORD  (optional bootstrap, skips the setup screen)
+ *   APPBUILDER_ALLOWED_HOSTS (extra Host names)  APPBUILDER_SECURE_COOKIE=1  APPBUILDER_TRUST_PROXY=1
  */
 import http from 'node:http'
 import { createApp } from './core/app.ts'
@@ -34,7 +35,15 @@ server.on('error', (e: NodeJS.ErrnoException) => {
 server.listen(port, host, () => {
   log('info', `Appbuilder is running at http://${host === '127.0.0.1' ? 'localhost' : host}:${port}/`)
   log('info', `Workspace folder: ${workspaceDir}`)
-  log('info', app.services.ready() ? `Database: ${app.services.state.location}` : 'Database not configured yet: open the app to run the setup.')
+  const st = app.services.state
+  log('info', app.services.ready()
+    ? `Database: ${st.location}`
+    : st.incompatible
+      ? 'Database NOT used: its schema is newer than this Appbuilder (see the error above). Data routes are off.'
+      : st.unavailable
+        ? 'Database not reachable yet: retrying in the background.'
+        : 'Database not configured yet: open the app on this computer to run the setup (use the setup code above).')
+  if (app.services.setupCode.current() && !app.services.setupComplete()) log('info', `Setup code: ${app.services.setupCode.current()} (shown above; needed by the setup screen)`)
 })
 
 let stopping = false

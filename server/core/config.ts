@@ -9,18 +9,44 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Partial<ServerConfig> = {}): ServerConfig {
   const workspaceDir = path.resolve(overrides.workspaceDir ?? (env.APPBUILDER_WORKSPACE || path.join(projectRoot, 'workspace')))
+  const host = overrides.host ?? (env.APPBUILDER_HOST || '127.0.0.1')
   return {
     workspaceDir,
     filesDir: overrides.filesDir ?? path.join(workspaceDir, 'files'),
     attachmentsDir: overrides.attachmentsDir ?? path.join(workspaceDir, 'attachments'),
-    host: overrides.host ?? (env.APPBUILDER_HOST || '127.0.0.1'),
+    host,
     port: overrides.port ?? (Number(env.PORT) || 5174),
     distDir: overrides.distDir ?? path.join(projectRoot, 'dist'),
+    allowedHosts: overrides.allowedHosts ?? allowedHostList(host, env.APPBUILDER_ALLOWED_HOSTS),
+    secureCookie: overrides.secureCookie ?? env.APPBUILDER_SECURE_COOKIE === '1',
+    trustProxy: overrides.trustProxy ?? env.APPBUILDER_TRUST_PROXY === '1',
   }
+}
+
+const WILDCARD_HOSTS = new Set(['0.0.0.0', '::', '[::]', ''])
+
+/**
+ * Host names a request's Host / Origin header may name: the loopback names, the listening host (unless it is a wildcard
+ * such as 0.0.0.0, which names no host) and the comma-separated APPBUILDER_ALLOWED_HOSTS. Lowercase, no port, no brackets.
+ */
+export function allowedHostList(host: string, extra?: string): string[] {
+  const out = new Set(['localhost', '127.0.0.1', '::1'])
+  const add = (h: string) => {
+    const v = h.trim().toLowerCase().replace(/^\[|\]$/g, '')
+    if (!WILDCARD_HOSTS.has(v)) out.add(v)
+  }
+  add(host)
+  for (const h of (extra ?? '').split(',')) if (h.trim()) add(h)
+  return [...out]
 }
 
 export interface ServerJson {
   defaultConnection?: MySqlSettings & { passwordSealed: string }
+  /**
+   * set once the first administrator exists. From then on POST /setup/database needs an administrator's session, also
+   * while the database is unreachable (re-pointing the database then means editing this file or using APPBUILDER_DB_*).
+   */
+  setupComplete?: boolean
 }
 
 export function readServerJson(config: ServerConfig): ServerJson {

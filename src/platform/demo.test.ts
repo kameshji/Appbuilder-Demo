@@ -238,7 +238,9 @@ describe('demo mode: CLS and RLS simulation', () => {
     const u = await p.security.createUser({ name: 'Rep2', email: 'rep2@example.com', roleIds: [role.id] })
     p.security.setCurrentUser(u.id)
     const mine = p.tables.insert('Contacts', { Name: 'Mine', Status: 'Lead' })
-    p.tables.insert('Contacts', { Name: 'Mine too', Status: 'Customer' })
+    // a user cannot create a row their filter hides (WITH CHECK); seed it raw instead
+    expect(() => p.tables.insert('Contacts', { Name: 'Mine too', Status: 'Customer' })).toThrow(/not allowed/)
+    p.tables.insert('Contacts', { Name: 'Mine too', Status: 'Customer' }, { secure: false })
     expect(p.tables.rows('Contacts').map((r) => r.Name)).toEqual(['Mine'])
     expect(p.tables.rows('Contacts')[0].owner).toBe(u.id)
     p.tables.delete('Contacts', [mine.id as string])
@@ -248,6 +250,65 @@ describe('demo mode: CLS and RLS simulation', () => {
     await p.security.updateRole(r2.id, { privileges: [{ table: contacts.id, create: false, read: 'all', update: 'none', delete: 'none', rowFilter: [{ column: 'owner', op: 'eq', value: '@me' }] }], apps: [] })
     await p.security.updateUser(u.id, { roleIds: [r2.id] })
     expect(p.tables.rows('Contacts').map((r) => r.Name)).toEqual(['Mine too'])
+  })
+
+  it('create is checked against the row filter of a role granting create; admins bypass', async () => {
+    const p = await boot()
+    const contacts = p.tables.get('Contacts')!
+    const adminId = p.security.currentUser().id
+    const role = await p.security.createRole({ name: 'LeadCreator' })
+    await p.security.updateRole(role.id, {
+      apps: 'all',
+      privileges: [{ table: contacts.id, create: true, read: 'all', update: 'all', delete: 'none', rowFilter: [{ column: 'Status', op: 'eq', value: 'Lead' }] }],
+    })
+    const u = await p.security.createUser({ name: 'Lc', email: 'lc@example.com', roleIds: [role.id] })
+    p.security.setCurrentUser(u.id)
+    const before = p.tables.rows('Contacts').length
+    expect(() => p.tables.insert('Contacts', { Name: 'Nope', Status: 'Customer' })).toThrow(expect.objectContaining({ code: 'denied' }))
+    expect(p.tables.rows('Contacts')).toHaveLength(before)
+    expect(p.tables.insert('Contacts', { Name: 'Ok', Status: 'Lead' }).Name).toBe('Ok')
+    // admin bypasses the same check
+    p.security.setCurrentUser(adminId)
+    expect(p.tables.insert('Contacts', { Name: 'Admin made', Status: 'Customer' }).Status).toBe('Customer')
+  })
+
+  it('update must satisfy the update predicate after the change; leaving read visibility is allowed', async () => {
+    const p = await boot()
+    const contacts = p.tables.get('Contacts')!
+    const adminId = p.security.currentUser().id
+    const seeded = p.tables.insert('Contacts', { Name: 'Seed', Status: 'Lead' })
+    const role = await p.security.createRole({ name: 'LeadEditor' })
+    await p.security.updateRole(role.id, {
+      apps: 'all',
+      privileges: [
+        { table: contacts.id, create: false, read: 'all', update: 'all', delete: 'none', rowFilter: [{ column: 'Status', op: 'eq', value: 'Lead' }] },
+      ],
+    })
+    const u = await p.security.createUser({ name: 'Le', email: 'le@example.com', roleIds: [role.id] })
+    p.security.setCurrentUser(u.id)
+    // moving the row out of the filter is denied (read and update share the filter here), row unchanged
+    expect(() => p.tables.update('Contacts', seeded.id as string, { Status: 'Customer' })) .toThrow(expect.objectContaining({ code: 'denied' }))
+    p.security.setCurrentUser(adminId)
+    expect(p.tables.rows('Contacts').find((r) => r.id === seeded.id)!.Status).toBe('Lead')
+    // admin may move it anywhere
+    expect(p.tables.update('Contacts', seeded.id as string, { Status: 'Customer' }).Status).toBe('Customer')
+
+    // update allowed for any row, read limited to Leads: the row may leave read visibility
+    const r2 = await p.security.createRole({ name: 'ReadLeadsEditAll' })
+    await p.security.updateRole(r2.id, {
+      apps: 'all',
+      privileges: [{ table: contacts.id, create: false, read: 'all', update: 'all', delete: 'none', rowFilter: undefined }],
+    })
+    const r3 = await p.security.createRole({ name: 'ReadLeadsOnly' })
+    await p.security.updateRole(r3.id, {
+      apps: 'all',
+      privileges: [{ table: contacts.id, create: false, read: 'all', update: 'none', delete: 'none', rowFilter: [{ column: 'Status', op: 'eq', value: 'Lead' }] }],
+    })
+    await p.security.updateUser(u.id, { roleIds: [r2.id, r3.id] })
+    p.security.setCurrentUser(u.id)
+    const lead = p.tables.insert('Contacts', { Name: 'L', Status: 'Lead' }, { secure: false })
+    // update predicate (all rows) holds after the change although the row leaves the read filter of r3 (r2 still reads it)
+    expect(() => p.tables.update('Contacts', lead.id as string, { Status: 'Customer' })).not.toThrow()
   })
 
   it('a rowFilter on a missing column grants nothing', async () => {

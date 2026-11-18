@@ -16,6 +16,7 @@ src/**/*.test.ts   server/**/*.test.ts   scripts/**/*.test.ts
 | Runtime | `src/runtime/{evaluator,submit,attachments}.test.ts` | Dependency tracking and invalidation, form submit flow, attachment helpers | no |
 | Platform (client) | `src/platform/{platform,demo,remote}.test.ts` | Demo-mode core, the remote platform's optimistic cache, rollback and mirrored checks (against a fake `fetch`) | no |
 | Server core | `server/core/unit.test.ts` | Router guards, auth, security engine, DataService, values, conditions, with in-memory fakes | no |
+| Server hardening | `server/core/hardening.test.ts`, `server/routes/meta/hardening.test.ts` | Loopback-only setup routes (a real LAN socket when the machine has one), host list, setup code, CSP hashes, Secure cookie, `password_change_required` gate, CSV escaping, per-email backoff, audit diffs; table delete/column unmap on linked tables, owners of imported rows, assign-owner, audit entries | no |
 | Server metadata routes | `server/routes/meta/{meta,connections,files,migrate,security,solutions,tables}.test.ts` | Apps, tables, columns, connections, roles and users, solutions, packages, legacy migration, data files. They use the in-memory `FakeMetaStore` harness `server/routes/meta/testing.ts` with the **real** `SecurityEngine`, `DataService` and `ConnectionManager` | no |
 | Connectors | `server/connectors/mysql/sql.test.ts` (pure SQL builder), `files/files.test.ts` (temp directory), `gsheets/gsheets.test.ts` (injected fake Google API) | Each connector in isolation | no |
 | Integration | `server/connectors/mysql/mysql.integration.test.ts`, `server/core/integration.test.ts`, `server/routes/meta/meta.integration.test.ts` | The MySQL connector against a real server including SQL-versus-reference **parity**, the whole HTTP API end to end (cookie jars per user, RBAC/RLS/CLS, attachments), the metadata API | **yes** |
@@ -61,7 +62,11 @@ What each suite creates and needs:
   needs `CREATE` and `DROP` on `appbuilder_test%`.
 - `server/routes/meta/meta.integration.test.ts` does the same with `appbuilder_test_s2_<8 hex>`, and
   `server/core/fixes.integration.test.ts` (body limits, RLS WITH CHECK, atomic deletes and imports, attachment limits, row order,
-  throttle codes, email migration) with `appbuilder_test_fx_<8 hex>`.
+  throttle codes, email migration) with `appbuilder_test_fx_<8 hex>`, and `server/core/hardening.integration.test.ts` (setup code and
+  setup lock, anonymous status, forced password change, MySQL link with and without consent, assign owner, migration v3, boot
+  retry, downgrade guard, Secure cookie) with `appbuilder_test_hd_<8 hex>`.
+- Integration tests create the app with `createApp({ ..., printSetupCode: false })` and send `app.services.setupCode.current()`
+  as `setupCode` to `/setup/database` and `/setup/admin`.
 - `server/connectors/mysql/mysql.integration.test.ts` uses the database named in the URL (`appbuilder_test`), which must exist, and
   creates and drops its own tables inside it with a random `tst<hex>_` prefix. It needs `ALL` on that database. Besides
   parity it covers DDL, indexes, transactions (a failing multi-row insert rolls everything back) and error mapping.

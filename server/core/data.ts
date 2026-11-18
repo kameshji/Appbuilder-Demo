@@ -11,7 +11,7 @@ import type { ColumnDef, TableDef } from '../../src/platform/contracts.ts'
 import type { Condition, Query, QueryValue } from '../../src/platform/http.ts'
 import { DEFAULT_ROW_CAP } from '../../src/platform/http.ts'
 import { and, applyQuery, conditionColumns, evaluateCondition } from './condition.ts'
-import { attachmentIds, cellOut, coerceIn, csvText, defaultIn, isBlank } from './values.ts'
+import { attachmentIds, cellOut, coerceIn, csvExportText, defaultIn, isBlank } from './values.ts'
 import { SYSTEM_COLUMN_NAMES } from './security.ts'
 import { errText, isUuid, rowUid } from './util.ts'
 import { DEFAULT_CONNECTION_ID } from './connections.ts'
@@ -30,6 +30,8 @@ const SYSTEM_DEFS: ColumnDef[] = [
 const OPS = new Set(['eq', 'ne', 'lt', 'le', 'gt', 'ge', 'in', 'contains', 'startsWith', 'endsWith', 'isBlank', 'notBlank'])
 const MAX_CONDITION_NODES = 2000
 const EXPORT_CAP = 1_000_000
+/** bulk deletes: at most this many row ids are written into one audit entry (the count is always complete) */
+export const AUDIT_ID_CAP = 1000
 
 export interface DataDeps {
   meta: () => MetaStore
@@ -50,12 +52,19 @@ export interface DataInternals {
   markFileModified(table: TableDef): Promise<void>
 }
 
-/** all columns of a def including the system ones (even when the stored def omits them) */
+/**
+ * all columns of a def including the system ones (even when the stored def omits them), except the system columns a
+ * linked source does not have (def.missingSystem): those are never queried or written.
+ */
 export function allColumns(def: TableDef): ColumnDef[] {
-  const out = [...def.columns]
-  for (const s of SYSTEM_DEFS) if (!out.some((c) => c.name === s.name)) out.push(s)
+  const missing = new Set(def.missingSystem ?? [])
+  const out = def.columns.filter((c) => !(missing.has(c.name) && SYSTEM_COLUMN_NAMES.has(c.name)))
+  for (const s of SYSTEM_DEFS) if (!missing.has(s.name) && !out.some((c) => c.name === s.name)) out.push(s)
   return out
 }
+
+/** does the physical table have this system column? */
+export const hasSystemColumn = (def: TableDef, name: string): boolean => !(def.missingSystem ?? []).includes(name)
 
 function findColumn(def: TableDef, name: string): ColumnDef | undefined {
   const cols = allColumns(def)
@@ -178,8 +187,14 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     try {
       await meta().audit({ userId: ctx?.user.id ?? null, action, tableId: table.id, rowId, details })
     } catch (e) {
-      deps.log('warn', `audit failed: ${errText(e)}`)
+      // never fails the request, but always visible on the console
+      deps.log('error', `audit write failed (${action}): ${errText(e)}`)
     }
+  }
+
+  /** row ids for the audit log: the list (at most AUDIT_ID_CAP) and the total count */
+  function auditIds(ids: string[]): { count: number; ids: string[]; idsTruncated?: true } {
+    return ids.length > AUDIT_ID_CAP ? { count: ids.length, ids: ids.slice(0, AUDIT_ID_CAP), idsTruncated: true } : { count: ids.length, ids }
   }
 
   /* ---------------------------------------------------------------- query */
@@ -204,7 +219,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     const requested = q.top
     const limited = requested !== undefined && requested <= cap
     const top = limited ? requested : cap + 1
-    let select = q.select?.length ? [...new Set([...q.select, 'id'])] : undefined
+    let select = q.select?.length ? [...new Set([...q.select, ...(hasSystemColumn(def, 'id') ? ['id'] : [])])] : undefined
     if (!select && ctx) {
       const visible = visibleColumns(ctx, def)
       if (visible.length < allColumns(def).length) select = visible.map((c) => c.name)
@@ -317,6 +332,8 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     /** ids of rows that are replaced by this batch: ignored by the id and unique checks */
     replacing?: Set<string>
     batch?: Batch
+    /** system imports on behalf of a user: createdBy and owner become this user id */
+    actorId?: string
   }
 
   function cannotCreate(def: TableDef): HttpError {
@@ -349,8 +366,10 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     }
     raw.createdOn = (given.createdOn as Date | undefined) ?? now
     raw.modifiedOn = (given.modifiedOn as Date | undefined) ?? now
-    raw.createdBy = ctx ? ctx.user.id : ((given.createdBy as string | undefined) ?? (given.owner as string | undefined) ?? null)
-    raw.owner = ctx ? ctx.user.id : ((given.owner as string | undefined) ?? (given.createdBy as string | undefined) ?? null)
+    const actor = ctx ? ctx.user.id : opts.actorId
+    raw.createdBy = actor ?? ((given.createdBy as string | undefined) ?? (given.owner as string | undefined) ?? null)
+    raw.owner = actor ?? ((given.owner as string | undefined) ?? (given.createdBy as string | undefined) ?? null)
+    for (const name of def.missingSystem ?? []) if (name !== 'id') delete raw[name]
     // RLS WITH CHECK: the new row must match the row filter of a role that grants create (admins: always)
     if (ctx && !evaluateCondition(ctx.rowPredicate(def, 'create'), raw)) {
       throw new HttpError(403, 'denied', `You are not allowed to add this row to "${def.displayName || def.name}": it does not match the rows your role may create.`)
@@ -449,7 +468,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
         for (const b of before) if (!after.has(b)) removed.push(b)
       }
     }
-    raw.modifiedOn = new Date()
+    if (hasSystemColumn(def, 'modifiedOn')) raw.modifiedOn = new Date()
     const connector = await writableConnector(def)
     const n = await connector.update(def, id, raw, guard && !('const' in guard) ? guard : undefined)
     if (n === 0) {
@@ -511,14 +530,14 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     if (total === 0 && ids.length === 1) throw new HttpError(404, 'not-found', 'Row not found.')
     if (total > 0) {
       await markFileModified(def)
-      await audit(ctx, 'row.delete', def, ids.length === 1 ? ids[0] : undefined, ids.length > 1 ? { count: total } : undefined)
+      await audit(ctx, 'row.delete', def, ids.length === 1 ? ids[0] : undefined, ids.length > 1 ? { ...auditIds(targets), deleted: total } : undefined)
     }
     return total
   }
 
   /* ---------------------------------------------------------------- csv */
 
-  async function importCsv(ctx: UserContext | null, table: TableDef, csv: string, mode: 'append' | 'replace'): Promise<number> {
+  async function importCsv(ctx: UserContext | null, table: TableDef, csv: string, mode: 'append' | 'replace', io: { actorId?: string } = {}): Promise<number> {
     const def = physical(table)
     checkWritableTable(def)
     if (typeof csv !== 'string') throw new HttpError(422, 'invalid', 'csv must be text.', 'csv')
@@ -572,7 +591,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     const rows: RawRow[] = []
     for (let i = 0; i < records.length; i++) {
       try {
-        rows.push(await buildRow(ctx, def, records[i], { preserve: true, conn: connector, replacing, batch }))
+        rows.push(await buildRow(ctx, def, records[i], { preserve: true, conn: connector, replacing, batch, actorId: io.actorId }))
       } catch (e) {
         if (e instanceof HttpError) throw new HttpError(e.status, e.code, `Row ${i + 1}: ${e.message} (nothing was imported)`, e.field)
         throw e
@@ -588,7 +607,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     else await write(connector)
     if (targets.length) {
       await removeAttachments(await meta().attachments.forRows(def.id, targets))
-      await audit(ctx, 'row.delete', def, undefined, { count: targets.length, import: true })
+      await audit(ctx, 'row.delete', def, undefined, { ...auditIds(targets), import: true })
     }
     if (targets.length || rows.length) await markFileModified(def)
     const n = rows.length
@@ -600,7 +619,8 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     const def = physical(table)
     const res = await doQuery(ctx, def, {}, EXPORT_CAP)
     const cols = visibleColumns(ctx, def).map((c) => c.name)
-    const data = res.rows.map((r) => cols.map((c) => csvText(r[c] ?? null)))
+    // spreadsheet formula injection: text cells starting with = + - @ tab CR get a leading ' (numbers stay numbers)
+    const data = res.rows.map((r) => cols.map((c) => csvExportText(r[c] ?? null)))
     return Papa.unparse({ fields: cols, data }, { newline: '\r\n' })
   }
 
@@ -617,7 +637,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
         throw new HttpError(403, 'denied', 'You are not allowed to make this change: the row would no longer match the rows your role may change.')
       }
     }
-    const n = await connector.update(def, rowId, { ...changes, modifiedOn: new Date() }, guard && !('const' in guard) ? guard : undefined)
+    const n = await connector.update(def, rowId, hasSystemColumn(def, 'modifiedOn') ? { ...changes, modifiedOn: new Date() } : changes, guard && !('const' in guard) ? guard : undefined)
     if (n > 0) await markFileModified(def)
     return n
   }

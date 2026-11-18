@@ -97,6 +97,37 @@ export function assertAdminRemains(users: UserDef[], roles: RoleDef[]): void {
   }
 }
 
+/** field-by-field before/after of a role for the audit log (privileges per table; only what changed) */
+export function roleDiff(before: RoleX | null, after: RoleX | null): Record<string, { before: unknown; after: unknown }> {
+  const out: Record<string, { before: unknown; after: unknown }> = {}
+  const b = (before ?? {}) as Partial<RoleX>
+  const a = (after ?? {}) as Partial<RoleX>
+  for (const k of ['name', 'description', 'isAdmin', 'isMaker', 'apps'] as const) {
+    const x = k === 'isAdmin' || k === 'isMaker' ? !!b[k] : (b[k] ?? null)
+    const y = k === 'isAdmin' || k === 'isMaker' ? !!a[k] : (a[k] ?? null)
+    if (JSON.stringify(x) !== JSON.stringify(y)) out[k] = { before: x, after: y }
+  }
+  const pb = new Map((b.privileges ?? []).map((p) => [p.table, p]))
+  const pa = new Map((a.privileges ?? []).map((p) => [p.table, p]))
+  for (const t of new Set([...pb.keys(), ...pa.keys()])) {
+    const x = pb.get(t) ?? null
+    const y = pa.get(t) ?? null
+    if (JSON.stringify(x) !== JSON.stringify(y)) out[`privileges.${t}`] = { before: x, after: y }
+  }
+  return out
+}
+
+/** before/after of the audited user fields (never the password hash) */
+function userDiff(before: UserRecord, after: UserRecord): Record<string, { before: unknown; after: unknown }> {
+  const out: Record<string, { before: unknown; after: unknown }> = {}
+  for (const k of ['name', 'email', 'status', 'roleIds'] as const) {
+    const x = k === 'status' ? (before.status ?? 'active') : before[k]
+    const y = k === 'status' ? (after.status ?? 'active') : after[k]
+    if (JSON.stringify(x) !== JSON.stringify(y)) out[k] = { before: x, after: y }
+  }
+  return out
+}
+
 const publicUser = (u: UserRecord): UserDef => {
   const { passwordHash, ...rest } = u
   return { ...rest, status: u.status ?? 'active', hasPassword: !!passwordHash }
@@ -128,7 +159,7 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
     if (b.isMaker === true) role.isMaker = true
     await s.meta.roles.upsert(role)
     s.security.invalidate()
-    await audit(s, ctx, 'role.create', { id: role.id, name, isAdmin, isMaker: !!role.isMaker })
+    await audit(s, ctx, 'role.create', { id: role.id, name, isAdmin, isMaker: !!role.isMaker, changes: roleDiff(null, role) })
     return role
   }, { auth: 'admin' })
 
@@ -162,7 +193,7 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
     assertAdminRemains(await s.meta.users.list(), roles)
     await s.meta.roles.upsert(next)
     s.security.invalidate()
-    await audit(s, ctx, 'role.update', { id: role.id, name: next.name, isAdmin: !!next.isAdmin, isMaker: !!next.isMaker, privilegesChanged: b.privileges !== undefined })
+    await audit(s, ctx, 'role.update', { id: role.id, name: next.name, isAdmin: !!next.isAdmin, isMaker: !!next.isMaker, privilegesChanged: b.privileges !== undefined, changes: roleDiff(role, next) })
     return next
   }, { auth: 'admin' })
 
@@ -181,7 +212,7 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
     }
     await s.meta.roles.remove(role.id)
     s.security.invalidate()
-    await audit(s, ctx, 'role.delete', { id: role.id, name: role.name })
+    await audit(s, ctx, 'role.delete', { id: role.id, name: role.name, changes: roleDiff(role as RoleX, null) })
     return { ok: true }
   }, { auth: 'admin' })
 
@@ -216,10 +247,14 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
     const rec: UserRecord = {
       id: s.uid('user'), name: f.name!, email: f.email!, roleIds: f.roleIds ?? [], status: f.status ?? 'active', passwordHash: null,
     }
-    if (b.password !== undefined) rec.passwordHash = await hashPassword(checkPasswordPolicy(b.password, rec.email))
+    if (b.password !== undefined) {
+      rec.passwordHash = await hashPassword(checkPasswordPolicy(b.password, rec.email))
+      // a password chosen by an administrator is temporary: the user must replace it at the first sign-in
+      rec.mustChangePassword = true
+    }
     await s.meta.users.insert(rec)
     s.security.invalidate()
-    await audit(s, ctx, 'user.create', { id: rec.id, email: rec.email, roleIds: rec.roleIds, status: rec.status })
+    await audit(s, ctx, 'user.create', { id: rec.id, email: rec.email, name: rec.name, roleIds: rec.roleIds, status: rec.status, passwordSet: !!rec.passwordHash })
     return publicUser(rec)
   }, { auth: 'admin' })
 
@@ -236,7 +271,10 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
     await s.meta.users.update(user.id, f)
     if (next.status === 'disabled' && user.status !== 'disabled') await s.meta.sessions.removeForUser(user.id)
     s.security.invalidate()
-    await audit(s, ctx, 'user.update', { id: user.id, email: next.email, roleIds: next.roleIds, status: next.status })
+    const changes = userDiff(user, next)
+    await audit(s, ctx, 'user.update', { id: user.id, email: next.email, roleIds: next.roleIds, status: next.status, changes })
+    if (changes.status) await audit(s, ctx, next.status === 'disabled' ? 'user.disable' : 'user.enable', { id: user.id, email: next.email })
+    if (changes.roleIds) await audit(s, ctx, 'user.roles', { id: user.id, email: next.email, before: changes.roleIds.before, after: changes.roleIds.after })
     return publicUser(next)
   }, { auth: 'admin' })
 
@@ -248,7 +286,7 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
     await s.meta.sessions.removeForUser(user.id)
     await s.meta.users.remove(user.id)
     s.security.invalidate()
-    await audit(s, ctx, 'user.delete', { id: user.id, email: user.email })
+    await audit(s, ctx, 'user.delete', { id: user.id, email: user.email, roleIds: user.roleIds, status: user.status ?? 'active' })
     return { ok: true }
   }, { auth: 'admin' })
 
@@ -256,9 +294,11 @@ export function registerSecurityRoutes(router: Router, s: Services): void {
     const user = await s.meta.users.get(ctx.params.id)
     if (!user) throw notFound('User not found.')
     const password = checkPasswordPolicy(bodyObj(ctx).password, user.email)
-    await s.meta.users.update(user.id, { passwordHash: await hashPassword(password) })
-    if (ctx.user?.user.id !== user.id) await s.meta.sessions.removeForUser(user.id)
-    await audit(s, ctx, 'user.password', { id: user.id })
+    const self = ctx.user?.user.id === user.id
+    // set by an administrator for someone else: temporary, the user must change it at the next sign-in
+    await s.meta.users.update(user.id, { passwordHash: await hashPassword(password), mustChangePassword: !self })
+    if (!self) await s.meta.sessions.removeForUser(user.id)
+    await audit(s, ctx, 'user.password', { id: user.id, email: user.email, reset: !self, mustChangePassword: !self })
     return { ok: true }
   }, { auth: 'admin' })
 

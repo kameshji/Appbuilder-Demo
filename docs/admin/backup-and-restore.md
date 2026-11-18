@@ -70,19 +70,21 @@ Restore into an empty database; never over a running installation you want to ke
    with the original workspace and the same database login, the server started and sign-in worked.
 5. **If the database login or address is different** from the one recorded in `server.json` (new machine, new user),
    stop the server, delete `workspace/server.json` (or change the `APPBUILDER_DB_*` variables), start the server and enter
-   the new details on the setup screen. Because the restored database already contains users, nobody becomes
-   administrator and your accounts still work. Making the setup screen reachable relies on there being no `server.json`;
-   see [Connections](connections.md#the-default-database).
+   the new details on the setup screen, on this PC, with the setup code printed in the server window. Because the
+   restored database already contains users, nobody becomes administrator and your accounts still work. Making the setup
+   screen reachable relies on there being no `server.json` (it also holds the `setupComplete` marker that keeps the setup
+   closed); see [Connections](connections.md#the-default-database).
 6. **If `.secret-key` is lost**, the server reports "The saved database password cannot be decrypted (was
-   workspace/.secret-key replaced?). Run the database setup again." Delete `server.json` and run the setup. A new key is
+   workspace/.secret-key replaced?). Run the database setup again." Delete `server.json` and run the setup (with the setup
+   code from the server window). A new key is
    created; users, roles and apps are intact, but **every other saved connection secret is unreadable** (for example the
    Google service-account key): open each such connection and enter the secret again.
 7. Copy back `workspace/files/` data files. These are not in the dump; without them tables of those connections show
    errors.
 8. Check: sign in, open an app, look at a few rows, open **Connections** and press **Test** on each.
 
-After a restore, the *Default database* connection is rebuilt from `server.json` or the environment, so any manual edits to
-it are gone.
+After a restore, the *Default database* connection is rebuilt from `server.json` or the environment (it cannot be edited in
+the portal).
 
 ## Test your backup
 

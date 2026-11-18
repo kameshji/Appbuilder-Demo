@@ -115,7 +115,9 @@ export const indexName = (kind: 'unique' | 'index', col: string): string => `${k
 /** Columns of the physical table: system columns first, then the user columns (a def that already lists them wins). */
 export function allColumns(def: TableDef): ColumnDef[] {
   const byName = new Map(def.columns.map((c) => [c.name, c]))
-  const out: ColumnDef[] = SYSTEM_COLUMNS.map((s) => {
+  // a linked table may lack system columns (def.missingSystem): they are never named in SQL
+  const missing = new Set(def.missingSystem ?? [])
+  const out: ColumnDef[] = SYSTEM_COLUMNS.filter((s) => !missing.has(s.name)).map((s) => {
     const given = byName.get(s.name)
     return { ...s, ...(given ?? {}), name: s.name, system: true, type: s.type }
   })
@@ -383,7 +385,8 @@ export interface SelectPlan {
 
 export function buildSelect(def: TableDef, q: Query): SelectPlan {
   const cols = new Cols(def)
-  const names = q.select && q.select.length ? [...new Set([...q.select, 'id'])] : cols.all().map((c) => c.name)
+  const hasId = !(def.missingSystem ?? []).includes('id')
+  const names = q.select && q.select.length ? [...new Set([...q.select, ...(hasId ? ['id'] : [])])] : cols.all().map((c) => c.name)
   const selected = names.map((n) => cols.get(n))
   const where = buildWhere(def, q.where)
   const t = tableId(def)
@@ -400,8 +403,9 @@ export function buildSelect(def: TableDef, q: Query): SelectPlan {
   // Only columns the def lists (a linked table may lack the system columns); paging always needs the id tie-breaker.
   if (!(q.orderBy ?? []).some((o) => o.col === 'id')) {
     const listed = new Set(def.columns.map((c) => c.name))
-    if (listed.has('createdOn')) order.push('`createdOn` ASC')
-    if (listed.has('id') || paged) order.push('`id` ASC')
+    const missing = new Set(def.missingSystem ?? [])
+    if (listed.has('createdOn') && !missing.has('createdOn')) order.push('`createdOn` ASC')
+    if (hasId && (listed.has('id') || paged)) order.push('`id` ASC')
   }
   let sql = `SELECT ${selected.map((c) => quoteId(c.name)).join(', ')} FROM ${t} WHERE ${where.sql}`
   if (order.length) sql += ` ORDER BY ${order.join(', ')}`

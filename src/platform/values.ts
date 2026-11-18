@@ -131,7 +131,7 @@ function parseDateTimeText(s: string): Date | null {
 /* ------------------------------------------------------------------ coercion */
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const URL_LIKE = /^([a-z][a-z0-9+.-]*:\/\/|www\.|mailto:|tel:|data:)\S+$/i
+const URL_LIKE = /^([a-z][a-z0-9+.-]*:\/\/|www\.|mailto:|tel:)\S+$/i
 const PHONE = /^[+()\-.\s\d]{3,32}(\s*(x|ext\.?)\s*\d{1,6})?$/i
 
 function bad(col: ColumnDef, msg: string): never {
@@ -198,7 +198,7 @@ export function coerceValue(col: ColumnDef, raw: FxValue | undefined): FxValue {
     case 'decimal':
       return toNumber(col, raw)
     case 'currency':
-      return Math.round(toNumber(col, raw) * 100) / 100
+      return Math.round(toNumber(col, raw) * 10000) / 10000
     case 'boolean': {
       if (typeof raw === 'boolean') return raw
       if (typeof raw === 'number') {

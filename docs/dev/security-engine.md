@@ -55,7 +55,9 @@ Let a user hold roles R1..Rn. For one table `T` the engine combines the privileg
    - skip roles with no privilege row for `T` or whose scope for `op` is `none`;
    - the role's base is `TRUE` for scope `all`, or `owner = <user id>` for scope `own`;
    - the role's filter is its `rowFilter` list converted to conditions (tokens resolved) and ANDed; no filter means `TRUE`;
-   - if the filter names a column that does not exist on the table, **that role grants nothing** (it is skipped);
+   - if the filter names a column that does not exist on the table (or one listed in `missingSystem`), **that role grants
+     nothing** (it is skipped);
+   - an `own` scope on a linked table without an `owner` column (`missingSystem` contains `owner`) grants nothing;
    - the term is `base AND filter`; if it simplifies to `TRUE`, the whole predicate is `TRUE` immediately;
    - if no role contributes a term the predicate is `{ const: false }` (no rows).
 4. **Column access** (`columnAccess(T, column)`): the maximum (`none` < `read` < `update`) over the *granting roles* of the value in that
@@ -147,9 +149,12 @@ or delete) gets 404 for every data route on that table, and the table is absent 
   called by every role, user and table change route in the same process. The per-request context is rebuilt from the cached roles
   each time, so a role edit takes effect on the next request (not on the next login). A change made behind the server's back
   (directly in the database) is seen after at most 5 seconds.
-- The session cookie identifies the user; on every request the session row and the user record (including `roleIds` and `status`)
-  are read from the database. A disabled user's session stops working immediately, a role assignment change applies to the next
-  request, and a password set by an admin removes that user's sessions.
+- The session cookie identifies the user; on every request the session row and the user record (including `roleIds`, `status`
+  and `mustChangePassword`) are read from the database. A disabled user's session stops working immediately, a role assignment
+  change applies to the next request, and a password set by an admin removes that user's sessions and sets
+  `must_change_password`: until the user changes it, the router answers every route not marked `allowPendingPasswordChange`
+  (`/auth/session`, `/auth/password`; `/auth/logout` and `/status` are `auth: 'none'`) with 403 `password_change_required`,
+  before the handler runs.
 
 ## Where the client mirrors it (user experience only)
 

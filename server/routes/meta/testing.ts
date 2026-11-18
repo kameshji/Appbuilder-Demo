@@ -165,6 +165,23 @@ export class MemoryConnector implements Connector {
       if (e) { e.columns.push({ name: col.name, type: col.type }); for (const r of e.rows) r[col.name] = null }
     }
   }
+  /** like the MySQL connector: adds the missing system columns of an external table (id filled with UUIDs) */
+  async ensureSystemColumns(source: string) {
+    const e = this.external.get(source)
+    if (!e) throw new Error(`no such table ${source}`)
+    const added: string[] = []
+    let filled = 0
+    for (const [name, type] of [['id', 'text'], ['createdOn', 'datetime'], ['modifiedOn', 'datetime'], ['createdBy', 'text'], ['owner', 'text']] as const) {
+      if (e.columns.some((c) => c.name === name)) continue
+      e.columns.push({ name, type })
+      added.push(name)
+      for (const r of e.rows) {
+        if (name === 'id') { r.id = crypto.randomUUID(); filled++ } else r[name] = name.endsWith('On') ? new Date() : null
+      }
+    }
+    this.ops.push(`ensureSystemColumns:${source}:${added.join(',')}`)
+    return { added, filled }
+  }
   async alterColumn(def: TableDef, before: ColumnDef, after: ColumnDef) { this.ops.push(`alterColumn:${def.source}.${before.name}->${after.type}`) }
   async dropColumn(def: TableDef, name: string) {
     this.ops.push(`dropColumn:${def.source}.${name}`)

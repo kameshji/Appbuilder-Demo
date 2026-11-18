@@ -158,7 +158,7 @@ export function readPkgApp(e: unknown): PkgApp {
  * Reuse tables that exist by name, create the rest on the default connection (rows only into the new ones).
  * Returns old table id -> local table id and the tables created. Rolls everything back on failure.
  */
-export async function ensurePkgTables(s: Services, list: PkgTable[]): Promise<{ map: Map<string, string>; created: TableDef[] }> {
+export async function ensurePkgTables(s: Services, list: PkgTable[], actorId?: string): Promise<{ map: Map<string, string>; created: TableDef[] }> {
   const map = new Map<string, string>()
   const existing = await s.meta.tables.list()
   const todo: PkgTable[] = []
@@ -182,7 +182,7 @@ export async function ensurePkgTables(s: Services, list: PkgTable[]): Promise<{ 
       created.push(def)
       if (p.csv) items.push({ def, rows: csvToRows(def, p.csv) })
     }
-    if (items.length) await importRowsSystem(s, items)
+    if (items.length) await importRowsSystem(s, items, actorId)
   } catch (e) {
     await rollbackTables(s, connector, created)
     throw e

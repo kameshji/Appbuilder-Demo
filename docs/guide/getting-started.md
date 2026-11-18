@@ -33,7 +33,15 @@ Run `npm start` in the Appbuilder folder, or run `scripts\start.ps1`, which also
 
 ## First run: the setup wizard
 
-The first time you open Appbuilder it asks you to set up a database and the first administrator.
+The first time you open Appbuilder it asks you to set up a database and the first administrator. Do this **on the PC where Appbuilder runs** (the setup refuses other computers).
+
+**The setup code.** When the server starts for the first time it prints a setup code in its window (the PowerShell window of `npm start` or `scripts\start.ps1`), for example:
+
+```
+  FIRST-RUN SETUP CODE:  K7QD-M2XP
+```
+
+Type it in the first field, **Setup code (shown in the server window)**. It proves that the person doing the setup is at this PC. The code changes every time the server starts, so if you restarted it, use the newest one. After the administrator is created the code is no longer needed.
 
 **Step 1: Database.** Enter the host (default `127.0.0.1`), port (`3306`), database name (`appbuilder`), user (`appbuilder`) and password. Tick "Create the database if it does not exist" if you want Appbuilder to create it.
 
@@ -45,7 +53,7 @@ If something is wrong the wizard tells you in plain words, for example that the 
 
 See [Troubleshooting](troubleshooting.md) for each message.
 
-**Step 2: Administrator.** Enter your name, email, and a password of at least 10 characters. A strength meter helps you choose.
+**Step 2: Administrator.** Enter your name, email, and a password of at least 10 characters. A strength meter helps you choose. (If you skipped step 1 because the database is configured with `APPBUILDER_DB_*` settings, this step asks for the setup code.)
 
 ![Setup wizard, administrator step](../images/setup-admin.png)
 

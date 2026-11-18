@@ -39,12 +39,13 @@ browser over at most 5,000 rows), no websockets or server push, no pagination cu
   | Status | `code` | Meaning |
   | --- | --- | --- |
   | 401 | `unauthenticated` | No valid session (also a wrong login) |
-  | 403 | `denied` | Signed in but not allowed (including a row filter a new or changed row would not match); also CSRF header missing |
+  | 403 | `denied` | Signed in but not allowed (including a row filter a new or changed row would not match); also CSRF header missing, wrong setup code, setup from another computer |
+  | 403 | `password_change_required` | The signed-in user must change the password an administrator set; only `GET /auth/session`, `POST /auth/password`, `POST /auth/logout` and `GET /status` work |
   | 404 | `not-found` | Unknown route, or the object does not exist **or the caller may not know it exists** |
   | 405 | `method_not_allowed` | Known path, wrong method |
   | 409 | `conflict` | Duplicate name or key, object in use, setup already done |
   | 413 / 415 / 422 | `invalid` | Body too large, wrong content type, validation failure (`field` names the offending input) |
-  | 429 | `rate_limited` | Throttled (8 failed attempts per email+IP for login, or per user for password changes, in 15 minutes; two separate in-memory maps) |
+  | 429 | `rate_limited` | Throttled: login 8 failures per email+IP in 15 minutes, plus a per-email backoff (from 10 failures in an hour 1 s, 2 s, 4 s ... up to 5 minutes between attempts, 50 block for the hour); password changes 8 per user in 15 minutes; 20 wrong setup codes in 15 minutes. In memory |
   | 503 | `unavailable` | The database is not configured or not reachable |
   | 500 | `storage` | Unexpected error; the message is always `Internal server error.` |
 
@@ -76,9 +77,9 @@ Every later example uses `-b $JAR` (and `-c $JAR` where the cookie changes).
 
 | Method and path | Auth | Request body | Response |
 | --- | --- | --- | --- |
-| `GET /status` | none | none | `StatusResponse`: `{ app: 'appbuilder', apiVersion: 1, backend, setup: { needsDatabase, needsAdmin }, storage: { kind: 'mysql', location } \| null, databaseError?, session: Session \| null }` |
-| `POST /setup/database` | none, but see below | `{ host, port, database, user, password, createDatabase?, ssl? }` | `{ ok: true }` |
-| `POST /setup/admin` | none, only while there are no users | `{ name, email, password }` | `Session` and sets the cookie |
+| `GET /status` | none | none | `StatusResponse`: `{ app: 'appbuilder', apiVersion: 1, backend, setup: { needsDatabase, needsAdmin, unavailable?, incompatible? }, ok, session: Session \| null }`; plus `storage: { kind: 'mysql', location } \| null` and `databaseError?` **for a signed-in administrator only** |
+| `POST /setup/database` | none + loopback + setup code, or an admin from loopback; see below | `{ host, port, database, user, password, createDatabase?, ssl?, setupCode? }` | `{ ok: true }` |
+| `POST /setup/admin` | none + loopback + setup code, only while there are no users | `{ name, email, password, setupCode? }` | `Session` and sets the cookie |
 | `POST /auth/login` | none | `{ email, password }` | `Session` and sets the cookie |
 | `POST /auth/logout` | none | none | `{ ok: true }` and clears the cookie |
 | `GET /auth/session` | user | none | `Session` |
@@ -90,7 +91,13 @@ Every later example uses `-b $JAR` (and `-c $JAR` where the cookie changes).
 
 Errors and rules:
 
-- `/setup/database`: allowed when the database is not configured, or when no user exists yet, or for an admin. Otherwise 403.
+- Both setup routes accept only connections whose TCP peer is loopback (127.0.0.0/8, `::1`, `::ffff:127.*`); others get 403
+  whatever headers they send. Without an admin session they need the one-time setup code the server prints on its console
+  (`setupCode` in the body or header `X-Appbuilder-Setup-Code`, case/space/dash-insensitive), else 403 with `field: 'setupCode'`;
+  20 wrong codes in 15 minutes give 429. The code rotates when the administrator is created.
+- `/setup/database`: allowed for an admin, or (with the code) while no administrator exists. Once `server.json` records
+  `setupComplete`, it is refused without an admin session: 403 while the database is reachable, 409 while it is not (the database
+  is then changed on disk). 409 also when the database is incompatible (schema too new), 503 when the user count cannot be read.
   `port` defaults to 3306 and must be 1..65535, `database` must match `^[A-Za-z0-9_$]{1,64}$`. `ssl` is accepted by the server but is
   not declared in the `SetupDatabaseRequest` type. The connection is tested, the metadata tables are created or upgraded
   (`ab_*`, see `schema.md`), and `workspace/server.json` is written with the password sealed. A failure is 422 or 503 with a
@@ -292,6 +299,7 @@ curl -sS -b $JAR "$BASE/apps/app_1a2b3c/package?data=1"
 | `POST /tables/from-csv` | maker | `{ displayName, csv }` (plus optional `connectionId`) | `TableDef` |
 | `PATCH /tables/:id` | maker | `{ displayName?, description?, primaryColumn? }` | `TableDef` |
 | `DELETE /tables/:id?dropSource=1` | maker | none | `{ ok: true }` |
+| `POST /tables/:id/assign-owner` | admin | `{ userId? }` (default: the caller) | `{ updated }` |
 | `POST /tables/:id/columns` | maker | `ColumnInput` (`displayName`, `type`, ...) | `TableDef` |
 | `PATCH /tables/:id/columns/:name` | maker | `Partial<ColumnDef>` | `TableDef` |
 | `DELETE /tables/:id/columns/:name` | maker | none | `TableDef` |
@@ -308,14 +316,22 @@ Rules that clients and a gateway must reproduce:
 - Column edits: the name cannot change (only `displayName`); changing the type checks that existing values convert; a change to
   `autonumber` needs an empty table; `file`/`image` columns cannot be converted; adding a `unique` or `required` column to a table
   with more than one row is refused unless valid; deleting a column that is the target of a `lookup` elsewhere is refused (409).
-- `DELETE /tables/:id` also removes the table's role privileges, solution links and file links; `dropSource=1` also drops the
-  physical table or sheet.
+- `DELETE /tables/:id` also removes the table's role privileges, solution links and file links. By default the physical table
+  stays. `dropSource=1` also drops it, and is refused (422) unless Appbuilder created it (`TableDef.managed`, or a data-file
+  table): linked tables are never dropped.
+- `DELETE /tables/:id/columns/:name` on a linked table (not `managed`) only removes the column from the definition (no
+  `ALTER TABLE`); on other tables it drops the physical column.
+- `POST /tables/:id/assign-owner` sets `owner` on every row whose owner is blank (rows of a linked table that existed before);
+  422 for read-only tables and tables without an `owner` column, 404 for an unknown user.
+- Rows created by `POST /tables/from-csv`, `POST /data/:table/import` and app/solution imports with data get the importing user as
+  `owner` and `createdBy`.
 - `POST /tables/from-csv` accepts bodies up to 25 MB (`maxBodyMB: 25`); the rows are stored in CSV order and read back in that order.
 
 ```bash
 curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"displayName":"Tickets","columns":[{"displayName":"Title","type":"text","required":true},{"displayName":"Status","type":"choice","choices":["Open","Closed"]}]}' $BASE/tables
 curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"displayName":"Priority","type":"number"}' $BASE/tables/tbl_1a2b3c/columns
-curl -sS -b $JAR -H "$H" -X DELETE "$BASE/tables/tbl_1a2b3c?dropSource=1"
+curl -sS -b $JAR -H "$H" -X DELETE "$BASE/tables/tbl_1a2b3c"              # keeps the physical table
+curl -sS -b $JAR -H "$H" -X DELETE "$BASE/tables/tbl_1a2b3c?dropSource=1"  # also drops it (tables Appbuilder created only)
 ```
 
 ## Connections
@@ -328,15 +344,22 @@ curl -sS -b $JAR -H "$H" -X DELETE "$BASE/tables/tbl_1a2b3c?dropSource=1"
 | `POST /connections/:id/test` | maker | none | `{ ok, message }` |
 | `POST /connections/:id/default` | admin | none | `ConnectionRef` |
 | `GET /connections/:id/source-tables` | maker | none | `{ items: SourceTableInfo[] }` |
-| `POST /connections/:id/link` | maker | `{ source, displayName?, name? }` | `TableDef` |
+| `POST /connections/:id/link` | maker | `{ source, displayName?, name?, readOnly?, ensureIdColumn? }` | `TableDef` |
 
 - `connector` is one of `mysql`, `files`, `gsheets`. The `files` connection is built in and unique. The two built-in connections are
   `conn_default` (MySQL, the metadata database) and `conn_files` (data files, scope `device`).
 - Secrets (database password, service-account key) are write-only: on `PATCH`, omitted keeps the stored secret, `''` clears it. They
   are stored AES-256-GCM sealed in `ab_connections.secret_sealed` and are never returned.
-- Delete is refused (409) for the default connection and while tables or data files use it.
+- Delete is refused (409) for the default connection and while tables or data files use it. `PATCH` on `conn_default` is refused
+  (400): it is rewritten from `server.json` / `APPBUILDER_DB_*` at every start.
 - `default` is only valid for a `mysql` connection that tests successfully.
-- `link` registers an existing physical table or sheet as a table (read from `source-tables`).
+- `link` registers an existing physical table or sheet as a table (read from `source-tables`). 409 when that source is already
+  linked through this connection or another one to the same store (same MySQL host, port and database, `localhost` = `127.0.0.1` =
+  `::1`; same spreadsheet id); the message names the existing table. `source-tables` leaves such tables out.
+- A source lacking system columns (`id`, `createdOn`, `modifiedOn`, `createdBy`, `owner`): with `ensureIdColumn: true` they are
+  added (MySQL: `ALTER TABLE ... ADD COLUMN`, a missing `id` is filled with UUIDv7 and gets a unique key; Google Sheets: the `id`
+  column is added and filled, the others as headers) and the table is writable; without it the table is `readOnly` with
+  `missingSystem` listing what is missing, and no query names those columns.
 
 ```bash
 curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"name":"Warehouse","connector":"mysql","settings":{"host":"db.internal","port":"3306","database":"wh","user":"app"},"secret":"pw"}' $BASE/connections
@@ -429,6 +452,5 @@ The client detects the backend by calling `GET /api/v1/status` (800 ms timeout);
 - `http.ts` comments `POST /api/v1/data/:table/from-csv (on /api/v1/tables/from-csv)`; the real route is `POST /api/v1/tables/from-csv`.
 - `http.ts` comments "connections (admins; makers may read)". In code `test`, `source-tables` and `link` are maker-level and the rest
   are admin-only; there is no `GET /connections` (connections come from `GET /workspace`).
-- `SetupDatabaseRequest` lacks the `ssl` flag that `/setup/database` accepts.
 - The doc comment for `Query.top` says "default and maximum: DEFAULT_ROW_CAP"; the code returns the cap when `top` is larger, as
   described above.

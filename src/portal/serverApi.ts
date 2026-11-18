@@ -16,7 +16,7 @@ export interface TablePreview {
 async function toError(res: Response): Promise<PlatformError> {
   let body: Partial<ApiError> | null = null
   try { body = (await res.json()) as Partial<ApiError> } catch { /* not JSON */ }
-  const code = body?.error?.code ?? (res.status === 401 ? 'unauthenticated' : res.status === 403 ? 'denied' : res.status === 404 ? 'not-found' : res.status === 503 ? 'unavailable' : 'storage')
+  const code = body?.error?.code ?? (res.status === 401 ? 'unauthenticated' : res.status === 403 ? 'denied' : res.status === 404 ? 'not-found' : res.status === 405 ? 'method_not_allowed' : res.status === 409 ? 'conflict' : res.status === 429 ? 'rate_limited' : res.status === 503 ? 'unavailable' : 'storage')
   return new PlatformError(code, body?.error?.message ?? `The server answered ${res.status}`)
 }
 
@@ -47,4 +47,21 @@ export function normalizeSecurityPreview(body: unknown): TablePreview[] {
     hiddenColumns: Array.isArray(p.hiddenColumns) ? p.hiddenColumns.map(String) : [],
     readOnlyColumns: Array.isArray(p.readOnlyColumns) ? p.readOnlyColumns.map(String) : [],
   }))
+}
+
+/** Admin only: rows of a table that have no owner (linked rows that existed before) get one (default: the caller). */
+export async function assignOwnerToUnownedRows(tableId: string, userId?: string): Promise<number> {
+  let res: Response
+  try {
+    res = await fetch(`${API_BASE}/tables/${encodeURIComponent(tableId)}/assign-owner`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { [CSRF_HEADER]: '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify(userId ? { userId } : {}),
+    })
+  } catch {
+    throw new PlatformError('unavailable', 'The server cannot be reached.')
+  }
+  if (!res.ok) throw await toError(res)
+  return Number(((await res.json()) as { updated?: number }).updated ?? 0)
 }

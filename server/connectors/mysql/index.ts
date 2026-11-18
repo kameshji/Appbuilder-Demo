@@ -8,9 +8,21 @@ import type {
 } from '../../core/contracts.ts'
 import { createSqlDb, formatServerVersion, poolOptions } from './db.ts'
 import {
-  buildCountById, buildDeletes, buildInserts, buildSelect, buildUpdate, checkSource, columnSql, columnTypesByName,
+  SYSTEM_COLUMNS, buildCountById, buildDeletes, buildInserts, buildSelect, buildUpdate, checkSource, columnSql, columnTypesByName,
   createTableSql, fromDb, indexName, physicalName, quoteId, sqlType, tableId, wantedIndex,
 } from './sql.ts'
+import { rowUid } from '../../core/util.ts'
+
+/** MySQL connectors only: adds the missing system columns to a linked table (with the maker's consent) */
+export interface MySqlSystemColumns {
+  ensureSystemColumns(source: string): Promise<{ added: string[]; filled: number }>
+}
+
+export function ensureMySqlSystemColumns(connector: Connector, source: string): Promise<{ added: string[]; filled: number }> {
+  const c = connector as Connector & Partial<MySqlSystemColumns>
+  if (typeof c.ensureSystemColumns !== 'function') throw new Error('Adding system columns is only available on MySQL connections.')
+  return c.ensureSystemColumns(source)
+}
 
 export { createSqlDb }
 
@@ -229,7 +241,7 @@ export const createMySqlConnector: ConnectorFactory = (conn: ConnectionRecord, e
     }
   }
 
-  const connector: Connector = {
+  const connector: Connector & MySqlSystemColumns = {
     kind: 'mysql',
     capabilities: { ddl: true, write: true, pushdown: true, transactions: true },
 
@@ -318,6 +330,42 @@ export const createMySqlConnector: ConnectorFactory = (conn: ConnectionRecord, e
     async dropTable(def) {
       const t = tableId(def)
       await run((d) => d.exec(`DROP TABLE IF EXISTS ${t}`))
+    },
+
+    /**
+     * Consent given at link time: ALTER TABLE ... ADD COLUMN for every missing system column. A missing id is added as
+     * CHAR(36) NULL, filled row by row with UUIDv7 values (UPDATE ... WHERE id IS NULL LIMIT 1, portable to MySQL 5.7 and
+     * MariaDB), then made NOT NULL with a unique key. createdOn / modifiedOn of existing rows become the current UTC time.
+     */
+    async ensureSystemColumns(source: string) {
+      checkSource(source)
+      const def: TableDef = { id: '', name: source, displayName: source, primaryColumn: 'id', columns: [], createdOn: '', modifiedOn: '', source }
+      const t = tableId(def)
+      return run(async (d) => {
+        const present = new Set((await columnRows(d, source)).map((r) => String(r.name)))
+        if (!present.size) throw new HttpError(404, 'not-found', `Table "${source}" does not exist in the database`)
+        const added: string[] = []
+        let filled = 0
+        if (!present.has('id')) {
+          await d.exec(`ALTER TABLE ${t} ADD COLUMN \`id\` CHAR(36) NULL`)
+          added.push('id')
+          for (;;) {
+            const r = await d.exec(`UPDATE ${t} SET \`id\` = ? WHERE \`id\` IS NULL LIMIT 1`, [rowUid()])
+            if (!r.affectedRows) break
+            filled++
+          }
+          await d.exec(`ALTER TABLE ${t} MODIFY COLUMN \`id\` CHAR(36) NOT NULL`)
+          await d.exec(`ALTER TABLE ${t} ADD UNIQUE KEY ${quoteId(indexName('unique', 'id'))} (\`id\`)`)
+        }
+        for (const col of SYSTEM_COLUMNS) {
+          if (col.name === 'id' || present.has(col.name)) continue
+          await d.exec(`ALTER TABLE ${t} ADD COLUMN ${columnSql(col)}`)
+          await syncIndexes(d, def, col)
+          if (col.name === 'createdOn' || col.name === 'modifiedOn') await d.exec(`UPDATE ${t} SET ${quoteId(col.name)} = UTC_TIMESTAMP(3) WHERE ${quoteId(col.name)} IS NULL`)
+          added.push(col.name)
+        }
+        return { added, filled }
+      })
     },
 
     ...dataOps(undefined),

@@ -301,10 +301,26 @@ order: auth, data, attachments, metadata routes. The router prefers the route wi
 registered wins. Requests starting with `/api` go to the router; everything else is served from `dist/` with an SPA fallback.
 
 Configuration is by environment variable: `PORT` (5174), `APPBUILDER_HOST` (127.0.0.1), `APPBUILDER_WORKSPACE` (`./workspace`),
-`APPBUILDER_SECRET_KEY` (64 hex characters; otherwise `workspace/.secret-key` is created), and the optional database bootstrap
-`APPBUILDER_DB_HOST/PORT/NAME/USER/PASSWORD/SSL` which skips the setup screen (and creates the database if needed). Without
-them the setup wizard calls `POST /setup/database` and the settings are saved to `workspace/server.json` with the password sealed.
-A database that cannot be reached at boot is reported through `GET /status` (`databaseError`), never thrown.
+`APPBUILDER_SECRET_KEY` (64 hex characters; otherwise `workspace/.secret-key` is created), `APPBUILDER_ALLOWED_HOSTS` (extra
+Host/Origin names), `APPBUILDER_SECURE_COOKIE=1` and `APPBUILDER_TRUST_PROXY=1` (Secure session cookie), and the optional
+database bootstrap `APPBUILDER_DB_HOST/PORT/NAME/USER/PASSWORD/SSL` which skips the setup screen (and creates the database if
+needed). Without them the setup wizard calls `POST /setup/database` and the settings are saved to `workspace/server.json` with
+the password sealed; `setupComplete: true` is added once the first administrator exists (`ServerConfig` in `contracts.ts`,
+`loadConfig` in `config.ts`).
+
+Boot (`services.boot()`, `app.ts`):
+
+- A configured database that cannot be reached is never thrown: `state.unavailable` and `state.databaseError` are set,
+  `GET /status` reports `setup.unavailable`, and a background timer retries with backoff (1 s doubling to 30 s,
+  `retryDelayMs`) until it connects; `services.retrying()` exposes the pending retry (tests). Retrying stops for permanent
+  problems (undecryptable password, incompatible schema) and on `close()`.
+- A database whose schema version is above `SCHEMA_VERSION` is not used at all (`state.incompatible`, `SchemaTooNewError`):
+  data routes answer 503, setup is refused, no retry.
+- The schema migration summary is logged and audited (`schema.migrate`).
+- While setup is needed (no `setupComplete`, or a database without users) a one-time setup code is generated
+  (`services.setupCode`) and printed in a banner; `/setup/*` require it and are `loopbackOnly` routes (the router checks
+  `req.socket.remoteAddress`). It rotates when the administrator is created. Tests pass `printSetupCode: false` to
+  `createApp` and read `services.setupCode.current()`.
 
 At boot the server also sweeps attachments that no row references (older than an hour, at most 5000 per run) and purges expired
 sessions hourly. `SIGINT`/`SIGTERM` flush the files connector, close connections and the database pool, then exit.

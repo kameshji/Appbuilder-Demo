@@ -5,6 +5,9 @@
 import type { ColumnDef, ConnectionRef, ConnectorKind, TableDef } from '../../../src/platform/contracts.ts'
 import type { ConnectionRecord, Connector, Router, Services, SourceColumn } from '../../core/contracts.ts'
 import { ensureIdColumn } from '../../connectors/gsheets/index.ts'
+import { ensureMySqlSystemColumns } from '../../connectors/mysql/index.ts'
+import { HttpError } from '../../core/contracts.ts'
+import { DEFAULT_CONNECTION_ID } from '../../core/connections.ts'
 import {
   IDENT, MAX_IDENT, SYSTEM_NAMES, SYSTEM_TABLE_NAMES, bodyObj, conflict, invalid, isObj, notFound, optString, redact, reqString, systemColumns, toIdentifier,
   uniqueIdentifier,
@@ -86,6 +89,40 @@ function sourceColumnsToDef(cols: SourceColumn[]): ColumnDef[] {
   return out
 }
 
+const LOOPBACK_NAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
+
+/**
+ * What physical store a connection points at: two connections with the same key reach the same tables (e.g. a second
+ * MySQL connection to the default database). null when it cannot be told.
+ */
+export function physicalKey(rec: Pick<ConnectionRecord, 'connector' | 'settings'>): string | null {
+  const st = rec.settings ?? {}
+  if (rec.connector === 'mysql') {
+    const host = String(st.host ?? '').trim().toLowerCase()
+    if (!host || !st.database) return null
+    return `mysql|${LOOPBACK_NAMES.has(host) ? 'loopback' : host}|${Number(st.port) || 3306}|${String(st.database).trim().toLowerCase()}`
+  }
+  if (rec.connector === 'gsheets') return st.spreadsheetId ? `gsheets|${String(st.spreadsheetId).trim()}` : null
+  return null
+}
+
+/** ids of the connections that reach the same physical store as `rec` (always includes rec.id) */
+async function sameStore(s: Services, rec: ConnectionRecord): Promise<Set<string>> {
+  const key = physicalKey(rec)
+  const out = new Set([rec.id])
+  if (!key) return out
+  for (const c of await s.meta.connections.list()) if (physicalKey(c) === key) out.add(c.id)
+  return out
+}
+
+/** the registered table that already uses this physical source (through this or an equivalent connection) */
+async function linkedAs(s: Services, rec: ConnectionRecord, source: string, tables?: TableDef[]): Promise<TableDef | undefined> {
+  const conns = await sameStore(s, rec)
+  const defaultId = await s.connections.defaultId().catch(() => DEFAULT_CONNECTION_ID)
+  const low = source.toLowerCase()
+  return (tables ?? (await s.meta.tables.list())).find((t) => conns.has(t.connectionId ?? defaultId) && (t.source ?? `t_${t.name.toLowerCase()}`).toLowerCase() === low)
+}
+
 export function registerConnectionRoutes(router: Router, s: Services): void {
   router.add('POST', '/api/v1/connections', async (ctx) => {
     const b = bodyObj(ctx)
@@ -116,6 +153,10 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
   router.add('PATCH', '/api/v1/connections/:id', async (ctx) => {
     const rec = await s.meta.connections.get(ctx.params.id)
     if (!rec) throw notFound('Connection not found.')
+    if (rec.id === DEFAULT_CONNECTION_ID) {
+      // rewritten from server.json / APPBUILDER_DB_* at every start: an edit here would silently revert
+      throw new HttpError(400, 'invalid', 'The default database connection is managed by the setup (workspace/server.json or the APPBUILDER_DB_* settings) and cannot be edited here. To use another database, change the server configuration and restart.')
+    }
     const b = bodyObj(ctx)
     const next: ConnectionRecord = { ...rec }
     let retest = false
@@ -195,7 +236,11 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
 
   router.add('GET', '/api/v1/connections/:id/source-tables', async (ctx) => {
     const { record, connector } = await resolveConnection(s, ctx.params.id)
-    const registered = new Set((await s.meta.tables.list()).filter((t) => t.connectionId === record.id).map((t) => (t.source ?? '').toLowerCase()))
+    // makers and administrators only (route level). There is no per-connection permission: a maker can list every table
+    // the connection's database user can see. Tables already linked (through this or an equivalent connection) are left out.
+    const conns = await sameStore(s, record)
+    const defaultId = await s.connections.defaultId().catch(() => DEFAULT_CONNECTION_ID)
+    const registered = new Set((await s.meta.tables.list()).filter((t) => conns.has(t.connectionId ?? defaultId)).map((t) => (t.source ?? `t_${t.name.toLowerCase()}`).toLowerCase()))
     let list
     try {
       list = await connector.listSourceTables()
@@ -214,7 +259,10 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
     const { record, connector } = await resolveConnection(s, ctx.params.id)
     if (record.connector === 'files') throw invalid('File tables are created by adding a data file.')
     const all = await s.meta.tables.list()
-    if (all.some((t) => t.connectionId === record.id && (t.source ?? '').toLowerCase() === source.toLowerCase())) throw conflict(`"${source}" is already linked.`)
+    // one registration per physical table: a second one would come with fresh default privileges (a way around the
+    // privileges of the first) and two definitions of the same rows
+    const existing = await linkedAs(s, record, source, all)
+    if (existing) throw conflict(`"${source}" is already linked as the table "${existing.displayName}" (${existing.name}). Use that table, or delete it first.`)
     let found: { source: string; columns: SourceColumn[]; hasId?: boolean } | undefined
     try {
       found = (await connector.listSourceTables()).find((t) => t.source === source) as typeof found
@@ -222,21 +270,15 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
       throw friendly(e, 'Could not read the source tables')
     }
     if (!found) throw notFound(`"${source}" was not found in "${record.name}".`)
-    const hasId = found.hasId ?? found.columns.some((c) => c.name === 'id')
+    const present = new Set(found.columns.map((c) => c.name))
+    const hasId = found.hasId ?? present.has('id')
     const consent = b.ensureIdColumn === true
     const wantReadOnly = b.readOnly === true
     let readOnly = wantReadOnly || !connector.capabilities.write
-    const fixes: ColumnDef[] = []
-    const present = new Set(found.columns.map((c) => c.name))
-    if (!readOnly) {
-      if (!hasId) {
-        // gsheets can fill ids with the user's consent; a MySQL table without an id cannot be made writable here
-        if (consent && record.connector === 'gsheets') fixes.push(...systemColumns().filter((c) => !present.has(c.name)))
-        else readOnly = true
-      } else if (consent && connector.capabilities.ddl) {
-        fixes.push(...systemColumns().filter((c) => !present.has(c.name)))
-      }
-    }
+    // system columns the source lacks; with consent (and a writable link) they are added, otherwise the link is read-only
+    let missing = systemColumns().map((c) => c.name).filter((n) => n === 'id' ? !hasId : !present.has(n))
+    const canFix = consent && !readOnly && missing.length > 0 && (record.connector === 'gsheets' || (record.connector === 'mysql' && connector.capabilities.ddl))
+    if (missing.length && !canFix) readOnly = true
     const displayName = optString(b, 'displayName', { max: 200 })?.trim() || source
     let name = optString(b, 'name')
     if (name === '') name = undefined
@@ -244,27 +286,32 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
       if (!IDENT.test(name) || name.length > MAX_IDENT - 8) throw invalid(`Table name "${name}" is not a valid identifier.`, 'name')
       if (all.some((t) => t.name.toLowerCase() === name!.toLowerCase())) throw conflict(`A table named "${name}" already exists.`)
     } else name = uniqueIdentifier(toIdentifier(displayName, 'Table'), all.map((t) => t.name))
-    const columns = sourceColumnsToDef(found.columns)
-    const userCols = columns.filter((c) => !c.system)
     const now = s.now()
+    if (canFix) {
+      try {
+        if (record.connector === 'mysql') await ensureMySqlSystemColumns(connector as Connector, source)
+        else {
+          if (!hasId) await ensureIdColumn(connector as Connector, source)
+          const withId: TableDef = { id: '', name: source, displayName: source, primaryColumn: 'id', columns: [], createdOn: now, modifiedOn: now, source }
+          for (const f of systemColumns()) if (f.name !== 'id' && missing.includes(f.name)) await connector.addColumn(withId, f)
+        }
+      } catch (e) {
+        throw friendly(e, 'Could not add the system columns')
+      }
+      for (const n of missing) present.add(n)
+      missing = []
+    }
+    const columns = sourceColumnsToDef([...found.columns, ...systemColumns().filter((c) => present.has(c.name) && !found!.columns.some((x) => x.name === c.name)).map((c) => ({ name: c.name, type: c.type }))])
+    const userCols = columns.filter((c) => !c.system)
     const def: TableDef = {
       id: s.uid('tbl'), name, displayName, primaryColumn: (userCols.find((c) => c.type === 'text') ?? userCols[0])?.name ?? 'id',
       columns: [...columns], createdOn: now, modifiedOn: now, connectionId: record.id, source,
     }
     if (readOnly) def.readOnly = true
-    if (fixes.length) {
-      try {
-        if (record.connector === 'gsheets' && !hasId) await ensureIdColumn(connector as Connector, source)
-        const withSys: TableDef = { ...def, columns: [...systemColumns().filter((c) => c.name === 'id' || present.has(c.name) || fixes.some((f) => f.name === c.name)), ...userCols] }
-        for (const f of fixes) if (!(f.name === 'id' && record.connector === 'gsheets' && !hasId)) await connector.addColumn(withSys, f)
-        def.columns = withSys.columns
-      } catch (e) {
-        throw friendly(e, 'Could not add the system columns')
-      }
-    }
+    if (missing.length) def.missingSystem = missing
     await s.meta.tables.upsert(def)
     await grantDefaults(s, [def])
-    await audit(s, ctx, 'table.link', { name, connection: record.id, source, readOnly }, def.id)
+    await audit(s, ctx, 'table.link', { name, connection: record.id, source, readOnly, ...(canFix ? { addedSystemColumns: true } : {}), ...(missing.length ? { missingSystem: missing } : {}) }, def.id)
     return def
   }, { auth: 'maker' })
 }

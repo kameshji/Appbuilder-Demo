@@ -17,11 +17,11 @@ When you finish the first-run setup, Appbuilder creates a connection called **De
 database you entered. It holds the system tables (`ab_users`, `ab_roles`, `ab_audit`, and so on) and, by default, the
 tables makers create.
 
-**Do not change the Default database by editing it on the Connections page.** The system tables stay where the setup put
-them (the server reads that location from `workspace/server.json` or from the `APPBUILDER_DB_*` variables), and the
-Default database connection is reset to that location every time the server starts. We confirmed this: after editing the
-default connection to another database, tables created afterwards appeared in that other database, but the next
-restart put the connection back and the tables seemed to vanish (their data was still in the other database).
+**The Default database connection is read-only in the portal** (it shows *Managed by setup* instead of an edit button,
+and `PATCH /api/v1/connections/conn_default` answers 400). The system tables stay where the setup put them (the server
+reads that location from `workspace/server.json` or from the `APPBUILDER_DB_*` variables), and this connection is
+rewritten from there at every start; earlier versions let you edit it, and the edit silently reverted at the next
+restart (tables created in between seemed to vanish).
 
 To move Appbuilder to a **different database or server**:
 
@@ -29,10 +29,11 @@ To move Appbuilder to a **different database or server**:
 2. Copy the data: dump the old database and restore it into the new one (the system tables and your tables live in the
    same database, so one dump holds both).
 3. Point Appbuilder at the new database: if you use `APPBUILDER_DB_*`, change them; otherwise delete
-   `workspace/server.json`. Start the server and the setup screen appears. Enter the new login. Because the new database
-   already has users, you go straight to the sign-in page; nobody becomes administrator.
-   (Confirmed on a test install. The setup screen is only reachable while no database is configured; there is no portal
-   page to change the setup database later.)
+   `workspace/server.json`. Start the server and the setup screen appears on this PC; it needs the setup code printed in
+   the server window. Enter the new login. Because the new database already has users, you go straight to the sign-in
+   page; nobody becomes administrator.
+   (The setup screen is only reachable while no administrator is recorded; there is no portal page to change the setup
+   database later. While `server.json` says `setupComplete`, the setup stays closed even if the database is unreachable.)
 
 You can also make **another MySQL connection the default for new tables** (below); that does not move the system tables.
 
@@ -64,6 +65,14 @@ copying the rows**. **Connections** > open the connection > **Browse** shows wha
   is refused: "Tables starting with "ab_" are reserved for the platform".)
 - The list shows every other table in that database, including those already used by Appbuilder as normal tables, and
   any table belonging to another program in the same database.
+- **Already linked tables are not offered and cannot be linked again** (409 "... is already linked as the table "X"").
+  This also holds through a second connection to the same database (same host, port and database name; `localhost`,
+  `127.0.0.1` and `::1` count as the same host) or the same spreadsheet. Before, re-linking created a second registration
+  with fresh default privileges, a way around the privileges of the first.
+- **Who can browse.** Makers and administrators, for every connection (there is no per-connection permission). The list
+  shows every table the connection's database user can see: **a database shared with other applications exposes their
+  tables' names, columns and, once linked, rows to every maker.** Give Appbuilder its own database, or a database user
+  that can see only what makers may see.
 - Appbuilder needs to address each row by a column named **`id`**. For a table to be **writable** through Appbuilder it
   must have these five columns (this is what Appbuilder's own tables have):
 
@@ -75,13 +84,21 @@ copying the rows**. **Connections** > open the connection > **Browse** shows wha
 
   New rows get a generated UUID in `id`; a table whose `id` is a number (for example `INT AUTO_INCREMENT`) cannot be
   written to.
-- **Read-only fallback.** A table **without an `id` column** is linked **read-only**: apps can read it, nothing can
-  change it, and Appbuilder does not alter it. You can also link any table read-only on purpose through the API.
-- **Tables that have `id` but lack the other four columns do not work properly when linked from the portal.** We
-  reproduced this: the table links as writable, but then every read and write fails with "A column does not exist in the
-  database table". (The API can add the missing columns with consent, see below; the portal does not send that
-  consent yet.) The safe route is to prepare the table yourself, once, and then link it. Example for a table
-  `crm_clients` with its own key `client_no`, run as the database administrator (tested on MariaDB 10.11):
+- **The consent box.** When a table lacks any of the five, the Browse dialog shows "This table lacks Appbuilder's system
+  columns (...). I agree that Appbuilder adds them ...". **Link** works either way:
+  - **Ticked** (`ensureIdColumn: true` in `POST /api/v1/connections/:id/link`): for MySQL, Appbuilder runs
+    `ALTER TABLE ... ADD COLUMN` for each missing column (owner with an index). A missing `id` is added as
+    `CHAR(36) NULL`, every existing row gets a UUIDv7, then it becomes `NOT NULL` with a unique key `uq_id`; existing rows
+    get the current UTC time in `createdOn` / `modifiedOn`. Your own primary key stays. For a Google Sheet tab the `id`
+    column is added and filled, and the other columns are added as headers. The table is then linked **writable**. Needs
+    `ALTER` rights. Back up first.
+  - **Not ticked**: the table is linked **read-only** and nothing is changed in it. Queries read only the columns the
+    table really has (before, a table that had `id` but lacked the other four linked writable and then every read failed
+    with "A column does not exist in the database table"). A table without `id` reads with an empty `id`, so apps cannot
+    tell its rows apart.
+
+  To prepare a table yourself instead (for example with your DBA), the equivalent SQL for a table `crm_clients` with its
+  own key `client_no` is:
 
   ```sql
   ALTER TABLE crm_clients
@@ -90,26 +107,22 @@ copying the rows**. **Connections** > open the connection > **Browse** shows wha
     ADD COLUMN modifiedOn DATETIME(3) NULL,
     ADD COLUMN createdBy VARCHAR(64) NULL,
     ADD COLUMN owner VARCHAR(64) NULL;
-  UPDATE crm_clients SET id = UUID(), createdOn = NOW(3), modifiedOn = NOW(3);
-  ALTER TABLE crm_clients MODIFY id CHAR(36) NOT NULL, ADD UNIQUE KEY uq_crm_clients_id (id), ADD KEY ix_owner (owner);
+  UPDATE crm_clients SET id = UUID(), createdOn = UTC_TIMESTAMP(3), modifiedOn = UTC_TIMESTAMP(3);
+  ALTER TABLE crm_clients MODIFY id CHAR(36) NOT NULL, ADD UNIQUE KEY uq_id (id), ADD KEY ix_owner (owner);
   ```
 
-  Back up first. Rows that existed before have no `owner`, so roles limited to *Own* rows will not see them
+  Rows that existed before have no `owner`, so roles limited to *Own* rows will not see them; an administrator can give
+  them one with **Assign to me** in the table's settings
   ([Users and roles](users-and-roles.md#table-privileges)).
-- **About the consent box.** For a table without `id`, the Browse dialog asks you to tick "I agree that Appbuilder adds
-  an id column ..." before **Link** is enabled. In this version the tick is **not sent to the server**, so for MySQL the
-  table is linked read-only and nothing is added; for a Google Sheet tab also read-only (see below). The server's API
-  does support the consent (`ensureIdColumn: true` in `POST /api/v1/connections/:id/link`): for a MySQL table that
-  already has `id` it adds the missing system columns, and for a Google Sheet tab it adds the `id` column and fills it.
-  It never adds an `id` to a MySQL table that has none.
 - **What a linked table gets.** Default privileges follow the rule in
   [Users and roles](users-and-roles.md#what-new-tables-get-automatically): Maker and full-access roles get full access,
   Viewer-like roles get read-only, all other roles get nothing. Give other roles privileges yourself.
-- **Removing a linked table.** Unlinking only removes Appbuilder's registration. But the portal's **Delete table** button
-  *drops the underlying database table and its rows* (it passes `dropSource` by default), also for a linked, writable
-  table. That is the same permanent deletion as for a table created in Appbuilder. A table linked read-only cannot be
-  deleted from the portal.
-- Makers who link tables can also **add or remove columns** on them (`ALTER TABLE`), for writable tables.
+- **Removing a linked table.** **Delete table** removes only Appbuilder's registration; the table and its rows stay in
+  the database. The server refuses `dropSource` for a linked table (422). For tables Appbuilder created, the delete
+  dialog offers *Also delete the table in the database*, unticked by default.
+- **Columns of linked tables.** Removing a column only **unmaps** it: Appbuilder stops showing and writing it, the
+  column and its values stay in your table. Makers can still **add** columns and **change column types** on writable
+  linked tables, which runs `ALTER TABLE` on your table.
 
 ## Data files
 
@@ -212,7 +225,9 @@ automatically. The Data files connection has nothing to test.
 | The server has too many connections right now. | Retry; check `max_connections`. |
 | The database is not reachable | At run time: the database stopped or the network dropped. Apps get this until it is back (the pool reconnects). |
 | The database user is not allowed to do this | The connection's user lacks the privilege for the action (for example `INSERT` on a read-only account). |
-| A column does not exist in the database table | The table changed outside Appbuilder, or it lacks the five system columns (above). |
+| A column does not exist in the database table | The table changed outside Appbuilder (a column was dropped or renamed there). |
+| "T" is already linked as the table "X" (N). | That physical table is registered already, possibly through another connection to the same database. Use table X. |
+| The default database connection is managed by the setup ... | The Default database cannot be edited in the portal; see [The default database](#the-default-database). |
 | The saved database password cannot be decrypted (was workspace/.secret-key replaced?). Run the database setup again. | Shown at start: the key file does not match `server.json`. Restore the right `.secret-key`, or run the setup again. |
 | Tables starting with "ab_" are reserved for the platform | You tried to use an Appbuilder system table. |
 | "T" was not found in "C". / "T" is already linked. | The table is gone from the source, or already registered. |
@@ -236,8 +251,8 @@ automatically. The Data files connection has nothing to test.
 
 ## Not supported yet
 
-- Changing the system database from the portal.
+- Changing the system database from the portal (an administrator can call `POST /api/v1/setup/database` from this PC).
 - Other databases (PostgreSQL, SQL Server, Oracle) or other spreadsheet services.
 - OAuth sign-in to Google; only service accounts work.
 - Syncing data files between PCs.
-- Per-connection access control beyond "administrators manage, makers link and test".
+- Per-connection access control beyond "administrators manage, makers browse, link and test".

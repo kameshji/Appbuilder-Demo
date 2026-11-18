@@ -244,9 +244,9 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
   /**
    * Row-level check for the current user: OR over roles that grant `op` of
    * (scope all ? true : owner == me) AND every rowFilter condition. A filter on a column the table no
-   * longer has makes that role grant nothing (server semantics).
+   * longer has makes that role grant nothing (server semantics). op 'create' is the WITH CHECK for new rows.
    */
-  function rowTester(def: TableDef, op: 'read' | 'update' | 'delete'): (row: Row) => boolean {
+  function rowTester(def: TableDef, op: 'read' | 'update' | 'delete' | 'create'): (row: Row) => boolean {
     const u = currentUser()
     if (!u) return () => false
     const rs = rolesOf(u)
@@ -256,10 +256,12 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     const grants: { scope: AccessScope; filter: NonNullable<TablePrivilege['rowFilter']> }[] = []
     for (const r of rs) {
       const p = r.privileges.find((x) => x.table === def.id)
-      if (!p || p[op] === 'none') continue
+      // create (WITH CHECK for new rows): any role with create, no owner term (a new row is owned by its creator)
+      const scope: AccessScope = op === 'create' ? (p?.create ? 'all' : 'none') : (p?.[op] ?? 'none')
+      if (!p || scope === 'none') continue
       const filter = p.rowFilter ?? []
       if (filter.some((c) => !colNames.has(c.column))) continue
-      grants.push({ scope: p[op], filter })
+      grants.push({ scope, filter })
     }
     return (row) =>
       grants.some((g) => (g.scope === 'all' || row.owner === me.id) && g.filter.every((c) => matchesCondition(c, row, me)))
@@ -1076,6 +1078,10 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     }
     const next = applyChanges(rt.def, rt.rows, existing!, changes, ctx())
     if (next === existing) return secure ? stripColumns(existing!, hiddenColumns(g)) : existing!
+    // RLS WITH CHECK (server parity): the changed row must still match the update predicate; leaving read visibility is fine
+    if (secure && !rowTester(rt.def, 'update')(next)) {
+      fail('denied', `${currentUser()?.name ?? 'This user'} is not allowed to make this change: the row would no longer match the rows their role may change.`)
+    }
     rt.rows = rt.rows.map((r) => (r === existing ? next : r))
     markFileModified(rt.def)
     setState({}, true)
@@ -1287,6 +1293,10 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
         assertWritable(rt, g, writtenKeys(rt.def, values))
       }
       const row = buildRow(rt.def, rt.rows, rt.counters, values, ctx())
+      // RLS WITH CHECK (server parity): the new row must match the row filter of a role that grants create
+      if (secure && !rowTester(rt.def, 'create')(row)) {
+        fail('denied', `${currentUser()?.name ?? 'This user'} is not allowed to add this row to "${rt.def.displayName}": it does not match the rows their role may create.`)
+      }
       rt.rows = [...rt.rows, row]
       markFileModified(rt.def)
       setState({}, true)

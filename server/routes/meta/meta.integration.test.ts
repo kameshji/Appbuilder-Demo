@@ -65,7 +65,7 @@ describe.skipIf(!URL_ENV)('metadata API integration (MariaDB/MySQL)', () => {
 
   beforeAll(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ab-s2-'))
-    app = await createApp({ env: {}, config: { workspaceDir: tmp } })
+    app = await createApp({ env: {}, config: { workspaceDir: tmp }, printSetupCode: false })
     server = http.createServer((req, res) => {
       app.handle(req, res).then((h) => {
         if (!h) res.writeHead(404).end()
@@ -74,9 +74,9 @@ describe.skipIf(!URL_ENV)('metadata API integration (MariaDB/MySQL)', () => {
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
     A = new Client(base)
-    const db = await A.post('/setup/database', { host: conn!.host, port: conn!.port, database: dbName, user: conn!.user, password: conn!.password, createDatabase: true })
+    const db = await A.post('/setup/database', { setupCode: app.services.setupCode.current() ?? '', host: conn!.host, port: conn!.port, database: dbName, user: conn!.user, password: conn!.password, createDatabase: true })
     expect(db.status).toBe(200)
-    const ad = await A.post('/setup/admin', { name: 'Ada', email: 'ada@example.com', password: 'admin-password-1' })
+    const ad = await A.post('/setup/admin', { setupCode: app.services.setupCode.current() ?? '', name: 'Ada', email: 'ada@example.com', password: 'admin-password-1' })
     expect(ad.status).toBe(200)
   }, 60000)
 

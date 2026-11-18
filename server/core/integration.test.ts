@@ -95,7 +95,7 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (MariaDB/MySQL)' : 
 
   beforeAll(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ab-s1-'))
-    app = await createApp({ env: {}, config: { workspaceDir: tmp } })
+    app = await createApp({ env: {}, config: { workspaceDir: tmp }, printSetupCode: false })
     server = http.createServer((req, res) => {
       app.handle(req, res).then((h) => {
         if (!h) res.writeHead(404).end()
@@ -127,17 +127,20 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (MariaDB/MySQL)' : 
   })
 
   it('setup database: wrong password is reported without the password; then succeeds and seals it', async () => {
-    const bad = await A.post('/api/v1/setup/database', { host: conn!.host, port: conn!.port, database: dbName, user: conn!.user, password: 'wrong-pass-xyz', createDatabase: true })
+    const bad = await A.post('/api/v1/setup/database', { setupCode: app.services.setupCode.current() ?? '', host: conn!.host, port: conn!.port, database: dbName, user: conn!.user, password: 'wrong-pass-xyz', createDatabase: true })
     expect(bad.status).toBe(422)
     expect(JSON.stringify(bad.data)).not.toContain('wrong-pass-xyz')
-    const ok = await A.post('/api/v1/setup/database', { host: conn!.host, port: conn!.port, database: dbName, user: conn!.user, password: conn!.password, createDatabase: true })
+    const ok = await A.post('/api/v1/setup/database', { setupCode: app.services.setupCode.current() ?? '', host: conn!.host, port: conn!.port, database: dbName, user: conn!.user, password: conn!.password, createDatabase: true })
     expect(ok.status).toBe(200)
     const sj = fs.readFileSync(path.join(tmp, 'server.json'), 'utf8')
     expect(sj).not.toContain(conn!.password)
     expect(JSON.parse(sj).defaultConnection).toMatchObject({ database: dbName, user: conn!.user })
     const st = await A.get('/api/v1/status')
     expect(st.data.setup).toEqual({ needsDatabase: false, needsAdmin: true })
-    expect(st.data.storage.location).toContain(dbName)
+    // anonymous status: state flags only, never the database host / port / name
+    expect(st.data.ok).toBe(false)
+    expect(st.data.storage).toBeUndefined()
+    expect(JSON.stringify(st.data)).not.toContain(dbName)
     // migrate() is idempotent
     await app.services.meta.migrate()
     await app.services.meta.migrate()
@@ -147,18 +150,18 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (MariaDB/MySQL)' : 
   }, 60000)
 
   it('setup admin creates the first administrator and signs in; only once', async () => {
-    const weak = await A.post('/api/v1/setup/admin', { name: 'Ada', email: 'ada@example.com', password: 'short' })
+    const weak = await A.post('/api/v1/setup/admin', { setupCode: app.services.setupCode.current() ?? '', name: 'Ada', email: 'ada@example.com', password: 'short' })
     expect(weak.status).toBe(422)
-    const r = await A.post('/api/v1/setup/admin', { name: 'Ada', email: 'Ada@Example.com', password: 'admin-password-1' })
+    const r = await A.post('/api/v1/setup/admin', { setupCode: app.services.setupCode.current() ?? '', name: 'Ada', email: 'Ada@Example.com', password: 'admin-password-1' })
     expect(r.status).toBe(200)
     expect(r.data.user).toMatchObject({ name: 'Ada', email: 'ada@example.com', roleIds: ['role_admin'], hasPassword: true })
     expect(r.data.user.passwordHash).toBeUndefined()
     expect(r.data.privileges).toMatchObject({ isAdmin: true, isMaker: true })
     expect(A.cookie).toMatch(/^ab_session=/)
-    const again = await new Client(base).post('/api/v1/setup/admin', { name: 'Eve', email: 'eve@example.com', password: 'another-password' })
+    const again = await new Client(base).post('/api/v1/setup/admin', { setupCode: app.services.setupCode.current() ?? '', name: 'Eve', email: 'eve@example.com', password: 'another-password' })
     expect(again.status).toBe(409)
     // a non-admin cannot re-point the database now
-    const re = await new Client(base).post('/api/v1/setup/database', { host: conn!.host, port: conn!.port, database: dbName, user: conn!.user, password: 'x' })
+    const re = await new Client(base).post('/api/v1/setup/database', { setupCode: app.services.setupCode.current() ?? '', host: conn!.host, port: conn!.port, database: dbName, user: conn!.user, password: 'x' })
     expect(re.status).toBe(403)
     const roles = await app.services.meta.roles.list()
     expect(roles.map((x) => x.id).sort()).toEqual(expect.arrayContaining(['role_admin', 'role_maker', 'role_viewer']))
@@ -167,6 +170,9 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (MariaDB/MySQL)' : 
     const st = await A.get('/api/v1/status')
     expect(st.data.session.user.email).toBe('ada@example.com')
     expect(st.data.setup).toEqual({ needsDatabase: false, needsAdmin: false })
+    // an administrator's status carries the details
+    expect(st.data.storage.location).toContain(dbName)
+    expect((await new Client(base).get('/api/v1/status')).data.storage).toBeUndefined()
   }, 60000)
 
   it('login errors are uniform; disabled users cannot sign in', async () => {
@@ -384,7 +390,7 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (MariaDB/MySQL)' : 
   }, 60000)
 
   it('restart: bootstraps from server.json', async () => {
-    const app2 = await createApp({ env: {}, config: { workspaceDir: tmp } })
+    const app2 = await createApp({ env: {}, config: { workspaceDir: tmp }, printSetupCode: false })
     try {
       expect(app2.services.ready()).toBe(true)
       const users = await app2.services.meta.users.count()

@@ -10,7 +10,7 @@ HeidiSQL and so on) and an account that can `SELECT` from the Appbuilder databas
 | --- | --- |
 | `id` | Increasing number. |
 | `at` | When it happened, **in UTC**, to the millisecond. Convert to local time yourself. |
-| `user_id` | The id of the acting user (`ab_users.id`), or empty for events with no signed-in user (failed or throttled sign-in, setup). |
+| `user_id` | The id of the acting user (`ab_users.id`), or empty for events with no signed-in user (failed or throttled sign-in, setup, schema migration). |
 | `action` | What happened, see below. |
 | `table_id` | The table concerned, when there is one (for example `t_orders`). |
 | `row_id` | The row concerned, for single-row actions. |
@@ -20,12 +20,12 @@ HeidiSQL and so on) and an account that can `SELECT` from the Appbuilder databas
 
 | Area | Actions |
 | --- | --- |
-| Sign-in | `auth.login`, `auth.login_failed` (details: the email entered), `auth.login_throttled` (email), `auth.logout`, `auth.password_changed`, `auth.password_failed` (wrong current password during a change) |
-| First-run | `setup.database`, `setup.admin` |
-| Users | `user.create`, `user.update` (including disable/enable and role changes), `user.delete`, `user.password` (an administrator set a password) |
-| Roles | `role.create`, `role.update`, `role.delete` |
-| Rows | `row.insert`, `row.update`, `row.delete` |
-| Tables and columns | `table.create`, `table.update`, `table.delete`, `table.import`, `table.link`, `table.move`, `column.add`, `column.update`, `column.remove` |
+| Sign-in | `auth.login` (details `mustChangePassword: true` when the user must change an admin-set password), `auth.login_failed` (details: the email entered), `auth.login_throttled` (email; `perEmail: true, waitSeconds` for the per-account brake), `auth.logout`, `auth.password_changed` (`forced: true` when it was a required change), `auth.password_failed` (wrong current password during a change) |
+| First-run and upgrades | `setup.database`, `setup.admin`, `setup.code_rejected` (a wrong or missing setup code), `schema.migrate` (details `{ from, to, steps }`, written when the schema step changed something) |
+| Users | `user.create` (details: id, email, name, roleIds, status, `passwordSet`), `user.update` (details include `changes`: before/after of name, email, status and roleIds), `user.disable` / `user.enable`, `user.roles` (before/after role ids), `user.delete` (with the roles and status the user had), `user.password` (an administrator set a password: `reset: true` and `mustChangePassword: true` when it was someone else's) |
+| Roles | `role.create`, `role.update`, `role.delete`; each with `changes`: before/after of name, description, isAdmin, isMaker, apps, and per table `privileges.<tableId>` (the whole privilege before and after, `null` when there was none) |
+| Rows | `row.insert`, `row.update`, `row.delete` (several rows: details `{ count, deleted, ids }`, the ids of at most 1,000 rows, then `idsTruncated: true`; also for the rows a *replace* import deleted, with `import: true`) |
+| Tables and columns | `table.create`, `table.update`, `table.delete`, `table.import`, `table.link` (with `missingSystem` or `addedSystemColumns` when it applies), `table.move`, `table.assign_owner` (owner, rows), `column.add`, `column.update`, `column.remove` (`unmappedOnly: true` on linked tables) |
 | Data files | `file.add`, `file.replace`, `file.delete` |
 | Attachments | `attachment.upload`, `attachment.delete` |
 | Connections | `connection.create`, `connection.update`, `connection.default`, `connection.delete` |
@@ -42,12 +42,11 @@ Be aware of these gaps before you rely on the log for an investigation:
   downloaded a file.
 - **Row updates record only which columns changed, not the old or new values.** You can see that someone changed `Status`
   on row X, not what it was before.
-- **Bulk deletes record how many rows, not which.**
-- **Role changes record only that privileges changed**, not the before and after.
+- **Bulk deletes list at most 1,000 row ids** per entry (the count is always complete). The deleted values are not kept.
 - **Opening an app, changing app contents, and saving app edits** are not listed above except create, duplicate, delete
   and import. Check app history in another way if that matters.
-- **A failure to write an audit entry does not stop the action.** The server logs a warning in its console and carries on,
-  so a database problem can leave gaps.
+- **A failure to write an audit entry does not stop the action.** The server logs an `ERROR audit write failed (<action>):
+  <reason>` line in its console and carries on, so a database problem can leave gaps; watch the console for these lines.
 - **The log is not tamper-proof.** It is an ordinary table. Anyone with write access to the database (including the
   Appbuilder database user itself, and so any Maker-level flaw that reached SQL) can edit or delete entries. If you need
   a trustworthy trail, copy it regularly to a system the database users cannot write to.

@@ -8,7 +8,8 @@
  *  - Session: HttpOnly cookie `ab_session` (SameSite=Strict, Path=/). No tokens in URLs or localStorage.
  *  - Every non-GET request must send header `X-Appbuilder: 1` (CSRF guard) and a same-origin Origin.
  *  - Errors: HTTP status + body ApiError. 401 unauthenticated, 403 denied, 404 not-found, 409 conflict,
- *    422 invalid, 503 unavailable (database not configured / unreachable), 500 storage.
+ *    422 invalid, 503 unavailable (database not configured / unreachable), 500 storage, 429 rate_limited (login / password
+ *    throttle), 405 method_not_allowed; 403 may also carry password_change_required (the account must set a new password).
  *  - Dates in JSON: ISO-8601 strings. Typed row values travel as JSON (numbers, booleans, strings, null);
  *    'date' columns as "YYYY-MM-DD", 'datetime' as full ISO. The client converts to Date for formulas.
  *  - Row objects always include `id`; the client adds `__id` itself.
@@ -26,7 +27,7 @@ export const SESSION_COOKIE = 'ab_session'
 export const DEFAULT_ROW_CAP = 5000
 
 export interface ApiError {
-  error: { code: 'unauthenticated' | 'denied' | 'not-found' | 'conflict' | 'invalid' | 'unavailable' | 'storage'; message: string; field?: string }
+  error: { code: 'unauthenticated' | 'denied' | 'not-found' | 'conflict' | 'invalid' | 'unavailable' | 'storage' | 'rate_limited' | 'method_not_allowed' | 'password_change_required'; message: string; field?: string }
 }
 
 /* ------------------------------------------------------------------ query AST (also used by connectors) */
@@ -56,22 +57,37 @@ export interface Query {
 
 /* ------------------------------------------------------------------ endpoints (method path -> request -> response) */
 
-/** GET /api/v1/status  (no auth) */
+/**
+ * GET /api/v1/status  (no auth). Anonymous callers get state flags only; `storage` and `databaseError` (which name the
+ * database host, port and name) are present only for a signed-in administrator.
+ */
 export interface StatusResponse {
   app: 'appbuilder'
   apiVersion: 1
   backend: 'node' | 'php'
-  setup: { needsDatabase: boolean; needsAdmin: boolean }
-  /** default store description for the UI, e.g. "MySQL 8.4.3 at 127.0.0.1:3306/appbuilder" */
-  storage: { kind: 'mysql'; location: string } | null
+  /**
+   * needsDatabase: the setup screen may configure the database (first run). unavailable: a configured database cannot be
+   * reached (the server retries in the background). incompatible: the database schema is newer than this server.
+   */
+  setup: { needsDatabase: boolean; needsAdmin: boolean; unavailable?: boolean; incompatible?: boolean }
+  /** true when the workspace is usable (database reachable and compatible, administrator exists) */
+  ok: boolean
+  /** admins only: default store description for the UI, e.g. "MySQL 8.4.3 at 127.0.0.1:3306/appbuilder" */
+  storage?: { kind: 'mysql'; location: string } | null
+  /** admins only */
   databaseError?: string
   session: Session | null
 }
 
-/** POST /api/v1/setup/database  (allowed while setup.needsAdmin is true, or for an admin) */
-export interface SetupDatabaseRequest { host: string; port: number; database: string; user: string; password: string; createDatabase?: boolean; ssl?: boolean | 'true' }
+/**
+ * POST /api/v1/setup/database and /setup/admin: only from this computer (loopback TCP peer) and only with the one-time
+ * setup code the server prints to its console (`setupCode` in the body or the X-Appbuilder-Setup-Code header).
+ * /setup/database: first run only (before an administrator exists), afterwards an administrator's session.
+ */
+export const SETUP_CODE_HEADER = 'X-Appbuilder-Setup-Code'
+export interface SetupDatabaseRequest { host: string; port: number; database: string; user: string; password: string; createDatabase?: boolean; ssl?: boolean | 'true'; setupCode?: string }
 /** POST /api/v1/setup/admin  (only while there are no users) -> sets the session cookie */
-export interface SetupAdminRequest { name: string; email: string; password: string }
+export interface SetupAdminRequest { name: string; email: string; password: string; setupCode?: string }
 
 /** POST /api/v1/auth/login -> Session (+ cookie). POST /api/v1/auth/logout -> {ok:true}. GET /api/v1/auth/session -> Session | 401 */
 export interface LoginRequest { email: string; password: string }
@@ -111,7 +127,9 @@ export interface AppCreateRequest { name: string; width: number; height: number;
 /* tables (makers)
  *   POST   /api/v1/tables                         { displayName, name?, description?, columns?, connectionId? } -> TableDef
  *   PATCH  /api/v1/tables/:id                     { displayName?, description?, primaryColumn? } -> TableDef
- *   DELETE /api/v1/tables/:id?dropSource=1        -> { ok: true }   (dropSource: also drop the physical table/sheet)
+ *   DELETE /api/v1/tables/:id?dropSource=1        -> { ok: true }   (dropSource: also drop the physical table; only for tables the
+ *                                                 platform created (not linked ones), never the default)
+ *   POST   /api/v1/tables/:id/assign-owner        { userId? } -> { updated: number }   (admin: rows without owner get one)
  *   POST   /api/v1/tables/:id/columns             ColumnInput -> TableDef
  *   PATCH  /api/v1/tables/:id/columns/:name       Partial<ColumnDef> -> TableDef
  *   DELETE /api/v1/tables/:id/columns/:name       -> TableDef
@@ -157,7 +175,9 @@ export interface AttachmentResolveResponse { items: AttachmentRef[] }
  *   POST   /api/v1/connections/:id/test              -> { ok, message }
  *   POST   /api/v1/connections/:id/default           -> ConnectionRef
  *   GET    /api/v1/connections/:id/source-tables     -> { items: SourceTableInfo[] }
- *   POST   /api/v1/connections/:id/link              { source, displayName?, name? } -> TableDef
+ *   POST   /api/v1/connections/:id/link              { source, displayName?, name?, readOnly?, ensureIdColumn? } -> TableDef
+ *          (409 when the source is already linked; ensureIdColumn = consent to add the missing system columns)
+ *   PATCH  on the default connection (conn_default) is refused with 400: it is managed by setup / server.json / env
  */
 export interface ConnectionCreateRequest { name: string; connector: ConnectorKind; settings?: Record<string, string>; secret?: string }
 export interface SourceTableInfo { source: string; columns: { name: string; type: ColumnType }[]; rowCount?: number }

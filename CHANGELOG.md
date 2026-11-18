@@ -12,6 +12,22 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 ### Changed
 - Build specifications moved to `docs/internal/specs`. They are kept for history and are no longer maintained.
 
+### Security
+- First-run setup accepts only requests from this computer (checked on the connection, not on headers) and needs a one-time setup code printed in the server window; once an administrator exists the setup stays closed, also while the database is unreachable.
+- `GET /status` no longer shows the database host, port and name to anyone but a signed-in administrator.
+- The page's Content-Security-Policy no longer allows inline script (hashes of the app's own inline script instead).
+- Linking a table that is already linked is refused, also through a second connection to the same database. Deleting a table keeps the table in the database unless you tick "Also delete the table in the database", which is offered only for tables Appbuilder created; linked tables are never dropped and removing their columns only unmaps them.
+- CSV exports prefix cells that a spreadsheet would run as formulas with `'`.
+- Passwords set by an administrator must be changed at the next sign-in (schema version 3). Sign-in also has a per-account backoff.
+- The session cookie can be marked `Secure` (`APPBUILDER_SECURE_COOKIE=1`, or `APPBUILDER_TRUST_PROXY=1` behind an HTTPS proxy).
+- The audit log records the row ids of bulk deletes, before/after of role and user changes, and schema migrations; failed audit writes are reported as errors.
+
+### Fixed
+- The consent to add system columns when linking a table is now sent; MySQL tables get the missing columns (including `id`, filled with UUIDs). Without consent such tables link read-only and can be read (before, a table with `id` but without the other system columns failed on every query).
+- The Default database connection can no longer be edited in the portal (edits silently reverted at the next start).
+- Imported rows (CSV, new table from CSV, packages with data) belong to the importing user; administrators can give rows without owner an owner.
+- The server retries an unreachable database in the background at start instead of staying unconfigured, and refuses to use a database upgraded by a newer version.
+
 ## [0.3.0] - 2026-11-17
 
 Phase 3: a shared database, connections to other data sources, and access rules enforced on the server.

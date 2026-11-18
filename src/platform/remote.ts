@@ -95,7 +95,8 @@ function rowFromJson(def: TableDef, raw: Record<string, QueryValue>): Row {
 }
 
 const codeForStatus = (s: number): PlatformError['code'] =>
-  s === 401 ? 'unauthenticated' : s === 403 ? 'denied' : s === 404 ? 'not-found' : s === 409 ? 'conflict' : s === 422 || s === 400 ? 'invalid' : s === 503 ? 'unavailable' : 'storage'
+  s === 401 ? 'unauthenticated' : s === 403 ? 'denied' : s === 404 ? 'not-found' : s === 405 ? 'method_not_allowed' : s === 409 ? 'conflict'
+    : s === 422 || s === 400 ? 'invalid' : s === 429 ? 'rate_limited' : s === 503 ? 'unavailable' : 'storage'
 
 const sortApps = (as: AppMeta[]) => [...as].sort((a, b) => b.modifiedOn.localeCompare(a.modifiedOn) || a.name.localeCompare(b.name))
 const sortTables = (ts: TableDef[]) => [...ts].sort((a, b) => a.displayName.localeCompare(b.displayName))
@@ -419,8 +420,26 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     for (const e of stale) if (e.loaded && isCurrent(e)) load(e, { quiet: true, force: true }).catch(() => {})
   }
 
+  /** signed in with a password an administrator set: only the change-password screen until it is changed */
+  function applyPendingSession(session: Session) {
+    entries = new Map()
+    setState({
+      session, currentUserId: session.user.id, apps: [], tables: [], roles: [], users: [], connections: [], solutions: [], dataFiles: [],
+      setup: { needsDatabase: false, needsAdmin: false }, loading: [], truncated: [],
+    }, true)
+  }
+
   async function loadWorkspace(reset: boolean) {
-    const ws = await call<WorkspaceResponse>('GET', '/workspace')
+    let ws: WorkspaceResponse
+    try {
+      ws = await call<WorkspaceResponse>('GET', '/workspace')
+    } catch (e) {
+      if (e instanceof PlatformError && e.code === 'password_change_required') {
+        applyPendingSession(await call<Session>('GET', '/auth/session'))
+        return
+      }
+      throw e
+    }
     applyWorkspace(ws, reset)
   }
   const refresh = () => loadWorkspace(false)
@@ -435,10 +454,11 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
 
   async function refreshStatus(): Promise<StatusResponse> {
     const st = await call<StatusResponse>('GET', '/status')
-    setState({
-      setup: { needsDatabase: !!st.setup?.needsDatabase, needsAdmin: !!st.setup?.needsAdmin },
-      storage: st.storage ?? { kind: 'mysql', location: st.databaseError ?? 'No database configured' },
-    })
+    const setup: WorkspaceState['setup'] = { needsDatabase: !!st.setup?.needsDatabase, needsAdmin: !!st.setup?.needsAdmin }
+    if (st.setup?.unavailable) setup.unavailable = true
+    if (st.setup?.incompatible) setup.incompatible = true
+    // storage details come only to administrators (and with the workspace); keep what we have otherwise
+    setState({ setup, ...(st.storage ? { storage: st.storage } : {}) })
     return st
   }
 
@@ -446,7 +466,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     if (!initPromise) {
       initPromise = (async () => {
         const st = await refreshStatus()
-        if (st.session && !st.setup.needsDatabase) {
+        if (st.session?.user.mustChangePassword) applyPendingSession(st.session)
+        else if (st.session && !st.setup.needsDatabase) {
           try {
             await loadWorkspace(true)
           } catch (e) {
@@ -689,9 +710,12 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       await refresh()
       return state.tables.find((t) => t.id === def.id) ?? def
     },
-    /** `opts.dropSource` (default true): also drop the physical table/sheet; pass false to only unregister it */
+    /**
+     * `opts.dropSource` (default false): also drop the physical table. The server allows it only for tables Appbuilder
+     * created (`def.managed` or a data-file table); a linked table is only unregistered.
+     */
     async remove(id: string, opts?: { dropSource?: boolean }) {
-      await call('DELETE', `/tables/${enc(id)}`, { query: { dropSource: opts?.dropSource === false ? undefined : '1' } })
+      await call('DELETE', `/tables/${enc(id)}`, { query: { dropSource: opts?.dropSource === true ? '1' : undefined } })
       await refresh()
     },
     async addColumn(tableId, col) {
@@ -782,7 +806,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
   const authApi: PlatformApi['auth'] = {
     async login(email, password) {
       const session = await call<Session>('POST', '/auth/login', { json: { email, password } })
-      await loadWorkspace(true)
+      if (session.user.mustChangePassword) applyPendingSession(session)
+      else await loadWorkspace(true)
       return state.session ?? session
     },
     async logout() {
@@ -794,6 +819,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     },
     async changePassword(current, next) {
       await call('POST', '/auth/password', { json: { current, next } })
+      // a forced change is done: now the workspace may load
+      if (state.session?.user.mustChangePassword) await loadWorkspace(true)
     },
     async setupDatabase(input) {
       await call('POST', '/setup/database', { json: input })

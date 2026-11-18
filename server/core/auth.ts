@@ -10,7 +10,7 @@ import type { RoleDef, Session, TablePrivilege, UserDef } from '../../src/platfo
 import type {
   ChangePasswordRequest, LoginRequest, SetupAdminRequest, SetupDatabaseRequest, StatusResponse,
 } from '../../src/platform/http.ts'
-import { SESSION_COOKIE } from '../../src/platform/http.ts'
+import { SESSION_COOKIE, SETUP_CODE_HEADER } from '../../src/platform/http.ts'
 import { migrateLegacyWorkspace, seedSample } from '../routes/meta/index.ts'
 import type { ApiRouter } from './router.ts'
 import { cookieValue } from './router.ts'
@@ -22,6 +22,14 @@ import { errText, log } from './util.ts'
 const TOUCH_INTERVAL_MS = 10 * 60 * 1000
 const THROTTLE_LIMIT = 8
 const THROTTLE_WINDOW_MS = 15 * 60 * 1000
+/** per email, from any address: failures counted over an hour */
+export const EMAIL_WINDOW_MS = 60 * 60 * 1000
+/** from this many failures (per email, any address) every further attempt waits 2^(n - start) seconds after the last failure */
+export const EMAIL_DELAY_FROM = 10
+/** the longest such delay */
+export const EMAIL_MAX_DELAY_MS = 5 * 60 * 1000
+/** this many failures within the hour block the email completely until the oldest ages out */
+export const EMAIL_LIMIT = 50
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export const ROLE_ADMIN = 'role_admin'
@@ -54,6 +62,40 @@ export class LoginThrottle {
   }
   blocked(key: string, now = Date.now()): boolean {
     return this.recent(key, now).length >= this.limit
+  }
+  fail(key: string, now = Date.now()): void {
+    const list = this.recent(key, now)
+    list.push(now)
+    this.failures.set(key, list)
+    if (this.failures.size > 10000) for (const k of [...this.failures.keys()].slice(0, 5000)) this.failures.delete(k)
+  }
+  reset(key: string): void {
+    this.failures.delete(key)
+  }
+}
+
+/**
+ * Second sign-in brake, per email from every address together (the per email+address throttle cannot see guesses spread
+ * over many addresses, or a local program that rotates emails). Up to EMAIL_DELAY_FROM failures in an hour cost nothing;
+ * after that each attempt must wait 1 s, 2 s, 4 s ... (at most 5 minutes) after the previous failure; EMAIL_LIMIT failures
+ * in an hour block the email. Attempts during a wait are refused without checking the password (so a correct password
+ * is refused too: anyone can slow down a known account's sign-in, which is the price of the brake). In memory.
+ */
+export class EmailBackoff {
+  private failures = new Map<string, number[]>()
+  private recent(key: string, now: number): number[] {
+    const list = (this.failures.get(key) ?? []).filter((t) => now - t < EMAIL_WINDOW_MS)
+    if (list.length) this.failures.set(key, list)
+    else this.failures.delete(key)
+    return list
+  }
+  /** milliseconds until the next attempt is allowed (0 = now) */
+  waitMs(key: string, now = Date.now()): number {
+    const list = this.recent(key, now)
+    if (list.length >= EMAIL_LIMIT) return Math.max(1, list[0] + EMAIL_WINDOW_MS - now)
+    if (list.length < EMAIL_DELAY_FROM) return 0
+    const delay = Math.min(EMAIL_MAX_DELAY_MS, 1000 * 2 ** (list.length - EMAIL_DELAY_FROM))
+    return Math.max(0, list[list.length - 1] + delay - now)
   }
   fail(key: string, now = Date.now()): void {
     const list = this.recent(key, now)
@@ -129,8 +171,16 @@ async function audit(services: CoreServices, userId: string | null, action: stri
   try {
     await services.meta.audit({ userId, action, details })
   } catch (e) {
-    log('warn', `audit failed: ${errText(e)}`)
+    // never fails the request, but always visible on the console
+    log('error', `audit write failed (${action}): ${errText(e)}`)
   }
+}
+
+/** the setup code from the body (setupCode) or the X-Appbuilder-Setup-Code header */
+function givenSetupCode(ctx: Ctx, b: Record<string, unknown>): unknown {
+  if (typeof b.setupCode === 'string') return b.setupCode
+  const h = ctx.req.headers[SETUP_CODE_HEADER.toLowerCase()]
+  return Array.isArray(h) ? h[0] : h
 }
 
 let setupLock: Promise<unknown> = Promise.resolve()
@@ -164,43 +214,80 @@ export async function ensureBuiltinRoles(services: CoreServices): Promise<void> 
 
 export function authRoutes(router: ApiRouter, services: CoreServices): void {
   const throttle = new LoginThrottle()
+  const emailBackoff = new EmailBackoff()
   /** separate map: login spraying can neither evict nor fill the password-change throttle (and vice versa) */
   const passwordThrottle = new LoginThrottle()
 
   router.add('GET', '/status', async (ctx): Promise<StatusResponse> => {
-    let needsAdmin = true
+    let needsAdmin = !services.setupComplete()
     let databaseError = services.state.databaseError
+    let reachable = services.ready()
     if (services.ready()) {
       try {
         needsAdmin = (await services.meta.users.count()) === 0
       } catch (e) {
         databaseError = 'The database is not reachable.'
+        reachable = false
         log('warn', `status: ${errText(e)}`)
       }
     }
+    const incompatible = !!services.state.incompatible
+    // first run only: once an administrator exists the database is never re-pointed from the (anonymous) setup screen
+    const needsDatabase = !services.ready() && !incompatible && !services.setupComplete()
+    const unavailable = !reachable && !incompatible && services.databaseConfigured()
+    const setup: StatusResponse['setup'] = { needsDatabase, needsAdmin: needsAdmin && !incompatible && (services.ready() || !services.setupComplete()) }
+    if (unavailable) setup.unavailable = true
+    if (incompatible) setup.incompatible = true
     const out: StatusResponse = {
       app: 'appbuilder',
       apiVersion: 1,
       backend: 'node',
-      setup: { needsDatabase: !services.ready(), needsAdmin },
-      storage: services.state.location ? { kind: 'mysql', location: services.state.location } : null,
+      setup,
+      ok: reachable && !needsAdmin && !incompatible,
       session: ctx.user ? ctx.user.session() : null,
     }
-    if (databaseError) out.databaseError = databaseError
+    // details (host, port, database name, server version, error text naming them) for administrators only
+    if (ctx.user?.privileges.isAdmin && !ctx.user.user.mustChangePassword) {
+      out.storage = services.state.location ? { kind: 'mysql', location: services.state.location } : null
+      if (databaseError) out.databaseError = databaseError
+    }
     return out
   }, { auth: 'none' })
 
-  router.add('POST', '/setup/database', async (ctx) => {
-    if (services.ready()) {
-      let users = 0
-      try {
-        users = await services.meta.users.count()
-      } catch {
-        users = 0 // current database unreachable: allow re-configuration
-      }
-      if (users > 0 && !ctx.user?.privileges.isAdmin) throw new HttpError(403, 'denied', 'Only an administrator can change the database.')
+  /** 20 wrong setup codes in 15 minutes: refuse for a while (the code is long; this only stops brute force) */
+  const setupThrottle = new LoginThrottle(20, THROTTLE_WINDOW_MS)
+  const checkSetupCode = async (ctx: Ctx, b: Record<string, unknown>) => {
+    if (setupThrottle.blocked('setup')) throw new HttpError(429, 'rate_limited', 'Too many wrong setup codes. Try again in a few minutes.')
+    if (!services.setupCode.current()) services.setupCode.issue()
+    if (!services.setupCode.matches(givenSetupCode(ctx, b))) {
+      setupThrottle.fail('setup')
+      await audit(services, null, 'setup.code_rejected', { path: ctx.path })
+      throw new HttpError(403, 'denied', 'The setup code is missing or wrong. It is shown in the window where the Appbuilder server runs.', 'setupCode')
     }
+  }
+
+  router.add('POST', '/setup/database', async (ctx) => {
     const b = obj(ctx.body) as Partial<SetupDatabaseRequest> & Record<string, unknown>
+    const admin = !!ctx.user?.privileges.isAdmin && !ctx.user.user.mustChangePassword
+    if (!admin) {
+      if (services.state.incompatible) throw new HttpError(409, 'conflict', 'The database was upgraded by a newer Appbuilder. Run that version; the database cannot be changed from here.')
+      if (services.setupComplete()) {
+        throw new HttpError(services.ready() ? 403 : 409, services.ready() ? 'denied' : 'conflict', services.ready()
+          ? 'Only an administrator can change the database.'
+          : 'Setup is complete, but the database is not reachable right now. Start the database (Appbuilder reconnects by itself), or change workspace/server.json or APPBUILDER_DB_* and restart.')
+      }
+      if (services.ready()) {
+        let users: number
+        try {
+          users = await services.meta.users.count()
+        } catch {
+          // the current database is unreachable: we cannot tell whether an administrator exists, so refuse
+          throw new HttpError(503, 'unavailable', 'The database is not reachable right now; try again when it is back.')
+        }
+        if (users > 0) throw new HttpError(403, 'denied', 'Only an administrator can change the database.')
+      }
+      await checkSetupCode(ctx, b)
+    }
     const host = text(b, 'host', 255).trim()
     const port = Number(b.port ?? 3306)
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(422, 'invalid', 'Port must be between 1 and 65535.', 'port')
@@ -210,12 +297,19 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     const ssl = b.ssl === true || b.ssl === 'true'
     await serialized(() => services.configureDatabase({ host, port, database, user, ssl }, password, { createDatabase: b.createDatabase === true, persist: true }))
     await audit(services, ctx.user?.user.id ?? null, 'setup.database', { host, port, database, user })
+    // an administrator pointed Appbuilder at an empty database: it needs a first administrator again
+    if ((await services.meta.users.count().catch(() => 1)) === 0) {
+      services.markSetupComplete(false)
+      if (admin) services.setupCode.issue()
+    }
     return { ok: true }
-  }, { auth: 'none' })
+  }, { auth: 'none', loopbackOnly: true })
 
   router.add('POST', '/setup/admin', async (ctx): Promise<Session> => {
     if (!services.ready()) throw new HttpError(503, 'unavailable', 'Configure the database first.')
     const b = obj(ctx.body) as Partial<SetupAdminRequest> & Record<string, unknown>
+    if ((await services.meta.users.count()) > 0) throw new HttpError(409, 'conflict', 'Setup is already complete. Please sign in.')
+    await checkSetupCode(ctx, b)
     const name = text(b, 'name', 255).trim()
     if (!name) throw new HttpError(422, 'invalid', 'name is required.', 'name')
     const email = checkEmail(text(b, 'email', 191))
@@ -229,7 +323,10 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
       services.security.invalidate()
       return id
     })
+    services.markSetupComplete()
+    services.setupCode.issue({ print: false }) // rotate: the printed code is useless from now on
     await audit(services, userId, 'setup.admin', { email })
+    await audit(services, userId, 'user.create', { id: userId, email, roleIds: [ROLE_ADMIN], status: 'active', via: 'setup' })
     try {
       const r = await migrateLegacyWorkspace(services, userId)
       if (r.migrated) log('info', `legacy workspace migrated: ${r.summary}`)
@@ -242,7 +339,7 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     const rec = await services.meta.users.get(userId)
     if (!rec) throw new HttpError(500, 'storage', 'The administrator could not be created.')
     return (await services.security.forUser(toUserDef(rec), expires)).session()
-  }, { auth: 'none' })
+  }, { auth: 'none', loopbackOnly: true })
 
   router.add('POST', '/auth/login', async (ctx): Promise<Session> => {
     if (!services.ready()) throw new HttpError(503, 'unavailable', 'The database is not configured yet.')
@@ -254,19 +351,26 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
       await audit(services, null, 'auth.login_throttled', { email })
       throw new HttpError(429, 'rate_limited', 'Too many attempts. Try again in a few minutes.')
     }
+    const wait = emailBackoff.waitMs(email)
+    if (wait > 0) {
+      await audit(services, null, 'auth.login_throttled', { email, perEmail: true, waitSeconds: Math.ceil(wait / 1000) })
+      throw new HttpError(429, 'rate_limited', `Too many attempts for this account. Try again in ${wait >= 60000 ? `${Math.ceil(wait / 60000)} minute(s)` : `${Math.ceil(wait / 1000)} second(s)`}.`)
+    }
     const user = email ? await services.meta.users.byEmail(email) : null
     const ok = user && user.passwordHash && user.status !== 'disabled' ? await verifyPassword(password, user.passwordHash) : await verifyDummy(password)
     if (!ok || !user) {
       throttle.fail(key)
+      if (email) emailBackoff.fail(email)
       await audit(services, user?.id ?? null, 'auth.login_failed', { email })
       throw new HttpError(401, 'unauthenticated', 'Invalid email or password.')
     }
     throttle.reset(key)
+    emailBackoff.reset(email)
     const old = cookieValue(ctx.req, SESSION_COOKIE)
     if (old && old.length <= 200) await services.meta.sessions.remove(hashToken(old)).catch(() => {})
     await services.meta.users.update(user.id, { lastLogin: new Date().toISOString() })
     const expires = await createSession(services, ctx, user.id)
-    await audit(services, user.id, 'auth.login')
+    await audit(services, user.id, 'auth.login', user.mustChangePassword ? { mustChangePassword: true } : undefined)
     const fresh = (await services.meta.users.get(user.id)) ?? user
     return (await services.security.forUser(toUserDef(fresh), expires)).session()
   }, { auth: 'none' })
@@ -279,7 +383,7 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     return { ok: true }
   }, { auth: 'none' })
 
-  router.add('GET', '/auth/session', (ctx) => ctx.user!.session(), { auth: 'user' })
+  router.add('GET', '/auth/session', (ctx) => ctx.user!.session(), { auth: 'user', allowPendingPasswordChange: true })
 
   router.add('POST', '/auth/password', async (ctx) => {
     const b = obj(ctx.body) as Partial<ChangePasswordRequest> & Record<string, unknown>
@@ -297,10 +401,10 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     const next = checkPasswordPolicy(b.next, rec.email, 'next')
     if (next === current) throw new HttpError(422, 'invalid', 'The new password must be different.', 'next')
     passwordThrottle.reset(key)
-    await services.meta.users.update(me.id, { passwordHash: await hashPassword(next) })
+    await services.meta.users.update(me.id, { passwordHash: await hashPassword(next), mustChangePassword: false })
     await services.meta.sessions.removeForUser(me.id) // signs out every other device
     await createSession(services, ctx, me.id) // and keeps this one signed in with a fresh token
-    await audit(services, me.id, 'auth.password_changed')
+    await audit(services, me.id, 'auth.password_changed', rec.mustChangePassword ? { forced: true } : undefined)
     return { ok: true }
-  }, { auth: 'user' })
+  }, { auth: 'user', allowPendingPasswordChange: true })
 }

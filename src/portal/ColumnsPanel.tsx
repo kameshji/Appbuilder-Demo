@@ -200,6 +200,8 @@ export function ColumnsPanel({ table }: { table: TableDef }) {
   const { toast } = useToast()
   const [mode, setMode] = useState<Mode | null>(null)
   const [del, setDel] = useState<ColumnDef | null>(null)
+  // server mode, a table that existed before it was linked: removing a column only unmaps it
+  const linkedTable = usePlatform((st) => st.mode === 'server') && table.managed !== true && table.origin?.kind !== 'file'
 
   useEffect(() => { setMode(null) }, [table.id])
   // close the editor if the column it edits disappears
@@ -257,7 +259,9 @@ export function ColumnsPanel({ table }: { table: TableDef }) {
         open={!!del}
         onOpenChange={(o) => !o && setDel(null)}
         title={`Delete column "${del?.displayName ?? ''}"?`}
-        description="The column and all of its values are removed from the table and its CSV file. Apps that use it will show errors."
+        description={linkedTable
+          ? 'Appbuilder stops showing and writing this column. This is a linked table, so the column and its values stay in the database. Apps that use it will show errors.'
+          : 'The column and all of its values are removed from the table and its CSV file. Apps that use it will show errors.'}
         onConfirm={async () => {
           if (!del) return
           await platform.tables.removeColumn(table.id, del.name)

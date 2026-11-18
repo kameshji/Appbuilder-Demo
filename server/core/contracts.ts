@@ -20,6 +20,8 @@ export type ApiErrorCode =
   | 'rate_limited'
   /** 405: the path exists but not for this HTTP method */
   | 'method_not_allowed'
+  /** 403: the signed-in user must change the password an administrator set before doing anything else */
+  | 'password_change_required'
 
 /** Throw from anywhere in a request; the router turns it into { error: { code, message, field? } }. */
 export class HttpError extends Error {
@@ -74,7 +76,16 @@ export type Handler = (ctx: Ctx) => Promise<unknown> | unknown
  * maxBodyMB: body limit of the route (JSON or raw; default 2 MB for JSON, 25 MB for raw).
  * streamBody (raw routes only): the body is not read before the handler; see Ctx.readBody.
  */
-export interface RouteOptions { auth: AuthLevel; raw?: boolean; maxBodyMB?: number; streamBody?: boolean }
+export interface RouteOptions {
+  auth: AuthLevel
+  raw?: boolean
+  maxBodyMB?: number
+  streamBody?: boolean
+  /** only requests whose TCP peer is a loopback address (127.0.0.0/8, ::1) reach the handler; headers do not count */
+  loopbackOnly?: boolean
+  /** reachable by a user whose password must be changed first (otherwise 403 password_change_required) */
+  allowPendingPasswordChange?: boolean
+}
 
 export interface Router {
   add(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', pattern: string, handler: Handler, opts: RouteOptions): void
@@ -168,6 +179,9 @@ export type ConnectorFactory = (conn: ConnectionRecord, env: ConnectorEnv) => Co
 /* ------------------------------------------------------------------ system store (MySQL, default connection) */
 
 export interface UserRecord extends UserDef { passwordHash: string | null }
+
+/** result of MetaStore.migrate(): the schema version before and after, and what each upgrade step did */
+export interface MigrationSummary { from: number; to: number; steps: string[] }
 export interface AttachmentRecord {
   id: string
   tableId: string
@@ -188,8 +202,11 @@ export interface AttachmentRecord {
  */
 export interface MetaStore {
   db: SqlDb
-  /** create/upgrade the ab_* tables; idempotent */
-  migrate(): Promise<void>
+  /**
+   * create/upgrade the ab_* tables; idempotent. Throws SchemaTooNewError when the database was upgraded by a newer
+   * server (ab_meta schemaVersion above SCHEMA_VERSION); nothing is changed then.
+   */
+  migrate(): Promise<MigrationSummary | void>
 
   users: {
     list(): Promise<UserRecord[]>
@@ -292,7 +309,8 @@ export interface DataService {
   insert(ctx: UserContext | null, table: TableDef, values: Record<string, QueryValue>): Promise<Record<string, QueryValue>>
   update(ctx: UserContext | null, table: TableDef, id: string, changes: Record<string, QueryValue>): Promise<Record<string, QueryValue>>
   delete(ctx: UserContext | null, table: TableDef, ids: string[]): Promise<number>
-  importCsv(ctx: UserContext | null, table: TableDef, csv: string, mode: 'append' | 'replace'): Promise<number>
+  /** opts.actorId (system context only): imported rows get createdBy = owner = that user */
+  importCsv(ctx: UserContext | null, table: TableDef, csv: string, mode: 'append' | 'replace', opts?: { actorId?: string }): Promise<number>
   exportCsv(ctx: UserContext | null, table: TableDef): Promise<string>
 }
 
@@ -327,6 +345,15 @@ export interface ServerConfig {
   port: number
   /** absolute dist folder for static serving (production) */
   distDir: string
+  /**
+   * host names the Host / Origin headers may name (DNS-rebinding guard): localhost, 127.0.0.1, ::1, the listening
+   * host unless it is a wildcard, and APPBUILDER_ALLOWED_HOSTS. A header is never proof that a request is local.
+   */
+  allowedHosts?: string[]
+  /** APPBUILDER_SECURE_COOKIE=1: always mark ab_session Secure */
+  secureCookie?: boolean
+  /** APPBUILDER_TRUST_PROXY=1: trust X-Forwarded-Proto (Secure cookie when it is https) */
+  trustProxy?: boolean
 }
 
 /**

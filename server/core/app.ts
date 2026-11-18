@@ -34,6 +34,8 @@ export interface CreateAppOptions {
   allowAnyHost?: boolean
   /** default true: connect to the database from env / server.json */
   boot?: boolean
+  /** default true: print the first-run setup code to the console (tests read services.setupCode.current()) */
+  printSetupCode?: boolean
 }
 
 export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer> {
@@ -42,6 +44,9 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   const services = createServices(config, { env, sqlDbFactory: opts.sqlDbFactory, fetch: opts.fetch })
   registerConnectors(services.connections)
   const router = createRouter(services, { allowAnyHost: opts.allowAnyHost })
+  if (config.host !== '127.0.0.1' && config.host !== 'localhost' && config.host !== '::1') {
+    log('warn', `listening on ${config.host}: other computers can reach the sign-in page. There is no TLS; see docs/admin/hardening-checklist.md.`)
+  }
   router.setSessionResolver(sessionResolver(services))
   // core routes first; the router prefers literal segments over :params regardless of order
   authRoutes(router, services)
@@ -55,6 +60,10 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
         .then((n) => n && log('info', `removed ${n} orphaned attachment(s)`))
         .catch((e) => log('warn', `orphan sweep failed: ${errText(e)}`))
     }
+    // while setup is needed: a one-time code, printed here, that the setup screen must send
+    let needsSetup = !services.setupComplete()
+    if (!needsSetup && services.ready()) needsSetup = (await services.meta.users.count().catch(() => 1)) === 0
+    if (needsSetup && !services.state.incompatible) services.setupCode.issue({ print: opts.printSetupCode !== false })
   }
   return {
     services,

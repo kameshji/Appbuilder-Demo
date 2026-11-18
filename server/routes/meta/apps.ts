@@ -105,7 +105,7 @@ export function registerAppRoutes(router: Router, s: Services): void {
     const doc = parsePackage(b.yaml, 'appbuilder/app')
     const app = readPkgApp(doc.app)
     const tables = readPkgTables(doc.tables, s.now())
-    await ensurePkgTables(s, tables)
+    await ensurePkgTables(s, tables, ctx.user?.user.id)
     const meta = await addApp(s, actorName(ctx), app.def, app.name, app.description)
     await audit(s, ctx, 'app.import', { id: meta.id, name: meta.name })
     return meta

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { Cable, CheckCircle2, Cloud, Copy, FileUp, HardDrive, Info, KeyRound, Pencil, Play, Plus, Star, TableProperties, Trash2, TriangleAlert, XCircle } from 'lucide-react'
+import { Cable, CheckCircle2, Cloud, Copy, FileUp, HardDrive, Info, KeyRound, Lock, Pencil, Play, Plus, Star, TableProperties, Trash2, TriangleAlert, XCircle } from 'lucide-react'
 import { platform, usePlatform, type ConnectionRef, type ConnectorKind } from '@/platform'
 import type { SourceTableInfo } from '@/platform/http'
 import { cn } from '@/lib/utils'
@@ -16,6 +16,10 @@ import { CONNECTOR_INFO, ConnectionFlags, connectorInfo } from './ConnectionBits
 import { PasswordInput } from './PasswordFields'
 import { goPortal, matches, useSearch } from './Shell'
 import { useCaps } from './security'
+
+/** the connection the setup created (workspace/server.json or APPBUILDER_DB_*); the server refuses edits to it */
+const DEFAULT_CONNECTION_ID = 'conn_default'
+const SYSTEM_COLUMN_NAMES = ['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner']
 
 /* ------------------------------------------------------------------ service-account key (client-side parsing only) */
 
@@ -282,8 +286,8 @@ function BrowseDialog({ connection, onOpenChange }: { connection: ConnectionRef 
     if (!connection) return
     setLinking(it.source)
     try {
-      const t = await platform.tables.linkSourceTable(connection.id, it.source)
-      toast(`Linked ${it.source} as table "${t.displayName}"`, 'success')
+      const t = await platform.tables.linkSourceTable(connection.id, it.source, consent[it.source] ? { ensureIdColumn: true } : undefined)
+      toast(`Linked ${it.source} as table "${t.displayName}"${t.readOnly ? ' (read-only)' : ''}`, 'success')
       setItems((l) => l?.filter((x) => x.source !== it.source) ?? l)
     } catch (e) {
       fail(e)
@@ -307,8 +311,10 @@ function BrowseDialog({ connection, onOpenChange }: { connection: ConnectionRef 
         ) : (
           <ul className="grid gap-2" data-testid="source-table-list">
             {items.map((it) => {
+              const names = new Set(it.columns.map((c) => c.name))
               const needsId = !it.columns.some((c) => c.name.toLowerCase() === 'id')
-              const ok = !needsId || consent[it.source]
+              // system columns the table lacks: with consent they are added, otherwise the table links read-only
+              const missing = SYSTEM_COLUMN_NAMES.filter((n) => (n === 'id' ? needsId : !names.has(n)))
               return (
                 <li key={it.source} className="grid gap-2 rounded-lg border border-border p-3" data-testid={`source-${it.source}`}>
                   <div className="flex items-center gap-3">
@@ -317,12 +323,12 @@ function BrowseDialog({ connection, onOpenChange }: { connection: ConnectionRef 
                       <div className="truncate text-sm font-medium">{it.source}</div>
                       <div className="truncate text-xs text-muted-foreground">{it.columns.length} columns{typeof it.rowCount === 'number' ? ` · ${it.rowCount} rows` : ''} · {it.columns.slice(0, 6).map((c) => c.name).join(', ')}{it.columns.length > 6 ? '...' : ''}</div>
                     </div>
-                    <Button size="sm" disabled={!ok || linking === it.source} onClick={() => void link(it)} data-testid={`link-${it.source}`}>{linking === it.source ? <Spinner /> : <Plus />} Link</Button>
+                    <Button size="sm" disabled={linking === it.source} onClick={() => void link(it)} data-testid={`link-${it.source}`}>{linking === it.source ? <Spinner /> : <Plus />} Link</Button>
                   </div>
-                  {needsId && (
+                  {missing.length > 0 && (
                     <label className="flex items-start gap-2 rounded-md bg-amber-500/10 px-2.5 py-2 text-xs">
                       <Checkbox checked={!!consent[it.source]} onCheckedChange={(v) => setConsent((c) => ({ ...c, [it.source]: v === true }))} className="mt-px" data-testid={`link-consent-${it.source}`} />
-                      <span>This {noun} has no <code className="font-mono">id</code> column. I agree that Appbuilder adds an <code className="font-mono">id</code> column{connection?.connector === 'mysql' ? ' and its system columns' : ''} to the {connection?.connector === 'gsheets' ? 'sheet tab' : 'table'} so rows can be told apart. Existing data is kept.</span>
+                      <span>This {noun} lacks Appbuilder's system columns ({missing.map((n, i) => <span key={n}>{i ? ', ' : ''}<code className="font-mono">{n}</code></span>)}). I agree that Appbuilder adds them to the {connection?.connector === 'gsheets' ? 'sheet tab' : 'table'}{needsId ? ' and fills id for every row' : ''} so rows can be told apart and owned. Existing data is kept. Without this, the {noun} is linked read-only.</span>
                     </label>
                   )}
                 </li>
@@ -449,7 +455,8 @@ export function Connections() {
                             {canBrowse && <Button variant="outline" size="xs" onClick={() => setBrowse(c)} data-testid={`browse-${c.id}`}><TableProperties /> Browse tables</Button>}
                             {canEdit && c.connector === 'mysql' && !c.isDefault && <Button variant="outline" size="xs" onClick={() => void makeDefault(c)} data-testid={`default-${c.id}`}><Star /> Set as default</Button>}
                             {isFiles && !demo && <Button variant="outline" size="xs" onClick={() => goPortal('datafiles')}><HardDrive /> Data files</Button>}
-                            {canEdit && !isFiles && <Button variant="ghost" size="icon-sm" aria-label={`Edit ${c.name}`} onClick={() => setDlg({ conn: c })} data-testid={`edit-${c.id}`}><Pencil /></Button>}
+                            {canEdit && !isFiles && c.id !== DEFAULT_CONNECTION_ID && <Button variant="ghost" size="icon-sm" aria-label={`Edit ${c.name}`} onClick={() => setDlg({ conn: c })} data-testid={`edit-${c.id}`}><Pencil /></Button>}
+                            {canEdit && c.id === DEFAULT_CONNECTION_ID && <span className="inline-flex items-center gap-1 px-1.5 text-xs text-muted-foreground" title="Set up when Appbuilder was installed (workspace/server.json or APPBUILDER_DB_*). Change it in the server configuration and restart." data-testid={`managed-${c.id}`}><Lock className="size-3.5" /> Managed by setup</span>}
                             {canEdit && !isFiles && <Button variant="ghost" size="icon-sm" aria-label={`Delete ${c.name}`} disabled={c.isDefault} title={c.isDefault ? 'The default connection cannot be deleted. Make another one the default first.' : undefined} onClick={() => setDel(c)} data-testid={`delete-${c.id}`}><Trash2 /></Button>}
                           </div>
                         </td>

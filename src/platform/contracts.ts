@@ -83,6 +83,16 @@ export interface TableDef {
   readOnly?: boolean
   /** set for tables that came from a data file (files connector) */
   origin?: { kind: 'file'; fileId: string; fileName: string; sheet?: string; importedOn: string }
+  /**
+   * server mode: true when Appbuilder created the physical table (new table, from CSV, package, move, sample). Only such
+   * tables may have their source dropped. Linked tables (they existed before) are never dropped or altered by removals.
+   */
+  managed?: boolean
+  /**
+   * server mode, linked tables: system columns (createdOn, modifiedOn, createdBy, owner, id) that the source does not
+   * have. Such a table is read-only and no query references these columns.
+   */
+  missingSystem?: string[]
 }
 
 /**
@@ -155,6 +165,8 @@ export interface UserDef {
   status?: 'active' | 'disabled'
   /** server mode: whether a password is set (the hash never leaves the server) */
   hasPassword?: boolean
+  /** server mode: an administrator set the password; the user must change it before doing anything else */
+  mustChangePassword?: boolean
   lastLogin?: string
 }
 
@@ -259,7 +271,14 @@ export interface WorkspaceState {
   /** 'server' = the local Node server (MySQL, real login, server-enforced security); 'demo' = browser-only simulation */
   mode: 'server' | 'demo'
   /** server mode first-run state. Both false once the workspace is usable. */
-  setup: { needsDatabase: boolean; needsAdmin: boolean }
+  setup: {
+    needsDatabase: boolean
+    needsAdmin: boolean
+    /** the configured database cannot be reached right now (the server keeps retrying) */
+    unavailable?: boolean
+    /** the database was upgraded by a newer Appbuilder; this server refuses to use it */
+    incompatible?: boolean
+  }
   /** null when signed out (server mode). Demo mode: always the run-as user. */
   session: Session | null
   storage: { kind: StorageAdapter['kind'] | 'mysql'; location: string }
@@ -280,7 +299,8 @@ export interface WorkspaceState {
 }
 
 export class PlatformError extends Error {
-  code: 'not-found' | 'denied' | 'invalid' | 'conflict' | 'storage' | 'unauthenticated' | 'unavailable'
+  /** rate_limited = 429 (login / password throttle), method_not_allowed = 405, password_change_required = 403 (the account must set a new password first) */
+  code: 'not-found' | 'denied' | 'invalid' | 'conflict' | 'storage' | 'unauthenticated' | 'unavailable' | 'rate_limited' | 'method_not_allowed' | 'password_change_required'
   constructor(code: PlatformError['code'], message: string) {
     super(message)
     this.code = code
@@ -323,7 +343,7 @@ export interface PlatformApi {
   tables: {
     create(input: { displayName: string; name?: string; description?: string; columns?: Partial<ColumnDef>[]; connectionId?: string }): Promise<TableDef>
     update(id: string, patch: Partial<Pick<TableDef, 'displayName' | 'description' | 'primaryColumn'>>): Promise<void>
-    /** dropSource (server mode, default true): also drop the physical table / sheet */
+    /** dropSource (server mode, default false): also drop the physical table; only for tables Appbuilder created (`managed`) */
     remove(id: string, opts?: { dropSource?: boolean }): Promise<void>
     addColumn(tableId: string, col: Partial<ColumnDef> & { displayName: string; type: ColumnType }): Promise<ColumnDef>
     updateColumn(tableId: string, name: string, patch: Partial<ColumnDef>): Promise<void>
@@ -364,7 +384,8 @@ export interface PlatformApi {
     /** list tables available inside a connection that are not yet registered (existing MySQL tables, sheets, file sheets) */
     listSourceTables(connectionId: string): Promise<{ source: string; columns: { name: string; type: ColumnType }[]; rowCount?: number }[]>
     /** register an existing source table as a workspace table (columns inferred; system columns added where the source allows) */
-    linkSourceTable(connectionId: string, source: string, input?: { displayName?: string; name?: string }): Promise<TableDef>
+    /** ensureIdColumn: consent to add the missing system columns (id, createdOn, modifiedOn, createdBy, owner); without it such a table links read-only */
+    linkSourceTable(connectionId: string, source: string, input?: { displayName?: string; name?: string; ensureIdColumn?: boolean; readOnly?: boolean }): Promise<TableDef>
     /** copy a table into another connection (e.g. a file table into MySQL), keeping its name so formulas keep working */
     moveToConnection(tableId: string, connectionId: string): Promise<TableDef>
   }
@@ -380,9 +401,10 @@ export interface PlatformApi {
     logout(): Promise<void>
     changePassword(current: string, next: string): Promise<void>
     /** first-run: the database connection for the default store (server tests it, creates the system tables) */
-    setupDatabase(input: { host: string; port: number; database: string; user: string; password: string; createDatabase?: boolean }): Promise<void>
+    /** setupCode: the one-time code the server prints to its console (first run) */
+    setupDatabase(input: { host: string; port: number; database: string; user: string; password: string; createDatabase?: boolean; setupCode?: string }): Promise<void>
     /** first-run: create the first administrator and sign in */
-    setupAdmin(input: { name: string; email: string; password: string }): Promise<Session>
+    setupAdmin(input: { name: string; email: string; password: string; setupCode?: string }): Promise<Session>
   }
 
   /** subscribe to rolled-back writes (server mode). Returns unsubscribe. */

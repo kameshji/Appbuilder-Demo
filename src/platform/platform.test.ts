@@ -272,7 +272,7 @@ describe('validation', () => {
     expect(r.createdOn).toEqual(FIXED)
     expect(r.__id).toBe(r.id)
     const o = p.tables.insert('Orders', { Customer: p.tables.rows('Contacts')[0].id, Amount: '1,234.567' })
-    expect(o.Amount).toBe(1234.57)
+    expect(o.Amount).toBe(1234.567)
     expect(o.OrderDate).toEqual(new Date(2026, 2, 15)) // default "today"
     expect(o.Status).toBe('New')
   })
@@ -320,6 +320,8 @@ describe('validation', () => {
     expect(coerceValue(col('boolean'), 'No')).toBe(false)
     expect(coerceValue(col('url'), 'https://example.com/x')).toBe('https://example.com/x')
     expect(() => coerceValue(col('url'), 'not a url')).toThrow(PlatformError)
+    expect(() => coerceValue(col('url'), 'data:text/html;base64,PGI+')).toThrow(PlatformError)
+    expect(coerceValue(col('currency'), '1.23456')).toBe(1.2346)
     expect(coerceValue(col('phone'), '+91 98765-43210')).toBe('+91 98765-43210')
     expect(() => coerceValue(col('phone'), 'call me')).toThrow(PlatformError)
     expect(coerceValue(col('date'), new Date(2026, 4, 17, 13, 45))).toEqual(new Date(2026, 4, 17))

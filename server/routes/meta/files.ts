@@ -7,7 +7,9 @@ import { HttpError } from '../../core/contracts.ts'
 import type { Ctx, Router, Services, UserContext } from '../../core/contracts.ts'
 import { readDataFile, removeDataFile, replaceDataFile, storeDataFile } from '../../connectors/files/index.ts'
 import type { StoredFile } from '../../connectors/files/index.ts'
+import Papa from 'papaparse'
 import { conflict, denied, invalid, me, notFound, reqString, systemColumns, toIdentifier, uniqueIdentifier } from './util.ts'
+import { csvSafeText } from '../../core/values.ts'
 import { FILES_CONNECTION_ID, audit, ensureFilesConnection, friendly, grantDefaults, unregisterTable } from './tables-core.ts'
 import type { RoleX } from './util.ts'
 
@@ -201,7 +203,10 @@ export function registerFileRoutes(router: Router, s: Services): void {
     const f = await needFile(s, ctx.params.id)
     const tables = (await s.meta.tables.list()).filter((t) => t.origin?.kind === 'file' && t.origin.fileId === f.id)
     if (!tables.every((t) => canReadWholeTable(u, t))) throw denied('Downloading a data file needs full read access to all of its tables.')
-    const bytes = await readDataFile(s.env, f.id).catch((e) => { throw friendly(e, 'Could not read the file') })
+    let bytes = await readDataFile(s.env, f.id).catch((e) => { throw friendly(e, 'Could not read the file') })
+    // CSV copies: cells a spreadsheet would run as formulas get a leading ' (the stored copy is not changed). XLSX cells
+    // are written as typed values (text stays text, never a formula), JSON is not opened by spreadsheet programs.
+    if (f.kind === 'csv') bytes = Buffer.from(csvSafeFile(bytes.toString('utf8')), 'utf8')
     const safe = f.fileName.replace(/[^A-Za-z0-9._ -]/g, '_')
     return { raw: true as const, headers: { 'Content-Type': KIND_MIME[f.kind] ?? 'application/octet-stream', 'Content-Disposition': `attachment; filename="${safe}"` }, body: bytes }
   }, { auth: 'maker' })
@@ -212,6 +217,16 @@ export function registerFileRoutes(router: Router, s: Services): void {
     await audit(s, ctx, 'file.delete', { id: f.id, fileName: f.fileName })
     return { ok: true }
   }, { auth: 'maker' })
+}
+
+/** a whole CSV file with every cell passed through csvSafeText (header row too); layout otherwise unchanged */
+export function csvSafeFile(text: string): string {
+  const bom = text.charCodeAt(0) === 0xfeff ? '\ufeff' : ''
+  const body = bom ? text.slice(1) : text
+  const grid = Papa.parse<string[]>(body, { header: false, skipEmptyLines: false }).data
+  if (grid.length && grid[grid.length - 1].length === 1 && grid[grid.length - 1][0] === '' && /\r?\n$/.test(body)) grid.pop()
+  const newline = body.includes('\r\n') ? '\r\n' : '\n'
+  return bom + Papa.unparse(grid.map((row) => row.map((c) => csvSafeText(String(c ?? '')))), { newline }) + (/\r?\n$/.test(body) ? newline : '')
 }
 
 export { reqString }

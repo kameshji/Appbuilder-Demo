@@ -5,6 +5,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { ArrowRight, Check, ChevronDown, CircleAlert, Database, KeyRound, LogOut, Moon, ShieldCheck, Shapes, Sun, UserRound } from 'lucide-react'
 import { PlatformError, platform, usePlatform } from '@/platform'
+import { CODE_MESSAGES } from '@/platform/errorMessages'
 import { go } from '@/router'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -76,7 +77,26 @@ function Steps({ current }: { current: 1 | 2 }) {
 
 /* ------------------------------------------------------------------ setup wizard */
 
-function DatabaseStep({ onDone }: { onDone(): void }) {
+/** the one-time code the server prints to its console; typed with or without the dash */
+function SetupCodeField({ value, onChange, autoFocus }: { value: string; onChange(v: string): void; autoFocus?: boolean }) {
+  return (
+    <Field label="Setup code (shown in the server window)" htmlFor="setup-code" hint="Printed in the window where the Appbuilder server runs, for example ABCD-EFGH. It proves you are at this computer.">
+      <Input
+        id="setup-code"
+        value={value}
+        autoFocus={autoFocus}
+        autoComplete="one-time-code"
+        spellCheck={false}
+        onChange={(e) => onChange(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 9))}
+        className="font-mono tracking-widest"
+        data-testid="setup-code"
+      />
+    </Field>
+  )
+}
+const setupCodeOk = (v: string) => v.replace(/-/g, '').length === 8
+
+function DatabaseStep({ onDone, code, setCode }: { onDone(): void; code: string; setCode(v: string): void }) {
   const { fail } = useToast()
   const [host, setHost] = useState('127.0.0.1')
   const [port, setPort] = useState('3306')
@@ -87,7 +107,7 @@ function DatabaseStep({ onDone }: { onDone(): void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const portNum = Number(port)
-  const valid = !!host.trim() && Number.isInteger(portNum) && portNum > 0 && portNum < 65536 && !!database.trim() && !!user.trim()
+  const valid = setupCodeOk(code) && !!host.trim() && Number.isInteger(portNum) && portNum > 0 && portNum < 65536 && !!database.trim() && !!user.trim()
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -95,7 +115,7 @@ function DatabaseStep({ onDone }: { onDone(): void }) {
     setBusy(true)
     setError('')
     try {
-      await platform.auth.setupDatabase({ host: host.trim(), port: portNum, database: database.trim(), user: user.trim(), password, createDatabase })
+      await platform.auth.setupDatabase({ host: host.trim(), port: portNum, database: database.trim(), user: user.trim(), password, createDatabase, setupCode: code })
       setPassword('') // write-only: never kept after use
       onDone()
     } catch (err) {
@@ -110,8 +130,9 @@ function DatabaseStep({ onDone }: { onDone(): void }) {
   return (
     <GateFrame step={<Steps current={1} />} title="Connect your database" subtitle="Appbuilder keeps your tables, apps and users in MySQL or MariaDB. Enter the connection details of the database to use as the default store.">
       <form onSubmit={(e) => void submit(e)} className="grid gap-4" data-testid="setup-database-form" autoComplete="off">
+        <SetupCodeField value={code} onChange={setCode} autoFocus />
         <div className="grid grid-cols-[1fr_96px] gap-3">
-          <Field label="Host" htmlFor="setup-host"><Input id="setup-host" value={host} onChange={(e) => setHost(e.target.value)} autoFocus data-testid="setup-host" /></Field>
+          <Field label="Host" htmlFor="setup-host"><Input id="setup-host" value={host} onChange={(e) => setHost(e.target.value)} data-testid="setup-host" /></Field>
           <Field label="Port" htmlFor="setup-port"><Input id="setup-port" inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value.replace(/[^0-9]/g, ''))} data-testid="setup-port" /></Field>
         </div>
         <Field label="Database" htmlFor="setup-database"><Input id="setup-database" value={database} onChange={(e) => setDatabase(e.target.value)} data-testid="setup-database" /></Field>
@@ -132,8 +153,9 @@ function DatabaseStep({ onDone }: { onDone(): void }) {
   )
 }
 
-function AdminStep() {
+function AdminStep({ code, setCode }: { code: string; setCode(v: string): void }) {
   const { fail } = useToast()
+  const [askCode] = useState(() => !setupCodeOk(code))
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -141,7 +163,7 @@ function AdminStep() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())
-  const valid = !!name.trim() && emailOk && passwordsValid(password, confirm, email)
+  const valid = setupCodeOk(code) && !!name.trim() && emailOk && passwordsValid(password, confirm, email)
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -149,7 +171,7 @@ function AdminStep() {
     setBusy(true)
     setError('')
     try {
-      await platform.auth.setupAdmin({ name: name.trim(), email: email.trim(), password })
+      await platform.auth.setupAdmin({ name: name.trim(), email: email.trim(), password, setupCode: code })
       setPassword('')
       setConfirm('')
     } catch (err) {
@@ -163,7 +185,8 @@ function AdminStep() {
   return (
     <GateFrame step={<Steps current={2} />} title="Create the administrator" subtitle="This account can manage connections, tables, roles and users. You can add more people afterwards.">
       <form onSubmit={(e) => void submit(e)} className="grid gap-4" data-testid="setup-admin-form">
-        <Field label="Your name" htmlFor="admin-name"><Input id="admin-name" autoFocus autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} data-testid="setup-admin-name" /></Field>
+        {askCode && <SetupCodeField value={code} onChange={setCode} autoFocus />}
+        <Field label="Your name" htmlFor="admin-name"><Input id="admin-name" autoFocus={!askCode} autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} data-testid="setup-admin-name" /></Field>
         <Field label="Email" htmlFor="admin-email" hint="Used to sign in.">
           <Input id="admin-email" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="setup-admin-email" />
         </Field>
@@ -180,10 +203,38 @@ function AdminStep() {
 export function SetupWizard() {
   const needsDatabase = usePlatform((s) => s.setup.needsDatabase)
   const [dbDone, setDbDone] = useState(false)
+  // typed once, used by both steps (the server checks it on each)
+  const [code, setCode] = useState('')
   return (
     <div data-testid="setup-wizard" className="h-full">
-      {needsDatabase && !dbDone ? <DatabaseStep onDone={() => setDbDone(true)} /> : <AdminStep />}
+      {needsDatabase && !dbDone ? <DatabaseStep onDone={() => setDbDone(true)} code={code} setCode={setCode} /> : <AdminStep code={code} setCode={setCode} />}
     </div>
+  )
+}
+
+/** the configured database cannot be used right now (unreachable: the server retries by itself; or too new) */
+function DatabaseProblem({ incompatible }: { incompatible: boolean }) {
+  const [busy, setBusy] = useState(false)
+  const retry = async () => {
+    setBusy(true)
+    try {
+      await fetch('/api/v1/status', { credentials: 'same-origin' })
+    } finally {
+      window.location.reload()
+    }
+  }
+  return (
+    <GateFrame
+      title={incompatible ? 'This database needs a newer Appbuilder' : 'The database is not reachable'}
+      subtitle={incompatible
+        ? 'The database was upgraded by a newer version of Appbuilder. This version will not use it, so nothing gets damaged. Start the newer version, or restore a backup taken before the upgrade.'
+        : 'Appbuilder cannot reach its database right now and keeps trying in the background. Make sure MySQL or MariaDB is running; no restart of Appbuilder is needed.'}
+    >
+      <div className="grid gap-3" data-testid={incompatible ? 'database-incompatible' : 'database-unavailable'}>
+        {!incompatible && <Button onClick={() => void retry()} disabled={busy} data-testid="database-retry">{busy ? <Spinner /> : <Database />} Try again</Button>}
+        <p className="text-center text-xs text-muted-foreground">An administrator can see details in the server window.</p>
+      </div>
+    </GateFrame>
   )
 }
 
@@ -191,8 +242,8 @@ export function SetupWizard() {
 
 export function loginMessage(e: unknown): string {
   const m = errMsg(e)
-  if (/too many/i.test(m)) return 'Too many sign-in attempts. Wait about 15 minutes, then try again.'
   if (e instanceof PlatformError) {
+    if (e.code === 'rate_limited') return CODE_MESSAGES.rate_limited ?? m
     if (e.code === 'unavailable') return 'The server cannot reach its database right now. Make sure MySQL is running, then try again.'
     if (e.code === 'unauthenticated' || e.code === 'denied' || e.code === 'invalid') return 'That email and password do not match. Check both and try again.'
   }
@@ -247,15 +298,28 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const setup = usePlatform((s) => s.setup)
   const session = usePlatform((s) => s.session)
   if (mode === 'server') {
+    if (setup.incompatible) return <ToastProvider><DatabaseProblem incompatible /></ToastProvider>
     if (setup.needsDatabase || setup.needsAdmin) return <ToastProvider><SetupWizard /></ToastProvider>
+    if (setup.unavailable && !session) return <ToastProvider><DatabaseProblem incompatible={false} /></ToastProvider>
     if (!session) return <ToastProvider><LoginScreen /></ToastProvider>
+    if (session.user.mustChangePassword) return <ToastProvider><ForcedPasswordChange /></ToastProvider>
   }
   return <>{children}</>
 }
 
+/** after signing in with a password an administrator set: a new password is required before anything else */
+function ForcedPasswordChange() {
+  return (
+    <div className="h-full bg-canvas" data-testid="forced-password-change">
+      <ChangePasswordDialog open onOpenChange={() => {}} forced />
+    </div>
+  )
+}
+
 /* ------------------------------------------------------------------ change password */
 
-export function ChangePasswordDialog({ open, onOpenChange }: { open: boolean; onOpenChange(o: boolean): void }) {
+/** forced: after an administrator set the password; cannot be dismissed (only signing out leaves it) */
+export function ChangePasswordDialog({ open, onOpenChange, forced = false }: { open: boolean; onOpenChange(o: boolean): void; forced?: boolean }) {
   const { fail, toast } = useToast()
   const email = usePlatform((s) => s.session?.user.email)
   const [current, setCurrent] = useState('')
@@ -272,7 +336,7 @@ export function ChangePasswordDialog({ open, onOpenChange }: { open: boolean; on
     setError('')
     try {
       await platform.auth.changePassword(current, next)
-      toast('Password changed. Other devices were signed out.', 'success')
+      toast(forced ? 'Password changed. Welcome!' : 'Password changed. Other devices were signed out.', 'success')
       reset()
       onOpenChange(false)
     } catch (err) {
@@ -283,18 +347,28 @@ export function ChangePasswordDialog({ open, onOpenChange }: { open: boolean; on
     }
   }
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) reset(); onOpenChange(o) }}>
-      <DialogContent data-testid="change-password-dialog">
+    <Dialog open={open} onOpenChange={(o) => { if (forced) return; if (!o) reset(); onOpenChange(o) }}>
+      <DialogContent
+        data-testid="change-password-dialog"
+        showCloseButton={!forced}
+        onEscapeKeyDown={(e) => { if (forced) e.preventDefault() }}
+        onPointerDownOutside={(e) => { if (forced) e.preventDefault() }}
+        onInteractOutside={(e) => { if (forced) e.preventDefault() }}
+      >
         <DialogHeader>
-          <DialogTitle>Change password</DialogTitle>
-          <DialogDescription>You will stay signed in here. Sessions on other devices end.</DialogDescription>
+          <DialogTitle>{forced ? 'Choose a new password' : 'Change password'}</DialogTitle>
+          <DialogDescription>{forced
+            ? 'An administrator set your password. Choose your own before you continue: type the password you were given, then the new one.'
+            : 'You will stay signed in here. Sessions on other devices end.'}</DialogDescription>
         </DialogHeader>
         <form onSubmit={(e) => void submit(e)} className="grid gap-4">
           <Field label="Current password" htmlFor="cp-current"><PasswordInput id="cp-current" autoComplete="current-password" autoFocus value={current} onChange={setCurrent} testId="cp-current" /></Field>
           <NewPasswordFields password={next} confirm={confirm} onPassword={setNext} onConfirm={setConfirm} email={email} idPrefix="cp" />
           <FormError message={error} />
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            {forced
+              ? <Button type="button" variant="ghost" onClick={() => { void platform.auth.logout() }} data-testid="cp-sign-out"><LogOut /> Sign out</Button>
+              : <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>}
             <Button type="submit" disabled={!valid || busy} data-testid="cp-save">Change password</Button>
           </DialogFooter>
         </form>

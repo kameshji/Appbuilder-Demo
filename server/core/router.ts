@@ -33,10 +33,28 @@ export const SECURITY_HEADERS: Record<string, string> = {
   'Referrer-Policy': 'same-origin',
   'X-Frame-Options': 'SAMEORIGIN',
 }
-export const HTML_CSP =
-  "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'"
+/**
+ * The HTML page's Content-Security-Policy. script-src allows only same-origin files and the inline scripts whose SHA-256
+ * hashes are passed (computed from the served file by static.ts), never 'unsafe-inline'. style-src keeps 'unsafe-inline':
+ * React and Radix set style attributes at run time (positions of popovers, sizes, transforms), which hashes cannot cover.
+ */
+export function htmlCsp(scriptHashes: string[] = []): string {
+  const scripts = ["'self'", ...scriptHashes.map((h) => `'sha256-${h}'`)].join(' ')
+  return `default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src ${scripts}; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'`
+}
+/** CSP for an HTML file without inline scripts */
+export const HTML_CSP = htmlCsp()
 
-const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1'])
+const LOCAL_HOSTS = ['localhost', '127.0.0.1', '::1']
+
+/** the TCP peer is this machine: 127.0.0.0/8, ::1 or an IPv4-mapped loopback (::ffff:127.x.y.z). Never from headers. */
+export function isLoopbackAddress(addr: string | undefined | null): boolean {
+  if (!addr) return false
+  const a = addr.toLowerCase()
+  if (a === '::1' || a === '0:0:0:0:0:0:0:1') return true
+  const v4 = a.startsWith('::ffff:') ? a.slice(7) : a
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4)
+}
 
 function hostnameOf(value: string): string {
   try {
@@ -53,14 +71,20 @@ function hostPortOf(value: string): string {
   }
 }
 
-/** Host must name this machine; Origin (when sent) must be the same origin. Returns a reason or null. */
-export function originProblem(req: IncomingMessage, allowAnyHost = false): string | null {
+/**
+ * DNS-rebinding and cross-origin guard: Host must be one of the configured host names (default: the loopback names);
+ * Origin (when sent) must be the same origin. Returns a reason or null. These are headers the client chooses, so this
+ * stops web pages in a browser, not programs: it is never used as proof that a request comes from this computer
+ * (see isLoopbackAddress and RouteOptions.loopbackOnly).
+ */
+export function originProblem(req: IncomingMessage, allowAnyHost = false, allowedHosts: readonly string[] = LOCAL_HOSTS): string | null {
   if (allowAnyHost) return null
+  const allowed = new Set(allowedHosts.map((h) => h.toLowerCase()))
   const host = String(req.headers.host ?? '')
-  if (!LOCAL_HOSTS.has(hostnameOf(host))) return 'Requests must be made to localhost.'
+  if (!allowed.has(hostnameOf(host).toLowerCase())) return 'Requests must be made to a configured host name.'
   const origin = req.headers.origin
   if (origin !== undefined) {
-    if (origin === 'null' || !LOCAL_HOSTS.has(hostnameOf(String(origin)))) return 'Cross-origin requests are not allowed.'
+    if (origin === 'null' || !allowed.has(hostnameOf(String(origin)).toLowerCase())) return 'Cross-origin requests are not allowed.'
     if (hostPortOf(String(origin)) !== hostPortOf(host)) return 'Cross-origin requests are not allowed.'
   }
   const site = req.headers['sec-fetch-site']
@@ -184,8 +208,26 @@ export function cookieValue(req: IncomingMessage, name: string): string | null {
   return null
 }
 
-function sessionCookie(req: IncomingMessage, token: string | null, expires?: Date): string {
-  const secure = (req.socket as TLSSocket).encrypted ? '; Secure' : ''
+export interface CookieOptions {
+  /** APPBUILDER_SECURE_COOKIE=1 */
+  secureCookie?: boolean
+  /** APPBUILDER_TRUST_PROXY=1: X-Forwarded-Proto: https marks the cookie Secure */
+  trustProxy?: boolean
+}
+
+/** Secure when the socket is TLS, when configured, or behind a trusted proxy that reports https */
+export function cookieIsSecure(req: IncomingMessage, o: CookieOptions = {}): boolean {
+  if ((req.socket as TLSSocket | undefined)?.encrypted) return true
+  if (o.secureCookie) return true
+  if (o.trustProxy) {
+    const proto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim().toLowerCase()
+    if (proto === 'https') return true
+  }
+  return false
+}
+
+export function sessionCookie(req: IncomingMessage, token: string | null, expires?: Date, o: CookieOptions = {}): string {
+  const secure = cookieIsSecure(req, o) ? '; Secure' : ''
   if (token === null) return `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}`
   const exp = expires ? `; Expires=${expires.toUTCString()}` : ''
   return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/${exp}${secure}`
@@ -197,7 +239,16 @@ export interface ApiRouter extends Router {
   setSessionResolver(r: SessionResolver): void
 }
 
-export function createRouter(services: Services, opts: { allowAnyHost?: boolean } = {}): ApiRouter {
+export interface RouterOptions extends CookieOptions {
+  allowAnyHost?: boolean
+  /** default: services.config.allowedHosts, else the loopback names */
+  allowedHosts?: readonly string[]
+}
+
+export function createRouter(services: Services, opts: RouterOptions = {}): ApiRouter {
+  const cfg = (services as Partial<Services>).config
+  const allowedHosts = opts.allowedHosts ?? cfg?.allowedHosts ?? LOCAL_HOSTS
+  const cookieOpts: CookieOptions = { secureCookie: opts.secureCookie ?? cfg?.secureCookie, trustProxy: opts.trustProxy ?? cfg?.trustProxy }
   const routes: Route[] = []
   let resolveSession: SessionResolver = async () => null
 
@@ -243,7 +294,7 @@ export function createRouter(services: Services, opts: { allowAnyHost?: boolean 
       res.on('finish', () => req.destroy())
     }
     try {
-      const problem = originProblem(req, opts.allowAnyHost)
+      const problem = originProblem(req, opts.allowAnyHost, allowedHosts)
       if (problem) throw new HttpError(403, 'denied', problem)
       const method = (req.method ?? 'GET').toUpperCase()
       if (method !== 'GET' && method !== 'HEAD' && req.headers[CSRF_HEADER.toLowerCase()] !== '1') {
@@ -260,6 +311,10 @@ export function createRouter(services: Services, opts: { allowAnyHost?: boolean 
       if (m === null) throw new HttpError(404, 'not-found', 'Unknown API route.')
       if (m === 'method') throw new HttpError(405, 'method_not_allowed', 'Method not allowed.')
       const { route, params } = m
+      // setup endpoints: the TCP peer must be this machine, whatever the headers say
+      if (route.opts.loopbackOnly && !isLoopbackAddress(req.socket?.remoteAddress)) {
+        throw new HttpError(403, 'denied', 'This can only be done on the computer that runs Appbuilder (open it at http://localhost).')
+      }
 
       const ctx: Ctx = {
         req,
@@ -273,7 +328,7 @@ export function createRouter(services: Services, opts: { allowAnyHost?: boolean 
         setSessionCookie(token, expires) {
           const prev = res.getHeader('Set-Cookie')
           const list = Array.isArray(prev) ? prev.filter((c) => !c.startsWith(SESSION_COOKIE + '=')) : []
-          res.setHeader('Set-Cookie', [...list, sessionCookie(req, token, expires)])
+          res.setHeader('Set-Cookie', [...list, sessionCookie(req, token, expires, cookieOpts)])
         },
       }
 
@@ -310,6 +365,9 @@ export function createRouter(services: Services, opts: { allowAnyHost?: boolean 
         const user = await resolveSession(ctx)
         if (!user) throw new HttpError(401, 'unauthenticated', 'Please sign in.')
         if (route.opts.auth === 'maker' && !user.privileges.isMaker) throw new HttpError(403, 'denied', 'Only makers can do this.')
+        if (user.user.mustChangePassword && !route.opts.allowPendingPasswordChange) {
+          throw new HttpError(403, 'password_change_required', 'You must change your password before you can continue.')
+        }
         if (route.opts.auth === 'admin' && !user.privileges.isAdmin) throw new HttpError(403, 'denied', 'Only administrators can do this.')
         ctx.user = user
       } else if (services.ready() && cookieValue(req, SESSION_COOKIE)) {

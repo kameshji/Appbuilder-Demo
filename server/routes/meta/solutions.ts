@@ -224,7 +224,7 @@ export async function importSolutionPackage(s: Services, ctx: Ctx, text: unknown
   const isAdmin = u.privileges.isAdmin
   const undo: (() => Promise<void>)[] = []
   try {
-    const { map: tableMap, created } = await ensurePkgTables(s, tables)
+    const { map: tableMap, created } = await ensurePkgTables(s, tables, ctx.user?.user.id)
     if (created.length) undo.push(async () => { const { connector } = await resolveConnection(s); await rollbackTables(s, connector, created) })
     const components: SolutionDef['components'] = []
     for (const t of tables) components.push({ kind: 'table', id: tableMap.get(t.def.id)! })
