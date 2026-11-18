@@ -14,6 +14,9 @@ import { createPolicyStore, type MfaMode, type PolicyStore } from './policy.ts'
 import { base32Decode, verifyTotp } from './totp.ts'
 import { clientIp, deviceName, normaliseCode, randomCode, randomToken, sameHash, setCookie, sha256 } from './util.ts'
 
+/** token kinds where only the newest link or code may be valid for a person */
+const SINGLE_LIVE_KINDS: ReadonlySet<string> = new Set(['reset', 'invite', 'email_change', 'email_code', 'email_setup'])
+
 export const MFA_COOKIE = 'ab_mfa'
 export const DEVICE_COOKIE = 'ab_td'
 export const KNOWN_COOKIE = 'ab_dev'
@@ -183,10 +186,20 @@ export function identity(services: CoreServices): Identity {
       const raw = o.raw ?? randomToken(32)
       const tid = uid('tok')
       const expiresOn = new Date(Date.now() + o.ttlMs)
-      await db().exec(
-        `INSERT INTO "ab"."auth_tokens" (id, kind, user_id, token_hash, created_on, expires_on, created_by, data) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
-        [tid, kind, userId, sha256(`${kind}:${normaliseToken(kind, raw)}`), new Date(), expiresOn, o.createdBy ?? null, o.data ? JSON.stringify(o.data) : null],
-      )
+      // One live link per person and kind. Callers revoke the earlier ones before calling, but two requests in quick
+      // succession could interleave (revoke, revoke, insert, insert) and leave two links valid. So: serialise per
+      // person and kind with an advisory lock, and retire every earlier token of that kind in the same transaction.
+      const single = SINGLE_LIVE_KINDS.has(kind) && !!userId
+      await db().tx(async (tx) => {
+        if (single) {
+          await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`auth_token:${kind}:${userId}`])
+          await tx.exec(`UPDATE "ab"."auth_tokens" SET used_on = now() WHERE user_id = $1 AND kind = $2 AND used_on IS NULL`, [userId, kind])
+        }
+        await tx.exec(
+          `INSERT INTO "ab"."auth_tokens" (id, kind, user_id, token_hash, created_on, expires_on, created_by, data) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+          [tid, kind, userId, sha256(`${kind}:${normaliseToken(kind, raw)}`), new Date(), expiresOn, o.createdBy ?? null, o.data ? JSON.stringify(o.data) : null],
+        )
+      })
       return { raw, id: tid, expiresOn }
     },
     async findToken(kind, raw) {
