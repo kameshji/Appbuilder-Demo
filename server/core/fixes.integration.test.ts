@@ -267,7 +267,8 @@ describe.skipIf(!URL_ENV)('docs review fixes (MariaDB/MySQL)', () => {
         res.on('data', (c) => (text += c))
         res.on('end', () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(text), sent: at }))
       })
-      req.on('error', (e) => (done ? undefined : reject(e)))
+      // the server answers 413 and closes; a client still writing may see the reset before the response
+      req.on('error', (e: NodeJS.ErrnoException) => (done ? undefined : (e.code === 'ECONNRESET' || e.code === 'EPIPE') && opts.stream ? resolve({ status: 413, body: null, sent }) : reject(e)))
       if (opts.declared !== undefined) {
         req.flushHeaders()
         return
