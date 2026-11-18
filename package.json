@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "start": "node server/main.ts",
     "test": "vitest run",
+    "docs:gen": "vitest run scripts/docs",
     "typecheck": "tsc -b --noEmit && tsc -p tsconfig.server.json",
     "typecheck:server": "tsc -p tsconfig.server.json"
   },

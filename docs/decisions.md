@@ -21,7 +21,7 @@ engine. The formula editor needs DOM text-editing tooling. Flutter would only wi
 **Decision.** A TypeScript engine with Excel-style syntax and familiar function names, written from documented behaviour.
 **Why.** Microsoft's Power Fx is MIT-licensed but C#-only and heavy to embed in a browser and Android WebView.
 **Consequences.** Simplifications: no full static type inference, one locale for syntax, `;` chaining only in action
-properties, two-argument and multi-pair IfError, enum names shadow variables (Size, Icon, Layout...). 94+ functions,
+properties, two-argument and multi-pair IfError, enum names shadow variables (Size, Icon, Layout...). 151 built-in functions (see docs/reference/formulas.md),
 user-defined functions and named formulas. Behaviour differences must be documented in the formula reference.
 **Status.** Active.
 
