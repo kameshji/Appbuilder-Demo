@@ -1,0 +1,18 @@
+{
+  "name": "appbuilder-website",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Static marketing website. Plain HTML, CSS and a little JavaScript, built by a zero-dependency Node script.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "node build.mjs",
+    "preview": "node tools/serve.mjs dist 8080",
+    "check:links": "node tools/check-links.mjs",
+    "check": "node build.mjs && node tools/check-links.mjs",
+    "og": "node tools/make-og.mjs",
+    "images": "python3 -I tools/optimise-images.py",
+    "review": "node tools/review.mjs"
+  }
+}

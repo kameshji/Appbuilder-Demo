@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 40" role="img" aria-labelledby="t">
+<title id="t">Appbuilder placeholder logo (not final)</title>
+<!-- PLACEHOLDER WORDMARK. Original, simple and deliberately plain: a 2x2 grid of cells where one cell has become a
+     button (a sheet becoming an app). Replace when a real name and identity exist. Do not trademark this. -->
+<rect x="2" y="4" width="32" height="32" rx="8" fill="#0b6b4d"/>
+<rect x="8.5" y="10.5" width="8.5" height="8.5" rx="2" fill="#fff"/>
+<rect x="19" y="10.5" width="8.5" height="8.5" rx="2" fill="#fff" opacity=".55"/>
+<rect x="8.5" y="21" width="8.5" height="8.5" rx="2" fill="#fff" opacity=".55"/>
+<circle cx="23.3" cy="25.3" r="4.4" fill="#fbeedb"/>
+<text x="44" y="27.5" font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="20" font-weight="700" letter-spacing="-0.4" fill="#16201c">Appbuilder</text>
+</svg>

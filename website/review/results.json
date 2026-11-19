@@ -1,0 +1,1413 @@
+[
+ {
+  "page": "/",
+  "width": 360,
+  "bytes": 153899,
+  "bytesNoShots": 80245,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 14891,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 55,
+   "incomplete": [
+    "color-contrast"
+   ]
+  }
+ },
+ {
+  "page": "/",
+  "width": 768,
+  "bytes": 269797,
+  "bytesNoShots": 79441,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 11869,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/",
+  "width": 1280,
+  "bytes": 153095,
+  "bytesNoShots": 79441,
+  "firstView": 117113,
+  "cls": 0,
+  "overflow": 0,
+  "h": 9348,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 55,
+   "incomplete": [
+    "color-contrast"
+   ],
+   "darkContrast": []
+  }
+ },
+ {
+  "page": "/",
+  "width": 1920,
+  "bytes": 153095,
+  "bytesNoShots": 79441,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 10033,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/hi/",
+  "width": 360,
+  "bytes": 109194,
+  "bytesNoShots": 72326,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 7765,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 48,
+   "incomplete": [
+    "color-contrast"
+   ]
+  }
+ },
+ {
+  "page": "/hi/",
+  "width": 768,
+  "bytes": 159506,
+  "bytesNoShots": 72326,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 6263,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/hi/",
+  "width": 1280,
+  "bytes": 109194,
+  "bytesNoShots": 72326,
+  "firstView": 109998,
+  "cls": 0,
+  "overflow": 0,
+  "h": 4884,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 49,
+   "incomplete": [
+    "color-contrast"
+   ],
+   "darkContrast": []
+  }
+ },
+ {
+  "page": "/hi/",
+  "width": 1920,
+  "bytes": 109194,
+  "bytesNoShots": 72326,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 5237,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/product/",
+  "width": 360,
+  "bytes": 55430,
+  "bytesNoShots": 55430,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3862,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 36,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/product/",
+  "width": 768,
+  "bytes": 55430,
+  "bytesNoShots": 55430,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2551,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/product/",
+  "width": 1280,
+  "bytes": 55430,
+  "bytesNoShots": 55430,
+  "firstView": 56234,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1977,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 37,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/product/",
+  "width": 1920,
+  "bytes": 55430,
+  "bytesNoShots": 55430,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2100,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/product/apps-studio/",
+  "width": 360,
+  "bytes": 102336,
+  "bytesNoShots": 55882,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 4926,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 38,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/product/apps-studio/",
+  "width": 768,
+  "bytes": 197807,
+  "bytesNoShots": 55882,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 4534,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/product/apps-studio/",
+  "width": 1280,
+  "bytes": 102336,
+  "bytesNoShots": 55882,
+  "firstView": 103140,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3250,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 39,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/product/apps-studio/",
+  "width": 1920,
+  "bytes": 102336,
+  "bytesNoShots": 55882,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3422,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/product/data-security/",
+  "width": 360,
+  "bytes": 137717,
+  "bytesNoShots": 58511,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 6406,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 38,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/product/data-security/",
+  "width": 768,
+  "bytes": 284582,
+  "bytesNoShots": 58511,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 6212,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/product/data-security/",
+  "width": 1280,
+  "bytes": 137717,
+  "bytesNoShots": 58511,
+  "firstView": 119415,
+  "cls": 0,
+  "overflow": 0,
+  "h": 4282,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 39,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/product/data-security/",
+  "width": 1920,
+  "bytes": 137717,
+  "bytesNoShots": 58511,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 4537,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/product/automation/",
+  "width": 360,
+  "bytes": 109166,
+  "bytesNoShots": 56154,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 5035,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 38,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/product/automation/",
+  "width": 768,
+  "bytes": 201752,
+  "bytesNoShots": 56154,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 4654,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/product/automation/",
+  "width": 1280,
+  "bytes": 109166,
+  "bytesNoShots": 56154,
+  "firstView": 109970,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3403,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 39,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/product/automation/",
+  "width": 1920,
+  "bytes": 109166,
+  "bytesNoShots": 56154,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3574,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/product/collaboration/",
+  "width": 360,
+  "bytes": 89314,
+  "bytesNoShots": 55551,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 5010,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 38,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/product/collaboration/",
+  "width": 768,
+  "bytes": 102480,
+  "bytesNoShots": 55551,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 4974,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/product/collaboration/",
+  "width": 1280,
+  "bytes": 89314,
+  "bytesNoShots": 55551,
+  "firstView": 90118,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3622,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 39,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/product/collaboration/",
+  "width": 1920,
+  "bytes": 89314,
+  "bytesNoShots": 55551,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3826,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/product/admin-operations/",
+  "width": 360,
+  "bytes": 139009,
+  "bytesNoShots": 56873,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 5572,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 38,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/product/admin-operations/",
+  "width": 768,
+  "bytes": 285764,
+  "bytesNoShots": 56873,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 5343,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/product/admin-operations/",
+  "width": 1280,
+  "bytes": 139009,
+  "bytesNoShots": 56873,
+  "firstView": 104395,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3760,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 39,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/product/admin-operations/",
+  "width": 1920,
+  "bytes": 139009,
+  "bytesNoShots": 56873,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3961,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/solutions/",
+  "width": 360,
+  "bytes": 52196,
+  "bytesNoShots": 52196,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2721,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 36,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/solutions/",
+  "width": 768,
+  "bytes": 52196,
+  "bytesNoShots": 52196,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1936,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/solutions/",
+  "width": 1280,
+  "bytes": 52196,
+  "bytesNoShots": 52196,
+  "firstView": 53000,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1632,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 37,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/solutions/",
+  "width": 1920,
+  "bytes": 52196,
+  "bytesNoShots": 52196,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1747,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/solutions/manufacturing/",
+  "width": 360,
+  "bytes": 70631,
+  "bytesNoShots": 56277,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 5970,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 38,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/solutions/manufacturing/",
+  "width": 768,
+  "bytes": 97295,
+  "bytesNoShots": 56277,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 4518,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/solutions/manufacturing/",
+  "width": 1280,
+  "bytes": 70631,
+  "bytesNoShots": 56277,
+  "firstView": 71435,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3422,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 39,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/solutions/manufacturing/",
+  "width": 1920,
+  "bytes": 70631,
+  "bytesNoShots": 56277,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3622,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/solutions/other-teams/",
+  "width": 360,
+  "bytes": 52759,
+  "bytesNoShots": 52759,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3353,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 36,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/solutions/other-teams/",
+  "width": 768,
+  "bytes": 52759,
+  "bytesNoShots": 52759,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2349,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/solutions/other-teams/",
+  "width": 1280,
+  "bytes": 52759,
+  "bytesNoShots": 52759,
+  "firstView": 53563,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1980,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 37,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/solutions/other-teams/",
+  "width": 1920,
+  "bytes": 52759,
+  "bytesNoShots": 52759,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2103,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/pricing/",
+  "width": 360,
+  "bytes": 63590,
+  "bytesNoShots": 63590,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 7957,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 47,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/pricing/",
+  "width": 768,
+  "bytes": 63590,
+  "bytesNoShots": 63590,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 6002,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/pricing/",
+  "width": 1280,
+  "bytes": 63590,
+  "bytesNoShots": 63590,
+  "firstView": 64394,
+  "cls": 0,
+  "overflow": 0,
+  "h": 4472,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 48,
+   "incomplete": [],
+   "darkContrast": []
+  }
+ },
+ {
+  "page": "/pricing/",
+  "width": 1920,
+  "bytes": 63590,
+  "bytesNoShots": 63590,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 4704,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/compare/",
+  "width": 360,
+  "bytes": 52283,
+  "bytesNoShots": 52283,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3045,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 36,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/compare/",
+  "width": 768,
+  "bytes": 52283,
+  "bytesNoShots": 52283,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2202,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/compare/",
+  "width": 1280,
+  "bytes": 52283,
+  "bytesNoShots": 52283,
+  "firstView": 53087,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1817,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 37,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/compare/",
+  "width": 1920,
+  "bytes": 52283,
+  "bytesNoShots": 52283,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1940,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/compare/power-platform/",
+  "width": 360,
+  "bytes": 58684,
+  "bytesNoShots": 58684,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 7550,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 43,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/compare/power-platform/",
+  "width": 768,
+  "bytes": 58684,
+  "bytesNoShots": 58684,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 4191,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/compare/power-platform/",
+  "width": 1280,
+  "bytes": 58684,
+  "bytesNoShots": 58684,
+  "firstView": 59488,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3296,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 43,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/compare/power-platform/",
+  "width": 1920,
+  "bytes": 58684,
+  "bytesNoShots": 58684,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3431,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/compare/zoho-creator/",
+  "width": 360,
+  "bytes": 57099,
+  "bytesNoShots": 57099,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 6115,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 43,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/compare/zoho-creator/",
+  "width": 768,
+  "bytes": 57099,
+  "bytesNoShots": 57099,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3727,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/compare/zoho-creator/",
+  "width": 1280,
+  "bytes": 57099,
+  "bytesNoShots": 57099,
+  "firstView": 57903,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3020,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 43,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/compare/zoho-creator/",
+  "width": 1920,
+  "bytes": 57099,
+  "bytesNoShots": 57099,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3155,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/compare/erpnext/",
+  "width": 360,
+  "bytes": 56334,
+  "bytesNoShots": 56334,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 5636,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 43,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/compare/erpnext/",
+  "width": 768,
+  "bytes": 56334,
+  "bytesNoShots": 56334,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3513,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/compare/erpnext/",
+  "width": 1280,
+  "bytes": 56334,
+  "bytesNoShots": 56334,
+  "firstView": 57138,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2795,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 43,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/compare/erpnext/",
+  "width": 1920,
+  "bytes": 56334,
+  "bytesNoShots": 56334,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2930,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/compare/excel-whatsapp/",
+  "width": 360,
+  "bytes": 55501,
+  "bytesNoShots": 55501,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 5028,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 43,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/compare/excel-whatsapp/",
+  "width": 768,
+  "bytes": 55501,
+  "bytesNoShots": 55501,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3150,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/compare/excel-whatsapp/",
+  "width": 1280,
+  "bytes": 55501,
+  "bytesNoShots": 55501,
+  "firstView": 56305,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2578,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 43,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/compare/excel-whatsapp/",
+  "width": 1920,
+  "bytes": 55501,
+  "bytesNoShots": 55501,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2713,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/pilot/",
+  "width": 360,
+  "bytes": 60412,
+  "bytesNoShots": 60412,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 5427,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 44,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/pilot/",
+  "width": 768,
+  "bytes": 60412,
+  "bytesNoShots": 60412,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 4041,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/pilot/",
+  "width": 1280,
+  "bytes": 60412,
+  "bytesNoShots": 60412,
+  "firstView": 61216,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3438,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 44,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/pilot/",
+  "width": 1920,
+  "bytes": 60412,
+  "bytesNoShots": 60412,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3576,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/contact/",
+  "width": 360,
+  "bytes": 54235,
+  "bytesNoShots": 54235,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3130,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 43,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/contact/",
+  "width": 768,
+  "bytes": 54235,
+  "bytesNoShots": 54235,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2313,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/contact/",
+  "width": 1280,
+  "bytes": 54235,
+  "bytesNoShots": 54235,
+  "firstView": 55039,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1821,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 43,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/contact/",
+  "width": 1920,
+  "bytes": 54235,
+  "bytesNoShots": 54235,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1886,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/docs/",
+  "width": 360,
+  "bytes": 54232,
+  "bytesNoShots": 54232,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2946,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 36,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/docs/",
+  "width": 768,
+  "bytes": 54232,
+  "bytesNoShots": 54232,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2147,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/docs/",
+  "width": 1280,
+  "bytes": 54232,
+  "bytesNoShots": 54232,
+  "firstView": 55036,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1632,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 37,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/docs/",
+  "width": 1920,
+  "bytes": 54232,
+  "bytesNoShots": 54232,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1710,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/security/",
+  "width": 360,
+  "bytes": 53493,
+  "bytesNoShots": 53493,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3864,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 36,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/security/",
+  "width": 768,
+  "bytes": 53493,
+  "bytesNoShots": 53493,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2705,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/security/",
+  "width": 1280,
+  "bytes": 53493,
+  "bytesNoShots": 53493,
+  "firstView": 54297,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2436,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 37,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/security/",
+  "width": 1920,
+  "bytes": 53493,
+  "bytesNoShots": 53493,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2506,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/about/",
+  "width": 360,
+  "bytes": 51989,
+  "bytesNoShots": 51989,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2939,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 38,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/about/",
+  "width": 768,
+  "bytes": 51989,
+  "bytesNoShots": 51989,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2184,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/about/",
+  "width": 1280,
+  "bytes": 51989,
+  "bytesNoShots": 51989,
+  "firstView": 52793,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1910,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 39,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/about/",
+  "width": 1920,
+  "bytes": 51989,
+  "bytesNoShots": 51989,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1978,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/legal/privacy/",
+  "width": 360,
+  "bytes": 52302,
+  "bytesNoShots": 52302,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 3173,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 40,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/legal/privacy/",
+  "width": 768,
+  "bytes": 52302,
+  "bytesNoShots": 52302,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2460,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/legal/privacy/",
+  "width": 1280,
+  "bytes": 52302,
+  "bytesNoShots": 52302,
+  "firstView": 53106,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2239,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 41,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/legal/privacy/",
+  "width": 1920,
+  "bytes": 52302,
+  "bytesNoShots": 52302,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2311,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/legal/terms/",
+  "width": 360,
+  "bytes": 51315,
+  "bytesNoShots": 51315,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2516,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 40,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/legal/terms/",
+  "width": 768,
+  "bytes": 51315,
+  "bytesNoShots": 51315,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 2010,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/legal/terms/",
+  "width": 1280,
+  "bytes": 51315,
+  "bytesNoShots": 51315,
+  "firstView": 52119,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1775,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 41,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/legal/terms/",
+  "width": 1920,
+  "bytes": 51315,
+  "bytesNoShots": 51315,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1846,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/404.html",
+  "width": 360,
+  "bytes": 50037,
+  "bytesNoShots": 50037,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1759,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 36,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/404.html",
+  "width": 768,
+  "bytes": 50037,
+  "bytesNoShots": 50037,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 1248,
+  "errors": [],
+  "axe": null
+ },
+ {
+  "page": "/404.html",
+  "width": 1280,
+  "bytes": 50037,
+  "bytesNoShots": 50037,
+  "firstView": 50841,
+  "cls": 0,
+  "overflow": 0,
+  "h": 928,
+  "errors": [],
+  "axe": {
+   "violations": [],
+   "passes": 37,
+   "incomplete": []
+  }
+ },
+ {
+  "page": "/404.html",
+  "width": 1920,
+  "bytes": 50037,
+  "bytesNoShots": 50037,
+  "firstView": null,
+  "cls": 0,
+  "overflow": 0,
+  "h": 974,
+  "errors": [],
+  "axe": null
+ }
+]

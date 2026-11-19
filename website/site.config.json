@@ -1,0 +1,63 @@
+{
+  "_comment": "One place for everything the owner is likely to change. Rename the product by changing site.name. See docs/launch/website.md.",
+  "site": {
+    "name": "Appbuilder",
+    "nameIsPlaceholder": true,
+    "tagline": "Business apps for your whole team, on your own server.",
+    "taglineHi": "आपकी पूरी टीम के लिए बिज़नेस ऐप्स, आपके अपने सर्वर पर।",
+    "domain": "https://appbuilder.example.com",
+    "basePath": "",
+    "version": "0.5.0",
+    "lastUpdated": "2026-11-19",
+    "contactEmail": "hello@example.com",
+    "securityEmail": "security@example.com",
+    "founderName": "the founder",
+    "location": "Bhopal, India",
+    "githubRepo": "https://github.com/kameshji/appbuilder-demo",
+    "docsBaseUrl": "https://github.com/kameshji/appbuilder-demo/blob/main/docs/"
+  },
+  "cta": {
+    "primaryLabel": "Request a pilot",
+    "primaryHref": "/pilot/",
+    "secondaryLabel": "See how it works",
+    "secondaryHref": "/#how-it-works",
+    "demoLabel": "Book a demo",
+    "demoHref": "/contact/?topic=demo"
+  },
+  "forms": {
+    "_comment": "endpoint: null keeps forms on the mailto: fallback. Set to an HTTPS URL that accepts a POST of form fields to switch every form to it. Only do that once the privacy notice names the processor.",
+    "endpoint": null,
+    "method": "POST",
+    "mailto": "hello@example.com"
+  },
+  "pricing": {
+    "_comment": "Set price to a number (per year, in currency) to show it; null shows 'Talk to us'. pilotNote shows while any price is null.",
+    "currency": "INR",
+    "currencySymbol": "₹",
+    "period": "per install, per year",
+    "pilotNote": "Pilot pricing: talk to us. Prices are not decided yet; design partners get pilot terms in writing before anything is installed.",
+    "bands": [
+      { "id": "s25", "name": "Up to 25 people", "seats": 25, "price": null, "note": "One install, up to 25 named users with passes." },
+      { "id": "s50", "name": "Up to 50 people", "seats": 50, "price": null, "note": "One install, up to 50 named users with passes.", "highlight": true },
+      { "id": "s100", "name": "Up to 100 people", "seats": 100, "price": null, "note": "One install, up to 100 named users with passes." }
+    ],
+    "passes": [
+      { "name": "Full user", "price": null, "desc": "Builds and uses apps (with the Maker role), sees every app their roles allow." },
+      { "name": "Operator", "price": null, "desc": "Uses the apps they are given: data entry, checklists, their own tasks." },
+      { "name": "External", "price": null, "desc": "Someone outside the organisation, such as a supplier or customer. Needs the external portal, which is planned." }
+    ]
+  },
+  "roi": {
+    "_comment": "Defaults for the ROI estimator. All are visible and editable by the visitor.",
+    "people": 8,
+    "hoursPerWeek": 4,
+    "share": 30,
+    "hourlyCost": 250,
+    "weeksPerYear": 48
+  },
+  "analytics": {
+    "_comment": "null = no analytics script at all. See docs/launch/website.md before turning this on.",
+    "scriptSrc": null,
+    "domainAttr": null
+  }
+}

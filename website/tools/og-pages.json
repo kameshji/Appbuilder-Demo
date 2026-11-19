@@ -1,0 +1,152 @@
+[
+ {
+  "slug": "home",
+  "title": "Business apps for your whole team, on your own server",
+  "lang": "en",
+  "path": "/"
+ },
+ {
+  "slug": "home-hi",
+  "title": "आपकी पूरी टीम के लिए बिज़नेस ऐप्स, आपके अपने सर्वर पर",
+  "lang": "hi",
+  "path": "/hi/"
+ },
+ {
+  "slug": "product",
+  "title": "Product overview",
+  "lang": "en",
+  "path": "/product/"
+ },
+ {
+  "slug": "apps-studio",
+  "title": "Apps and Studio",
+  "lang": "en",
+  "path": "/product/apps-studio/"
+ },
+ {
+  "slug": "data-security",
+  "title": "Data and security",
+  "lang": "en",
+  "path": "/product/data-security/"
+ },
+ {
+  "slug": "automation",
+  "title": "Automation: flows and approvals (in progress)",
+  "lang": "en",
+  "path": "/product/automation/"
+ },
+ {
+  "slug": "collaboration",
+  "title": "Collaboration",
+  "lang": "en",
+  "path": "/product/collaboration/"
+ },
+ {
+  "slug": "admin-operations",
+  "title": "Admin and operations",
+  "lang": "en",
+  "path": "/product/admin-operations/"
+ },
+ {
+  "slug": "solutions",
+  "title": "Solutions",
+  "lang": "en",
+  "path": "/solutions/"
+ },
+ {
+  "slug": "manufacturing",
+  "title": "For small manufacturers",
+  "lang": "en",
+  "path": "/solutions/manufacturing/"
+ },
+ {
+  "slug": "other-teams",
+  "title": "For other teams that outgrew Excel",
+  "lang": "en",
+  "path": "/solutions/other-teams/"
+ },
+ {
+  "slug": "pricing",
+  "title": "Pricing",
+  "lang": "en",
+  "path": "/pricing/"
+ },
+ {
+  "slug": "compare",
+  "title": "Comparisons",
+  "lang": "en",
+  "path": "/compare/"
+ },
+ {
+  "slug": "compare-power-platform",
+  "title": "Compared with Microsoft Power Platform",
+  "lang": "en",
+  "path": "/compare/power-platform/"
+ },
+ {
+  "slug": "compare-zoho-creator",
+  "title": "Compared with Zoho Creator",
+  "lang": "en",
+  "path": "/compare/zoho-creator/"
+ },
+ {
+  "slug": "compare-erpnext",
+  "title": "Compared with ERPNext",
+  "lang": "en",
+  "path": "/compare/erpnext/"
+ },
+ {
+  "slug": "compare-excel-whatsapp",
+  "title": "Compared with Excel and WhatsApp",
+  "lang": "en",
+  "path": "/compare/excel-whatsapp/"
+ },
+ {
+  "slug": "pilot",
+  "title": "Pilot programme",
+  "lang": "en",
+  "path": "/pilot/"
+ },
+ {
+  "slug": "contact",
+  "title": "Contact",
+  "lang": "en",
+  "path": "/contact/"
+ },
+ {
+  "slug": "docs",
+  "title": "Documentation",
+  "lang": "en",
+  "path": "/docs/"
+ },
+ {
+  "slug": "security",
+  "title": "Security",
+  "lang": "en",
+  "path": "/security/"
+ },
+ {
+  "slug": "about",
+  "title": "About",
+  "lang": "en",
+  "path": "/about/"
+ },
+ {
+  "slug": "default",
+  "title": "Privacy notice (draft)",
+  "lang": "en",
+  "path": "/legal/privacy/"
+ },
+ {
+  "slug": "default",
+  "title": "Terms of use (draft)",
+  "lang": "en",
+  "path": "/legal/terms/"
+ },
+ {
+  "slug": "default",
+  "title": "Page not found",
+  "lang": "en",
+  "path": "/404.html"
+ }
+]

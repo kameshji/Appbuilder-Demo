@@ -1,0 +1,12 @@
+{
+  "skip": "Skip to content",
+  "banner": "{name} is a working name and version {version} is an early product. No customers yet; the pilot programme is open.",
+  "bannerLink": "Where we are",
+  "mainNav": "Main",
+  "theme": "Switch between dark and light theme",
+  "menu": "Menu",
+  "footerAbout": "{name} is a self-hosted business app platform for organisations of about 20 to 50 people. Built in Bhopal, India.",
+  "footerNoTracking": "This site sets no cookies and uses no trackers.",
+  "ctaPrimary": "Request a pilot",
+  "ctaDemo": "Book a demo"
+}

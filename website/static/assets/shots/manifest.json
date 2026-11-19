@@ -1,0 +1,287 @@
+{
+ "table-import-csv": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "table-import-csv-720.webp",
+   "1440": "table-import-csv-1440.webp"
+  }
+ },
+ "home-start-with-data": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "home-start-with-data-720.webp",
+   "1440": "home-start-with-data-1440.webp"
+  }
+ },
+ "studio-start-with-data": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "studio-start-with-data-720.webp",
+   "1440": "studio-start-with-data-1440.webp"
+  }
+ },
+ "studio-filter-formula": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "studio-filter-formula-720.webp",
+   "1440": "studio-filter-formula-1440.webp"
+  }
+ },
+ "preview-checked-out": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "preview-checked-out-720.webp",
+   "1440": "preview-checked-out-1440.webp"
+  }
+ },
+ "studio-button-onselect": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "studio-button-onselect-720.webp",
+   "1440": "studio-button-onselect-1440.webp"
+  }
+ },
+ "user-mode-tabs": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "user-mode-tabs-720.webp",
+   "1440": "user-mode-tabs-1440.webp"
+  }
+ },
+ "portal-apps": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "portal-apps-720.webp",
+   "1440": "portal-apps-1440.webp"
+  }
+ },
+ "portal-tables": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "portal-tables-720.webp",
+   "1440": "portal-tables-1440.webp"
+  }
+ },
+ "roles-who-can-see": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "roles-who-can-see-720.webp",
+   "1440": "roles-who-can-see-1440.webp"
+  }
+ },
+ "restricted-supervisor-grid": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "restricted-supervisor-grid-720.webp",
+   "1440": "restricted-supervisor-grid-1440.webp"
+  }
+ },
+ "roles-rule-builder": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "roles-rule-builder-720.webp",
+   "1440": "roles-rule-builder-1440.webp"
+  }
+ },
+ "roles-test-as-user-why": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "roles-test-as-user-why-720.webp",
+   "1440": "roles-test-as-user-why-1440.webp"
+  }
+ },
+ "events-validation-rule": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "events-validation-rule-720.webp",
+   "1440": "events-validation-rule-1440.webp"
+  }
+ },
+ "events-formula-column": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "events-formula-column-720.webp",
+   "1440": "events-formula-column-1440.webp"
+  }
+ },
+ "datamodel-canvas": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "datamodel-canvas-720.webp",
+   "1440": "datamodel-canvas-1440.webp"
+  }
+ },
+ "identity-second-step": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "identity-second-step-720.webp",
+   "1440": "identity-second-step-1440.webp"
+  }
+ },
+ "admin-audit": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "admin-audit-720.webp",
+   "1440": "admin-audit-1440.webp"
+  }
+ },
+ "flows-list": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "flows-list-720.webp",
+   "1440": "flows-list-1440.webp"
+  }
+ },
+ "flows-run-detail": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "flows-run-detail-720.webp",
+   "1440": "flows-run-detail-1440.webp"
+  }
+ },
+ "flows-run-history": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "flows-run-history-720.webp",
+   "1440": "flows-run-history-1440.webp"
+  }
+ },
+ "reports-builder": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "reports-builder-720.webp",
+   "1440": "reports-builder-1440.webp"
+  }
+ },
+ "core-timeline": {
+  "w": 680,
+  "h": 620,
+  "files": {
+   "680": "core-timeline-680.webp"
+  }
+ },
+ "core-tasks": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "core-tasks-720.webp",
+   "1440": "core-tasks-1440.webp"
+  }
+ },
+ "live-presence-app": {
+  "w": 540,
+  "h": 260,
+  "files": {
+   "540": "live-presence-app-540.webp"
+  }
+ },
+ "live-notifications": {
+  "w": 600,
+  "h": 420,
+  "files": {
+   "600": "live-notifications-600.webp"
+  }
+ },
+ "core-mentions": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "core-mentions-720.webp",
+   "1440": "core-mentions-1440.webp"
+  }
+ },
+ "environments-admin": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "environments-admin-720.webp",
+   "1440": "environments-admin-1440.webp"
+  }
+ },
+ "solutions-deploy-plan": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "solutions-deploy-plan-720.webp",
+   "1440": "solutions-deploy-plan-1440.webp"
+  }
+ },
+ "backups-list": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "backups-list-720.webp",
+   "1440": "backups-list-1440.webp"
+  }
+ },
+ "backups-restore-dialog": {
+  "w": 768,
+  "h": 810,
+  "files": {
+   "720": "backups-restore-dialog-720.webp",
+   "768": "backups-restore-dialog-768.webp"
+  }
+ },
+ "admin-updates": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "admin-updates-720.webp",
+   "1440": "admin-updates-1440.webp"
+  }
+ },
+ "admin-logs": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "admin-logs-720.webp",
+   "1440": "admin-logs-1440.webp"
+  }
+ },
+ "setup-admin": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "setup-admin-720.webp",
+   "1440": "setup-admin-1440.webp"
+  }
+ },
+ "portal-connections": {
+  "w": 1440,
+  "h": 900,
+  "files": {
+   "720": "portal-connections-720.webp",
+   "1440": "portal-connections-1440.webp"
+  }
+ },
+ "studio-filter-formula-crop": {
+  "w": 1150,
+  "h": 700,
+  "files": {
+   "720": "studio-filter-formula-crop-720.webp",
+   "1150": "studio-filter-formula-crop-1150.webp"
+  }
+ }
+}
