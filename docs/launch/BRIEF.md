@@ -10,7 +10,10 @@ Excel-like formula language. Built-in: database with role-based, row-level and c
 environments (dev/test/production) with deploy between them; validation rules, formula columns, rollups;
 visual data model designer; live updates; tasks, comments, mentions, record timelines; notifications;
 scheduled reports by email; backup and restore; two-step verification; installers for Windows and Linux.
-In progress: workflow automation (flows) and approvals. Planned, NOT built: phone layouts, PDF output,
+Built but early: workflow automation (flows run on triggers and schedules with run history; they are edited as
+text today), connector actions (HTTP, email, incoming webhooks), email notifications. Apps can be designed at
+phone and tablet sizes. In progress: the visual flow designer and approvals. Planned, NOT built: a
+phone-optimised experience for operators (offline, camera, barcode), PDF output,
 dashboards, WhatsApp, templates marketplace with CRM / ERP / manufacturing pack, team chat, document /
 sheet / slide editors, mail client, AI agents, external portal sites, single sign-on.
 

@@ -96,3 +96,8 @@ Carried forward (open items, none blocks the exit check):
   and jobs pages (`events.mjs`, with the new schedule editor and the rollup warning) were refreshed; the Users page's
   directory visibility and the Backups page's export panel have no screenshot yet, and the other capture scripts
   (backups, identity, environments, organisation, data model, core data model, live) were not re-run.
+
+
+## Exit item 5 closed (19 Nov 2026)
+
+The Windows installer was run for real on a Windows 11 PC (PowerShell 5.1): Node 24, PostgreSQL 17 on port 5433, both services running, health ok, setup wizard at the administrator step. Three defects found by the run were fixed (release scripts missing from git, npm spawn on Windows, initdb under a restricted token). Final run: 75 s with downloads cached. Not yet exercised on Windows: HTTPS options, updater and rollback, uninstall, offline bundle.

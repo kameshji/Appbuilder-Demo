@@ -1,5 +1,8 @@
 # Sector research: small and mid-size manufacturing (India focus)
 
+> **Product facts in this research are dated 18 Nov 2026 (version 0.3).** Since then the platform moved to PostgreSQL, removed the 5,000-row limit, and added password reset, two-step verification, environments, flows and more. For current product facts use `docs/launch/BRIEF.md`. The market findings are unchanged.
+
+
 Research date: 18 November 2026. Prices, laws and product status were checked on that date where a source is linked. Anything marked **Inference** is the author's judgement, not a sourced fact. Anything marked **Unverified** could not be confirmed.
 
 ## Executive summary
