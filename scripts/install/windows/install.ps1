@@ -301,13 +301,26 @@ if ($pgOurs) {
   if (-not (Test-Path -LiteralPath (Join-Path $PgData 'PG_VERSION'))) {
     Invoke-Action "initdb $PgData (UTF8, scram-sha-256)" {
       New-Item -ItemType Directory -Force -Path $PgData | Out-Null
-      Set-FolderAcl ([pscustomobject]@{ Path = $PgData; Rules = @(@{ Identity = '*S-1-5-32-544'; Rights = 'F' }, @{ Identity = '*S-1-5-18'; Rights = 'F' }) })
-      $pwFile = Join-Path $AdminDir "initdb-$PID.tmp"
+      # initdb.exe drops administrator rights (it re-runs itself with a restricted token), so the Administrators group
+      # entry does not help it: the installing user needs an explicit entry on the data folder and on the password
+      # file while initdb runs. Both entries are removed again below, and ownership goes to Administrators.
+      $meSid = '*' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+      Set-FolderAcl ([pscustomobject]@{ Path = $PgData; Rules = @(@{ Identity = '*S-1-5-32-544'; Rights = 'F' }, @{ Identity = '*S-1-5-18'; Rights = 'F' }, @{ Identity = $meSid; Rights = 'F' }) })
+      $pwDir = Join-Path $DataDir "initdb-$PID"
+      New-Item -ItemType Directory -Force -Path $pwDir | Out-Null
+      Set-FolderAcl ([pscustomobject]@{ Path = $pwDir; Rules = @(@{ Identity = '*S-1-5-18'; Rights = 'F' }, @{ Identity = $meSid; Rights = 'F' }) })
+      $pwFile = Join-Path $pwDir 'pw.tmp'
       [IO.File]::WriteAllText($pwFile, $superPassword)
       try {
         $r = Invoke-NativeCapture -Exe (Join-Path $PgHome 'bin\initdb.exe') -Arguments @('-D', $PgData, '-U', $PgSuperUser, '-E', 'UTF8', '--locale=C', '-A', 'scram-sha-256', "--pwfile=$pwFile")
         if ($r.ExitCode -ne 0) { throw "initdb failed: $($r.Output)" }
-      } finally { Remove-Item -Force -LiteralPath $pwFile -ErrorAction SilentlyContinue }
+      } finally {
+        Remove-Item -Force -Recurse -LiteralPath $pwDir -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $PgData) {
+          Invoke-Native 'icacls.exe' @($PgData, '/setowner', '*S-1-5-32-544', '/T', '/C', '/Q') | Out-Null
+          Invoke-Native 'icacls.exe' @($PgData, '/remove:g', $meSid, '/T', '/C', '/Q') | Out-Null
+        }
+      }
       Add-Content -LiteralPath (Join-Path $PgData 'postgresql.conf') -Value "`r`n# Appbuilder installer`r`nlisten_addresses = '127.0.0.1'`r`nport = $PgPort`r`n" -Encoding ASCII
     } | Out-Null
   }
