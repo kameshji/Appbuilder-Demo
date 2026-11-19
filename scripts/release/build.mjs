@@ -22,6 +22,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+
+// Windows: Node refuses to spawn .cmd files without a shell (EINVAL). All arguments here are fixed literals.
+const WIN = process.platform === 'win32'
 import { fileURLToPath } from 'node:url'
 import { listFiles, sha256File, writeSums } from '../../server/core/update/release.ts'
 import { isExec, zipRelease } from './lib.mjs'
@@ -70,7 +73,7 @@ say(`Building ${name} from ${commit.slice(0, 12)}${dirty ? ' (uncommitted change
 /* ------------------------------------------------------------------ 1. web app */
 if (!opt.skipBuild) {
   say('[1/7] npm run build (typecheck + web app) ...')
-  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], { cwd: root, stdio: 'inherit' })
+  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], { cwd: root, stdio: 'inherit', shell: WIN })
 } else say('[1/7] using the existing dist/ (--skip-build)')
 if (!fs.existsSync(path.join(root, 'dist', 'index.html'))) die('dist/index.html is missing: run npm run build first')
 
@@ -144,7 +147,7 @@ copy('package.json')
 copy('package-lock.json')
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const npmEnv = { ...process.env, npm_config_audit: 'false', npm_config_fund: 'false', npm_config_update_notifier: 'false' }
-execFileSync(npm, ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], { cwd: stage, stdio: 'inherit', env: npmEnv })
+execFileSync(npm, ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], { cwd: stage, stdio: 'inherit', env: npmEnv, shell: WIN })
 const relPkg = {
   name: 'appbuilder', version, private: true, type: 'module',
   description: 'Appbuilder server release',
@@ -154,7 +157,7 @@ const relPkg = {
   overrides: pkg.overrides,
 }
 fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify(relPkg, null, 2) + '\n')
-execFileSync(npm, ['prune', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], { cwd: stage, stdio: 'inherit', env: npmEnv })
+execFileSync(npm, ['prune', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], { cwd: stage, stdio: 'inherit', env: npmEnv, shell: WIN })
 fs.rmSync(path.join(stage, 'node_modules', '.bin'), { recursive: true, force: true })
 // packages' own licence list
 const licences = []
