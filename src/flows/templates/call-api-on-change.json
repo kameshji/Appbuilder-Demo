@@ -1,0 +1,23 @@
+{
+  "id": "call-api-on-change",
+  "title": "Call an HTTP API when a row changes",
+  "description": "Send the changed row as JSON to another system through an HTTP connection.",
+  "category": "Integration",
+  "params": [
+    { "name": "table", "label": "Table", "type": "table" },
+    { "name": "connection", "label": "HTTP connection", "type": "connection", "connector": "http" },
+    { "name": "path", "label": "Path or address", "type": "text", "default": "/records" }
+  ],
+  "flow": {
+    "name": "Send {{table}} changes to an API",
+    "description": "Posts every added or changed row of {{table}}.",
+    "runAs": "owner",
+    "trigger": { "type": "table", "table": "{{table}}", "on": ["create", "update"], "coalesce": true },
+    "variables": [],
+    "settings": { "concurrency": "perRecord", "timeoutMinutes": 60, "retentionDays": 30, "onError": "fail" },
+    "steps": [
+      { "id": "post", "name": "PostRow", "kind": "http", "method": "POST", "url": "\"{{path}}\"", "body": "{operation: Trigger.Operation, row: Trigger.Record}", "auth": "api" }
+    ],
+    "connections": { "api": "{{connection}}" }
+  }
+}

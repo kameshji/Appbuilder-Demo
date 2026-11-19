@@ -1,0 +1,25 @@
+{
+  "id": "scheduled-cleanup",
+  "title": "Scheduled data clean-up",
+  "description": "Every Sunday night, delete rows older than a number of days (up to 500 per run).",
+  "category": "Schedules",
+  "params": [
+    { "name": "table", "label": "Table", "type": "table" },
+    { "name": "days", "label": "Older than (days)", "type": "number", "default": "90" },
+    { "name": "timeZone", "label": "Time zone", "type": "timezone", "default": "UTC" }
+  ],
+  "flow": {
+    "name": "Clean up old {{table}}",
+    "description": "Deletes rows of {{table}} older than {{days}} days.",
+    "runAs": "owner",
+    "trigger": { "type": "schedule", "cron": "0 2 * * 0", "timeZone": "{{timeZone}}" },
+    "variables": [],
+    "settings": { "concurrency": "singleton", "timeoutMinutes": 240, "retentionDays": 30, "onError": "fail" },
+    "steps": [
+      { "id": "old", "name": "OldRows", "kind": "data.list", "table": "{{table}}", "filter": "createdOn < DateAdd(Now(), -{{days}}, \"Days\")", "top": 500, "select": [] },
+      { "id": "each", "name": "DeleteEach", "kind": "forEach", "items": "Steps.OldRows.Output", "as": "Old", "concurrency": 4, "steps": [
+        { "id": "del", "name": "DeleteRow", "kind": "data.delete", "table": "{{table}}", "rowId": "Old" }
+      ] }
+    ]
+  }
+}

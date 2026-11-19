@@ -9,7 +9,7 @@ Decision D14 in `/home/claude/appbuilder-demo/docs/decisions.md` records the mov
    (at most `APPBUILDER_MAX_ENVIRONMENTS`, default 5). Each holds the environment's metadata tables (`ab_roles`, `ab_tables`,
    `ab_apps`, `ab_audit`, ...) **and** the data tables of its default connection (`t_orders`, `t_contacts`, ...).
 
-Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 8`),
+Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 9`),
 `/home/claude/appbuilder-demo/server/core/install-store.ts` (the `ab` registry, access and install audit)
 and, for data tables, `/home/claude/appbuilder-demo/server/connectors/postgres/sql.ts` (`createTableSql`, `sqlType`).
 
@@ -539,6 +539,19 @@ indexes on `wake_at` and `timeout_at` of waiting rows, `token_hash`, `approval_i
 `ab_flow_run_grants (flow_id, role_id)`; `ab_flow_settings.k`; `ab_flow_alerts.flow_id`. Timestamps `timestamptz`,
 documents `jsonb`. Environment copies copy `ab_flows`, `ab_flow_versions`, `ab_flow_connections`, `ab_flow_run_grants`
 (flows turned off); restores cancel active runs.
+
+### Approvals: `ab_approval_policies`, `ab_approval_requests`, `ab_approval_stages`, `ab_approval_assignments`, `ab_approval_history`, `ab_approval_delegations`, `ab_approval_links`, `ab_approval_settings` (P1 package C, version 9)
+
+DDL in `server/core/approvals/ddl.ts` (`approvalsEnvironmentDdl`, appended to `environmentDdl`); environment step 9
+`upgradeEnvironmentTo9Approvals` checks they exist. Columns and purpose: [approvals.md](approvals.md#tables-per-environment-schema-version-9).
+Keys and indexes: `ab_approval_policies.id`, unique `lower(name)`; `ab_approval_requests.id`, unique `idempotency_key`
+(where set), `(regarding_id, created_on DESC)`, `(requested_by, created_on DESC)`, partial `escalate_at` of open requests;
+`ab_approval_stages (request_id, idx)`; `ab_approval_assignments.id`, `(request_id, stage_idx)`, `(user_id, status)`,
+partial `reassigned_from`, partial `next_reminder_at` of pending rows; `ab_approval_history.id`, `(request_id, at, seq)`;
+`ab_approval_delegations.id`, `from_user`; `ab_approval_links.id`, `assignment_id`; `ab_approval_settings.k`. The core
+data model shows them as the views `sys_approval_requests`, `sys_approval_stages`, `sys_approval_assignments`,
+`sys_approval_history`, `sys_approval_delegations`, `sys_approval_policies` (group Approvals). Environment copies copy
+`ab_approval_policies` and `ab_approval_settings`; restores keep requests (see approvals.md).
 
 ## Data tables (default connection, PostgreSQL)
 

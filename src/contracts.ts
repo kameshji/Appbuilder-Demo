@@ -139,6 +139,11 @@ export interface FxHost {
    * variable named by Result (default FlowResult) when it arrives (at most Timeout seconds, at most 30).
    */
   runFlow?(flow: string, inputs: FxRecord, options: { wait: boolean; timeoutSeconds: number; result: string }): string
+  /**
+   * RequestApproval(policyOrApprovers, record, title [, details [, fields]]) (P1-C, server mode): asks for an approval and
+   * returns its id at once (chosen here, so a retry does not ask twice); the request is made asynchronously.
+   */
+  requestApproval?(input: { id: string; policy?: string; approvers?: string[]; record: string; title: string; details: string; fields: FxRecord }): string
 }
 
 export interface FxFunctionDoc {

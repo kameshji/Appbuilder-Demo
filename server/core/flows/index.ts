@@ -383,6 +383,38 @@ export function createFlows(deps: FlowsDeps) {
     })
   }
 
+  /* ---------------------------------------------------------------- approvalDecided trigger (P1-C calls it) */
+
+  /**
+   * An approval request ended: one run per enabled flow with an approvalDecided trigger that matches (policy, statuses).
+   * Idempotent: trigger key appr:<flow>:<request>. Called by the approvals module's decided job (after the decision
+   * committed), in the request's environment.
+   */
+  async function triggerApprovalDecided(env: string, p: { requestId: string; status: string; policyId?: string | null; policyName?: string | null; request: Record<string, unknown>; responses: unknown[] }): Promise<{ runIds: string[] }> {
+    return runInEnvironment(env, async () => {
+      const rows = await db().query<Row>(`SELECT id FROM ${T('ab_flows')} WHERE enabled AND suspended IS NULL AND definition->'trigger'->>'type' = 'approvalDecided'`)
+      const runIds: string[] = []
+      if (!rows.length) return { runIds }
+      if ((await store.settings()).paused) return { runIds }
+      for (const r of rows) {
+        const f = await store.get(String(r.id))
+        if (!f || f.trigger?.type !== 'approvalDecided') continue
+        const t = f.trigger
+        if (t.policy && ![p.policyId, p.policyName].some((x) => x && x.toLowerCase() === t.policy!.toLowerCase())) continue
+        if (t.statuses?.length && !t.statuses.includes(p.status as never)) continue
+        const runAs = await engine.runAsFor(f, null)
+        const created = await db().tx(() => engine.createRun({
+          flowId: f.id, flowName: f.name, flowVersion: f.version, ownerId: f.ownerId, triggerKind: 'approvalDecided', triggerKey: `appr:${f.id}:${p.requestId}`,
+          triggerSummary: `approval ${p.status}: ${String(p.request.Title ?? '')}`.slice(0, 200), trigger: { Request: jsonToFx(p.request), Responses: jsonToFx(p.responses) },
+          runAs, runAsKind: typeof f.runAs === 'object' ? 'serviceAccount' : f.runAs, variables: engine.initialVariables(f.variables), timeoutMinutes: f.settings.timeoutMinutes,
+          concurrencyKey: f.settings.concurrency === 'singleton' ? f.id : null, ...(f.settings.maxRunsPerMinute ? { maxRunsPerMinute: f.settings.maxRunsPerMinute } : {}),
+        }))
+        runIds.push(created.id)
+      }
+      return { runIds }
+    })
+  }
+
   async function webhookFlow(env: string, flowId: string): Promise<{ id: string; name: string; enabled: boolean; ownerId?: string } | null> {
     return runInEnvironment(env, async () => {
       const f = await store.get(flowId)
@@ -482,7 +514,7 @@ export function createFlows(deps: FlowsDeps) {
 
   return {
     ...service,
-    store, engine, invalidate, validate, syncSchedule, runManual, waitForResponse, canRun, canEdit, assertCanAttach, listItems, retention,
+    store, engine, invalidate, validate, syncSchedule, runManual, waitForResponse, canRun, canEdit, assertCanAttach, listItems, retention, triggerApprovalDecided,
     catalog: () => ({ steps: STEP_KINDS, triggers: TRIGGER_TYPES, limits: FLOW_LIMITS }),
     /** tests: the flow clock (Now(), delays, timeouts, deadlines) */
     setClock: engine.setClock,

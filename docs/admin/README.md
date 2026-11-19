@@ -19,6 +19,7 @@ The browser-only demo mode has no server, no real security and is not covered (s
 | [Reference data, number sequences and the financial year](reference-data.md) | You maintain currencies, Indian states and GST codes, units, holidays and settings, set up invoice numbering, or change the financial year |
 | [Environments](environments.md) | You want a sandbox next to production, move solutions between them, lock production, or give people access to an environment |
 | [Connections](connections.md) | You change the database, link existing PostgreSQL or MySQL tables, use data files or Google Sheets, add HTTP and Email connections for flows, decide who may use them, set email limits and the suppression list |
+| [Approvals](approvals.md) | Who sees approval requests, email answer links, delegation for others, escalation, audit and retention |
 | [Flows](flows.md) | You decide who may build, run and change flows, which identity they run as, pause every flow at once (kill switch), and keep their run history |
 | [Webhook security](webhook-security.md) | Another system (Tally, a payment provider, a form tool) should start a flow by calling Appbuilder |
 | [Backup and restore](backup-and-restore.md) | You need to protect the data, or recover it |

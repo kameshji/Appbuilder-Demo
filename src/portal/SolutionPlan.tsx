@@ -5,7 +5,7 @@
  * the administrator reviewed and confirmed the plan.
  */
 import { useEffect, useState } from 'react'
-import { ArrowRight, Boxes, Cable, CircleAlert, FileSpreadsheet, Info, LayoutGrid, Rocket, ShieldCheck, Table2, TriangleAlert, Workflow, Zap, type LucideIcon } from 'lucide-react'
+import { ArrowRight, Boxes, Cable, ClipboardCheck, CircleAlert, FileSpreadsheet, Info, LayoutGrid, Rocket, ShieldCheck, Table2, TriangleAlert, Workflow, Zap, type LucideIcon } from 'lucide-react'
 import { ENVIRONMENT_TYPE_LABEL, usePlatform, type SolutionDef } from '@/platform'
 import type { PlanItem, SolutionPlan } from '@/platform/http'
 import { cn } from '@/lib/utils'
@@ -18,8 +18,8 @@ import { TypeBadge } from './EnvironmentPicker'
 import { Field, errMsg, useToast } from './kit'
 import { deploy, planDeploy } from './environmentApi'
 
-const KIND_ICON: Record<PlanItem['kind'], LucideIcon> = { app: LayoutGrid, table: Table2, role: ShieldCheck, connection: Cable, file: FileSpreadsheet, event: Zap, flow: Workflow }
-const KIND_LABEL: Record<PlanItem['kind'], string> = { app: 'App', table: 'Table', role: 'Role', connection: 'Connection', file: 'Data file', event: 'Table event', flow: 'Flow' }
+const KIND_ICON: Record<PlanItem['kind'], LucideIcon> = { app: LayoutGrid, table: Table2, role: ShieldCheck, connection: Cable, file: FileSpreadsheet, event: Zap, flow: Workflow, approvalPolicy: ClipboardCheck }
+const KIND_LABEL: Record<PlanItem['kind'], string> = { app: 'App', table: 'Table', role: 'Role', connection: 'Connection', file: 'Data file', event: 'Table event', flow: 'Flow', approvalPolicy: 'Approval policy' }
 const CHANGE_STYLE: Record<PlanItem['change'], string> = {
   new: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
   changed: 'bg-sky-500/15 text-sky-700 dark:text-sky-300',
@@ -69,6 +69,15 @@ export function PlanView({ plan }: { plan: SolutionPlan }) {
             <span key={c.from}>{c.fromName ?? c.from} ({c.connector ?? 'connection'}) <ArrowRight className="inline size-3" /> {c.to ? (c.candidates.find((x) => x.id === c.to)?.name ?? c.to) : <b className="text-destructive">not chosen</b>} <span className="text-muted-foreground">for {c.usedBy.map((u) => u.flowName).join(', ')}</span></span>
           ))}
           <span className="text-muted-foreground">New flows arrive turned off. Another mapping: connectionMap in the import request (docs/guide/maker/solutions.md).</span>
+        </div>
+      )}
+      {plan.approvalPeople && plan.approvalPeople.length > 0 && (
+        <div className="grid gap-1 rounded-md border border-border p-2.5 text-xs" data-testid="plan-approval-people">
+          <span className="font-semibold">People the approval policies name</span>
+          {plan.approvalPeople.map((p) => (
+            <span key={p.email} data-testid={p.to ? 'plan-person-found' : 'plan-person-missing'}>{p.email} <ArrowRight className="inline size-3" /> {p.to ? (p.toName ?? p.to) : <b className="text-amber-700 dark:text-amber-300">no account here</b>} <span className="text-muted-foreground">in {p.usedBy.join(', ')}</span></span>
+          ))}
+          <span className="text-muted-foreground">Roles, teams, departments and managers are matched by name and code. Another person: peopleMap in the import request (email to email).</span>
         </div>
       )}
       <div className="max-h-72 overflow-auto rounded-md border border-border" data-testid="plan-items">

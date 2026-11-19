@@ -68,11 +68,11 @@ export const MODULES: readonly ModuleEntry[] = [
     ],
   },
   {
-    key: 'approvals', label: 'Approvals', icon: ClipboardCheck, modes: ['dev', 'user'], status: 'soon', phase: 'P1',
+    key: 'approvals', label: 'Approvals', icon: ClipboardCheck, modes: ['dev', 'user'], status: 'live', route: { page: 'u', id: 'approvals' }, phase: 'P1',
     tagline: 'Request, approve and track decisions.',
     details: [
-      'Approval requests from flows land in one inbox, with approve and reject in the app, by email or as a chat card.',
-      'Escalation, reminders and a full history of who decided what and when.',
+      'Approval requests from flows and apps land in one inbox, answered in the app, from the bell or with an email link (confirmed in the app).',
+      'Policies with stages, thresholds, delegation, reminders, escalation and a full history of who decided what and when.',
     ],
   },
   {

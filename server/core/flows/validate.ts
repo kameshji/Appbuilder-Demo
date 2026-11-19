@@ -13,6 +13,7 @@ import {
 import { CronError, checkTimeZone, parseCron } from '../cron.ts'
 import { blankRecord } from '../event-fx.ts'
 import { checkExpression, flowScope, open, type Problem, type ScopeData } from './expr.ts'
+import * as approvalsPlatform from '../../../src/platform/approvals.ts'
 
 export const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 const KINDS = new Set(STEP_KINDS.map((k) => k.kind))
@@ -71,6 +72,11 @@ export function triggerSample(t: FlowDefinition['trigger'], tables: TableDef[]):
       return { Inputs: inputs, User: user }
     }
     case 'webhook': return { Body: open({}), Query: open({}), Headers: open({}), ReceivedOn: new Date(0), DeliveryId: '' }
+    // P1-C
+    case 'approvalDecided': return {
+      Request: { Id: '', Title: '', Status: '', Outcome: '', RequestedBy: '', RequestedByEmail: '', Policy: '', RegardingTable: '', RegardingId: '', CompletedOn: new Date(0), Fields: open({}) },
+      Responses: [{ Approver: '', Name: '', Response: '', Comment: '', Time: null, Stage: 0, UserId: '' }],
+    }
     default: return open({})
   }
 }
@@ -88,7 +94,10 @@ export function outputSample(s: Step, tables: TableDef[]): FxValue {
     case 'forEach': return { Count: 0, Succeeded: 0, Failed: 0 }
     case 'until': return { Iterations: 0 }
     case 'scope': return { Status: '' }
-    case 'approval': return { Outcome: '', Responses: [], ApprovalId: '', CompletedOn: null, Comments: '' }
+    case 'approval': return {
+      Outcome: '', Status: '', Responses: [{ Approver: '', Name: '', Response: '', Comment: '', Time: null, Stage: 0, UserId: '' }],
+      Approvers: [{ Approver: '', Name: '', Stage: 0, Source: '', Status: '' }], ApprovalId: '', CompletedOn: null, Comments: '',
+    }
     case 'delay': return { ResumedOn: new Date(0) }
     case 'notify': return { Delivered: [], Skipped: [] }
     case 'http': return { Status: 0, Headers: open({}), Body: open({}) }
@@ -127,7 +136,7 @@ export async function validateFlow(doc: { name?: unknown; description?: unknown;
   if (runAs !== undefined && runAs !== 'owner' && runAs !== 'triggeringUser' && !(runAs && typeof runAs === 'object' && typeof (runAs as { serviceAccount?: unknown }).serviceAccount === 'string')) {
     err('', 'runAs', 'runAs must be "owner", "triggeringUser" or { "serviceAccount": "<user id>" }.')
   }
-  if (runAs === 'triggeringUser' && (trig?.type === 'schedule' || trig?.type === 'webhook')) err('', 'runAs', `A ${trig.type === 'schedule' ? 'schedule' : 'web request'} has no triggering user: run the flow as its owner or a service account.`)
+  if (runAs === 'triggeringUser' && (trig?.type === 'schedule' || trig?.type === 'webhook' || trig?.type === 'approvalDecided')) err('', 'runAs', `A ${trig.type === 'schedule' ? 'schedule' : trig.type === 'webhook' ? 'web request' : 'decided approval'} has no triggering user: run the flow as its owner or a service account.`)
 
   // settings
   const st = doc.settings as Partial<FlowDefinition['settings']> | undefined
@@ -158,6 +167,9 @@ export async function validateFlow(doc: { name?: unknown; description?: unknown;
         if (Array.isArray(trig.on) && !trig.on.includes('update')) warn('trigger', 'columns', 'columns only filter updates; this trigger does not fire on updates.')
       }
       if (trig.coalesce !== undefined && typeof trig.coalesce !== 'boolean') err('trigger', 'coalesce', 'coalesce must be true or false.')
+    } else if (trig.type === 'approvalDecided') {
+      if (trig.policy !== undefined && (typeof trig.policy !== 'string' || !trig.policy.trim())) err('trigger', 'policy', 'policy must name an approval policy.')
+      if (trig.statuses !== undefined && (!Array.isArray(trig.statuses) || !trig.statuses.length || trig.statuses.some((x) => !['approved', 'rejected', 'completed', 'expired', 'cancelled'].includes(x)))) err('trigger', 'statuses', 'statuses must list approved, rejected, completed, expired and/or cancelled.')
     } else if (trig.type === 'schedule') {
       const hasCron = typeof trig.cron === 'string' && trig.cron.trim() !== ''
       const hasEvery = trig.everyMinutes !== undefined && trig.everyMinutes !== null
@@ -416,8 +428,26 @@ export async function validateFlow(doc: { name?: unknown; description?: unknown;
       case 'approval':
         checkFx(id, 'title', s.title, lc)
         checkFx(id, 'details', s.details, lc, false)
-        checkFx(id, 'approvers', s.approvers, lc)
-        if (s.type !== undefined && !['single', 'all', 'any', 'sequential'].includes(s.type)) err(id, 'type', 'type must be single, all, any or sequential.')
+        // P1-C: approvers may come from a policy
+        checkFx(id, 'approvers', s.approvers, lc, !s.policy)
+        if (s.policy !== undefined && (typeof s.policy !== 'string' || !s.policy.trim())) err(id, 'policy', 'policy must name an approval policy.')
+        if (s.fields !== undefined) {
+          if (!s.fields || typeof s.fields !== 'object' || Array.isArray(s.fields)) err(id, 'fields', 'fields must map labels to formulas.')
+          else for (const [k, f] of Object.entries(s.fields)) {
+            if (!k.trim() || k.length > 60) err(id, 'fields', 'Each field needs a label of at most 60 characters.')
+            checkFx(id, `fields.${k}`, f, lc)
+          }
+        }
+        {
+          const { definitionProblems } = approvalsPlatform
+          const def: Record<string, unknown> = { type: s.type ?? 'single', approvers: s.policy ? undefined : ['x@example.com'] }
+          for (const k of ['quorum', 'stages', 'dueMinutes', 'reminders', 'escalation'] as const) if (s[k] !== undefined) def[k] = s[k]
+          if (s.type === 'sequential' && !s.stages && s.policy) def.stages = [{ approvers: ['manager'] }]
+          if (s.type === 'sequential' && !s.stages && !s.policy) def.stages = undefined
+          if (def.escalation && def.dueMinutes === undefined && s.timeoutMinutes) def.dueMinutes = s.timeoutMinutes
+          for (const p of definitionProblems(def)) if (p.field !== 'approvers' || !s.policy) err(id, p.field, p.message)
+        }
+        if (s.type !== undefined && !['single', 'all', 'any', 'sequential', 'quorum'].includes(s.type)) err(id, 'type', 'type must be single, any, all, quorum or sequential.')
         if (s.options !== undefined && (!Array.isArray(s.options) || !s.options.length || s.options.some((o) => typeof o !== 'string' || !o.trim()))) err(id, 'options', 'options must be a list of texts (default Approve, Reject).')
         if (s.regarding !== undefined) {
           if (!tableOf(ctx, s.regarding?.table)) err(id, 'regarding.table', `There is no table "${String(s.regarding?.table ?? '')}".`)

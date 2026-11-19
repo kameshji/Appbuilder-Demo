@@ -211,6 +211,20 @@ function TimelineEntry({ item, onToggle, onDelete }: { item: TimelineItem; onTog
       </div>
     )
   }
+  // P1-C: approval requests about this record (shown to those who may see the request)
+  if (typeof item.data.action === 'string' && item.data.action.startsWith('approval.')) {
+    const decided = item.data.action === 'approval.decided'
+    const st = String(item.data.status ?? '')
+    return (
+      <div className="flex gap-2.5" data-testid="timeline-approval">
+        <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-muted"><History className="size-3.5" /></span>
+        <div className="min-w-0 flex-1 pt-1.5">{head(null, <>
+          {decided ? <>Approval <a className="font-medium text-primary underline-offset-2 hover:underline" href={`#u-approvals?id=${encodeURIComponent(String(item.data.approvalId))}`}>{String(item.data.title ?? '')}</a> was <span className="font-medium text-foreground" data-testid="timeline-approval-outcome">{st === 'completed' ? `answered "${String(item.data.outcome ?? '')}"` : st}{st !== 'completed' && item.data.outcome && !['Expired', 'Cancelled'].includes(String(item.data.outcome)) ? ` (${String(item.data.outcome)})` : ''}</span></>
+            : <><span className="font-medium text-foreground">{who}</span> asked for approval: <a className="text-primary underline-offset-2 hover:underline" href={`#u-approvals?id=${encodeURIComponent(String(item.data.approvalId))}`}>{String(item.data.title ?? '')}</a></>}
+        </>)}</div>
+      </div>
+    )
+  }
   const cols = (item.data.columns as string[] | undefined) ?? []
   return (
     <div className="flex gap-2.5" data-testid="timeline-event">

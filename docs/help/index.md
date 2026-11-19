@@ -26,7 +26,7 @@ everywhere, and that is what these pages describe.
 One-page cards you can print:
 
 - [Quick-start for operators](quick-start-operator.md)
-- [Quick-start for approvers](quick-start-approver.md) (**draft**: approvals are still being built)
+- [Quick-start for approvers](quick-start-approver.md): answer approvals on the Approvals page, from the bell or an email, on a phone too
 
 ## Who to ask
 

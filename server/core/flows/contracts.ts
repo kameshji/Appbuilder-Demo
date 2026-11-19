@@ -29,7 +29,7 @@ export interface ApprovalRequest {
   details?: string
   /** user ids, emails or `team:<id or code>`; resolved by C */
   approvers: string[]
-  type: 'single' | 'all' | 'any' | 'sequential'
+  type: 'single' | 'all' | 'any' | 'sequential' | 'quorum'
   /** answer options; default ['Approve', 'Reject'] */
   options: string[]
   regarding?: { tableId: string; rowId: string }
@@ -41,14 +41,28 @@ export interface ApprovalRequest {
   idempotencyKey: string
   /** a test run with dry run: C may simulate (the runtime does not call request() in dry runs) */
   dryRun?: boolean
+  /** P1-C refinements: an approval policy (name or id) whose definition applies; the step's own approvers, type and options override it */
+  policy?: string
+  /** P1-C: fields shown to approvers (label -> value), read by threshold rules */
+  fields?: Record<string, unknown>
+  /** P1-C: more of the definition from the step (quorum, stages, dueMinutes, reminders, escalation, allowSelfApproval, separationOfDuties, requireCommentOnReject) */
+  definition?: Record<string, unknown>
+  /** P1-C: false when the step did not set type (a policy's type then applies) */
+  typeGiven?: boolean
+  /** P1-C: false when the step did not set options (a policy's answers then apply) */
+  optionsGiven?: boolean
 }
 
 export interface ApprovalOutcome {
   /** the chosen option ("Approve", "Reject" ...) */
   outcome: string
-  responses?: { userId: string; name?: string; response: string; comment?: string; at: string }[]
+  responses?: { userId: string; name?: string; response: string; comment?: string; at: string; email?: string; stage?: number }[]
   comments?: string
   completedOn?: string
+  /** P1-C: approved, rejected, completed (a custom answer), expired, cancelled */
+  status?: string
+  /** P1-C: everyone asked: { Approver (email), Name, Stage, Source, Status } */
+  approvers?: { Approver: string; Name: string; Stage: number; Source: string; Status: string }[]
 }
 
 export interface ApprovalsService {

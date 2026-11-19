@@ -385,6 +385,30 @@ export function recordById(id: string): FxRecord | null | undefined {
   return null
 }
 
+/* ------------------------------------------------------------------ approvals (P1-C) */
+
+/**
+ * RequestApproval(...) from formulas: POST /api/v1/approvals with the id chosen by the formula (a retry finds the same
+ * request). Failures are reported like SendNotification's.
+ */
+export async function requestApprovalCall(input: { id: string; policy?: string; approvers?: string[]; record: string; title: string; details: string; fields: unknown }): Promise<void> {
+  try {
+    if (platformMode() !== 'server') throw new PlatformError('unavailable', 'Approvals run on the server; they are not available in demo mode.')
+    const { approvalsApi } = await import('@/approvals/api')
+    // the record may have just been written by the same formula (Patch is optimistic): wait until the writes are stored
+    await platform.tables.flush().catch(() => {})
+    await approvalsApi.create({
+      id: input.id, ...(input.policy ? { policy: input.policy } : { approvers: input.approvers ?? [] }), title: input.title, ...(input.details ? { details: input.details } : {}),
+      ...(input.fields && typeof input.fields === 'object' ? { fields: input.fields as Record<string, unknown> } : {}), ...(input.record ? { regarding: { rowId: input.record } } : {}), source: 'app',
+    })
+    // Approvals panels and pages on screen reload
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('appbuilder:approvals-changed'))
+  } catch (e) {
+    const message = `RequestApproval: ${errorMessage(e)}`
+    for (const l of [...shareErrorListeners]) l(message)
+  }
+}
+
 /* ------------------------------------------------------------------ flows (P1) */
 
 /**

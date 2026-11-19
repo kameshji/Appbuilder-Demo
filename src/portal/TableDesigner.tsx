@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Calculator, CheckCheck, Columns3, Link2, Lock, Settings2, ShieldCheck, Sigma, Table2, Trash2, UserCheck, Zap } from 'lucide-react'
+import { ArrowLeft, Calculator, CheckCheck, Columns3, Link2, Lock, Settings2, ShieldCheck, Sigma, Table2, Trash2, UserCheck, Workflow, Zap } from 'lucide-react'
+import { automate } from '@/flows/intent'
 import { EventsPanel, FormulaColumnsPanel, RollupsPanel, ValidationRulesPanel } from './TableLogic'
 import { platform, usePlatform } from '@/platform'
 import { go } from '@/router'
@@ -107,6 +108,8 @@ export function TableDesigner({ tableId }: { tableId: string }) {
             className="mt-0.5 block h-7 w-full max-w-xl rounded-md border border-transparent bg-transparent px-1.5 text-sm text-muted-foreground outline-none placeholder:text-muted-foreground/60 hover:border-border focus:border-ring focus:bg-background"
           />
         </div>
+        {/* P1 package B: start a flow on this table (server mode, own tables) */}
+        {caps.server && own && !table.system && <Button size="sm" variant="outline" className="mt-1 shrink-0" onClick={() => automate({ table: table.name })} data-testid="table-automate"><Workflow className="size-4" />Automate</Button>}
         <div className="shrink-0 pt-1.5 text-right text-xs text-muted-foreground">
           <div className="flex items-center justify-end gap-1.5">
             {conn && <span className="flex items-center gap-1" data-testid="table-connection">{(() => { const I = connectorInfo(conn.connector).icon; return <I className="size-3.5" /> })()}{conn.name}</span>}

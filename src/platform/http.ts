@@ -96,7 +96,16 @@ export interface StatusResponse {
    * needsDatabase: the setup screen may configure the database (first run). unavailable: a configured database cannot be
    * reached (the server retries in the background). incompatible: the database schema is newer than this server.
    */
-  setup: { needsDatabase: boolean; needsAdmin: boolean; unavailable?: boolean; incompatible?: boolean }
+  setup: {
+    needsDatabase: boolean; needsAdmin: boolean; unavailable?: boolean; incompatible?: boolean
+    /**
+     * while setup is needed: where the setup code is to be read. console: the window of the server (started by hand);
+     * file: the server runs as a service and writes it to its setup-code file (APPBUILDER_SETUP_CODE_FILE is set; the
+     * path is not sent). platform: so the screen can show the command for this operating system.
+     */
+    codeIn?: 'console' | 'file'
+    platform?: 'windows' | 'linux' | 'macos'
+  }
   /** true when the workspace is usable (database reachable and compatible, administrator exists) */
   ok: boolean
   /** admins only: default store description for the UI, e.g. "PostgreSQL 16.4 at 127.0.0.1:5432/appbuilder" */
@@ -313,7 +322,7 @@ export type PlanChange = 'new' | 'changed' | 'unchanged' | 'removed'
 export interface PlanColumnChange { name: string; change: 'added' | 'removed' | 'type' | 'changed'; from?: string; to?: string; destructive?: boolean }
 export interface PlanItem {
   /** event: a table event or validation rule (package G) */
-  kind: 'app' | 'table' | 'role' | 'connection' | 'file' | 'event' | 'flow'
+  kind: 'app' | 'table' | 'role' | 'connection' | 'file' | 'event' | 'flow' | 'approvalPolicy'
   id: string
   name: string
   change: PlanChange
@@ -348,5 +357,7 @@ export interface SolutionPlan {
    * choose one). Change it with `connectionMap: { <from>: <connection id> }` on the plan and import requests.
    */
   flowConnections?: { from: string; fromName?: string; connector?: string; usedBy: { flowId: string; flowName: string; ref: string }[]; to: string | null; candidates: { id: string; name: string }[] }[]
+  /** P1-C: people named by approval policies (by email): found here (to) or flagged (to null); `peopleMap` on the import changes it */
+  approvalPeople?: { email: string; to: string | null; toName?: string; usedBy: string[] }[]
 }
 export type SolutionImportResult = SolutionDef & { warnings?: string[]; plan?: SolutionPlan; backup?: { taken: boolean; message: string; id?: string; failed?: boolean } }

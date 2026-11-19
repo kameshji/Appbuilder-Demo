@@ -1,0 +1,25 @@
+{
+  "id": "copy-row-on-status",
+  "title": "Copy a row to another table when its status changes",
+  "description": "When a row's status becomes a value, add a row to another table (an archive, a log, an order book).",
+  "category": "Data",
+  "params": [
+    { "name": "table", "label": "Table to watch", "type": "table" },
+    { "name": "statusColumn", "label": "Status column", "type": "column", "of": "table", "columnTypes": ["text", "choice"] },
+    { "name": "status", "label": "When the status becomes", "type": "text", "default": "Approved" },
+    { "name": "titleColumn", "label": "Column to copy", "type": "column", "of": "table", "columnTypes": ["text", "autonumber"] },
+    { "name": "target", "label": "Table to add to", "type": "table" },
+    { "name": "targetColumn", "label": "Column to copy into", "type": "column", "of": "target", "columnTypes": ["text"] }
+  ],
+  "flow": {
+    "name": "Copy {{table}} to {{target}}",
+    "description": "Adds a row to {{target}} when a row of {{table}} becomes {{status}}.",
+    "runAs": "owner",
+    "trigger": { "type": "table", "table": "{{table}}", "on": ["update"], "columns": ["{{statusColumn}}"], "condition": "Trigger.Record.{{statusColumn}} = \"{{status}}\" && Trigger.Old.{{statusColumn}} <> \"{{status}}\"" },
+    "variables": [],
+    "settings": { "concurrency": "perRecord", "timeoutMinutes": 60, "retentionDays": 30, "onError": "fail" },
+    "steps": [
+      { "id": "copy", "name": "AddCopy", "kind": "data.create", "table": "{{target}}", "values": { "{{targetColumn}}": "Trigger.Record.{{titleColumn}}" } }
+    ]
+  }
+}

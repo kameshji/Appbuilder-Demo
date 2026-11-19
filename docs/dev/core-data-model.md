@@ -5,7 +5,7 @@ administrators: [docs/admin/reference-data.md](../admin/reference-data.md).
 
 | Where | What |
 | --- | --- |
-| `src/platform/system-tables.ts` | The specs of the 34 system tables (ids `sys_*`, groups, columns, policy), `systemTableDef`, the built-in row predicates (`systemPredicate`, `regardingCondition`), rich-text sanitising and mention extraction, financial year and number formatting, seeded units / Indian states / settings. Shared by the server and demo mode. |
+| `src/platform/system-tables.ts` | The specs of the 40 system tables (P1-C added the six of the group Approvals, [approvals.md](approvals.md)) (ids `sys_*`, groups, columns, policy), `systemTableDef`, the built-in row predicates (`systemPredicate`, `regardingCondition`), rich-text sanitising and mention extraction, financial year and number formatting, seeded units / Indian states / settings. Shared by the server and demo mode. |
 | `src/platform/system-reference-data.ts` | Countries (249) and currencies (159), generated once from CLDR 48.0 (Node 22, ICU 78.3). |
 | `server/core/system-tables.ts` | Provisioning of an environment schema: views, tables, `ab_tables` registrations, extra indexes, seeds, attachment links; `copySystemData` for environment copies. |
 | `server/core/collab.ts` | Write hooks (regarding normalisation and checks, mentions, cascades), the timeline, NextNumber, the mention / follow notification job, the orphan sweep. |
@@ -28,6 +28,7 @@ and `regarding` (the table has the polymorphic pair). Built-in columns are `lock
 | communication | | | Channels, Channel members, Messages, Message reactions |
 | logging | | Audit entries, Sign-in log (`ab.signin_log` of package I when it exists, else an empty view), Job runs, Event runs, Flow runs (P1: a view over `ab_flow_runs`, see [flows.md](flows.md)) | |
 | reference | Currencies, Units of measure, Countries, States, Calendars, Holidays, Number sequences, Settings | | |
+| approvals (P1-C) | | Approval requests, Approval stages, Approval assignments, Approval history, Approval delegations, Approval policies (views over `ab_approval_*`; policy `approvals`, see [approvals.md](approvals.md#security)) | |
 
 Projections are `CREATE VIEW` in `env_<id>` over `ab.*` and the environment's metadata tables; they select only safe
 columns (never password hashes, MFA secrets, tokens, session data). They are dropped and created again at every

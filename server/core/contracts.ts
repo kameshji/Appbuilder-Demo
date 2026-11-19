@@ -728,6 +728,11 @@ export interface NotifyInput {
   source: string
   /** the person who sent it (shown as "from") */
   from?: { id: string; name: string }
+  /**
+   * P1-C: buttons of an immediate email (not stored, not in digests): e.g. Approve / Reject links of an approval, each
+   * to a confirmation page in the app. One recipient per call when the links are personal.
+   */
+  emailActions?: { label: string; url: string }[]
 }
 
 /**

@@ -21,6 +21,9 @@ const parse = <X>(v: unknown, d: X): X => (v === null || v === undefined ? d : v
 /** the document a version stores: everything a maker edits */
 export interface FlowDoc extends FlowDefinition { name: string; description?: string; runAs: RunAs }
 
+/** the designer's unpublished draft (package B) */
+export interface FlowDraft { doc: FlowDoc; connections: Record<string, string>; baseVersion: number; savedBy?: string; savedByName?: string; savedOn: string }
+
 export interface EnvFlowSettings {
   /** kill switch: no run starts or continues while paused (triggers still record their runs) */
   paused: boolean
@@ -245,5 +248,18 @@ export function createFlowStore(deps: { db(): SqlDb | null; meta(): MetaStore })
     return out
   }
 
-  return { get, byName, resolve, list, insert, saveVersion, setEnabled, setSuspended, remove, versions, versionDoc, connections, setConnections, grants, setGrants, grantedFlows, settings, setSetting, rawSetting, health, invalidateSettings: () => settingsCache.clear() }
+  /** the designer's unpublished draft of a flow (package B): { doc, connections, baseVersion } with who saved it when */
+  async function draft(id: string): Promise<FlowDraft | null> {
+    const rows = await db().query<Row>(`SELECT f.draft, f.draft_by, f.draft_on, u.name AS by_name FROM ${T('ab_flows')} f LEFT JOIN "ab"."users" u ON u.id = f.draft_by WHERE f.id = $1`, [id])
+    const r = rows[0]
+    if (!r || !r.draft) return null
+    const d = parse<{ doc: FlowDoc; connections?: Record<string, string>; baseVersion?: number }>(r.draft, null as never)
+    return { doc: d.doc, connections: d.connections ?? {}, baseVersion: Number(d.baseVersion) || 0, ...(r.draft_by ? { savedBy: String(r.draft_by) } : {}), ...(r.by_name ? { savedByName: String(r.by_name) } : {}), savedOn: iso(r.draft_on) }
+  }
+  /** replaces the draft (null clears it); joins the caller's transaction */
+  async function setDraft(id: string, d: { doc: FlowDoc; connections: Record<string, string>; baseVersion: number } | null, by: string | null): Promise<void> {
+    await db().exec(`UPDATE ${T('ab_flows')} SET draft = $2::jsonb, draft_by = $3, draft_on = CASE WHEN $2::jsonb IS NULL THEN NULL ELSE now() END WHERE id = $1`, [id, d ? JSON.stringify(d) : null, d ? by : null])
+  }
+
+  return { draft, setDraft, get, byName, resolve, list, insert, saveVersion, setEnabled, setSuspended, remove, versions, versionDoc, connections, setConnections, grants, setGrants, grantedFlows, settings, setSetting, rawSetting, health, invalidateSettings: () => settingsCache.clear() }
 }

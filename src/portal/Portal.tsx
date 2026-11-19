@@ -21,12 +21,14 @@ import { DataFiles } from './DataFiles'
 import { SolutionDetail, Solutions } from './Solutions'
 import { ComingSoon } from './ComingSoon'
 import { MentionsPage, TasksPage } from './TasksPage'
+import { ApprovalsPage } from '@/approvals/ApprovalsPage'
 import { ReportsPage } from './Reports'
 import { AdminConsole } from './Admin'
 import { DataModel } from './model/DataModel'
 import { FlowsPage } from '@/flows/FlowsPage'
 import { SettingsPage } from './Settings'
 import { usePrefs } from '@/platform/preferences'
+import { referenceOf, rememberErrorReference } from '@/platform/errorMessages'
 import { useChatDock } from '@/chat/dock'
 import { MyApps, useTabSync } from './UserMode'
 import { moduleByKey, type ShellMode } from './modules'
@@ -62,7 +64,9 @@ function DataErrorToasts() {
   useEffect(
     () => platform.onDataError((e) => {
       const what = e.op === 'create' ? 'add' : e.op === 'update' ? 'save' : 'delete'
-      toast(`Could not ${what} in ${e.table}: ${errMsg(e.error)}`, 'error')
+      const msg = `Could not ${what} in ${e.table}: ${errMsg(e.error)}`
+      rememberErrorReference(msg, referenceOf(e.error))
+      toast(msg, 'error')
     }),
     [toast],
   )
@@ -148,7 +152,7 @@ function Frame({ route }: { route: Route }) {
   }, [routed, route, user, canDev])
 
   // built-in User mode pages of the core data model (P0-N): #u-tasks, #u-mentions (not app tabs)
-  const builtin = routed === 'user' && route.page === 'u' && 'id' in route && (route.id === 'tasks' || route.id === 'mentions' || route.id === 'reports') ? route.id : null
+  const builtin = routed === 'user' && route.page === 'u' && 'id' in route && (route.id === 'tasks' || route.id === 'mentions' || route.id === 'reports' || route.id === 'approvals') ? route.id : null
   const activeTab = routed === 'user' && route.page === 'u' && 'id' in route && !builtin ? route.id : null
   useTabSync(activeTab)
 
@@ -166,6 +170,7 @@ function Frame({ route }: { route: Route }) {
   else if (builtin === 'tasks') page = <TasksPage />
   else if (builtin === 'mentions') page = <MentionsPage />
   else if (builtin === 'reports') page = <ReportsPage />
+  else if (builtin === 'approvals') page = <ApprovalsPage />
   else if (routed === 'user') page = <MyApps />
   else page = <DevPage route={route} />
 

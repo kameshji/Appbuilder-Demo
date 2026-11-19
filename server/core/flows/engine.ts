@@ -1070,16 +1070,27 @@ export function createFlowEngine(deps: EngineDeps) {
         if (!svc) throw new StepError('Approvals are not available on this server yet.', false, 'unavailable')
         const title = String(fxToJson(await fx(c, step.title, 'title')) ?? '')
         const details = step.details ? String(fxToJson(await fx(c, step.details, 'details')) ?? '') : undefined
-        const approvers = principals(await fx(c, step.approvers, 'approvers'))
-        if (!approvers.length) throw new StepError('Nobody to ask: approvers is blank.', true)
+        const approvers = step.approvers !== undefined && step.approvers !== '' ? principals(await fx(c, step.approvers, 'approvers')) : []
+        // P1-C: a policy may name the approvers instead of the step
+        if (!approvers.length && !step.policy) throw new StepError('Nobody to ask: approvers is blank.', true)
         let regarding: { tableId: string; rowId: string } | undefined
         if (step.regarding) regarding = { tableId: tableNamed(c.tables, step.regarding.table).id, rowId: rowIdOf(await fx(c, step.regarding.rowId, 'regarding.rowId')) }
+        // P1-C: fields shown to approvers (and read by a policy's threshold rules)
+        let fields: Record<string, unknown> | undefined
+        if (step.fields && Object.keys(step.fields).length) {
+          fields = {}
+          for (const [k, f] of Object.entries(step.fields)) fields[k] = fxToJson(await fx(c, f, `fields.${k}`))
+        }
+        const definition: Record<string, unknown> = {}
+        for (const k of ['quorum', 'stages', 'dueMinutes', 'reminders', 'escalation', 'allowSelfApproval', 'separationOfDuties', 'requireCommentOnReject'] as const) if (step[k] !== undefined) definition[k] = step[k]
         approvalReq = {
           environmentId: env().id, runId: run.id, flowId: run.flowId, flowName: run.flowName, stepKey: key, stepName: step.name, waitId, title, ...(details ? { details } : {}),
           approvers, type: step.type ?? 'single', options: step.options?.length ? step.options : ['Approve', 'Reject'], ...(regarding ? { regarding } : {}),
           requestedBy: run.runAs, ...(timeoutAt ? { dueOn: timeoutAt.toISOString() } : {}), idempotencyKey: `${run.id}:${key}`,
+          ...(step.policy ? { policy: step.policy } : {}), ...(fields ? { fields } : {}), ...(Object.keys(definition).length ? { definition } : {}),
+          ...(step.type === undefined ? { typeGiven: false } : {}), ...(step.options?.length ? {} : { optionsGiven: false }),
         }
-        input = { title, approvers, type: approvalReq.type, options: approvalReq.options, ...(regarding ? { regarding } : {}) }
+        input = { title, approvers, type: approvalReq.type, options: approvalReq.options, ...(regarding ? { regarding } : {}), ...(step.policy ? { policy: step.policy } : {}), ...(fields ? { fields } : {}) }
       } else if (step.kind === 'callFlow') {
         const target = await deps.store.resolve(step.flow)
         if (!target) throw new StepError(`There is no flow "${step.flow}".`, true)
@@ -1178,8 +1189,12 @@ export function createFlowEngine(deps: EngineDeps) {
       } else if (kind === 'delay') output = { ResumedOn: { $d: now.toISOString() } }
       else if (kind === 'approval') {
         const o = (p.outcome ?? { kind: 'approval', outcome: '' }) as Extract<WaitOutcome, { kind: 'approval' }>
+        // P1-C: Responses as a table of Approver (email), Name, Response, Comment, Time, Stage; Status and Approvers
+        const responses = (o.responses ?? []).map((x) => ({
+          Approver: x.email ?? x.userId, Name: x.name ?? '', Response: x.response, Comment: x.comment ?? '', Time: x.at ? new Date(x.at) : null, Stage: x.stage ?? 1, UserId: x.userId,
+        }))
         output = toStored({
-          Outcome: o.outcome, Responses: jsonToFx(o.responses ?? []), ApprovalId: w.approval_id ? String(w.approval_id) : '',
+          Outcome: o.outcome, Status: o.status ?? '', Responses: responses as unknown as FxValue, Approvers: jsonToFx(o.approvers ?? []), ApprovalId: w.approval_id ? String(w.approval_id) : '',
           CompletedOn: o.completedOn ? new Date(o.completedOn) : now, Comments: o.comments ?? '',
         } as FxRecord)
       } else if (kind === 'callback') {

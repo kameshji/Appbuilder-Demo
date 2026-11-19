@@ -1,7 +1,8 @@
 /**
- * Dev mode > Flows (P1 package A): the list with status and health, the kill switch, and per flow its definition, runs,
- * versions and run permissions. The definition is edited as JSON here (FlowJsonEditor); package B replaces that one
- * component with the visual designer and keeps the rest (RunViews, the list, versions, permissions).
+ * Dev mode > Flows (P1 packages A and B): the list with status and health, the kill switch, the "New flow" gallery
+ * (templates, blank flows; an empty-state walkthrough), and per flow the visual designer (FlowDesigner: canvas, draft,
+ * publish, test, run overlay, JSON as "Advanced: definition"), the runs (RunViews; "Show on canvas"), the version
+ * history with a visual diff, and who may run it.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Pause, Play, Plus, Power, PowerOff, Workflow } from 'lucide-react'
@@ -11,11 +12,14 @@ import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { go } from '@/router'
 import { usePlatform } from '@/platform'
-import type { FlowDef, FlowListItem, FlowVersionInfo, InputDef } from '@/platform/flows'
+import type { FlowDef, FlowListItem, InputDef } from '@/platform/flows'
 import { Empty, PageHeader, Panel, errMsg, fmtDate, fmtRelative, useToast } from '@/portal/kit'
 import { useCaps } from '@/portal/security'
-import { FLOW_TEMPLATE, editable, flowsApi, type EnvFlowSettings } from './api'
-import { FlowJsonEditor } from './FlowJsonEditor'
+import { editable, flowsApi, type EnvFlowSettings } from './api'
+import { FlowDesigner } from './designer/FlowDesigner'
+import { NewFlowGallery, FlowsWalkthrough, type GalleryIntent } from './designer/Gallery'
+import { VersionHistory } from './designer/Versions'
+import { useFlowIntent } from './intent'
 import { RunDetail, RunHistory, StatusBadge } from './RunViews'
 
 function DemoNotice() {
@@ -29,7 +33,7 @@ const pct = (x: number | null) => (x === null ? '-' : `${Math.round(x * 100)} %`
 export function FlowsPage({ flowId }: { flowId?: string }) {
   const caps = useCaps()
   if (!caps.server) return <><PageHeader icon={Workflow} title="Flows" subtitle="Automate work when data changes, on a schedule or at a button press." /><DemoNotice /></>
-  return flowId ? <FlowDetail flowId={flowId} /> : <FlowList />
+  return flowId ? <FlowDetail key={flowId} flowId={flowId} /> : <FlowList />
 }
 
 function FlowList() {
@@ -38,6 +42,11 @@ function FlowList() {
   const [items, setItems] = useState<FlowListItem[] | null>(null)
   const [settings, setSettings] = useState<EnvFlowSettings | null>(null)
   const [creating, setCreating] = useState(false)
+  const [intent, setIntent] = useState<GalleryIntent | undefined>(undefined)
+  useEffect(() => {
+    const i = useFlowIntent.getState().take()
+    if (i) { setIntent(i); setCreating(true) }
+  }, [])
   const load = useCallback(() => {
     flowsApi.list().then((r) => { setItems(r.items); setSettings(r.settings) }).catch((e) => toast(errMsg(e), 'error'))
   }, [toast])
@@ -55,14 +64,9 @@ function FlowList() {
           <Button size="sm" data-testid="new-flow" onClick={() => setCreating(true)}><Plus className="size-4" />New flow</Button>
         </>} />
       {settings?.paused && <Panel className="mb-3 border-destructive p-3 text-sm text-destructive">All flows of this environment are paused (kill switch{settings.pausedOn ? `, since ${fmtDate(settings.pausedOn)}` : ''}). Triggers still record their runs; they start when flows are resumed.</Panel>}
-      {creating && (
-        <Panel className="mb-4 p-3">
-          <h2 className="mb-2 text-sm font-semibold">New flow</h2>
-          <FlowJsonEditor initial={FLOW_TEMPLATE} onSaved={(f) => { setCreating(false); go({ page: 'flow', id: f.id }) }} onCancel={() => setCreating(false)} />
-        </Panel>
-      )}
+      <NewFlowGallery open={creating} intent={intent} onClose={() => { setCreating(false); setIntent(undefined) }} onCreated={(id) => { setCreating(false); go({ page: 'flow', id }) }} />
       {items === null ? <p className="text-sm text-muted-foreground">Loading flows...</p> : !items.length ? (
-        <Empty icon={Workflow} title="No flows yet" description="Create one to start a run when a row changes, on a schedule, or from a button in an app." action={<Button onClick={() => setCreating(true)}><Plus className="size-4" />New flow</Button>} />
+        <div className="mb-4"><FlowsWalkthrough onNew={() => setCreating(true)} /></div>
       ) : (
         <Panel className="mb-4 overflow-x-auto">
           <table className="w-full text-sm" data-testid="flow-list">
@@ -120,11 +124,13 @@ function FlowDetail({ flowId }: { flowId: string }) {
   const [data, setData] = useState<{ flow: FlowDef; canEdit: boolean; canRun: boolean } | null>(null)
   const [tab, setTab] = useState('definition')
   const [openRun, setOpenRun] = useState<string | null>(null)
+  const [canvasRun, setCanvasRun] = useState<string | null>(null)
   const load = useCallback(() => { flowsApi.get(flowId).then(setData).catch((e) => toast(errMsg(e), 'error')) }, [flowId, toast])
   useEffect(load, [load])
   if (!data) return <p className="text-sm text-muted-foreground">Loading the flow...</p>
   const f = data.flow
   const open = (id: string) => { setOpenRun(id); setTab('runs') }
+  const showOnCanvas = (id: string) => { setCanvasRun(id); setTab('definition') }
   return (
     <div data-testid="flow-detail">
       <PageHeader icon={Workflow} title={f.name} subtitle={<>{f.description ?? ''} {f.suspended && <span className="text-destructive">Suspended: {f.suspended}</span>}</>}
@@ -139,47 +145,21 @@ function FlowDetail({ flowId }: { flowId: string }) {
       {data.canRun && f.enabled && <Panel className="mb-3 p-3"><RunNow flow={f} onStarted={open} /></Panel>}
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
-          <TabsTrigger value="definition">Definition</TabsTrigger>
+          <TabsTrigger value="definition" data-testid="tab-designer-page">Designer</TabsTrigger>
           <TabsTrigger value="runs" data-testid="tab-runs">Runs</TabsTrigger>
-          <TabsTrigger value="versions">Versions</TabsTrigger>
+          <TabsTrigger value="versions" data-testid="tab-versions">Versions</TabsTrigger>
           <TabsTrigger value="permissions">Who may run it</TabsTrigger>
         </TabsList>
-        <TabsContent value="definition">
-          <FlowJsonEditor key={f.version} flowId={f.id} readOnly={!data.canEdit} initial={editable(f)} onSaved={() => load()} onTested={open} />
+        <TabsContent value="definition" forceMount hidden={tab !== 'definition'}>
+          <FlowDesigner key={f.version} flowId={f.id} readOnly={!data.canEdit} initial={{ ...editable(f), version: f.version }} onSaved={() => load()} showRun={canvasRun} />
         </TabsContent>
         <TabsContent value="runs">
-          {openRun ? <><Button size="sm" variant="ghost" className="mb-2" onClick={() => setOpenRun(null)}>Back to the runs</Button><RunDetail runId={openRun} onOpen={setOpenRun} canManage={data.canEdit} /></> : <RunHistory flowId={f.id} onOpen={setOpenRun} />}
+          {openRun ? <><div className="mb-2 flex gap-2"><Button size="sm" variant="ghost" onClick={() => setOpenRun(null)}>Back to the runs</Button><Button size="sm" variant="outline" onClick={() => showOnCanvas(openRun)} data-testid="show-on-canvas">Show on the canvas</Button></div><RunDetail runId={openRun} onOpen={setOpenRun} canManage={data.canEdit} /></> : <RunHistory flowId={f.id} onOpen={setOpenRun} />}
         </TabsContent>
-        <TabsContent value="versions"><Versions flow={f} canEdit={data.canEdit} onRestored={load} /></TabsContent>
+        <TabsContent value="versions"><VersionHistory flow={f} canEdit={data.canEdit} onRestored={load} /></TabsContent>
         <TabsContent value="permissions"><Permissions flow={f} canEdit={data.canEdit} /></TabsContent>
       </Tabs>
     </div>
-  )
-}
-
-function Versions({ flow, canEdit, onRestored }: { flow: FlowDef; canEdit: boolean; onRestored(): void }) {
-  const [items, setItems] = useState<FlowVersionInfo[]>([])
-  const [shown, setShown] = useState<{ version: number; doc: unknown } | null>(null)
-  const { toast } = useToast()
-  useEffect(() => { flowsApi.versions(flow.id).then((r) => setItems(r.items)).catch((e) => toast(errMsg(e), 'error')) }, [flow.id, flow.version, toast])
-  return (
-    <Panel className="p-3">
-      <table className="w-full text-sm">
-        <tbody>
-          {items.map((v) => (
-            <tr key={v.version} className="border-t border-border">
-              <td className="p-2 font-medium">Version {v.version}{v.version === flow.version ? ' (current)' : ''}</td>
-              <td className="p-2">{fmtDate(v.savedOn)}</td><td className="p-2">{v.savedByName ?? ''}</td><td className="p-2 text-muted-foreground">{v.note ?? ''}</td>
-              <td className="p-2 text-right">
-                <Button size="sm" variant="ghost" onClick={() => flowsApi.version(flow.id, v.version).then(setShown).catch((e) => toast(errMsg(e), 'error'))}>Show</Button>
-                {canEdit && v.version !== flow.version && <Button size="sm" variant="outline" onClick={() => flowsApi.restore(flow.id, v.version).catch((e) => (e.status === 409 && confirm(`${errMsg(e)}\n\nRestore anyway?`) ? flowsApi.restore(flow.id, v.version, true) : Promise.reject(e))).then(() => { toast(`Version ${v.version} restored as a new version.`, 'success'); onRestored() }).catch((e) => toast(errMsg(e), 'error'))}>Restore</Button>}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {shown && <pre className="mt-2 max-h-96 overflow-auto rounded-md bg-muted p-2 text-xs">{JSON.stringify(shown.doc, null, 2)}</pre>}
-    </Panel>
   )
 }
 

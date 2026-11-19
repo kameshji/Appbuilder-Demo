@@ -112,6 +112,39 @@ function viewSql(spec: SystemTableSpec, schema: string, envId: string, has: (t: 
         (EXTRACT(EPOCH FROM r.finished_on - r.started_on) * 1000)::bigint AS "DurationMs", (r.error->>'message') AS "Error",
         ${vc('r.regarding_table')} AS "regardingTable", ${vc('r.regarding_id')} AS "regardingId"
         FROM ${S('ab_flow_runs')} r WHERE r.mode = 'normal'`
+    // P1-C approvals (approvals/ddl.ts): owner = the requester (requests) or the delegating person (delegations)
+    case SYS.approvalRequests:
+      return `SELECT r.id AS "id", ${ts('r.created_on')} AS "createdOn", ${ts('r.modified_on')} AS "modifiedOn", r.requested_by AS "createdBy", r.requested_by AS "owner",
+        ${vc('r.title')} AS "Title", r.details AS "Details", ${vc('r.status')} AS "Status", ${vc('r.outcome')} AS "Outcome", ${vc('r.type')} AS "ApprovalType",
+        ${vc('(SELECT p.name FROM ' + S('ab_approval_policies') + ' p WHERE p.id = r.policy_id)')} AS "Policy", r.requested_by AS "RequestedBy",
+        ${ts('r.due_on')} AS "DueOn", ${ts('r.completed_on')} AS "CompletedOn", r.current_stage::bigint AS "CurrentStage", ${vc('r.source')} AS "Source",
+        ${vc('r.flow_name')} AS "FlowName", ${vc('r.flow_run_id')} AS "FlowRun", ${vc('r.regarding_table')} AS "regardingTable", ${vc('r.regarding_id')} AS "regardingId"
+        FROM ${S('ab_approval_requests')} r`
+    case SYS.approvalStages:
+      return `SELECT (st.request_id || ':' || st.idx) AS "id", ${ts('COALESCE(st.started_on, r.created_on)')} AS "createdOn", ${ts('COALESCE(st.completed_on, st.started_on, r.created_on)')} AS "modifiedOn", NULL::text AS "createdBy", r.requested_by AS "owner",
+        st.request_id AS "Request", (st.idx + 1)::bigint AS "StageNumber", ${vc('st.name')} AS "Name", ${vc('st.mode')} AS "Mode", st.quorum::bigint AS "Quorum", ${vc('st.status')} AS "Status",
+        ${ts('st.started_on')} AS "StartedOn", ${ts('st.completed_on')} AS "CompletedOn"
+        FROM ${S('ab_approval_stages')} st JOIN ${S('ab_approval_requests')} r ON r.id = st.request_id`
+    case SYS.approvalAssignments:
+      return `SELECT a.id AS "id", ${ts('a.created_on')} AS "createdOn", ${ts('COALESCE(a.responded_on, a.created_on)')} AS "modifiedOn", NULL::text AS "createdBy", a.user_id AS "owner",
+        a.request_id AS "Request", ${vc('r.title')} AS "Title", ${vc('r.status')} AS "RequestStatus", (a.stage_idx + 1)::bigint AS "Stage", a.user_id AS "Approver", ${vc('a.source')} AS "Source",
+        ${vc('a.status')} AS "Status", ${vc('a.response')} AS "Response", a.comment AS "Comment", ${ts('a.responded_on')} AS "RespondedOn", a.reassigned_from AS "ReassignedFrom",
+        ${ts('r.due_on')} AS "DueOn", ${vc('r.regarding_table')} AS "regardingTable", ${vc('r.regarding_id')} AS "regardingId"
+        FROM ${S('ab_approval_assignments')} a JOIN ${S('ab_approval_requests')} r ON r.id = a.request_id`
+    case SYS.approvalHistory:
+      return `SELECT h.id AS "id", ${ts('h.at')} AS "createdOn", ${ts('h.at')} AS "modifiedOn", h.actor_id AS "createdBy", NULL::text AS "owner",
+        h.request_id AS "Request", ${vc('h.action')} AS "Action", h.actor_id AS "Actor", ${vc('h.actor_kind')} AS "ActorKind", (h.stage_idx + 1)::bigint AS "Stage", h.details::text AS "Details"
+        FROM ${S('ab_approval_history')} h`
+    case SYS.approvalDelegations:
+      return `SELECT d.id AS "id", ${ts('d.created_on')} AS "createdOn", ${ts('COALESCE(d.cancelled_on, d.created_on)')} AS "modifiedOn", d.created_by AS "createdBy", d.from_user AS "owner",
+        d.from_user AS "FromUser", d.to_user AS "ToUser", ${ts('d.starts_on')} AS "StartsOn", ${ts('d.ends_on')} AS "EndsOn",
+        ${vc("COALESCE((SELECT string_agg(x, ', ') FROM jsonb_array_elements_text(d.policies) x), '')")} AS "Policies", ${vc('d.note')} AS "Note",
+        (d.cancelled_on IS NULL AND d.starts_on <= now() AND (d.ends_on IS NULL OR d.ends_on > now())) AS "Active"
+        FROM ${S('ab_approval_delegations')} d`
+    case SYS.approvalPolicies:
+      return `SELECT p.id AS "id", ${ts('p.created_on')} AS "createdOn", ${ts('p.modified_on')} AS "modifiedOn", p.created_by AS "createdBy", NULL::text AS "owner",
+        ${vc('p.name')} AS "Name", p.description AS "Description", ${vc("p.definition->>'type'")} AS "ApprovalType", p.definition::text AS "Definition"
+        FROM ${S('ab_approval_policies')} p`
   }
   throw new Error(`no view for ${spec.id}`)
 }

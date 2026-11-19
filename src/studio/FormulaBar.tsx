@@ -10,6 +10,7 @@ import { summarize, typeName } from '@/runtime/util'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { Cloud, Monitor, TriangleAlert } from 'lucide-react'
+import { RunFlowHelper } from '@/flows/RunFlowHelper'
 
 const GROUPS = ['Content', 'Data', 'Layout', 'Style', 'Behaviour'] as const
 
@@ -192,6 +193,10 @@ export function FormulaBar() {
       </Select>
       <span className="select-none font-serif text-sm italic text-primary">fx</span>
       <FormulaEditor key={`${node.id}:${prop}`} node={node} prop={prop} ev={ev} multi={selection.length > 1} />
+      {/* P1 package B: behaviour properties can call a flow (server mode) */}
+      {metas.find((m) => m.name === prop)?.kind === 'action' && selection.length === 1 && (
+        <RunFlowHelper current={node.props[prop] ?? ''} onInsert={(f) => useStore.getState().setProp(node.id, prop, f, `runflow:${node.id}:${prop}`)} />
+      )}
     </div>
   )
 }

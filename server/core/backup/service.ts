@@ -880,6 +880,17 @@ export function createBackupService(deps: BackupServiceDeps) {
       await c.query(`UPDATE ${S}."ab_flow_waits" SET state = 'cancelled', resolved_on = now() WHERE state IN ('waiting', 'early')`)
       await c.query(`UPDATE ${S}."ab_flow_steps" SET state = 'cancelled', finished_on = now() WHERE state IN ('running', 'waiting')`)
     }
+    // P1-C approvals: open requests stay open; the flow runs that waited for them were cancelled above, so the link to the
+    // run is cut (a later decision notifies, it resumes nothing). Notification jobs were cancelled with the queue: every
+    // person still asked gets one reminder a minute after the restore (instead of the lost or late ones), escalations
+    // that fell due while the backup was on the shelf move to an hour from now, and unused email links stop working.
+    const approvals = await c.query(`SELECT to_regclass($1) IS NOT NULL AS ok`, [`${S}."ab_approval_requests"`])
+    if (approvals.rows[0]?.ok) {
+      await c.query(`UPDATE ${S}."ab_approval_requests" SET wait_id = NULL, escalate_at = CASE WHEN escalate_at IS NOT NULL AND escalate_at < now() THEN now() + interval '1 hour' ELSE escalate_at END WHERE status IN ('pending', 'info')`)
+      await c.query(`UPDATE ${S}."ab_approval_assignments" a SET next_reminder_at = now() + interval '1 minute' FROM ${S}."ab_approval_requests" r WHERE r.id = a.request_id AND r.status = 'pending' AND a.status = 'pending'`)
+      await c.query(`UPDATE ${S}."ab_approval_links" SET used_on = now() WHERE used_on IS NULL`)
+      await c.query(`INSERT INTO ${S}."ab_approval_history" (id, request_id, at, actor_id, actor_kind, action, details) SELECT 'ahst_' || md5(random()::text || id), id, now(), NULL, 'system', 'restored', '{"text":"The environment was restored from a backup; this request stays open. A flow that waited for it was cancelled by the restore; everyone still asked gets a reminder."}'::jsonb FROM ${S}."ab_approval_requests" WHERE status IN ('pending', 'info')`)
+    }
   }
 
   /** brings a restored schema from the backup's schema version to this server's (same transaction) */

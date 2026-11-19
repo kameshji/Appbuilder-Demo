@@ -140,7 +140,9 @@ export async function createEnvironment(s: CoreServices, actor: UserContext, b: 
 /** metadata tables copied by every copy; the data-only ones follow */
 const COPY_META = ['ab_roles', 'ab_role_tables', 'ab_tables', 'ab_apps', 'ab_solutions', 'ab_connections', 'ab_table_events', 'ab_relationships', 'ab_model_layouts',
   // P1-A flows: definitions, versions, connection references, run grants (no runs); copies arrive turned off
-  'ab_flows', 'ab_flow_versions', 'ab_flow_connections', 'ab_flow_run_grants']
+  'ab_flows', 'ab_flow_versions', 'ab_flow_connections', 'ab_flow_run_grants',
+  // P1-C approvals: policies and settings (never requests, pending or decided, nor delegations)
+  'ab_approval_policies', 'ab_approval_settings']
 const COPY_DATA_META = ['ab_data_files', 'ab_attachments', 'ab_counters', 'ab_shares']
 
 async function columnsOf(db: SqlDb, schema: string, table: string): Promise<string[]> {

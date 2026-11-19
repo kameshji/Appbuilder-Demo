@@ -26,8 +26,9 @@ Never send your password, the code from your phone or your recovery codes, not e
 
 - Select the message text with the mouse, press **Ctrl+C**, and paste with **Ctrl+V** into an email or WhatsApp message.
 - If the message disappears quickly, a screenshot is best.
-- Appbuilder does not show a technical code or a "copy error" button to normal users at this time. Your administrator uses the time and your name to find your problem in the
-  server's log.
+- When the message came from the server, it ends with **Reference: abc123...** and a copy button. Click the button and
+  paste the reference into your report: your administrator finds exactly that request in the server's log with it
+  (Admin console > Server logs, search for the reference). Without a reference, they use the time and your name.
 
 ## Common messages
 

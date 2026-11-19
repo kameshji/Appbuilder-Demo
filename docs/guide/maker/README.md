@@ -13,6 +13,7 @@ For people who build apps.
 - [Connections and actions](connections-and-actions.md): HTTP and Email connections, testing actions, custom actions and OpenAPI import, RunConnector.
 - [Flows](flows.md): automate work when data changes, on a schedule, at a button press or a web request; run history.
 - [Webhooks](webhooks.md): let other systems start a flow through a signed address.
+- [Approvals](approvals.md): policies, approval steps in flows, RequestApproval and the Approvals panel in apps.
 - [Scheduled reports](scheduled-reports.md): a table or total emailed on a schedule, per recipient's access.
 - [Notifications](notifications.md): in the app and by email, digests, quiet hours, unsubscribe.
 

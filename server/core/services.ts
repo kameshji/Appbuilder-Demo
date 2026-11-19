@@ -137,6 +137,8 @@ export type CoreServices = Services & {
   collab: Collab
   /** flows (P1 package A): definitions, triggers, the run engine (flows/index.ts) */
   flows: Flows
+  /** approvals (P1 package C): requests, routing, answers, delegation, escalation (approvals/service.ts); set by createApp */
+  approvals?: import('./approvals/service.ts').Approvals
   connections: ReturnType<typeof createConnectionManager>
   /** test + connect + migrate the default store; persist=true seals the password into server.json */
   configureDatabase(settings: DatabaseSettings, password: string, opts: { createDatabase?: boolean; persist: boolean }): Promise<void>
@@ -149,6 +151,8 @@ export type CoreServices = Services & {
   retrying(): Promise<void> | null
   close(): Promise<void>
   setupCode: SetupCode
+  /** the setup code is also written to a file (APPBUILDER_SETUP_CODE_FILE is set: installed as a service) */
+  setupCodeInFile: boolean
   /** true once the first administrator exists (server.json setupComplete, or users in the database) */
   setupComplete(): boolean
   /** records setupComplete in server.json (false: clears it, when the database was re-pointed to an empty one) */
@@ -569,6 +573,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     retrying: () => retryPromise,
     close,
     setupCode,
+    setupCodeInFile: !!procEnv.APPBUILDER_SETUP_CODE_FILE,
     setupComplete: setupCompleteFlag,
     markSetupComplete,
     databaseConfigured,

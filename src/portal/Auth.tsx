@@ -98,8 +98,21 @@ function Steps({ current }: { current: 1 | 2 }) {
 
 /** the one-time code the server prints to its console; typed with or without the dash */
 function SetupCodeField({ value, onChange, autoFocus }: { value: string; onChange(v: string): void; autoFocus?: boolean }) {
+  // a server installed as a service has no window: the code is in its setup-code file (the server says which, not where)
+  const where = usePlatform((s) => s.setup.codeIn)
+  const os = usePlatform((s) => s.setup.platform)
+  const inFile = where === 'file'
+  const label = inFile ? 'Setup code (in the setup-code file on the server)' : 'Setup code (shown in the server window)'
+  const hint = inFile ? (
+    <span data-testid="setup-code-file-hint">
+      Appbuilder runs as a service, so the code is in a file on this computer. {os === 'windows'
+        ? <>In an <b>administrator</b> PowerShell, type <code className="rounded bg-muted px-1">appbuilder setup-code</code> (or <code className="rounded bg-muted px-1">Get-Content 'C:\ProgramData\Appbuilder\workspace\setup-code.txt'</code> for a default install).</>
+        : <>In a terminal, type <code className="rounded bg-muted px-1">sudo appbuilder setup-code</code> (or <code className="rounded bg-muted px-1">sudo cat /var/lib/appbuilder/workspace/setup-code.txt</code> for a default install).</>}
+      {' '}It looks like ABCD-EFGH, changes when the service restarts and proves you are at this computer.
+    </span>
+  ) : 'Printed in the window where the Appbuilder server runs, for example ABCD-EFGH. It proves you are at this computer.'
   return (
-    <Field label="Setup code (shown in the server window)" htmlFor="setup-code" hint="Printed in the window where the Appbuilder server runs, for example ABCD-EFGH. It proves you are at this computer.">
+    <Field label={label} htmlFor="setup-code" hint={hint}>
       <Input
         id="setup-code"
         value={value}

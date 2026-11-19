@@ -13,7 +13,7 @@ Every step also takes `id`, `name`, `description`, `runAfter` (`[{ step, when: [
   - [On a schedule](#on-a-schedule)
   - [Run by a person or an app](#run-by-a-person-or-an-app)
   - [When a web request arrives](#when-a-web-request-arrives)
-  - [When an approval is decided (reserved)](#when-an-approval-is-decided-reserved)
+  - [When an approval is decided](#when-an-approval-is-decided)
   - [When a form is submitted (reserved)](#when-a-form-is-submitted-reserved)
 - [Steps](#steps)
   - [Condition](#condition)
@@ -97,13 +97,18 @@ Every step also takes `id`, `name`, `description`, `runAfter` (`[{ step, when: [
 
 **Guarantee:** One run per delivery id.
 
-### When an approval is decided (reserved)
+### When an approval is decided
 
-`type: "approvalDecided"` (reserved). Reserved for a later release.
+`type: "approvalDecided"`. Starts a run when an approval request ends: approved, rejected, a custom answer, expired or cancelled (P1-C).
 
-**Expressions see:** -
+| Field | Type | Required | What it is |
+| --- | --- | --- | --- |
+| `policy` | text |  | Only requests of this approval policy (name or id). |
+| `statuses` | ("approved" \| "rejected" \| "completed" \| "expired" \| "cancelled")[] |  | Only these endings (default all). |
 
-**Guarantee:** -
+**Expressions see:** Trigger.Request (Id, Title, Status, Outcome, RequestedBy, Policy, RegardingTable, RegardingId, CompletedOn, Fields), Trigger.Responses
+
+**Guarantee:** One run per decided request and flow (trigger key appr:<flow>:<request>).
 
 ### When a form is submitted (reserved)
 
@@ -360,14 +365,21 @@ Every step also takes `id`, `name`, `description`, `runAfter` (`[{ step, when: [
 | Field | Type | Required | What it is |
 | --- | --- | --- | --- |
 | `title` | Fx (text) | yes | What to decide. |
-| `details` | Fx (text) |  | More text. |
-| `approvers` | Fx | yes | Email, user id, team, or a table of them. |
-| `type` | "single" \| "all" \| "any" \| "sequential" |  | Default single. |
-| `options` | string[] |  | Default Approve, Reject. |
+| `details` | Fx (text) |  | More text, shown to every approver. |
+| `approvers` | Fx | yes | Emails, user ids, role:<name>, team:<code>, manager, manager-chain:<n>, department-head, or a table of people (optional with a policy). |
+| `type` | "single" \| "any" \| "all" \| "quorum" \| "sequential" |  | Default single. |
+| `options` | string[] |  | Default Approve, Reject; "Need more info" returns the request to the requester. |
 | `regarding` | { table, rowId: Fx } |  | The record the approval is about. |
-| `timeoutMinutes` | number |  | Outcome timedOut after this long (use runAfter timedOut to escalate). |
+| `policy` | text |  | An approval policy (name or id): approvers, stages, thresholds, reminders, escalation. |
+| `fields` | Record<label, Fx> |  | Fields shown to approvers (also to those who cannot open the record); threshold rules read them. |
+| `quorum` | number |  | type quorum: how many must approve. |
+| `stages` | { name?, approvers, mode?, quorum?, condition? }[] |  | type sequential: the stages. |
+| `dueMinutes` | number |  | Due this long after the request; reminders and escalation count from it. |
+| `reminders` | { afterMinutes, everyMinutes?, max? } |  | Reminders to those still to answer. |
+| `escalation` | { action, afterMinutes?, to? } |  | manager, user, nextStage, approve, reject or expire after the due date. |
+| `timeoutMinutes` | number |  | Outcome timedOut after this long (use runAfter timedOut to escalate in the flow). |
 
-**Output:** { Outcome, Responses, ApprovalId, CompletedOn }
+**Output:** { Outcome, Status, Responses, Approvers, ApprovalId, CompletedOn, Comments }
 
 **Guarantee:** The request is made once per step execution (idempotency key run:step); the answer resumes the run once (the wait row changes state once).
 

@@ -61,6 +61,7 @@ export const DESCRIPTIONS: Record<string, string> = {
   Avatar: 'A round picture or initials for a person. Set User to a user id or a Users record (ThisItem.owner, User()) to show that person.',
   AvatarGroup: 'A row of overlapping avatars for a list of people. Set Users to a table of user ids or Users records.',
   RecordTimeline: 'The timeline of one record (core data model): comments with @mentions, activities, files and the record\'s changes in one live feed, with a composer, follow and tags.',
+  ApprovalsPanel: 'The approval requests about a record that the signed-in user may see (status, who is asked or decided), with the answer buttons when one waits for them and a "Request approval" button (P1, server mode).',
   ActivityList: 'The signed-in user\'s open tasks (activities of type Task assigned to them or their teams), with a checkbox to complete each.',
   PersonPicker: 'Choose a person from the Users of this environment, with search; Value is the user id, Selected the person.',
   TagInput: 'The tags of a record: add a tag (created when new) or remove one.',

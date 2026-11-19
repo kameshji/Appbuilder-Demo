@@ -6,6 +6,7 @@ import { PACKAGE_CONNECTORS, exportConnectionActions, importConnectionActions } 
 import type { ConnectorKind, RoleDef, SolutionComponentKind, SolutionDef, TableDef, TablePrivilege } from '../../../src/platform/contracts.ts'
 import type { ConnectionRecord, Ctx, Router, Services } from '../../core/contracts.ts'
 import { exportFlows } from '../../core/flows/alm.ts'
+import { exportApprovalPolicies } from '../../core/approvals/alm.ts'
 import { readDataFile } from '../../connectors/files/index.ts'
 import {
   IDENT, bodyObj, clone, conflict, invalid, isObj, me, notFound, optString, reqString, toIdentifier, toYaml, uniqueIdentifier, uniqueLabel,
@@ -25,7 +26,7 @@ import type { CoreServices } from '../../core/services.ts'
 import { userContextFor } from '../../core/auth.ts'
 import { runInEnvironment } from '../../core/env-context.ts'
 
-const KINDS: SolutionComponentKind[] = ['app', 'table', 'role', 'connection', 'file', 'flow']
+const KINDS: SolutionComponentKind[] = ['app', 'table', 'role', 'connection', 'file', 'flow', 'approvalPolicy']
 const MAX_FILE_BYTES = 25 * 1024 * 1024
 
 /** P1-A: the flow options of an import (connection mapping, which new flows arrive turned on) */
@@ -37,6 +38,11 @@ function flowOpts(b: Record<string, unknown>): { connectionMap?: Record<string, 
   }
   if (b.enableFlows === true) out.enableFlows = true
   else if (Array.isArray(b.enableFlows)) out.enableFlows = b.enableFlows.map(String)
+  // P1-C: people of approval policies, email in the package -> email here
+  if (b.peopleMap !== undefined) {
+    if (!b.peopleMap || typeof b.peopleMap !== 'object' || Array.isArray(b.peopleMap) || Object.values(b.peopleMap).some((v) => typeof v !== 'string')) throw invalid('peopleMap must map emails in the package to emails here.', 'peopleMap')
+    ;(out as { peopleMap?: Record<string, string> }).peopleMap = b.peopleMap as Record<string, string>
+  }
   return out
 }
 
@@ -54,6 +60,7 @@ async function componentExists(s: Services, kind: SolutionComponentKind, id: str
     case 'connection': return !!(await s.meta.connections.get(id))
     case 'file': return !!(await s.meta.files.get(id))
     case 'flow': return !!(await (s as unknown as { flows?: { store: { get(id: string): Promise<unknown> } } }).flows?.store.get(id))
+    case 'approvalPolicy': return !!(await (s as unknown as { approvals?: { policy(id: string): Promise<{ id: string } | null> } }).approvals?.policy(id))?.id
   }
 }
 
@@ -265,6 +272,8 @@ export async function exportSolutionPackage(s: Services, ctx: Ctx, id: string, i
     apps, tables, roles, connections, files: fileEntries,
     // P1-A: flows with their connection references and run permissions
     flows: await exportFlows(s, ofKind('flow')),
+    // P1-C: approval policies (people by email; requests never travel)
+    approvalPolicies: await exportApprovalPolicies(s, ofKind('approvalPolicy')),
   })
 }
 

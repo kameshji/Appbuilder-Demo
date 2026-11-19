@@ -1,39 +1,54 @@
 # Quick-start for approvers
 
-> **DRAFT. DO NOT HAND OUT YET.**
-> Approvals are still being built. In this version the **Approvals** item in the left menu is marked **Soon** and does not work.
-> This page lists only what is expected to stay true and what is already available. Items marked **(planned)** are not built; the screens, button
-> names and exact wording will change. Do not print or train people from this page until engineering confirms the approval screens
-> (verify with engineering).
+You are asked to approve (or reject) something someone else asked for: a purchase, a leave, a document. This page shows
+how, on a PC or on your phone.
 
-## What an approver does (planned)
+## Where requests reach you
 
-An approver is asked to say **yes** or **no** to a request that someone else made, for example a leave request or a purchase.
-You decide; the request then moves on. **(planned)**
+- **The bell** at the top shows "Approval needed: ...". Click it to open the request.
+- **An email** with the buttons **Approve** and **Reject** (and any other answers).
+- The **Approvals** page in the left menu (on a phone: the menu button at the top left), tab **To approve**.
 
-## What you can already use today
+## Answering on the Approvals page
 
-- **Sign in** and two-step verification: see [Signing in](signing-in.md).
-- **The bell**: when approvals arrive, a notification is expected to appear here. Settings > Notifications has an Approvals kind;
-  administrators may set it to always send by email. See [Notifications and email](notifications.md).
-- **Comments and @mentions** on the record you are asked about: see [Working with records](records.md). Ask the person who made the request a question before you decide.
-- **Tasks**: your **Tasks** page lists to-dos assigned to you.
+1. Open **Approvals**. **To approve** lists what waits for you, with who asked and when it is due.
+2. Click a request. You see what was asked, the details and fields the requester included, and the record it is about
+   (if you may open that record; otherwise a note says so and you see only what was included).
+3. Type a comment if you want (some answers need one: they are marked with *), and click **Approve**, **Reject**, or
+   another answer. Answers cannot be changed afterwards.
 
-## What is planned
+![A request on a phone](../images/approvals-detail-phone.png)
 
-- An approvals inbox listing requests waiting for you. **(planned)**
-- Buttons to approve or reject, with a reason. **(planned)**
-- A history of who decided what and when. **(planned)**
-- Delegating to someone else while you are away. **(planned; verify with engineering)**
+**Several at once.** Tick the requests in the list, type one comment, and click **Approve all** (some kinds of request
+must be answered one by one; they say so).
 
-## Until approvals work
+**Need more information?** Choose **Need more info** (if offered) and write your question. The request goes back to the
+requester; when they answer, it is back in your list.
 
-Your company needs a stand-in: for example an email or a task assigned to you, with a comment on the record saying "approved" or "rejected" and why.
-Ask your administrator which one is used.
+**Not for you?** Click **Reassign** and type the email of the right person.
 
-## Good habits that apply anyway
+## Answering from the email
 
-- Read the whole record before you decide.
-- Say why in a comment. It is kept with the record.
-- If you are unsure, ask; do not guess.
-- Tell your administrator if you are away for a long time so requests do not wait.
+1. Click **Approve** (or **Reject**) in the email.
+2. Appbuilder opens. Sign in if asked.
+3. A page shows the request and your answer. **Nothing is decided yet.** Add a comment if you want and press
+   **Confirm**.
+
+![Confirming an answer from an email link on a phone](../images/approvals-link-confirm-phone.png)
+
+Each email button works once and for a few days. If it says the link expired or was used, open **Approvals** instead.
+
+## Going away
+
+On **Approvals > Delegations**, type the email of the colleague who decides for you, and the dates. What waits for you
+moves to them while you are away and comes back if still open when you return. You still see those requests.
+
+## What the requester sees
+
+Who has answered and what, on the Approvals page (**Sent by me**) and on the record's timeline. Every action is kept.
+
+## Good habits
+
+- Read the details before you decide; ask (comment, or "Need more info") if unsure.
+- Say why in the comment, especially when you reject.
+- Tell your administrator if you are away for long and did not set a delegation.

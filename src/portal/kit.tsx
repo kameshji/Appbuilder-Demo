@@ -6,7 +6,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { CheckCircle2, CircleAlert, Copy, Download, Info, X } from 'lucide-react'
 import { PlatformError } from '@/platform'
 import { cn } from '@/lib/utils'
-import { CODE_MESSAGES } from '@/platform/errorMessages'
+import { CODE_MESSAGES, errorReference, referenceOf, rememberErrorReference } from '@/platform/errorMessages'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -15,10 +15,30 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 /* ------------------------------------------------------------------ errors + formatting */
 
 export function errMsg(e: unknown): string {
-  if (e instanceof PlatformError) return CODE_MESSAGES[e.code] ?? e.message
-  if (e instanceof Error) return e.message
-  return String(e)
+  const msg = e instanceof PlatformError ? CODE_MESSAGES[e.code] ?? e.message : e instanceof Error ? e.message : String(e)
+  // the server's request id travels with the message, so the toast or dialog showing it can add "Reference: ..."
+  rememberErrorReference(msg, referenceOf(e))
+  return msg
 }
+
+/** "Reference: abc123" with a copy button: the request id of a server error, for support (matches the server log) */
+export function ErrorReference({ id, className }: { id: string; className?: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <span className={cn('inline-flex items-center gap-1 text-[11px] text-muted-foreground', className)} data-testid="error-reference">
+      Reference: <code className="font-mono select-all">{id}</code>
+      <button
+        type="button" aria-label="Copy the reference" className="rounded p-0.5 hover:text-foreground"
+        onClick={() => { void navigator.clipboard?.writeText(id).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) }).catch(() => {}) }}
+      >
+        {copied ? <CheckCircle2 className="size-3" /> : <Copy className="size-3" />}
+      </button>
+    </span>
+  )
+}
+
+/** the reference (request id) of an error message shown to the user, if the server sent one */
+export const referenceFor = (message: string): string | undefined => errorReference(message)
 
 export function fmtDate(iso: string | undefined | null): string {
   if (!iso) return ''
@@ -62,7 +82,7 @@ export function downloadText(filename: string, text: string, mime = 'text/plain'
 /* ------------------------------------------------------------------ toasts */
 
 type ToastKind = 'success' | 'error' | 'info'
-interface ToastItem { id: number; kind: ToastKind; message: string }
+interface ToastItem { id: number; kind: ToastKind; message: string; reference?: string }
 interface ToastApi {
   toast(message: string, kind?: ToastKind): void
   /** shows the message of any thrown value as an error toast */
@@ -78,8 +98,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const toast = useCallback(
     (message: string, kind: ToastKind = 'info') => {
       const id = ++seq.current
-      setItems((l) => [...l.slice(-3), { id, kind, message }])
-      setTimeout(() => dismiss(id), kind === 'error' ? 7000 : 3500)
+      const reference = kind === 'error' ? errorReference(message) : undefined
+      setItems((l) => [...l.slice(-3), { id, kind, message, ...(reference ? { reference } : {}) }])
+      setTimeout(() => dismiss(id), kind === 'error' ? (reference ? 15000 : 7000) : 3500)
     },
     [dismiss],
   )
@@ -100,7 +121,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               )}
             >
               <Icon className={cn('mt-0.5 size-4 shrink-0', t.kind === 'success' && 'text-emerald-500', t.kind === 'error' && 'text-destructive', t.kind === 'info' && 'text-primary')} />
-              <span className="min-w-0 flex-1 break-words">{t.message}</span>
+              <span className="flex min-w-0 flex-1 flex-col break-words">{t.message}{t.reference && <ErrorReference id={t.reference} />}</span>
               <button type="button" aria-label="Dismiss" className="rounded p-0.5 text-muted-foreground hover:text-foreground" onClick={() => dismiss(t.id)}>
                 <X className="size-3.5" />
               </button>

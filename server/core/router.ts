@@ -13,7 +13,7 @@ import { mapDbError } from '../connectors/mysql/index.ts'
 import { isPgError, mapPgError } from '../connectors/postgres/db.ts'
 import { DEFAULT_ENVIRONMENT_ID, requestedEnvironment, runInEnvironment } from './env-context.ts'
 import { errText, log } from './util.ts'
-import { runWithRequest } from './work-context.ts'
+import { newWorkId, runWithRequest } from './work-context.ts'
 import { withLiveOrigin } from './live/changes.ts'
 import { LIVE_CLIENT_HEADER } from '../../src/platform/live-protocol.ts'
 
@@ -224,7 +224,8 @@ export function sendError(res: ServerResponse, e: unknown, req?: IncomingMessage
     // unread request bytes are not drained: answer, then drop the connection
     res.on('finish', () => req.destroy())
   }
-  sendJson(res, h.status, { ...(h.extra ?? {}), error: { code: h.code, message: h.message, ...(h.field ? { field: h.field } : {}) } }, close ? { Connection: 'close' } : {})
+  const rid = res.getHeader('X-Request-Id')
+  sendJson(res, h.status, { ...(h.extra ?? {}), error: { code: h.code, message: h.message, ...(h.field ? { field: h.field } : {}), ...(typeof rid === 'string' ? { requestId: rid } : {}) } }, close ? { Connection: 'close' } : {})
 }
 
 export function cookieValue(req: IncomingMessage, name: string): string | null {
@@ -342,6 +343,13 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const url = new URL(req.url ?? '/', 'http://localhost')
     if (url.pathname !== '/api' && !url.pathname.startsWith('/api/')) return false
+    // every API answer carries its request id (X-Request-Id; errors also in the body): the id the client sent when it is
+    // well-formed, else a new one. The server log lines of the request carry the same id (work-context.ts), so support
+    // can match a "Reference: ..." from an error message to the log.
+    const sent = String(req.headers['x-request-id'] ?? '').trim()
+    const rid = /^[A-Za-z0-9._:-]{1,64}$/.test(sent) ? sent : newWorkId()
+    req.headers['x-request-id'] = rid
+    res.setHeader('X-Request-Id', rid)
     return handleIn(req, res, url)
   }
 

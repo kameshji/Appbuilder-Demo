@@ -1,5 +1,5 @@
 /**
- * Calls of the flow runtime (server mode; docs/dev/data-api.md "Flows"). The Flows page and, later, the visual designer
+ * Calls of the flow runtime (server mode; docs/dev/data-api.md "Flows"). The Flows page and the visual designer
  * (package B) use these; the types are the shared ones of src/platform/flows.ts.
  */
 import { PlatformError } from '@/platform'
@@ -34,13 +34,28 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 
 const enc = encodeURIComponent
 
+export interface FlowCatalog { steps: StepKindDoc[]; triggers: TriggerTypeDoc[]; limits: Record<string, number>; /** an approvals service is registered (package C) */ approvals?: boolean }
+export interface FlowDraft { doc: FlowInput & Record<string, unknown>; connections: Record<string, string>; baseVersion: number; savedBy?: string; savedByName?: string; savedOn: string }
+export interface WebhookInfo { id: string; flowId: string; name: string | null; tokenHint: string; hasSecret: boolean; requireSignature: boolean; toleranceSeconds: number; maxBodyKB: number; perMinute: number; enabled: boolean; createdOn: string; rotatedOn: string | null; lastUsedOn: string | null; calls: number; rejected: number; urlPrefix: string }
+export interface WebhookCreated { hook: WebhookInfo; token?: string; secret?: string; url?: string; note?: string }
+
 export interface EnvFlowSettings { paused: boolean; pausedBy?: string; pausedOn?: string; environmentRunsPerMinute: number }
 /** what the editor sends: the definition plus name, description, runAs, connections (ref -> connection id) */
 export type FlowInput = Partial<Omit<FlowDef, 'connections'>> & { connections?: Record<string, string>; confirmRunAs?: boolean; note?: string }
 
 export const flowsApi = {
   list: () => call<{ items: FlowListItem[]; settings: EnvFlowSettings }>('GET', '/flows'),
-  catalog: () => call<{ steps: StepKindDoc[]; triggers: TriggerTypeDoc[]; limits: Record<string, number> }>('GET', '/flows/catalog'),
+  catalog: () => call<FlowCatalog>('GET', '/flows/catalog'),
+  /** the designer's unpublished draft (package B) */
+  draft: (id: string) => call<{ draft: FlowDraft | null }>('GET', `/flows/${enc(id)}/draft`),
+  saveDraft: (id: string, flow: unknown, connections: Record<string, string>, baseVersion: number) => call<{ draft: FlowDraft }>('PUT', `/flows/${enc(id)}/draft`, { flow, connections, baseVersion }),
+  discardDraft: (id: string) => call<{ ok: true }>('DELETE', `/flows/${enc(id)}/draft`),
+  schedulePreview: (b: { cron?: string; everyMinutes?: number; timeZone: string }) => call<{ next: string[]; description?: string; error?: string }>('POST', '/flows/schedule-preview', b),
+  webhooks: (flowId: string) => call<{ items: WebhookInfo[] }>('GET', `/flows/${enc(flowId)}/webhooks`),
+  createWebhook: (flowId: string, b: { name?: string; requireSignature?: boolean } = {}) => call<WebhookCreated>('POST', `/flows/${enc(flowId)}/webhooks`, b),
+  updateWebhook: (id: string, b: { enabled?: boolean; requireSignature?: boolean; name?: string }) => call<WebhookInfo>('PATCH', `/webhooks/${enc(id)}`, b),
+  rotateWebhook: (id: string, b: { token?: boolean; secret?: boolean }) => call<{ token?: string; secret?: string; url?: string }>('POST', `/webhooks/${enc(id)}/rotate`, b),
+  revokeWebhook: (id: string) => call<{ ok: true }>('DELETE', `/webhooks/${enc(id)}`),
   get: (id: string) => call<{ flow: FlowDef; canEdit: boolean; canRun: boolean }>('GET', `/flows/${enc(id)}`),
   create: (f: FlowInput) => call<{ flow: FlowDef; problems: ValidationProblem[] }>('POST', '/flows', f),
   save: (id: string, f: FlowInput) => call<{ flow: FlowDef; problems: ValidationProblem[] }>('PUT', `/flows/${enc(id)}`, f),
@@ -64,21 +79,6 @@ export const flowsApi = {
   setPermissions: (id: string, roleIds: string[]) => call<{ roleIds: string[] }>('PUT', `/flows/${enc(id)}/permissions`, { roleIds }),
   settings: () => call<EnvFlowSettings>('GET', '/flows/settings'),
   setPaused: (paused: boolean) => call<EnvFlowSettings>('PUT', '/flows/settings', { paused }),
-}
-
-/** a new flow to start from in the JSON editor */
-export const FLOW_TEMPLATE = {
-  name: 'New flow',
-  description: '',
-  runAs: 'owner',
-  trigger: { type: 'manual', inputs: [{ name: 'Message', type: 'text', required: true }], from: 'any' },
-  variables: [],
-  settings: { concurrency: 'parallel', timeoutMinutes: 60, retentionDays: 30, onError: 'fail' },
-  steps: [
-    { id: 'compose', name: 'Greeting', kind: 'compose', value: '"Hello " & Trigger.Inputs.Message' },
-    { id: 'reply', name: 'Reply', kind: 'respond', body: '{Text: Steps.Greeting.Output}' },
-  ],
-  connections: {},
 }
 
 /** the document the editor shows: what a maker changes, connections as ref -> connection id */

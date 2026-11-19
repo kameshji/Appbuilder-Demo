@@ -42,7 +42,9 @@ export type Trigger =
   | { type: 'schedule'; cron?: string; everyMinutes?: number; timeZone: string }
   | { type: 'manual'; inputs: InputDef[]; from: 'app' | 'record' | 'any' }
   | { type: 'webhook'; secretRef?: string }
-  | { type: 'approvalDecided' | 'formSubmitted' }
+  /** P1-C: an approval request was decided (approved, rejected, a custom answer, expired or cancelled); policy: only requests of that policy (name or id); outcomes: only these statuses */
+  | { type: 'approvalDecided'; policy?: string; statuses?: ('approved' | 'rejected' | 'completed' | 'expired' | 'cancelled')[] }
+  | { type: 'formSubmitted' }
 
 export type TriggerType = Trigger['type']
 
@@ -88,7 +90,9 @@ export type StepConfig =
   | { kind: 'data.create'; table: string; values: Record<string, Fx> }
   | { kind: 'data.update'; table: string; rowId: Fx; values: Record<string, Fx> }
   | { kind: 'data.delete'; table: string; rowId: Fx }
-  | { kind: 'approval'; title: Fx; details?: Fx; approvers: Fx; type?: 'single' | 'all' | 'any' | 'sequential'; options?: string[]; regarding?: { table: string; rowId: Fx } }
+  | ({ kind: 'approval'; title: Fx; details?: Fx; approvers?: Fx; type?: 'single' | 'all' | 'any' | 'sequential' | 'quorum'; options?: string[]; regarding?: { table: string; rowId: Fx } }
+      // P1-C refinements (src/platform/approvals.ts ApprovalStepConfig): policy, fields, quorum, stages, due, reminders, escalation ...
+      & Omit<import('./approvals.ts').ApprovalStepConfig, 'title' | 'details' | 'approvers' | 'type' | 'options' | 'regarding' | 'timeoutMinutes'>)
   | { kind: 'delay'; minutes?: number; until?: Fx }
   | { kind: 'notify'; to: Fx; title: Fx; body: Fx; link?: Fx; channels: ('inApp' | 'email')[] }
   | { kind: 'email'; to: Fx; cc?: Fx; subject: Fx; body: Fx; attachments?: Fx; connection?: string }
@@ -370,8 +374,8 @@ export const STEP_KINDS: readonly StepKindDoc[] = [
   },
   {
     kind: 'approval', group: 'People', title: 'Start and wait for an approval', summary: 'Asks people to approve; the run waits (costing nothing) until they answer or the timeout passes.',
-    fields: [{ name: 'title', type: 'Fx (text)', required: true, doc: 'What to decide.' }, { name: 'details', type: 'Fx (text)', doc: 'More text.' }, { name: 'approvers', type: 'Fx', required: true, doc: 'Email, user id, team, or a table of them.' }, { name: 'type', type: '"single" | "all" | "any" | "sequential"', doc: 'Default single.' }, { name: 'options', type: 'string[]', doc: 'Default Approve, Reject.' }, { name: 'regarding', type: '{ table, rowId: Fx }', doc: 'The record the approval is about.' }, { name: 'timeoutMinutes', type: 'number', doc: 'Outcome timedOut after this long (use runAfter timedOut to escalate).' }],
-    output: '{ Outcome, Responses, ApprovalId, CompletedOn }', guarantee: 'The request is made once per step execution (idempotency key run:step); the answer resumes the run once (the wait row changes state once).', suspends: true, defaultRetry: 'creating the request: transient errors, 3 attempts',
+    fields: [{ name: 'title', type: 'Fx (text)', required: true, doc: 'What to decide.' }, { name: 'details', type: 'Fx (text)', doc: 'More text, shown to every approver.' }, { name: 'approvers', type: 'Fx', required: true, doc: 'Emails, user ids, role:<name>, team:<code>, manager, manager-chain:<n>, department-head, or a table of people (optional with a policy).' }, { name: 'type', type: '"single" | "any" | "all" | "quorum" | "sequential"', doc: 'Default single.' }, { name: 'options', type: 'string[]', doc: 'Default Approve, Reject; "Need more info" returns the request to the requester.' }, { name: 'regarding', type: '{ table, rowId: Fx }', doc: 'The record the approval is about.' }, { name: 'policy', type: 'text', doc: 'An approval policy (name or id): approvers, stages, thresholds, reminders, escalation.' }, { name: 'fields', type: 'Record<label, Fx>', doc: 'Fields shown to approvers (also to those who cannot open the record); threshold rules read them.' }, { name: 'quorum', type: 'number', doc: 'type quorum: how many must approve.' }, { name: 'stages', type: '{ name?, approvers, mode?, quorum?, condition? }[]', doc: 'type sequential: the stages.' }, { name: 'dueMinutes', type: 'number', doc: 'Due this long after the request; reminders and escalation count from it.' }, { name: 'reminders', type: '{ afterMinutes, everyMinutes?, max? }', doc: 'Reminders to those still to answer.' }, { name: 'escalation', type: '{ action, afterMinutes?, to? }', doc: 'manager, user, nextStage, approve, reject or expire after the due date.' }, { name: 'timeoutMinutes', type: 'number', doc: 'Outcome timedOut after this long (use runAfter timedOut to escalate in the flow).' }],
+    output: '{ Outcome, Status, Responses, Approvers, ApprovalId, CompletedOn, Comments }', guarantee: 'The request is made once per step execution (idempotency key run:step); the answer resumes the run once (the wait row changes state once).', suspends: true, defaultRetry: 'creating the request: transient errors, 3 attempts',
     example: { id: 'mgr', name: 'ManagerApproval', kind: 'approval', title: '"Purchase " & Trigger.Record.Title', approvers: 'Trigger.Record.Manager', timeoutMinutes: 2880 },
   },
   {
@@ -454,7 +458,11 @@ export const TRIGGER_TYPES: readonly TriggerTypeDoc[] = [
     fields: [{ name: 'secretRef', type: 'text', doc: 'Which signing secret (managed with the webhook).' }],
     scope: 'Trigger.Body, Trigger.Query, Trigger.Headers, Trigger.ReceivedOn', guarantee: 'One run per delivery id.',
   },
-  { type: 'approvalDecided', title: 'When an approval is decided (reserved)', summary: 'Reserved for a later release.', fields: [], scope: '-', guarantee: '-', reserved: true },
+  {
+    type: 'approvalDecided', title: 'When an approval is decided', summary: 'Starts a run when an approval request ends: approved, rejected, a custom answer, expired or cancelled (P1-C).',
+    fields: [{ name: 'policy', type: 'text', doc: 'Only requests of this approval policy (name or id).' }, { name: 'statuses', type: '("approved" | "rejected" | "completed" | "expired" | "cancelled")[]', doc: 'Only these endings (default all).' }],
+    scope: 'Trigger.Request (Id, Title, Status, Outcome, RequestedBy, Policy, RegardingTable, RegardingId, CompletedOn, Fields), Trigger.Responses', guarantee: 'One run per decided request and flow (trigger key appr:<flow>:<request>).',
+  },
   { type: 'formSubmitted', title: 'When a form is submitted (reserved)', summary: 'Reserved for a later release.', fields: [], scope: '-', guarantee: '-', reserved: true },
 ]
 

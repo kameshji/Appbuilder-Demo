@@ -24,6 +24,7 @@ import { BACKUP_INSTALL_DDL, BACKUP_TABLES, upgradeInstallTo7Backup } from './ba
 import { MODEL_TABLES, createRelationshipStore, modelEnvironmentDdl, upgradeEnvironmentTo7Model } from './model/store.ts'
 import { dropSystemViews, provisionSystemTables } from './system-tables.ts'
 import { FLOW_TABLES, flowsEnvironmentDdl, upgradeEnvironmentTo8Flows } from './flows/ddl.ts'
+import { APPROVAL_TABLES, approvalsEnvironmentDdl, upgradeEnvironmentTo9Approvals } from './approvals/ddl.ts'
 import { ACTIONS_TABLES, DELIVERY_INSTALL_DDL, DELIVERY_TABLES, actionsEnvironmentDdl } from './actions/ddl.ts'
 
 /**
@@ -48,8 +49,11 @@ import { ACTIONS_TABLES, DELIVERY_INSTALL_DDL, DELIVERY_TABLES, actionsEnvironme
  *    (ab.mail_suppressions, ab.notification_deliveries, ab.notification_digest, ab.mail_log.sealed_message).
  *    N: core data model, per environment system tables sys_* (views over ab.* and real tables), registered in ab_tables
  *    with stable ids; provisionSystemTables (system-tables.ts) runs after the steps and at every start (idempotent).
+ * 9: P1 package C (independent step): approvals per environment (approvals/ddl.ts: ab_approval_policies, ab_approval_requests,
+ *    ab_approval_stages, ab_approval_assignments, ab_approval_history, ab_approval_delegations, ab_approval_links,
+ *    ab_approval_settings) shown in the core data model as the projections of the group "Approvals" (sys_approval_*).
  */
-export const SCHEMA_VERSION = 8
+export const SCHEMA_VERSION = 9
 
 /** the database was upgraded by a newer server: this one must not touch it (downgrade guard) */
 export class SchemaTooNewError extends Error {
@@ -290,13 +294,15 @@ export function environmentDdl(schema: string): string[] {
     ...actionsEnvironmentDdl(schema),
     // P1-A flows: definitions, versions, runs, steps, waits, connection references, run grants (idempotent)
     ...flowsEnvironmentDdl(schema),
+    // P1-C approvals: policies, requests, stages, assignments, history, delegations, email links, settings (idempotent)
+    ...approvalsEnvironmentDdl(schema),
   ]
 }
 
 /** names of the metadata tables inside an environment schema (never reachable through a connector: prefix ab_) */
 export const ENVIRONMENT_TABLES = [
   'ab_roles', 'ab_user_roles', 'ab_role_tables', 'ab_tables', 'ab_apps', 'ab_connections', 'ab_solutions', 'ab_data_files',
-  'ab_attachments', 'ab_counters', 'ab_audit', ...KERNEL_TABLES, 'ab_shares', ...MODEL_TABLES, ...ACTIONS_TABLES, ...FLOW_TABLES,
+  'ab_attachments', 'ab_counters', 'ab_audit', ...KERNEL_TABLES, 'ab_shares', ...MODEL_TABLES, ...ACTIONS_TABLES, ...FLOW_TABLES, ...APPROVAL_TABLES,
 ]
 /** names of the tables in schema ab */
 export const INSTALL_TABLES = ['settings', 'users', 'sessions', 'environments', 'environment_access', 'audit', 'licence', 'departments', 'teams', 'team_members', ...NOTIFICATION_TABLES, ...IDENTITY_TABLES, ...BACKUP_TABLES, ...DELIVERY_TABLES]
@@ -368,6 +374,12 @@ export const ENVIRONMENT_STEPS: { to: number; describe: string; run(db: SqlDb, s
     to: 8,
     describe: 'flows (ab_flows, ab_flow_versions, ab_flow_runs, ab_flow_steps, ab_flow_waits, ab_flow_connections, ab_flow_run_grants, ab_flow_settings, ab_flow_alerts); Flow runs becomes a view',
     run: upgradeEnvironmentTo8Flows,
+  },
+  {
+    // P1-C (independent step): approvals; the tables come from environmentDdl, the views from provisionSystemTables
+    to: 9,
+    describe: 'approvals (ab_approval_policies, ab_approval_requests, ab_approval_stages, ab_approval_assignments, ab_approval_history, ab_approval_delegations, ab_approval_links, ab_approval_settings) and their system tables in the group Approvals',
+    run: upgradeEnvironmentTo9Approvals,
   },
 ]
 

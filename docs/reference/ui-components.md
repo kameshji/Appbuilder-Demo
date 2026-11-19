@@ -40,7 +40,7 @@ Every UI component except a screen has these 10 properties. They are not repeate
 - [Layout](#layout): [Screen](#screen), [Container](#container), [Row](#row), [Column](#column), [Grid](#grid), [Card](#card), [Scroll area](#scroll-area), [Divider](#divider), [Spacer](#spacer), [Dialog](#dialog), [Sheet](#sheet), [Accordion](#accordion)
 - [Input](#input): [Button](#button), [Text input](#text-input), [Checkbox](#checkbox), [Toggle](#toggle), [Dropdown](#dropdown), [Text area](#text-area), [Number input](#number-input), [Password input](#password-input), [Search box](#search-box), [Radio group](#radio-group), [Combo box](#combo-box), [Person picker](#person-picker), [Tag input](#tag-input), [Date picker](#date-picker), [Date range picker](#date-range-picker), [Time picker](#time-picker), [Slider](#slider), [Range slider](#range-slider), [Rating](#rating), [Toggle group](#toggle-group), [Segmented control](#segmented-control), [Icon button](#icon-button), [Link button](#link-button), [Split button](#split-button), [Menu button](#menu-button), [File upload](#file-upload), [Color picker](#color-picker), [Stepper](#stepper), [PIN input](#pin-input), [Timer](#timer)
 - [Display](#display): [Label](#label), [Image](#image), [Rectangle](#rectangle), [Heading](#heading), [Rich text](#rich-text), [Badge](#badge), [Avatar](#avatar), [Avatar group](#avatar-group), [Icon](#icon), [Shape](#shape), [Tag list](#tag-list), [Stat card](#stat-card), [Timeline](#timeline)
-- [Data](#data): [Gallery](#gallery), [Form](#form), [Data table](#data-table), [List](#list), [Calendar](#calendar), [Record timeline](#record-timeline), [Activity list](#activity-list)
+- [Data](#data): [Gallery](#gallery), [Form](#form), [Data table](#data-table), [List](#list), [Calendar](#calendar), [Record timeline](#record-timeline), [Activity list](#activity-list), [Approvals panel](#approvals-panel)
 - [Navigation](#navigation): [Tabs](#tabs), [Breadcrumb](#breadcrumb), [Pagination](#pagination), [Nav menu](#nav-menu), [Top bar](#top-bar), [Steps](#steps)
 - [Feedback](#feedback): [Progress](#progress), [Circular progress](#circular-progress), [Spinner](#spinner), [Skeleton](#skeleton), [Alert](#alert), [Empty state](#empty-state)
 - [Media](#media): [Video](#video), [Audio](#audio), [Animated icon](#animated-icon)
@@ -1449,6 +1449,31 @@ Type: `ActivityList` · default size 360 x 320 · main property: `Title`
 | Output | Initial value |
 | --- | --- |
 | `Count` | `0` |
+
+**Events:** none.
+
+### Approvals panel
+
+The approval requests about a record that the signed-in user may see (status, who is asked or decided), with the answer buttons when one waits for them and a "Request approval" button (P1, server mode).
+
+Type: `ApprovalsPanel` · default size 380 x 360 · main property: `Record`
+
+| Property | Shown as | Kind | Group | Default | Level |
+| --- | --- | --- | --- | --- | --- |
+| `Record` |  | record | Data | `=Blank()` | Simple |
+| `Table` |  | text | Data | `=""` | Advanced |
+| `Title` |  | text | Content | `="Approvals"` | Simple |
+| `Policy` |  | text | Behaviour | `=""` | Simple |
+| `Approvers` |  | text | Behaviour | `=""` | Simple |
+| `ShowRequest` | Show "Request approval" | boolean | Behaviour | `=true` | Simple |
+
+**Outputs**
+
+| Output | Initial value |
+| --- | --- |
+| `Count` | `0` |
+| `Pending` | `0` |
+| `LastOutcome` | `""` |
 
 **Events:** none.
 

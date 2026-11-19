@@ -1,0 +1,30 @@
+{
+  "id": "escalate-overdue-tasks",
+  "title": "Escalate overdue tasks",
+  "description": "Every morning, find rows past their due date that are not done and notify their owner and a lead.",
+  "category": "Schedules",
+  "params": [
+    { "name": "table", "label": "Tasks table", "type": "table" },
+    { "name": "titleColumn", "label": "Column that names the task", "type": "column", "of": "table", "columnTypes": ["text", "autonumber"] },
+    { "name": "dueColumn", "label": "Due date column", "type": "column", "of": "table", "columnTypes": ["date", "datetime"] },
+    { "name": "statusColumn", "label": "Status column", "type": "column", "of": "table", "columnTypes": ["text", "choice"] },
+    { "name": "doneValue", "label": "Status meaning done", "type": "text", "default": "Done" },
+    { "name": "lead", "label": "Lead to tell (email)", "type": "text", "default": "lead@example.com" },
+    { "name": "timeZone", "label": "Time zone", "type": "timezone", "default": "UTC" }
+  ],
+  "flow": {
+    "name": "Escalate overdue {{table}}",
+    "description": "Notifies about overdue rows of {{table}} every morning.",
+    "runAs": "owner",
+    "trigger": { "type": "schedule", "cron": "0 9 * * 1-5", "timeZone": "{{timeZone}}" },
+    "variables": [],
+    "settings": { "concurrency": "singleton", "timeoutMinutes": 120, "retentionDays": 30, "onError": "fail" },
+    "steps": [
+      { "id": "late", "name": "Overdue", "kind": "data.list", "table": "{{table}}", "filter": "{{dueColumn}} < Today() && {{statusColumn}} <> \"{{doneValue}}\"", "top": 200 },
+      { "id": "each", "name": "EachOverdue", "kind": "forEach", "items": "Steps.Overdue.Output", "as": "Task", "steps": [
+        { "id": "owner", "name": "TellOwner", "kind": "notify", "to": "Task.owner", "title": "$\"Overdue: {Task.{{titleColumn}}}\"", "body": "$\"It was due {Text(Task.{{dueColumn}}, \"yyyy-mm-dd\")}.\"", "channels": ["inApp", "email"] }
+      ] },
+      { "id": "lead", "name": "TellLead", "kind": "notify", "to": "\"{{lead}}\"", "title": "$\"{CountRows(Steps.Overdue.Output)} overdue in {{table}}\"", "body": "\"\"", "channels": ["inApp"], "runAfter": [{ "step": "each", "when": ["succeeded", "failed"] }] }
+    ]
+  }
+}

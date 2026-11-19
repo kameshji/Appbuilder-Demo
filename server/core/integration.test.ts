@@ -129,7 +129,7 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (PostgreSQL)' : `se
     expect(sj).not.toContain(conn!.password)
     expect(JSON.parse(sj).defaultConnection).toMatchObject({ database: dbName, user: conn!.user })
     const st = await A.get('/api/v1/status')
-    expect(st.data.setup).toEqual({ needsDatabase: false, needsAdmin: true })
+    expect(st.data.setup).toEqual({ needsDatabase: false, needsAdmin: true, codeIn: 'console', platform: expect.any(String) })
     // anonymous status: state flags only, never the database host / port / name
     expect(st.data.ok).toBe(false)
     expect(st.data.storage).toBeUndefined()

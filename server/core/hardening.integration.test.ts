@@ -93,7 +93,7 @@ describe.skipIf(!URL_ENV)('hardening (PostgreSQL)', () => {
     const code = app.services.setupCode.current()
     expect(code).toMatch(/^[A-Z2-9]{8}$/)
     const st = await A.get('/status')
-    expect(st.data.setup).toEqual({ needsDatabase: true, needsAdmin: true })
+    expect(st.data.setup).toEqual({ needsDatabase: true, needsAdmin: true, codeIn: 'console', platform: expect.any(String) })
     expect(st.data.ok).toBe(false)
     expect(st.data.storage).toBeUndefined()
     // no code / wrong code: refused before anything is tried

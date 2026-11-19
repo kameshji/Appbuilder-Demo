@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import {
-  Boxes, Cloud, Cable, Database, FileSpreadsheet, Hammer, Home, HardDrive, LayoutGrid, Moon, Search, Shapes, ShieldCheck, Sun, Table2, X,
+  Boxes, Cloud, Cable, Database, FileSpreadsheet, Hammer, Home, HardDrive, LayoutGrid, Menu, Moon, Search, Shapes, ShieldCheck, Sun, Table2, X,
 } from 'lucide-react'
 import { usePlatform } from '@/platform'
 import { go, type Route } from '@/router'
@@ -57,7 +57,8 @@ function activeNav(route: PortalRoute): string {
   if (route.page === 'solution') return 'solutions'
   if (route.page === 'flow') return 'flows'
   if (route.page === 'soon') return `soon-${route.id}`
-  if (route.page === 'u') return 'u'
+  // built-in User mode pages light up their menu entry (#u-approvals -> Approvals); app tabs keep "My apps"
+  if (route.page === 'u') return 'id' in route ? ({ approvals: 'approvals', tasks: 'tasks', mentions: 'mentions', reports: 'myreports' } as Record<string, string>)[route.id] ?? 'u' : 'u'
   if (route.page === 'admin') return 'admin'
   return route.page
 }
@@ -171,16 +172,25 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
   const searchable = !appTab && !hidden && ['apps', 'tables', 'roles', 'solutions', 'connections', 'home', 'datafiles', 'u', 'admin'].includes(route.page)
 
   useEffect(() => { setQ('') }, [route.page, setQ])
+  // phone width (below md): the menu is a drawer behind a button, the header keeps the essentials (P1-C: approvers
+  // answer from their phones); from md up nothing changes
+  const [navOpen, setNavOpen] = useState(false)
+  useEffect(() => { setNavOpen(false) }, [route])
 
   return (
-    <div data-testid="portal-root" data-mode={mode} hidden={hidden} className={cn('flex h-full min-w-[900px] flex-col overflow-hidden bg-background text-foreground', hidden && 'hidden')}>
-      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-card px-4">
+    <div data-testid="portal-root" data-mode={mode} hidden={hidden} className={cn('flex h-full flex-col overflow-hidden bg-background text-foreground md:min-w-[900px]', hidden && 'hidden')}>
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-2 md:gap-3 md:px-4">
+        {!appTab && (
+          <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Menu" aria-expanded={navOpen} onClick={() => setNavOpen((v) => !v)} data-testid="nav-toggle">
+            <Menu />
+          </Button>
+        )}
         <button type="button" onClick={() => go(user ? { page: 'u' } : { page: 'home' })} title="Appbuilder home" className="flex shrink-0 items-center gap-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/40" aria-label="Appbuilder home">
           <span className="grid size-7 place-items-center rounded-lg bg-primary text-primary-foreground shadow-xs"><Shapes className="size-4" /></span>
-          <span className="text-[15px] font-semibold tracking-tight">Appbuilder</span>
+          <span className="hidden text-[15px] font-semibold tracking-tight sm:inline">Appbuilder</span>
         </button>
-        {canSwitch && <ModeSwitch mode={mode} onChange={onModeChange} />}
-        <div className="relative mx-auto w-full max-w-lg">
+        {canSwitch && <div className="hidden md:block"><ModeSwitch mode={mode} onChange={onModeChange} /></div>}
+        <div className="relative mx-auto hidden w-full max-w-lg md:block">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <input
             type="search"
@@ -212,14 +222,13 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
               </TooltipContent>
             </Tooltip>
           )}
-          <Button variant="ghost" size="icon-sm" onClick={toggle} data-testid="portal-theme-toggle" aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} title={theme === 'dark' ? 'Light theme' : 'Dark theme'}>
+          <Button variant="ghost" size="icon-sm" className="hidden md:inline-flex" onClick={toggle} data-testid="portal-theme-toggle" aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} title={theme === 'dark' ? 'Light theme' : 'Dark theme'}>
             {theme === 'dark' ? <Sun /> : <Moon />}
           </Button>
           <LiveIndicator />
           {/* Power Platform order: notifications, chat, environment, account (last) */}
           <NotificationBell />
-          <ChatButton />
-          <EnvironmentPicker />
+          <div className="hidden items-center gap-2 md:flex"><ChatButton /><EnvironmentPicker /></div>
           <ProfileAvatar />
         </div>
       </header>
@@ -228,7 +237,8 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
       {user && <TabStrip activeId={activeTab} />}
       <div className="flex min-h-0 flex-1">
         {!appTab && (
-          <nav aria-label="Main" data-testid={user ? 'user-nav' : 'dev-nav'} className="flex w-56 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border bg-card/60 p-2.5">
+          <nav aria-label="Main" data-testid={user ? 'user-nav' : 'dev-nav'} className={cn('w-56 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border bg-card/60 p-2.5 md:flex', navOpen ? 'fixed top-12 bottom-0 left-0 z-40 flex bg-card shadow-lg md:static md:bg-card/60 md:shadow-none' : 'hidden')}>
+            {canSwitch && <div className="mb-2 md:hidden"><ModeSwitch mode={mode} onChange={onModeChange} /></div>}
             {user ? (
               <>
                 <NavButton testId="nav-my-apps" active={active === 'u'} icon={LayoutGrid} label="My apps" onClick={() => go({ page: 'u' })} />
@@ -255,7 +265,7 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
         <main className="relative min-w-0 flex-1 bg-canvas">
           <div className={cn('absolute inset-0 overflow-auto', appTab && 'hidden')}>
             {/* full-bleed pages (the data model designer's canvas) fill the area themselves */}
-            <div className={route.page === 'datamodel' ? 'h-full w-full' : 'mx-auto w-full max-w-[1500px] px-8 py-6'}>{children}</div>
+            <div className={route.page === 'datamodel' ? 'h-full w-full' : 'mx-auto w-full max-w-[1500px] px-2 py-3 md:px-8 md:py-6'}>{children}</div>
           </div>
           <AppTabPanes activeId={user ? activeTab : null} />
         </main>

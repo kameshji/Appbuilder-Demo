@@ -1,0 +1,23 @@
+{
+  "id": "webhook-create-row",
+  "title": "Add a row from a web request",
+  "description": "Another system posts JSON to the flow's web address; the flow adds a row and answers with its id.",
+  "category": "Integration",
+  "params": [
+    { "name": "table", "label": "Table", "type": "table" },
+    { "name": "column", "label": "Column to fill", "type": "column", "of": "table", "columnTypes": ["text", "email", "multiline"] },
+    { "name": "field", "label": "Field of the request body", "type": "text", "default": "name" }
+  ],
+  "flow": {
+    "name": "Web request adds a {{table}} row",
+    "description": "POST {\"{{field}}\": ...} to the web address to add a row to {{table}}.",
+    "runAs": "owner",
+    "trigger": { "type": "webhook", "sample": { "{{field}}": "Example" } },
+    "variables": [],
+    "settings": { "concurrency": "parallel", "timeoutMinutes": 10, "retentionDays": 30, "onError": "fail" },
+    "steps": [
+      { "id": "add", "name": "AddRow", "kind": "data.create", "table": "{{table}}", "values": { "{{column}}": "Trigger.Body.{{field}}" } },
+      { "id": "answer", "name": "Answer", "kind": "respond", "body": "{id: Steps.AddRow.Output.id}", "status": 201 }
+    ]
+  }
+}

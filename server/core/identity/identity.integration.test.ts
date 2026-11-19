@@ -623,7 +623,8 @@ describe.skipIf(!PG_URL)('identity basics (PostgreSQL)', () => {
     const k = await A.get('/identity/signins?outcome=failure&pageSize=1')
     expect(k.data.items[0]).toMatchObject({ email: 'kim@example.com', reason: 'bad_password', method: 'password' })
     const nobody = await new Client(base).post('/auth/login', { email: 'ghost@example.com', password: 'nope-nope-nope' })
-    expect(nobody.data).toEqual(kimFails.data)
+    // the same answer (the request id differs per request and reveals nothing)
+    expect({ ...nobody.data.error, requestId: '' }).toEqual({ ...kimFails.data.error, requestId: '' })
   })
 
   it('environment deletion needs re-authentication', async () => {

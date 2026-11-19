@@ -291,6 +291,27 @@ their state while you build.
 - Build-time constants (`vite.config.ts` `define`, declared in `src/build-info.d.ts`): `__APP_VERSION__` (package.json) and
   `__THIRD_PARTY__` (the summary table of `THIRD-PARTY-NOTICES.md`), shown in Settings > About.
 
+## The flow designer
+
+Dev mode > Flows > a flow (`src/flows/FlowsPage.tsx`) renders `FlowDesigner` (`src/flows/designer/`, P1 package B; design in
+[flows.md](flows.md#designer-p1-package-b), decision D28). Patterns to reuse:
+
+- **The definition is the state.** `useDesigner` (zustand, one designer at a time) holds the flow document and its
+  connection references; change it only through `edit(fn, key?)` (one undo step; edits with the same `key` within a second
+  merge) or the commands in `actions.ts`. Pure helpers live in `model.ts` / `refs.ts` / `filter.ts` / `literal.ts` /
+  `dynamic.ts` and are unit-tested without a DOM (`designer.test.ts`).
+- **Fields.** `FxField` is the one field component for step settings: a typed plain value (text with dynamic content,
+  number, yes/no, date, choice, lookup row) or a formula, with server problems under it matched by step id and field (the
+  validator's names: `values.Amount`, `inputs.to`, `trigger.condition` as step `trigger` + field `condition`). New step
+  settings should use it so problems, dynamic content and read-only mode work for free.
+- **Read-only** comes from `useDesigner((s) => s.readOnly)` (locked environment, the soft lock held by someone else, or no
+  right to edit); `edit` refuses changes while it is set.
+- **Canvas** (`Canvas.tsx`): HTML cards and SVG lines in one transformed layer; elements that must not start a drag carry
+  `data-no-drag`; scrollable panels inside the canvas area carry `data-no-canvas-wheel`.
+- **Entry points**: `automate({ table, templateId? })` (`src/flows/intent.ts`) opens the gallery from anywhere;
+  `RunFlowHelper` (`src/flows/RunFlowHelper.tsx`) is the Studio formula bar's "Run a flow" for behaviour properties.
+- **Approvals**: the approval step's form is package C's `ApprovalStepForm`, loaded through `approvalAdapter.tsx`.
+
 ## The Studio state store
 
 App state lives in zustand stores with immer, created by `createAppStore()` in `/home/claude/appbuilder-demo/src/runtime/store.ts`. Each store holds

@@ -391,6 +391,11 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     const setup: StatusResponse['setup'] = { needsDatabase, needsAdmin: needsAdmin && !incompatible && (services.ready() || !services.setupComplete()) }
     if (unavailable) setup.unavailable = true
     if (incompatible) setup.incompatible = true
+    // while setup is needed: where to read the setup code (only the fact that a code file is used, never its path)
+    if (setup.needsDatabase || setup.needsAdmin) {
+      setup.codeIn = services.setupCodeInFile ? 'file' : 'console'
+      setup.platform = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'
+    }
     const out: StatusResponse = {
       app: 'appbuilder',
       apiVersion: 1,

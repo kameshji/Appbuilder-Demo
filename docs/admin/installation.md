@@ -256,7 +256,12 @@ and the service only; `APPBUILDER_SETUP_CODE_FILE` names the file). The file is 
 ============================================================
 ```
 
-Type it in the field *Setup code (shown in the server window)*, with or without the dash. It is 8 characters from an
+Type it in the setup code field, with or without the dash. The field says where the code is: *shown in the server
+window* when you started the server by hand, or *in the setup-code file on the server* when the server runs as a service
+(it knows `APPBUILDER_SETUP_CODE_FILE` is set; the page never shows the path). Then it shows the command for this
+system: `sudo appbuilder setup-code` (Linux) or `appbuilder setup-code` in an administrator PowerShell (Windows), which
+prints the code from the service's file, or `sudo cat /var/lib/appbuilder/workspace/setup-code.txt` /
+`Get-Content 'C:\ProgramData\Appbuilder\workspace\setup-code.txt'` for a default install. It is 8 characters from an
 alphabet without look-alikes (no `0/O`, `1/I/L`), changes at every start, and is replaced (and no longer printed) as soon
 as the administrator exists. 20 wrong codes within 15 minutes block further tries for a while. It is not written to the
 server's log file (`workspace/logs`), and diagnostics bundles remove it. The API takes it as

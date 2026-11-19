@@ -139,16 +139,22 @@ export interface TableDef {
    * comments, mentions, follows, tag links, attachment links, documents. Visible only to users who can read that row.
    */
   regarding?: { table: string; id: string }
+  /**
+   * P1-C: roles granted the system table's extra privilege (Approval requests: "Approvals: view", i.e. see requests about
+   * records the role's members can read). Set by the approvals settings; kept by provisioning.
+   */
+  systemPrivilegeRoles?: string[]
 }
 
-export type SystemTableGroup = 'people' | 'collaboration' | 'files' | 'communication' | 'logging' | 'reference'
+export type SystemTableGroup = 'people' | 'collaboration' | 'files' | 'communication' | 'logging' | 'reference' | 'approvals'
 /**
  * directory: Users/Departments/Teams (directory rule); own: own rows (owner = me); adminOrOwn: admins all, others own rows;
  * admin: administrators only; reference: everyone reads, administrators write; regarding: rows about a record the user can
  * read; shared: everyone reads and creates, owners and administrators change (tags); members: channel members only;
- * parent: follows the read rule of the row a lookup column points at (document versions, channel messages).
+ * parent: follows the read rule of the row a lookup column points at (document versions, channel messages); approvals: the
+ * approval rule (requester, the people asked, delegates, administrators, "Approvals: view" readers of the record; P1-C).
  */
-export type SystemPolicy = 'directory' | 'own' | 'adminOrOwn' | 'admin' | 'reference' | 'shared' | 'regarding' | 'members' | 'parent'
+export type SystemPolicy = 'directory' | 'own' | 'adminOrOwn' | 'admin' | 'reference' | 'shared' | 'regarding' | 'members' | 'parent' | 'approvals'
 
 /**
  * A row as formulas see it. Typed values: number/decimal/currency -> number, boolean -> boolean,
@@ -450,7 +456,7 @@ export interface AttachmentRef {
   url: string
 }
 
-export type SolutionComponentKind = 'app' | 'table' | 'role' | 'connection' | 'file' | 'flow'
+export type SolutionComponentKind = 'app' | 'table' | 'role' | 'connection' | 'file' | 'flow' | 'approvalPolicy'
 export interface SolutionDef {
   id: string
   /** identifier-safe */
@@ -478,6 +484,9 @@ export interface WorkspaceState {
     unavailable?: boolean
     /** the database was upgraded by a newer Appbuilder; this server refuses to use it */
     incompatible?: boolean
+    /** while setup is needed: where the setup code is (console window, or the setup-code file of a service) and the server's OS */
+    codeIn?: 'console' | 'file'
+    platform?: 'windows' | 'linux' | 'macos'
   }
   /** null when signed out (server mode). Demo mode: always the run-as user. */
   session: Session | null
@@ -515,6 +524,8 @@ export class PlatformError extends Error {
   code: 'not-found' | 'denied' | 'invalid' | 'conflict' | 'storage' | 'unauthenticated' | 'unavailable' | 'rate_limited' | 'method_not_allowed' | 'password_change_required'
     /** package I: sign-in needs the second step; the action needs a fresh password or code; two-step verification must be set up first */
     | 'mfa_required' | 'reauth_required' | 'mfa_enrolment_required'
+  /** the server's request id of the failed call (X-Request-Id): shown as "Reference: ..." so support can find it in the log */
+  requestId?: string
   constructor(code: PlatformError['code'], message: string) {
     super(message)
     this.code = code

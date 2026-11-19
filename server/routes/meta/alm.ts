@@ -37,6 +37,7 @@ import { forgetApp } from './apps.ts'
 import { assertAdminRemains } from './security.ts'
 import { installPkgFiles, readPkgFiles } from './solutions.ts'
 import { afterApplyFlows, applyFlows, planFlows, readPkgFlows, type FlowPlanOps, type PkgFlow } from '../../core/flows/alm.ts'
+import { applyApprovalPolicies, planApprovalPolicies, readPkgApprovalPolicies, type ApprovalPolicyOps, type PkgApprovalPolicy } from '../../core/approvals/alm.ts'
 import type { PkgFile } from './solutions.ts'
 
 /* ------------------------------------------------------------------ package */
@@ -53,6 +54,8 @@ export interface SolutionPkg {
   files: PkgFile[]
   /** P1-A flows; undefined: an older package without a flows list (the solution's flows are left alone) */
   flows?: PkgFlow[]
+  /** P1-C approval policies; undefined: an older package (the solution's policies are left alone) */
+  approvalPolicies?: PkgApprovalPolicy[]
   /** sha256 of the package content (without exportedOn) */
   hash: string
 }
@@ -107,7 +110,7 @@ export function readSolutionPkg(text: unknown, s: Services): SolutionPkg | null 
       version: typeof head.version === 'string' && VERSION_RE.test(head.version) ? head.version : '1.0.0',
       ...(typeof head.description === 'string' && head.description ? { description: head.description } : {}),
     },
-    apps, tables, roles, connections, files: readPkgFiles(doc.files), flows: readPkgFlows(doc.flows),
+    apps, tables, roles, connections, files: readPkgFiles(doc.files), flows: readPkgFlows(doc.flows), approvalPolicies: readPkgApprovalPolicies(doc.approvalPolicies),
     // the content, not the text: two exports of the same solution differ only in exportedOn
     hash: createHash('sha256').update(JSON.stringify({ ...doc, exportedOn: null })).digest('hex'),
   }
@@ -176,6 +179,8 @@ interface Ops {
   canAdmin: boolean
   /** P1-A: flows to create, upgrade, remove and the connection mapping */
   flowOps?: FlowPlanOps
+  /** P1-C: approval policies to create, change, remove */
+  approvalOps?: ApprovalPolicyOps
 }
 
 export interface PlanResult { plan: SolutionPlan; ops: Ops }
@@ -188,7 +193,7 @@ function mapRole(r: PkgRole, ops: Ops): { privileges: TablePrivilege[]; apps: st
 }
 
 /** computes the plan in the current environment (nothing is changed) */
-export interface FlowImportOptions { connectionMap?: Record<string, string>; enableFlows?: boolean | string[] }
+export interface FlowImportOptions { connectionMap?: Record<string, string>; enableFlows?: boolean | string[]; peopleMap?: Record<string, string> }
 
 export async function planSolution(s: Services, user: UserContext, pkg: SolutionPkg, flowOpts: FlowImportOptions = {}): Promise<PlanResult> {
   const items: PlanItem[] = []
@@ -436,6 +441,13 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
   warnings.push(...fp.warnings)
   if (fp.matched) matched = true
   ops.flowOps = fp.ops
+  // approval policies (P1-C): people by email, flagged when they have no account here
+  const ap = await planApprovalPolicies(s, user, pkg.approvalPolicies, old.filter((x) => x.kind === 'approvalPolicy').map((x) => x.id), { peopleMap: flowOpts.peopleMap })
+  items.push(...ap.items)
+  problems.push(...ap.problems)
+  warnings.push(...ap.warnings)
+  if (ap.matched) matched = true
+  ops.approvalOps = ap.ops
 
   const planMode: SolutionPlan['mode'] = matched ? 'upgrade' : 'install'
   if (planMode === 'upgrade' && !canAdmin) problems.push('Upgrading a solution in place changes existing apps, tables and roles: only administrators of this environment can do it.')
@@ -453,10 +465,11 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
     ...(systemEvents.length ? { systemEvents } : {}),
     ...(fp.serviceFlows.length ? { serviceFlows: fp.serviceFlows } : {}),
     ...(fp.connections.length ? { flowConnections: fp.connections } : {}),
+    ...(ap.people.length ? { approvalPeople: ap.people } : {}),
   }
   // ids generated for new components (package entries without one) differ between two plans: not part of the token
   const fingerprint = items.map((i) => ({ ...i, id: i.change === 'new' ? '' : i.id }))
-  plan.token = createHash('sha256').update(JSON.stringify({ env: plan.target.id, pkg: pkg.hash, mode: plan.mode, items: fingerprint, problems, flows: fp.connections.map((c) => [c.from, c.to]), enable: flowOpts.enableFlows ?? null })).digest('hex').slice(0, 32)
+  plan.token = createHash('sha256').update(JSON.stringify({ env: plan.target.id, pkg: pkg.hash, mode: plan.mode, items: fingerprint, problems, flows: fp.connections.map((c) => [c.from, c.to]), enable: flowOpts.enableFlows ?? null, people: ap.people.map((p) => [p.email, p.to]) })).digest('hex').slice(0, 32)
   return { plan, ops }
 }
 
@@ -749,6 +762,10 @@ export async function applySolution(s: Services, ctx: Ctx, pkg: SolutionPkg, res
       }
       if (pkg.flows) for (const f of pkg.flows) components.push({ kind: 'flow', id: f.id })
       else for (const c of ops.existingSolution?.components ?? []) if (c.kind === 'flow') components.push(c)
+      // approval policies (P1-C)
+      if (ops.approvalOps) await applyApprovalPolicies(s, u.user.id, ops.approvalOps, pkg.head.id)
+      if (pkg.approvalPolicies) for (const p of pkg.approvalPolicies) components.push({ kind: 'approvalPolicy', id: p.id })
+      else for (const c of ops.existingSolution?.components ?? []) if (c.kind === 'approvalPolicy') components.push(c)
 
       const sols = await s.meta.solutions.list()
       const prev = ops.existingSolution
@@ -801,7 +818,7 @@ function dedupe(list: SolutionDef['components']): SolutionDef['components'] {
  * to the plan's token (409 otherwise: the client shows the plan first); problems refuse it (422).
  */
 export async function importStable(s: Services, ctx: Ctx, pkg: SolutionPkg, o: { confirm?: unknown; filesAs: 'database' | 'file'; proceedWithoutBackup?: boolean } & FlowImportOptions): Promise<SolutionImportResult> {
-  const res = await planSolution(s, me(ctx), pkg, { connectionMap: o.connectionMap, enableFlows: o.enableFlows })
+  const res = await planSolution(s, me(ctx), pkg, { connectionMap: o.connectionMap, enableFlows: o.enableFlows, peopleMap: o.peopleMap })
   if (res.plan.problems.length) throw invalid(`The solution cannot be imported here: ${res.plan.problems.join(' ')}`)
   // an upgrade, and any import with events that run as the system, needs the administrator's explicit confirmation
   if ((res.plan.mode === 'upgrade' || res.plan.systemEvents?.length || res.plan.serviceFlows?.length) && o.confirm !== res.plan.token) {

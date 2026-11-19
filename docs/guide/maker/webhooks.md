@@ -5,16 +5,20 @@ when a payment arrives, a form tool when someone submits a form, or a Tally add-
 
 ## Create the address
 
-In this version the address is made through the API by someone who may change the flow (the flow designer will show the
-same panel):
+In the flow designer, click the trigger card ("When a web request arrives") and **Create the web address** (you need to be
+able to change the flow). The panel shows the **address** (with its secret token) and the **signing secret** with copy
+buttons. Copy both now: they are not shown again. Give them to the other system. The same panel lists the address (its
+first characters only), its calls and refusals, and has **New address**, **New secret**, **Require signature** /
+**Allow unsigned**, **Turn off** and **Revoke** ([flows](flows.md#the-trigger)).
+
+The same through the API:
 
 ```
 POST /api/v1/flows/<flow id>/webhooks      { "requireSignature": true }
 ```
 
-The answer holds the **address** (with its secret token) and the **signing secret**. Copy both now: they are not shown
-again. Give them to the other system. Settings you can change (`PATCH /api/v1/webhooks/<id>`): `requireSignature`
-(default on), `toleranceSeconds` (5 minutes), `maxBodyKB` (256, at most 1,024), `perMinute` (60), `enabled`, `name`.
+Settings you can change (`PATCH /api/v1/webhooks/<id>`): `requireSignature` (default on), `toleranceSeconds` (5 minutes),
+`maxBodyKB` (256, at most 1,024), `perMinute` (60), `enabled`, `name`.
 
 - **Rotate** (`POST /api/v1/webhooks/<id>/rotate` with `{ "token": true }` and/or `{ "secret": true }`): the old address or
   secret stops working at once; the new one is shown once.

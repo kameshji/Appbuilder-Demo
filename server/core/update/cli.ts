@@ -11,6 +11,7 @@
  *   appbuilder health                        asks the running server: ok / starting / degraded
  *   appbuilder restore <archive> ...         disaster recovery (backup/cli.ts)
  *   appbuilder db-check                      installers: exit 0 when the saved database login works
+ *   appbuilder admin list|reset-password|reset-mfa|make-install-admin <email>   locked out: identity/admin-cli.ts
  *   appbuilder seed-config ...               installers only: writes server.json with the database password sealed
  *                                            (the password is read from standard input, never from the command line)
  */

@@ -1,0 +1,38 @@
+{
+  "id": "purchase-approval",
+  "title": "Multi-step purchase approval",
+  "description": "A request is added: the manager approves; above a limit a director approves too; no answer in 2 days escalates; the requester is told the outcome.",
+  "category": "Approvals",
+  "needs": ["approvals"],
+  "params": [
+    { "name": "table", "label": "Requests table", "type": "table" },
+    { "name": "titleColumn", "label": "Title column", "type": "column", "of": "table", "columnTypes": ["text", "autonumber"] },
+    { "name": "amountColumn", "label": "Amount column", "type": "column", "of": "table", "columnTypes": ["number", "decimal", "currency"] },
+    { "name": "requesterColumn", "label": "Requester column (email)", "type": "column", "of": "table", "columnTypes": ["text", "email"] },
+    { "name": "managerColumn", "label": "Manager column (email)", "type": "column", "of": "table", "columnTypes": ["text", "email"] },
+    { "name": "statusColumn", "label": "Status column", "type": "column", "of": "table", "columnTypes": ["text", "choice"] },
+    { "name": "limit", "label": "Second approval above", "type": "number", "default": "10000" },
+    { "name": "director", "label": "Director (email)", "type": "text", "default": "director@example.com" }
+  ],
+  "flow": {
+    "name": "Purchase approval ({{table}})",
+    "description": "Manager approval, a second approval above {{limit}}, escalation after 2 days, the requester is told.",
+    "runAs": "owner",
+    "trigger": { "type": "table", "table": "{{table}}", "on": ["create"] },
+    "variables": [],
+    "settings": { "concurrency": "perRecord", "timeoutMinutes": 20160, "retentionDays": 90, "onError": "fail" },
+    "steps": [
+      { "id": "mgr", "name": "Mgr", "kind": "approval", "title": "$\"Purchase: {Trigger.Record.{{titleColumn}}}\"", "approvers": "Trigger.Record.{{managerColumn}}", "timeoutMinutes": 2880, "regarding": { "table": "{{table}}", "rowId": "Trigger.Record" } },
+      { "id": "esc", "name": "Esc", "kind": "scope", "runAfter": [{ "step": "mgr", "when": ["timedOut"] }], "steps": [
+        { "id": "escn", "name": "EscNotify", "kind": "notify", "to": "\"{{director}}\"", "title": "$\"Escalated: {Trigger.Record.{{titleColumn}}}\"", "body": "\"The manager did not answer in 2 days.\"", "channels": ["inApp"] },
+        { "id": "escs", "name": "EscStatus", "kind": "data.update", "table": "{{table}}", "rowId": "Trigger.Record", "values": { "{{statusColumn}}": "\"Escalated\"" } }
+      ] },
+      { "id": "decide", "name": "Decide", "kind": "condition", "runAfter": [{ "step": "esc", "when": ["succeeded", "skipped"] }], "if": "Steps.Mgr.Status = \"timedOut\" || (Steps.Mgr.Output.Outcome = \"Approve\" && Trigger.Record.{{amountColumn}} > {{limit}})", "then": [
+        { "id": "dir", "name": "Dir", "kind": "approval", "title": "$\"Second approval: {Trigger.Record.{{titleColumn}}}\"", "approvers": "\"{{director}}\"", "timeoutMinutes": 4320 }
+      ], "else": [] },
+      { "id": "final", "name": "Final", "kind": "compose", "value": "If(Steps.Decide.Output.Result, Steps.Dir.Output.Outcome, Steps.Mgr.Output.Outcome)" },
+      { "id": "status", "name": "SetStatus", "kind": "data.update", "table": "{{table}}", "rowId": "Trigger.Record", "values": { "{{statusColumn}}": "If(Steps.Final.Output = \"Approve\", \"Approved\", \"Rejected\")" } },
+      { "id": "tell", "name": "Tell", "kind": "notify", "to": "Trigger.Record.{{requesterColumn}}", "title": "$\"Request {Trigger.Record.{{titleColumn}}}: {If(Steps.Final.Output = \"Approve\", \"approved\", \"rejected\")}\"", "body": "\"\"", "channels": ["inApp"] }
+    ]
+  }
+}

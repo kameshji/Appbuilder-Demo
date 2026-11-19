@@ -1,0 +1,26 @@
+{
+  "id": "daily-summary-email",
+  "title": "Daily summary email of a table",
+  "description": "Every morning, an email listing the rows added since the day before.",
+  "category": "Schedules",
+  "params": [
+    { "name": "table", "label": "Table", "type": "table" },
+    { "name": "titleColumn", "label": "Column to list", "type": "column", "of": "table", "columnTypes": ["text", "autonumber", "email"] },
+    { "name": "recipient", "label": "Send to (email)", "type": "text", "default": "you@example.com" },
+    { "name": "timeZone", "label": "Time zone", "type": "timezone", "default": "UTC" }
+  ],
+  "flow": {
+    "name": "Daily summary of {{table}}",
+    "description": "Emails the rows added to {{table}} in the last day.",
+    "runAs": "owner",
+    "trigger": { "type": "schedule", "cron": "0 8 * * *", "timeZone": "{{timeZone}}" },
+    "variables": [],
+    "settings": { "concurrency": "singleton", "timeoutMinutes": 60, "retentionDays": 30, "onError": "fail" },
+    "steps": [
+      { "id": "new", "name": "NewRows", "kind": "data.list", "table": "{{table}}", "filter": "createdOn >= DateAdd(Trigger.ScheduledTime, -1, \"Days\")", "sort": [{ "column": "createdOn" }], "top": 500 },
+      { "id": "any", "name": "AnyNew", "kind": "condition", "if": "CountRows(Steps.NewRows.Output) > 0", "then": [
+        { "id": "mail", "name": "SendSummary", "kind": "email", "to": "\"{{recipient}}\"", "subject": "$\"{CountRows(Steps.NewRows.Output)} new in {{table}}\"", "body": "\"<p>Added since yesterday:</p><ul>\" & Concat(Steps.NewRows.Output, \"<li>\" & {{titleColumn}} & \"</li>\") & \"</ul>\"" }
+      ], "else": [] }
+    ]
+  }
+}

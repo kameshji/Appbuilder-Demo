@@ -5,6 +5,70 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 ## [Unreleased]
 
 ### Added
+- **Approvals** (P1 package C, decision D29; exit check 3, and exit check 1 against the real service): requests from
+  flows (the step "Start and wait for an approval" with `policy`, `fields`, `quorum`, `stages`, `dueMinutes`, `reminders`,
+  `escalation`; outputs `Outcome`, `Status`, `Responses`, `Approvers`, `Comments`), from apps (`RequestApproval(...)`,
+  `Approvals(record)`, `MyApprovals()`, the **Approvals panel** UI component) and the API (`/approvals`). Types: single,
+  first to respond, everyone, quorum (N of M), sequential stages with conditions, amount threshold rules; approvers by
+  person, role, team, department, department head, manager, manager chain (N levels, or until a job title or role);
+  custom answers and "Need more info" (back to the requester, then resumes); self-approval prevention with fallback to the
+  manager or administrators (and why, in the history); separation of duties; reusable **policies** (in solutions, people by
+  email, flagged in the plan when missing). Delegation (out of office, at assignment, retroactive, back when it ends),
+  reminders, escalation (manager, person, next stage, automatic approve/reject recorded as the system, expire), reassign,
+  cancel/withdraw, expiry; comments and files on a request; full history and audit; decisions immutable. **Approvals
+  page** in User mode (To approve with bulk answers, Sent by me, All for administrators, Delegations, Policies and
+  settings), usable at phone width; bell notifications deep-link to it; **emails with Approve / Reject buttons** that open
+  a confirmation page (signed, single-use, expiring links in the URL fragment; the answer is a POST with a session).
+  Security: requester, people asked, delegates, administrators, and the new privilege "Approvals: view" for readers of
+  the record; approvers who cannot read the record see only the declared details. The record timeline shows approvals.
+  The flow trigger **When an approval is decided** (`approvalDecided`). Six system tables in the new group **Approvals**.
+  Schema version 9. Docs: `docs/guide/maker/approvals.md`, `docs/admin/approvals.md`, `docs/dev/approvals.md`,
+  `docs/help/quick-start-approver.md` (real page), `docs/reference/approvals.md` (generated); headless run and screenshots
+  `scripts/docs-shots/approvals.mjs`.
+- **Locked out: `appbuilder admin`** recovery commands on the server machine (`list`, `reset-password` with a one-time
+  15-minute code, `reset-mfa`, `make-install-admin`), working with the server running or stopped, refusing without the
+  workspace's secret key, audited with source `cli` and the OS user; `appbuilder setup-code` prints the setup code of a
+  server installed as a service.
+- **Error references**: every API answer carries `X-Request-Id` (errors also `error.requestId`); error messages in the app
+  show "Reference: ..." with a copy button so support can find the request in the server log.
+- The User mode menu and header work at phone width (menu drawer below the md breakpoint).
+
+### Changed
+- The setup screen says where the setup code is: the server window, or (installed as a service) the setup-code file with
+  the command to read it (`/status` tells only which, never the path).
+
+### Designed, not built
+- A recycle bin for deleted rows: `docs/dev/recycle-bin.md`.
+
+- **Flows: the visual designer** (P1 package B, decision D28; exit check 2, `scripts/exit-check/p1-designer.mjs`): flows are
+  built on a canvas by clicking, no JSON. Trigger card on top, step cards joined by lines, containers (condition branches
+  side by side, switch cases, for each, do until, scope) as collapsible regions, "+" between any two steps and inside
+  containers, drag to move steps (also between containers; run after and references are checked), multi-select,
+  copy/paste (also between flows), duplicate, undo/redo, zoom, pan, minimap, fit, search, full keyboard use, run-after
+  settings drawn as labelled connectors, notes on steps, renames that update every formula. A step picker by group
+  (Control, Data, Approvals, Notifications, Connectors with the connections you may use and their actions, Advanced),
+  recently used first. Step panels with table and column pickers, typed values (lookups by search, choices, dates), the
+  field mapping of Add / Update a row with the required columns first, a filter builder for List rows and Get a row, a
+  condition builder, people and team pickers, durations, a rich text email body, inputs generated from an action's JSON
+  Schema (nested, with a raw JSON view), a child flow's typed inputs, retry policy, time limit and run after. **Dynamic
+  content** everywhere, typed: the trigger's row (lookups one step away, the row before a change), manual inputs, a pasted
+  web request sample, earlier steps' outputs (by table, approval, action output schema, a pasted HTTP response),
+  variables, loop items. Formula fields with suggestions and the server's check under each field (Studio wording,
+  "Runs on server" / "Can't run" for table reads). Trigger panels: table changes (columns, condition builder, coalescing,
+  own changes), schedules (presets, cron, the next five runs in the time zone), typed manual inputs, and **web requests:
+  create, rotate and revoke the flow's webhook in the designer** (address and secret shown once, signing instructions).
+  Flow settings: run as (service account for administrators, confirmed), concurrency, limits, variables, connection
+  references, run permissions. **Drafts**: changes are saved as the flow's draft on the server (`ab_flows.draft`,
+  `GET|PUT|DELETE /flows/:id/draft`) and **Publish** makes them the running version; a live problem list (click to go to
+  the field); publishing and turning on wait for zero errors; version history with a visual diff and restore; read-only in
+  locked production environments; the Studio's soft edit lock. **Test** with a sample trigger (an existing row, a recent
+  real trigger, a form), simulated by default ("run for real" asks); runs shown on the canvas (status, duration, attempts,
+  each step's inputs/outputs/error, loop iteration pager, live), any earlier run on the canvas, run again from the failed
+  step. **New flow** gallery with ten working templates (`src/flows/templates/`, validated against the server validator)
+  and an empty-state walkthrough; "Advanced: definition" JSON view with two-way sync. Entry points: **Automate** in the
+  table designer, **Run a flow** (inserts `RunFlow(...)` with typed inputs) for behaviour properties in the Studio.
+  `POST /flows/schedule-preview`; `GET /flows/catalog` says whether approvals are available. Docs: maker guide rewritten
+  around the designer (screenshots: `scripts/docs-shots/flow-designer.mjs`), `docs/dev/flows.md` ("Designer").
 - **Flows: the runtime** (P1 package A, decision D27; exit check 1): flow definitions with versions and restore
   (`ab_flows`, `ab_flow_versions`), triggers on table changes (from the outbox, with condition, changed columns, coalescing),
   schedules (cron or every N minutes, time zones), manual runs with typed inputs (`POST /flows/:id/run`, the new formula

@@ -2,7 +2,7 @@
  * Tables of the flow runtime (P1 package A, schema version 8; docs/dev/flows.md "Tables", docs/dev/schema.md).
  * CREATE ... IF NOT EXISTS: idempotent, run on every start (environmentDdl in meta-store.ts).
  *
- *   ab_flows             definitions (current version), enabled, owner, run-as, solution
+ *   ab_flows             definitions (current version), enabled, owner, run-as, solution; the designer's draft (package B)
  *   ab_flow_versions     every saved version (restore, ALM compares the current one)
  *   ab_flow_runs         one row per run (state machine, trigger payload, run-as, correlation, variables, response)
  *   ab_flow_steps        one row per step execution (state, input, output, error, attempt, timings, container state)
@@ -39,6 +39,11 @@ export function flowsEnvironmentDdl(schema: string): string[] {
       modified_on timestamptz NOT NULL
     )`,
     `CREATE UNIQUE INDEX IF NOT EXISTS ab_ux_flows_name ON ${E('ab_flows')} (lower(name))`,
+    // P1 package B (designer): the unpublished draft of a flow (definition and connection references), one per flow;
+    // "Publish" saves it as a new version and clears it. Additive and idempotent (no schema version step needed).
+    `ALTER TABLE ${E('ab_flows')} ADD COLUMN IF NOT EXISTS draft jsonb NULL`,
+    `ALTER TABLE ${E('ab_flows')} ADD COLUMN IF NOT EXISTS draft_by text NULL`,
+    `ALTER TABLE ${E('ab_flows')} ADD COLUMN IF NOT EXISTS draft_on timestamptz NULL`,
     `CREATE TABLE IF NOT EXISTS ${E('ab_flow_versions')} (
       flow_id text NOT NULL,
       version integer NOT NULL,

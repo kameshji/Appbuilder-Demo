@@ -12,6 +12,7 @@
 import { remoteCollab } from './remote-collab.ts'
 import type { AppDef, FxRecord, FxValue } from '@/contracts'
 import { PlatformError } from './contracts'
+import { rememberErrorReference } from './errorMessages'
 import type {
   AccessScope, AppMeta, AttachmentRef, ColumnAccess, ColumnDef, ConnectionRef, DataErrorEvent, DataFileDef,
   DataOp, PlatformApi, RoleDef, Row, Session, SolutionDef, TableDef, UserDef, WorkspaceState,
@@ -255,6 +256,12 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       } catch { /* not JSON */ }
       const err = new PlatformError(code ?? codeForStatus(res.status), message ?? `The server answered ${res.status}.`)
       if (field) Object.assign(err, { field })
+      // the server's request id: "Reference: ..." in error toasts and dialogs (support finds it in the log)
+      const rid = res.headers?.get?.('x-request-id')
+      if (rid) {
+        err.requestId = rid
+        rememberErrorReference(err.message, rid)
+      }
       // 409 version conflict: the row as it is now and who changed it (package H)
       if (extra) Object.assign(err, extra)
       if (res.status === 401 && !path.startsWith('/auth/login')) onUnauthenticated()
@@ -638,6 +645,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     const setup: WorkspaceState['setup'] = { needsDatabase: !!st.setup?.needsDatabase, needsAdmin: !!st.setup?.needsAdmin }
     if (st.setup?.unavailable) setup.unavailable = true
     if (st.setup?.incompatible) setup.incompatible = true
+    if (st.setup?.codeIn) setup.codeIn = st.setup.codeIn
+    if (st.setup?.platform) setup.platform = st.setup.platform
     // storage details come only to administrators (and with the workspace); keep what we have otherwise
     setState({ setup, ...(st.storage ? { storage: st.storage } : {}) })
     return st

@@ -1,0 +1,27 @@
+{
+  "id": "approval-above-amount",
+  "title": "Approval for rows above an amount",
+  "description": "When a row with an amount above a limit is added, ask an approver and write the answer into a status column.",
+  "category": "Approvals",
+  "needs": ["approvals"],
+  "params": [
+    { "name": "table", "label": "Table", "type": "table" },
+    { "name": "amountColumn", "label": "Amount column", "type": "column", "of": "table", "columnTypes": ["number", "decimal", "currency"] },
+    { "name": "titleColumn", "label": "Column that names the row", "type": "column", "of": "table", "columnTypes": ["text", "autonumber"] },
+    { "name": "statusColumn", "label": "Status column (text or choice)", "type": "column", "of": "table", "columnTypes": ["text", "choice"] },
+    { "name": "limit", "label": "Above this amount", "type": "number", "default": "1000" },
+    { "name": "approver", "label": "Approver (email)", "type": "text", "default": "approver@example.com" }
+  ],
+  "flow": {
+    "name": "Approve large {{table}}",
+    "description": "Rows of {{table}} above {{limit}} need an approval.",
+    "runAs": "owner",
+    "trigger": { "type": "table", "table": "{{table}}", "on": ["create"], "condition": "Trigger.Record.{{amountColumn}} > {{limit}}" },
+    "variables": [],
+    "settings": { "concurrency": "perRecord", "timeoutMinutes": 20160, "retentionDays": 90, "onError": "fail" },
+    "steps": [
+      { "id": "ask", "name": "Approve", "kind": "approval", "title": "$\"Approve {Trigger.Record.{{titleColumn}}} ({Trigger.Record.{{amountColumn}}})\"", "approvers": "\"{{approver}}\"", "regarding": { "table": "{{table}}", "rowId": "Trigger.Record" } },
+      { "id": "set", "name": "WriteOutcome", "kind": "data.update", "table": "{{table}}", "rowId": "Trigger.Record", "values": { "{{statusColumn}}": "If(Steps.Approve.Output.Outcome = \"Approve\", \"Approved\", \"Rejected\")" } }
+    ]
+  }
+}

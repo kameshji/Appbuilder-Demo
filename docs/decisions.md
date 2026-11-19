@@ -503,3 +503,69 @@ least once. `Flow.Run` is offered as `RunFlow(...)` (no dotted function names in
 
 **Status.** Accepted, 19 Nov 2026.
 
+
+## D28. Flow designer: the definition is the model; own HTML/SVG canvas; a server-side draft per flow; formulas checked by the server (P1 package B, Nov 2026)
+
+**Context.** Exit check 2 asks for a flow built by clicking only. Makers need Power Automate's ease without its traps: no
+JSON, but nothing lost when the runtime grows new options; typed help for formulas; safe testing; changes that do not hit
+running flows until they are ready. The runtime (D27) already validates a definition with step id and field per problem.
+
+**Decision.**
+1. **The flow definition itself is the designer's model.** Edits are pure functions on the version document that copy
+   only what they change; step lists are addressed by slots (container id + list key). A canvas tree is derived for
+   drawing and converts back losslessly (tested for every step kind with unknown fields). Unknown step kinds are drawn
+   and edited as JSON. No intermediate graph format to keep in sync.
+2. **Own canvas, no library**: HTML cards (focusable, keyboard, screen readers) and SVG connectors in one transformed
+   layer, a measured top-down layout with containers as regions and lanes side by side; pan, zoom and minimap as in the
+   data model designer. Insertion points are real buttons; moves drop on them.
+3. **A draft per flow on the server** (`ab_flows.draft`, additive columns), saved as you edit, not validated; **Publish**
+   saves a version (validated) and clears it. Running flows use only published versions. One draft per flow, guarded by the
+   Studio's soft edit lock, instead of per-user drafts.
+4. **Formulas are checked by the server's validator** (`POST /flows/validate`, debounced), so the messages and the
+   delegation rules are exactly the runtime's; the browser adds suggestions, typed dynamic content and a syntax check. Plain
+   values (text with dynamic content, numbers, dates, choices, lookups) compile to formulas (interpolated strings for text).
+5. **Templates are definitions** with `{{param}}` placeholders, validated by a test against the server validator.
+6. **Approvals' form is package C's component**, found at build time (`import.meta.glob`), with a placeholder without it.
+
+**Alternatives.** A graph library (React Flow and the like: free layout, but layout of nested containers and keyboard
+access are ours anyway, and a dependency); a separate designer model translated to and from the definition (drift, lost
+fields); drafts as unvalidated versions in `ab_flow_versions` (the version list would mix drafts and published versions,
+and ALM compares the current version); a browser-side formula checker (a second implementation of the server's rules).
+
+**Consequences.** Validation is a server round trip (about 0.5 s after typing stops). A draft can hold problems; publishing
+cannot. Two makers cannot edit one flow at the same time (take over instead). The webhook trigger's management (create,
+rotate, revoke, the secret shown once) is now in the designer.
+
+**Status.** Accepted, 19 Nov 2026.
+
+## D29. Approvals: requests as rows with one locked transaction per change; routing by references resolved per stage; email answers through a confirmation page (P1 package C, Nov 2026)
+
+**Context.** Exit checks 1 and 3: approvals from flows and apps, answered in the app, from the bell and by email, with
+delegation and escalation, surviving restarts. Approvers are often on phones and away from desks; approval emails are
+opened by mail scanners; approvers must see what they approve without seeing records they may not read.
+
+**Decision.**
+1. **State in eight environment tables**, changed only by the approvals service, each change in one transaction with the
+   request row locked; the flow's resume job and the notification jobs are enqueued in that transaction (exactly-once
+   resume, notifications after commit). Decisions are immutable. The core data model shows the tables as read-only views
+   (group Approvals) with a built-in policy, so formulas (`Approvals`, `MyApprovals`) delegate like any table.
+2. **Approvers are text references** (`role:`, `team:`, `department:`, `manager`, `manager-chain...`, emails), planned into
+   stages when the request is made and resolved into people when a stage starts; the rules every stage follows
+   (self-approval, separation of duties, fallback, delegation) are one pure function with unit tests, and each decision
+   is written to the history with its reason. A request keeps a copy of its definition.
+3. **Visibility is one rule** used by the system-table policy and the service; "Approvals: view" is a role list stored
+   on the requests table's definition so the security engine needs no new lookup. An approver who cannot read the record
+   sees only what the requester declared (details and fields); the record is always read as the viewer.
+4. **Email links never decide.** A signed token in the URL fragment opens a confirmation page; the answer is a POST with a
+   session and the CSRF header; links are single use, expiring, bound to one person and one assignment.
+5. **Time follows the flow clock**; the sweep (reminders, escalation, delegations) runs on worker rounds.
+
+**Alternatives.** Approve on GET with a one-time token (scanners and previews approve by accident); per-request
+workflow inside the flow engine (approvals from apps and the API would need flows); resolving everyone up front (people
+change jobs during long sequential approvals); storing approvals as ordinary tables written through the data service
+(immutability and the rule would need hooks everywhere).
+
+**Consequences.** One due date per request (not per stage); answering by reply is not supported; department heads are
+inferred from reporting lines. Restores keep open requests but cut their link to the (cancelled) flow run.
+
+**Status.** Accepted, 19 Nov 2026.

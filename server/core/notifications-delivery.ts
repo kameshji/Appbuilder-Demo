@@ -239,12 +239,15 @@ ${inner}
 </body></html>`
 }
 
-function itemHtml(brand: Brand, n: { title: string; body: string; link: string | null; from?: string; createdOn?: string }): string {
+function itemHtml(brand: Brand, n: { title: string; body: string; link: string | null; from?: string; createdOn?: string; actions?: { label: string; url: string }[] }): string {
   const href = deepLink(brand, n.link)
+  // P1-C: answer buttons (each opens a confirmation page in the app; nothing is decided by opening a link)
+  const actions = (n.actions ?? []).map((a, i) => `<a href="${esc(a.url)}" style="display:inline-block;margin:0 8px 8px 0;padding:10px 18px;border-radius:8px;background:${i === 0 ? '#16a34a' : i === 1 ? '#dc2626' : '#475569'};color:#ffffff;text-decoration:none;font-weight:600;font-size:14px">${esc(a.label)}</a>`).join('')
   return `<div style="margin:0 0 14px;padding:0 0 12px;border-bottom:1px solid #f1f5f9">
 <div style="font-weight:600">${esc(n.title)}</div>
 ${n.body ? `<div style="margin-top:4px;white-space:pre-wrap;line-height:1.5">${esc(n.body)}</div>` : ''}
 ${n.from ? `<div style="margin-top:4px;font-size:12px;color:#64748b">From ${esc(n.from)}</div>` : ''}
+${actions ? `<div style="margin-top:12px">${actions}</div><div style="font-size:11px;color:#94a3b8">Each button opens a page where you confirm (sign in first if asked); each link works once.</div>` : ''}
 ${href ? `<div style="margin-top:8px"><a href="${esc(href)}" style="display:inline-block;padding:7px 14px;border-radius:8px;background:#4f46e5;color:#ffffff;text-decoration:none;font-weight:600;font-size:13px">Open in ${esc(brand.installName)}</a></div>` : ''}
 </div>`
 }
@@ -320,7 +323,7 @@ export function createDelivery(services: CoreServices): DeliveryService {
     const html = emailFrame(b, heading, items.map((i) => itemHtml(b, i)).join('\n'), footer)
     const text = [
       heading, '',
-      ...items.flatMap((i) => [i.title, ...(i.body ? [i.body] : []), ...(deepLink(b, i.link) ? [`Open: ${deepLink(b, i.link)}`] : []), '']),
+      ...items.flatMap((i) => [i.title, ...(i.body ? [i.body] : []), ...(((i as { actions?: { label: string; url: string }[] }).actions ?? []).map((a) => `${a.label}: ${a.url}`)), ...(deepLink(b, i.link) ? [`Open: ${deepLink(b, i.link)}`] : []), '']),
       '--', why.trim(), ...(b.publicUrl ? [`Stop these emails: ${unsub}`] : []), 'Settings > Notifications changes what you get.',
     ].join('\n')
     const headers: Record<string, string> = b.publicUrl ? { 'List-Unsubscribe': `<${unsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } : {}

@@ -1,4 +1,24 @@
-import type { PlatformError } from './contracts'
+import type { PlatformError } from './contracts.ts'
+
+/**
+ * The request ids (references) of recent server errors by their message, so an error toast or dialog can show
+ * "Reference: <id>" wherever the message ends up (support matches it to the server log). Bounded; newest wins.
+ */
+const refs = new Map<string, string>()
+export function rememberErrorReference(message: string, requestId: string | null | undefined): void {
+  if (!message || !requestId) return
+  refs.delete(message)
+  refs.set(message, requestId)
+  if (refs.size > 50) refs.delete(refs.keys().next().value as string)
+}
+export function errorReference(message: string): string | undefined {
+  return refs.get(message)
+}
+/** the request id of a thrown value (PlatformError.requestId), remembered for its message */
+export function referenceOf(e: unknown): string | undefined {
+  const id = (e as { requestId?: unknown } | null)?.requestId
+  return typeof id === 'string' && id ? id : undefined
+}
 
 /** Fixed, user-facing messages for server error codes whose server text is not meant for display. */
 export const CODE_MESSAGES: Partial<Record<PlatformError['code'], string>> = {

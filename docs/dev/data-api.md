@@ -719,13 +719,17 @@ Errors of a definition: `422 invalid` with `problems: ValidationProblem[]` (`{ s
 | Route | Level | Body / answer |
 | --- | --- | --- |
 | `GET /flows` | maker | `{ items: FlowListItem[] (with health, canEdit, canRun), settings }` |
-| `GET /flows/catalog` | user | `{ steps: StepKindDoc[], triggers: TriggerTypeDoc[], limits }` (the designer's palette) |
+| `GET /flows/catalog` | user | `{ steps: StepKindDoc[], triggers: TriggerTypeDoc[], limits, approvals }` (the designer's palette; `approvals`: an approvals service is registered) |
+| `POST /flows/schedule-preview` | maker | `{ cron? \| everyMinutes?, timeZone }` -> `{ next: ISO[5], description? }` or `{ next: [], error }` (the designer's schedule builder; the server's own cron code) |
 | `POST /flows/validate` | maker | `{ id?, name, description?, runAs?, trigger, steps, variables?, settings?, connections? }` -> `{ problems }` (nothing saved) |
 | `POST /flows` | maker, design | the same plus `enabled?`, `ownerId?` (administrators), `confirmRunAs?`, `note?` -> `{ flow: FlowDef, problems }` (warnings). `connections`: `{ <ref>: <connection id> }` or `[{ ref, connectionId }]`; a new or changed reference needs the right to use the connection (403). `runAs: { serviceAccount }` needs an administrator (403); a new service-account flow, a changed runAs or owner answers 409 (`field: confirmRunAs`) until `confirmRunAs: true` |
 | `GET /flows/:id` | maker | `{ flow, canEdit, canRun }` |
 | `PUT /flows/:id` | maker, design | partial document -> a new version `{ flow, problems }`; owner or administrator (403); a flow that runs as a service account: administrators only |
 | `DELETE /flows/:id` | maker, design | cancels active runs, removes the flow (history kept) -> `{ ok, cancelledRuns }` |
 | `POST /flows/:id/enable`, `/disable` | maker | `{ flow }`; enabling validates first (422) and needs an active owner (409); arms or removes the schedule. In a locked environment administrators only |
+| `GET /flows/:id/draft` | maker | `{ draft: { doc, connections, baseVersion, savedBy, savedByName, savedOn } \| null }` (P1-B, the designer's unpublished draft; `null` for people who cannot change the flow) |
+| `PUT /flows/:id/draft` | maker, design | `{ flow, connections?, baseVersion? }` -> `{ draft }`. Not validated (a draft may have problems); owner or administrator (403); a new or changed connection reference needs the right to use it (403 with the reason). `PUT /flows/:id` (publish) clears the draft unless `keepDraft: true` |
+| `DELETE /flows/:id/draft` | maker, design | discards the draft -> `{ ok }` |
 | `GET /flows/:id/versions` | maker | `{ items: FlowVersionInfo[], current }` |
 | `GET /flows/:id/versions/:v` | maker | `{ version, doc }` |
 | `POST /flows/:id/versions/:v/restore` | maker, design | `{ confirmRunAs? }` -> `{ flow, problems }` (a new version with the old document) |
@@ -747,6 +751,33 @@ connections: [{ ref, connectionId, connectionName?, connector? }], runRoles }]`.
 connection here, `to: null` = choose one, a problem). `POST /solutions/import/plan`, `/solutions/import` and
 `/solutions/:id/deploy` take `connectionMap: { <source connection id>: <connection id here> }` and
 `enableFlows: true | [<flow id>]` (new flows arrive turned off otherwise).
+
+## Approvals
+
+P1 package C (`server/core/approvals/routes.ts`; design in [approvals.md](approvals.md)). Types in `src/platform/approvals.ts`.
+A request someone may not see answers 404 like a missing one.
+
+| Route | Level | Body / answer |
+| --- | --- | --- |
+| `GET /approvals?view=toApprove\|sentByMe\|involved\|all&status=open\|decided\|<status>&q=&policy=&regarding=&before=&limit=` | user (`all`: administrators) | `{ items: ApprovalRequestInfo[], nextBefore }` |
+| `POST /approvals` | user | `{ id?, policy? \| approvers, type?, options?, title, details?, fields?, regarding?: { table?, rowId }, dueMinutes? }` -> `{ id, created }` (a client `id` makes it idempotent) |
+| `GET /approvals/:id` | user | `{ request: ApprovalDetail }` (record summary as the viewer may read it, or `recordHidden`) |
+| `POST /approvals/:id/respond` | user (asked now) | `{ response, comment? }` -> `{ status, outcome }`; 403 not asked, 409 decided / already answered / waiting for info, 422 comment required |
+| `POST /approvals/respond-many` | user | `{ ids, response, comment? }` -> `{ results: [{ id, ok, status?, error? }] }` |
+| `POST /approvals/:id/info` | requester | `{ comment }` answers "Need more info" |
+| `POST /approvals/:id/cancel` | requester, administrators | `{ reason? }` |
+| `POST /approvals/:id/reassign` | person asked, administrators | `{ to, assignmentId?, comment? }` |
+| `GET /approvals/record/:table/:row` | user (reads the record) | `{ items }` the requests about a record the user may see |
+| `POST /approvals/links/inspect` | user | `{ token }` -> `{ ok, response, kind, requireComment, request }` or `{ ok: false, code, reason, environmentId? }`; changes nothing |
+| `POST /approvals/links/use` | user (the link's person) | `{ token, comment? }` -> `{ status, outcome, requestId }`; single use |
+| `GET /approvals/delegations?all=1`, `POST /approvals/delegations`, `DELETE /approvals/delegations/:id` | user (others' delegations: administrators) | `{ toUser, fromUser?, startsOn?, endsOn?, policies?, note? }` |
+| `GET /approvals/policies` | user | `{ items: ApprovalPolicy[] }` |
+| `POST /approvals/policies`, `PUT /approvals/policies/:id`, `DELETE /approvals/policies/:id` | maker | `{ name, description?, definition }` (422 with the field of the first problem) |
+| `GET\|PUT /approvals/settings` | administrators | `{ viewerRoles, retentionDays, linkHours }` |
+| `GET /approvals/catalog` | user | types, approver references, escalation actions, step outputs, statuses |
+
+**Request ids.** Every API answer has the header `X-Request-Id` (the client's `X-Request-Id` when well-formed, else a new
+one); error bodies carry it as `error.requestId`. The UI shows it as "Reference: ..." in error messages.
 
 ## Notifications (user)
 

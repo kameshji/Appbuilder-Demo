@@ -117,7 +117,7 @@ Gross(net: Number): Number = net * (1 + TaxRate);
 
 ## Functions
 
-170 built-in functions. A signature in square brackets means the argument is optional; "..." means more of the same may follow. A function marked as behaviour works only in behaviour properties.
+173 built-in functions. A signature in square brackets means the argument is optional; "..." means more of the same may follow. A function marked as behaviour works only in behaviour properties.
 
 - [Logic and errors](#logic-and-errors) (16)
 - [Text](#text) (23)
@@ -125,10 +125,11 @@ Gross(net: Number): Number = net * (1 + TaxRate);
 - [Date and time](#date-and-time) (20)
 - [Table](#table) (25)
 - [Colour](#colour) (3)
-- [Behaviour](#behaviour) (38)
+- [Behaviour](#behaviour) (39)
 - [JSON and regular expressions](#json-and-regular-expressions) (5)
 - [Context and environment](#context-and-environment) (5)
 - [Core data model](#core-data-model) (7)
+- [Other](#other) (2)
 
 ### Logic and errors
 
@@ -314,6 +315,7 @@ Functions with side effects. They work only in behaviour properties such as OnSe
 | `Refresh(table)` | Reloads a table from storage. |
 | `Remove(collection, record [, record2, ...])` | Removes records from a collection. |
 | `RemoveIf(collection, condition)` | Removes every row where the condition is true. |
+| `RequestApproval(policyOrApprovers, record, title [, details [, fields]])` | Asks for an approval about a record (server mode) and returns the request id at once. policyOrApprovers: the name of an approval policy, or approvers ("asha@example.com; role:Finance", "manager", a table of people). details: text every approver sees; fields: a record such as {Amount: ThisItem.Amount} (shown to approvers, read by threshold rules). You are the requester. |
 | `Reset(component)` | Puts an input UI component back to its default value. |
 | `ResetForm(Form)` | Puts every field of a form back to its starting value. |
 | `RunFlow(flow, inputs [, options])` | Starts a run of a flow that people and apps may start (server mode) and returns its run id. inputs is a record of the flow's inputs, like {Order: ThisItem.id}. options: {Wait: true, Timeout: 10, Result: "Answer"} puts the flow's response (its Respond step) in the global variable Answer (default FlowResult) when it arrives. You need the permission to run the flow. |
@@ -370,6 +372,15 @@ Comments, activities and mentions of records, settings and unit conversion over 
 | `RecordId(record)` | The id of a record (row) of a table; with text, the text itself. Blank for blank. |
 | `Setting(key)` | The value (text) of a setting of this environment from the Settings table, such as Setting("FinancialYearStartMonth"). Blank when missing. |
 
+### Other
+
+Functions that are not yet assigned to a category in scripts/docs/formulas.ts.
+
+| Function | What it does |
+| --- | --- |
+| `Approvals(record)` | The approval requests about a record that you may see (Approval requests: Title, Status, Outcome, RequestedBy, DueOn ...), newest first. Delegates like Filter. |
+| `MyApprovals()` | The approvals waiting for the signed-in user (Approval assignments: Request, Title, DueOn, regardingId ...), by due date. Delegates like Filter. |
+
 ## Enums
 
 24 built-in lists of named values, written `EnumName.Member`, for example `Align.Center` or `Color.Red`.
@@ -382,13 +393,13 @@ Used by: `Heading.Align`, `Label.Align`, `LinkButton.Align`, `RichText.Align`.
 
 ### AlignItems
 
-Used by: 87 properties on 79 UI components (for example `Accordion.AlignSelf`, `ActivityList.AlignSelf`, `Alert.AlignSelf`).
+Used by: 88 properties on 80 UI components (for example `Accordion.AlignSelf`, `ActivityList.AlignSelf`, `Alert.AlignSelf`).
 
 5 members: `Auto`, `Start`, `Center`, `End`, `Stretch`.
 
 ### Anchor
 
-Used by: 156 properties on 78 UI components (for example `Accordion.AnchorH`, `Accordion.AnchorV`, `ActivityList.AnchorH`).
+Used by: 158 properties on 79 UI components (for example `Accordion.AnchorH`, `Accordion.AnchorV`, `ActivityList.AnchorH`).
 
 5 members: `Start`, `End`, `Stretch`, `Center`, `Scale`.
 

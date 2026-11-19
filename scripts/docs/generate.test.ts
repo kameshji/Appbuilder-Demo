@@ -17,6 +17,7 @@ import { buildControlsPage } from './controls'
 import { buildFormulasPage } from './formulas'
 import { buildFlowsPage } from './flows'
 import { buildActionsPage } from './actions'
+import { buildApprovalsPage } from './approvals'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const WRITE = process.env.DOCS_WRITE === '1' || process.env.npm_lifecycle_event === 'docs:gen'
@@ -91,6 +92,12 @@ describe('generated reference docs', () => {
     const { text } = buildFlowsPage()
     expect(text).toContain('`kind: "data.create"`')
     writeOrCheck('docs/reference/flows.md', text)
+  })
+
+  it('docs/reference/approvals.md matches the approvals catalogue (types, references, step outputs)', () => {
+    const { text } = buildApprovalsPage()
+    expect(text).toContain('`quorum`')
+    writeOrCheck('docs/reference/approvals.md', text)
   })
 
   it('generation is deterministic', () => {

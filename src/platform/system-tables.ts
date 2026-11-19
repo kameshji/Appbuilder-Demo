@@ -49,6 +49,12 @@ export const SYS = {
   jobRuns: 'sys_job_runs',
   eventRuns: 'sys_event_runs',
   flowRuns: 'sys_flow_runs',
+  approvalRequests: 'sys_approval_requests',
+  approvalStages: 'sys_approval_stages',
+  approvalAssignments: 'sys_approval_assignments',
+  approvalHistory: 'sys_approval_history',
+  approvalDelegations: 'sys_approval_delegations',
+  approvalPolicies: 'sys_approval_policies',
   currencies: 'sys_currencies',
   units: 'sys_units',
   countries: 'sys_countries',
@@ -66,6 +72,7 @@ export const SYSTEM_GROUP_LABELS: Record<SystemTableGroup, string> = {
   communication: 'Communication',
   logging: 'Logging',
   reference: 'Reference data',
+  approvals: 'Approvals',
 }
 
 export const ACTIVITY_TYPES = ['Task', 'Call', 'Meeting', 'Email', 'Note', 'Custom']
@@ -285,6 +292,47 @@ export const SYSTEM_TABLES: SystemTableSpec[] = [
     columns: [col('Flow', 'Flow', 'text'), col('TriggerKind', 'Trigger', 'text'), col('Status', 'Status', 'choice', { choices: ['queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled', 'timedOut'] }), col('StartedOn', 'Started', 'datetime'), col('FinishedOn', 'Finished', 'datetime'), col('DurationMs', 'Duration (ms)', 'number'), col('Error', 'Error', 'multiline'), ...regardingCols(false)],
   },
 
+  /* ---------------------------------------------------------------- approvals (P1-C; views over ab_approval_*, written by the approvals service only) */
+  {
+    id: SYS.approvalRequests, name: 'ApprovalRequests', displayName: 'Approval requests', group: 'approvals', kind: 'projection', policy: 'approvals', source: SYS.approvalRequests, primaryColumn: 'Title', extensible: false, regarding: true,
+    description: 'Approval requests (from flows, apps and the API). Visible to the requester, the people asked and their delegates, administrators, and roles granted "Approvals: view" for records they can read.',
+    columns: [
+      col('Title', 'Title', 'text'), col('Details', 'Details', 'multiline'), col('Status', 'Status', 'choice', { choices: ['pending', 'info', 'approved', 'rejected', 'completed', 'cancelled', 'expired'] }),
+      col('Outcome', 'Outcome', 'text'), col('ApprovalType', 'Type', 'text'), col('Policy', 'Policy', 'text'), look('RequestedBy', 'Requested by', 'Users'),
+      col('DueOn', 'Due on', 'datetime'), col('CompletedOn', 'Completed on', 'datetime'), col('CurrentStage', 'Current stage', 'number'), col('Source', 'Source', 'text'),
+      col('FlowName', 'Flow', 'text'), col('FlowRun', 'Flow run', 'text'), ...regardingCols(false),
+    ],
+  },
+  {
+    id: SYS.approvalStages, name: 'ApprovalStages', displayName: 'Approval stages', group: 'approvals', kind: 'projection', policy: 'approvals', source: SYS.approvalStages, primaryColumn: 'Name', extensible: false,
+    description: 'The stages of approval requests (one for single, any, all and quorum approvals).',
+    columns: [look('Request', 'Request', 'ApprovalRequests'), col('StageNumber', 'Stage', 'number'), col('Name', 'Name', 'text'), col('Mode', 'Mode', 'text'), col('Quorum', 'Quorum', 'number'), col('Status', 'Status', 'text'), col('StartedOn', 'Started on', 'datetime'), col('CompletedOn', 'Completed on', 'datetime')],
+  },
+  {
+    id: SYS.approvalAssignments, name: 'ApprovalAssignments', displayName: 'Approval assignments', group: 'approvals', kind: 'projection', policy: 'approvals', source: SYS.approvalAssignments, primaryColumn: 'Title', extensible: false, regarding: true,
+    description: 'One row per person asked: why (direct, role, team, manager, delegation, escalation), their answer and comment. MyApprovals() reads it.',
+    columns: [
+      look('Request', 'Request', 'ApprovalRequests'), col('Title', 'Title', 'text'), col('RequestStatus', 'Request status', 'text'), col('Stage', 'Stage', 'number'), look('Approver', 'Approver', 'Users'),
+      col('Source', 'Source', 'text'), col('Status', 'Status', 'text'), col('Response', 'Response', 'text'), col('Comment', 'Comment', 'multiline'), col('RespondedOn', 'Responded on', 'datetime'),
+      look('ReassignedFrom', 'Reassigned from', 'Users'), col('DueOn', 'Due on', 'datetime'), ...regardingCols(false),
+    ],
+  },
+  {
+    id: SYS.approvalHistory, name: 'ApprovalHistory', displayName: 'Approval history', group: 'approvals', kind: 'projection', policy: 'approvals', source: SYS.approvalHistory, primaryColumn: 'Action', extensible: false,
+    description: 'Every action on approval requests (requested, asked, answered, reminded, delegated, reassigned, escalated, cancelled ...). Append-only.',
+    columns: [look('Request', 'Request', 'ApprovalRequests'), col('Action', 'Action', 'text'), look('Actor', 'Actor', 'Users'), col('ActorKind', 'Actor kind', 'text'), col('Stage', 'Stage', 'number'), col('Details', 'Details', 'multiline')],
+  },
+  {
+    id: SYS.approvalDelegations, name: 'ApprovalDelegations', displayName: 'Approval delegations', group: 'approvals', kind: 'projection', policy: 'approvals', source: SYS.approvalDelegations, primaryColumn: 'Note', extensible: false,
+    description: 'Out-of-office delegations: approvals for one person go to another for a date range (optionally only some policies).',
+    columns: [look('FromUser', 'From', 'Users'), look('ToUser', 'To', 'Users'), col('StartsOn', 'Starts on', 'datetime'), col('EndsOn', 'Ends on', 'datetime'), col('Policies', 'Policies', 'text'), col('Note', 'Note', 'text'), col('Active', 'Active', 'boolean')],
+  },
+  {
+    id: SYS.approvalPolicies, name: 'ApprovalPolicies', displayName: 'Approval policies', group: 'approvals', kind: 'projection', policy: 'reference', source: SYS.approvalPolicies, primaryColumn: 'Name', extensible: false,
+    description: 'Reusable approval definitions (approvers, stages, thresholds, reminders, escalation). Travel in solutions.',
+    columns: [col('Name', 'Name', 'text'), col('Description', 'Description', 'multiline'), col('ApprovalType', 'Type', 'text'), col('Definition', 'Definition', 'multiline')],
+  },
+
   /* ---------------------------------------------------------------- reference data (seeded, extensible) */
   {
     id: SYS.currencies, name: 'Currencies', displayName: 'Currencies', group: 'reference', kind: 'table', policy: 'reference', source: SYS.currencies, primaryColumn: 'Code', extensible: true,
@@ -359,6 +407,8 @@ export function systemTableDef(spec: SystemTableSpec, now: string, existing?: Ta
   }
   if (spec.kind === 'projection') def.readOnly = true
   else def.managed = true
+  // roles granted the table's extra privilege (Approval requests: "Approvals: view"), set by the approvals settings
+  if (existing?.systemPrivilegeRoles?.length) def.systemPrivilegeRoles = [...existing.systemPrivilegeRoles]
   if (spec.regarding) def.regarding = { ...REGARDING }
   if (spec.uniqueTogether) def.uniqueTogether = spec.uniqueTogether.map((x) => [...x])
   return def
@@ -458,6 +508,8 @@ export function systemPredicate(table: TableDef, op: SystemOp, env: SystemPredic
       return parentPredicate(table, op, env)
     case 'regarding':
       return regardingPolicy(table, op, env)
+    case 'approvals':
+      return approvalsPredicate(table, op, env)
   }
   return FALSE
 }
@@ -497,8 +549,8 @@ export function regardingCondition(collab: TableDef, env: SystemPredicateEnv): C
   let joined = 0
   for (const t of env.tables) {
     if (t.id === collab.id) continue
-    // collaboration rows about collaboration rows: only about activities and documents (one level deep)
-    if (t.system && t.id !== SYS.activities && t.id !== SYS.documents) continue
+    // collaboration rows about collaboration rows: only about activities, documents and approval requests (one level deep)
+    if (t.system && t.id !== SYS.activities && t.id !== SYS.documents && t.id !== SYS.approvalRequests) continue
     if (t.system && (env.depth ?? 0) > 0) continue
     const pred = t.system ? systemPredicate(t, 'read', { ...env, depth: (env.depth ?? 0) + 1 }) : env.readOf(t)
     if (isFalse(pred)) continue
@@ -550,6 +602,47 @@ function regardingPolicy(table: TableDef, op: SystemOp, env: SystemPredicateEnv)
       return op === 'read' ? about : FALSE
   }
   return op === 'read' ? about : FALSE
+}
+
+/**
+ * Approvals (P1-C): a request is visible to its requester (owner), to everyone asked (or asked before a reassignment or
+ * delegation), and, with the privilege "Approvals: view" (roles in the table's systemPrivilegeRoles), to readers of the
+ * record it is about. Stages, assignments and history follow their request; delegations their two people. Never
+ * writable through the data API (projections); the approvals service writes the underlying tables.
+ */
+export function approvalRequestRead(env: SystemPredicateEnv): Condition {
+  const me = env.user.id
+  const req = env.tables.find((t) => t.id === SYS.approvalRequests)
+  if (!req) return FALSE
+  if (env.isAdmin) return TRUE
+  const asg = env.tables.find((t) => t.id === SYS.approvalAssignments)
+  const asked: Condition = asg && env.sameStore(req, asg) ? { semi: { col: 'id', table: asg, key: 'Request', where: or([eq('Approver', me), eq('ReassignedFrom', me)]) } } : FALSE
+  const roles = new Set(env.user.roleIds ?? [])
+  const viewer = (req.systemPrivilegeRoles ?? []).some((r) => roles.has(r))
+  const about = viewer && (env.depth ?? 0) === 0 ? regardingCondition(req, env) : FALSE
+  return or([eq('owner', me), asked, about])
+}
+
+function approvalsPredicate(table: TableDef, op: SystemOp, env: SystemPredicateEnv): Condition {
+  if (op !== 'read') return FALSE
+  if (env.isAdmin) return TRUE
+  const me = env.user.id
+  switch (table.id) {
+    case SYS.approvalRequests:
+      return approvalRequestRead(env)
+    case SYS.approvalDelegations:
+      return or([eq('owner', me), eq('ToUser', me)])
+    case SYS.approvalAssignments:
+    case SYS.approvalStages:
+    case SYS.approvalHistory: {
+      const req = env.tables.find((t) => t.id === SYS.approvalRequests)
+      if (!req || !env.sameStore(table, req)) return table.id === SYS.approvalAssignments ? eq('Approver', me) : FALSE
+      const read = approvalRequestRead(env)
+      const viaRequest: Condition = isTrue(read) ? TRUE : isFalse(read) ? FALSE : { semi: { col: 'Request', table: req, key: 'id', where: read } }
+      return table.id === SYS.approvalAssignments ? or([eq('Approver', me), viaRequest]) : viaRequest
+    }
+  }
+  return FALSE
 }
 
 function membersPredicate(table: TableDef, op: SystemOp, env: SystemPredicateEnv): Condition {

@@ -5,6 +5,8 @@
  * `node server/main.ts restore <archive.abbak> [options]` restores an install from a backup instead (backup/cli.ts).
  * `node server/main.ts version|verify-release|update|diagnostics|health|seed-config`: tools of an installed server
  * (update/cli.ts; the installers wrap them as the `appbuilder` command).
+ * `node server/main.ts admin list|reset-password|reset-mfa|make-install-admin <email>`: recovery of administrator access
+ * on the server machine (identity/admin-cli.ts).
  *   PORT (5174)   APPBUILDER_HOST (127.0.0.1)   APPBUILDER_WORKSPACE (./workspace)   APPBUILDER_SECRET_KEY
  *   APPBUILDER_DB_HOST / _PORT (5432) / _NAME / _USER / _PASSWORD / _SSL  (optional PostgreSQL bootstrap, skips the setup screen)
  *   APPBUILDER_ALLOWED_HOSTS (extra Host names)  APPBUILDER_SECURE_COOKIE=1  APPBUILDER_TRUST_PROXY=1
@@ -15,6 +17,20 @@ import { serveStatic } from './core/static.ts'
 import { log } from './core/util.ts'
 import { startFileLogging } from './core/diagnostics/logger.ts'
 import { loadConfig } from './core/config.ts'
+
+// offline recovery of administrator access (identity/admin-cli.ts): appbuilder admin list | reset-password | reset-mfa |
+// make-install-admin <email>; needs the workspace's secret key and database login, works with the server running or not
+if (process.argv[2] === 'admin') {
+  ;(await import('./core/update/cli.ts')).loadInstallEnv()
+  const { runAdminCli } = await import('./core/identity/admin-cli.ts')
+  process.exit(await runAdminCli(process.argv.slice(3)))
+}
+// the setup code of a server installed as a service (it is in the setup-code file, not in a window)
+if (process.argv[2] === 'setup-code') {
+  ;(await import('./core/update/cli.ts')).loadInstallEnv()
+  const { runSetupCodeCli } = await import('./core/identity/admin-cli.ts')
+  process.exit(runSetupCodeCli())
+}
 
 // installed-server tools: version, verify-release, update, diagnostics, health, seed-config (update/cli.ts)
 const { CLI_COMMANDS, runOpsCli } = await import('./core/update/cli.ts')

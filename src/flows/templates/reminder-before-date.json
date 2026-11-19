@@ -1,0 +1,27 @@
+{
+  "id": "reminder-before-date",
+  "title": "Reminder some days before a date",
+  "description": "Every morning, remind the owner of each row whose date is N days away.",
+  "category": "Schedules",
+  "params": [
+    { "name": "table", "label": "Table", "type": "table" },
+    { "name": "titleColumn", "label": "Column that names the row", "type": "column", "of": "table", "columnTypes": ["text", "autonumber"] },
+    { "name": "dateColumn", "label": "Date column", "type": "column", "of": "table", "columnTypes": ["date", "datetime"] },
+    { "name": "days", "label": "Days before", "type": "number", "default": "3" },
+    { "name": "timeZone", "label": "Time zone", "type": "timezone", "default": "UTC" }
+  ],
+  "flow": {
+    "name": "Remind {{days}} days before {{dateColumn}}",
+    "description": "Reminds owners of {{table}} rows {{days}} days before {{dateColumn}}.",
+    "runAs": "owner",
+    "trigger": { "type": "schedule", "cron": "0 8 * * *", "timeZone": "{{timeZone}}" },
+    "variables": [],
+    "settings": { "concurrency": "singleton", "timeoutMinutes": 120, "retentionDays": 30, "onError": "fail" },
+    "steps": [
+      { "id": "soon", "name": "DueSoon", "kind": "data.list", "table": "{{table}}", "filter": "{{dateColumn}} >= DateAdd(Today(), {{days}}, \"Days\") && {{dateColumn}} < DateAdd(Today(), {{days}} + 1, \"Days\")", "top": 500 },
+      { "id": "each", "name": "EachRow", "kind": "forEach", "items": "Steps.DueSoon.Output", "as": "Row", "steps": [
+        { "id": "remind", "name": "Remind", "kind": "notify", "to": "Row.owner", "title": "$\"In {{days}} days: {Row.{{titleColumn}}}\"", "body": "\"\"", "channels": ["inApp", "email"] }
+      ] }
+    ]
+  }
+}

@@ -169,9 +169,11 @@ export function createNotificationService(deps: NotificationServiceDeps): Notifi
         id: s.uid('ntf'), kind, title, body, link, environmentId: input.environmentId ?? null, createdOn: now.toISOString(), readOn: null, source,
         ...(input.from?.name ? { from: input.from.name } : {}),
       }
+      // P1-C: personal email buttons (approval answer links) ride along to the email channel only
+      const emailItem = input.emailActions?.length ? Object.assign({}, item, { actions: input.emailActions.filter((a) => a && typeof a.label === 'string' && /^https?:\/\//.test(a.url)).slice(0, 6) }) : item
       if (delivery) {
         try {
-          await delivery.deliver(u, item, plan, prefs)
+          await delivery.deliver(u, emailItem, plan, prefs)
         } catch (e) {
           log('warn', `notification delivery failed: ${errText(e)}`)
         }

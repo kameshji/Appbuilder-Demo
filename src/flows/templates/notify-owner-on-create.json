@@ -1,0 +1,21 @@
+{
+  "id": "notify-owner-on-create",
+  "title": "Tell the owner when a row is added",
+  "description": "A notification (the bell) to the row's owner each time a row is added to a table.",
+  "category": "Notifications",
+  "params": [
+    { "name": "table", "label": "Table", "type": "table" },
+    { "name": "titleColumn", "label": "Column that names the row", "type": "column", "of": "table", "columnTypes": ["text", "autonumber", "email"] }
+  ],
+  "flow": {
+    "name": "New {{table}} row: tell the owner",
+    "description": "Notifies the owner of each new row of {{table}}.",
+    "runAs": "owner",
+    "trigger": { "type": "table", "table": "{{table}}", "on": ["create"] },
+    "variables": [],
+    "settings": { "concurrency": "parallel", "timeoutMinutes": 60, "retentionDays": 30, "onError": "fail" },
+    "steps": [
+      { "id": "tell", "name": "TellOwner", "kind": "notify", "to": "Trigger.Record.owner", "title": "$\"New: {Trigger.Record.{{titleColumn}}}\"", "body": "\"A row was added to {{table}}.\"", "channels": ["inApp"] }
+    ]
+  }
+}

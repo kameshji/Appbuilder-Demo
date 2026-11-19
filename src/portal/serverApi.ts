@@ -5,6 +5,7 @@
 import { PlatformError } from '@/platform'
 import { API_BASE, CSRF_HEADER, type ApiError, type AuditPageResponse, type StatusResponse, type StatusServerInfo } from '@/platform/http'
 import { environmentHeaders } from '@/platform/environments'
+import { rememberErrorReference } from '@/platform/errorMessages'
 
 /** One row of GET /api/v1/security/preview?user= */
 export interface TablePreview {
@@ -21,6 +22,11 @@ export async function toError(res: Response): Promise<PlatformError> {
   try { body = (await res.json()) as Partial<ApiError> } catch { /* not JSON */ }
   const code = body?.error?.code ?? (res.status === 401 ? 'unauthenticated' : res.status === 403 ? 'denied' : res.status === 404 ? 'not-found' : res.status === 405 ? 'method_not_allowed' : res.status === 409 ? 'conflict' : res.status === 429 ? 'rate_limited' : res.status === 503 ? 'unavailable' : 'storage')
   const err = new PlatformError(code, body?.error?.message ?? `The server answered ${res.status}`)
+  const rid = res.headers?.get?.('x-request-id') ?? (body?.error as { requestId?: string } | undefined)?.requestId
+  if (rid) {
+    err.requestId = rid
+    rememberErrorReference(err.message, rid)
+  }
   // the field the server named (e.g. "backup": the backup before a change failed, package J)
   if (body?.error?.field) Object.assign(err, { field: body.error.field })
   return err

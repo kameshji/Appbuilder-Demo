@@ -32,6 +32,8 @@ import { diagnosticsRoutes } from './diagnostics/routes.ts'
 import { updateRoutes } from './update/routes.ts'
 import { wireActions } from './actions/wiring.ts'
 import { flowRoutes } from './flows/routes.ts'
+import { createApprovals } from './approvals/service.ts'
+import { approvalRoutes } from './approvals/routes.ts'
 
 export interface AppServer {
   services: CoreServices
@@ -115,6 +117,10 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   wireActions(router, services, notifications)
   // P1-A: flows (definitions, runs, manual runs, callbacks)
   flowRoutes(router, services)
+  // P1-C: approvals (the flow runtime's ApprovalsService, the API, email answer links, the record timeline)
+  const approvals = createApprovals(services)
+  services.approvals = approvals
+  approvalRoutes(router, services, () => approvals)
   if (opts.boot !== false) {
     await services.boot()
     if (services.ready()) {

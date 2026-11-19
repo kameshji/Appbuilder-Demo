@@ -40,8 +40,12 @@ The installer already connected Appbuilder to its database. One step is left, an
 1. Read the one-time **setup code**: in the same administrator PowerShell, type
 
    ```powershell
-   Get-Content 'C:\ProgramData\Appbuilder\workspace\setup-code.txt'
+   appbuilder setup-code
    ```
+
+   (or `Get-Content 'C:\ProgramData\Appbuilder\workspace\setup-code.txt'`). On Linux: `sudo appbuilder setup-code`.
+   The setup screen says the same: for a server installed as a service the code is in its setup-code file, not in a
+   window.
 
    It shows something like `K7QD-M2XP`. The code changes every time Appbuilder starts; the file disappears once you have
    created the administrator.

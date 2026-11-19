@@ -95,6 +95,14 @@ The restore command prints "Saved secrets that this key cannot decrypt: N of M" 
 - The server says *ENVIRONMENT <id> NOT AVAILABLE* after the restore: that environment's migration failed; the reason is
   in the console and in Admin console > Environments. The others work.
 
+## Nobody can sign in as administrator
+
+A restored install (or a running one) whose only administrator cannot sign in: on the server machine run
+`appbuilder admin list`, then `appbuilder admin reset-password <email>` (a one-time code valid 15 minutes) or
+`appbuilder admin reset-mfa <email>`, or make another account an administrator with `appbuilder admin make-install-admin
+<email>`. See [Locked out](sign-in-and-identity.md#locked-out-the-last-administrator). Anyone with administrator rights
+on that machine can do this (as they can read the database): keep it protected.
+
 ## Practise it
 
 `node scripts/drill/restore-drill.mjs` does all of the above against a scratch database and folder and compares every row

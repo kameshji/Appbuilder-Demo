@@ -20,7 +20,8 @@ reference of every trigger and step kind: [reference/flows.md](../reference/flow
 | `server/core/flows/routes.ts` | HTTP API |
 | `server/core/flows/alm.ts` | Flows in solution packages: export, plan, apply |
 | `server/core/flows/contracts.ts` | Interfaces for approvals (package C) and the webhook route (package D) |
-| `src/flows/**` | The Flows page (list, JSON editor, run history, run detail, versions, permissions) |
+| `src/flows/**` | The Flows page (list, run history, run detail, permissions) and the visual designer (`src/flows/designer/**`, package B, see "Designer" below) |
+| `src/flows/templates/*.json` | The "New flow" gallery's templates (validated by `server/core/flows/templates.test.ts`) |
 
 ## Tables (per environment schema, version 8)
 
@@ -261,8 +262,9 @@ have moved on since the backup, so resuming them could act twice or on stale ans
   `notifications.notify` (as extra members) for D's email delivery. Webhooks: D's route calls
   `services.flows.triggerWebhook(env, flowId, payload)`, `webhookFlow(env, flowId)` and `canManage(user, flowId)`.
 * **Designer (package B)**: the API above, `GET /flows/catalog` (step kinds with fields, outputs, examples; trigger types;
-  limits) and `POST /flows/validate`; replace `src/flows/FlowJsonEditor.tsx` (props `flowId`, `initial`, `readOnly`,
-  `onSaved`, `onCancel`, `onTested`); keep `RunViews.tsx` and the list.
+  limits; whether approvals are available), `POST /flows/validate` and the draft routes; `src/flows/designer/FlowDesigner.tsx`
+  replaced the JSON editor with the same props (`flowId`, `initial`, `readOnly`, `onSaved`, `onCancel`, `onTested`); `RunViews.tsx`
+  and the list are kept (see "Designer" below).
 
 ## Refinements of the P1 contract
 
@@ -283,8 +285,78 @@ burst itself: the first step of 2,000 runs queues behind everything (advances of
 starts, priority 2 over 1, so runs that started finish quickly). One step is one job with its own transaction; that is the
 price of the guarantees above.
 
+## Designer (P1 package B)
+
+Decision D28 in `docs/decisions.md`; maker view: [guide/maker/flows.md](../guide/maker/flows.md). Exit check 2:
+`scripts/exit-check/p1-designer.mjs` (a flow built by clicking only, then the exit-check-1 test on it).
+
+| Module (`src/flows/designer/`) | What it does |
+| --- | --- |
+| `model.ts` | The canvas model, pure: slots, find/walk, edits (insert, remove, move with run-after repair and visibility notes, duplicate, copy/paste with re-ids and rewritten references), rename of steps / variables / loop items with reference updates, `toTree`/`fromTree`, visible steps (the runtime's rule) |
+| `refs.ts` | Which fields of each step kind are formulas (`FX_FIELDS`), mapping them, reference rewrites through the formula parser (`Steps.<name>`, `Variables.<name>`) |
+| `layout.ts` | Geometry: cards, container regions with lanes side by side, insertion points, edges, run-after connectors |
+| `dynamic.ts` | Dynamic content: typed tokens from the trigger (columns, lookups one hop through `LookUp`, `Old`, inputs, a webhook body sample), visible steps (by kind, table, action output schema, HTTP sample), variables, loop items, Flow, `User()` |
+| `filter.ts`, `literal.ts` | The filter / condition builders (rules <-> formula) and plain values <-> formulas (text with `{token}` is an interpolated string `$"..."`) |
+| `diff.ts`, `overlay.ts` | Version diff by step id; a run's step rows mapped onto the canvas (one loop iteration at a time) |
+| `templateKit.ts` | Templates: parameters, `instantiate`, guesses |
+| `store.ts`, `actions.ts`, `context.tsx` | zustand store (definition, connection references, undo/redo with merged typing, selection, problems, draft state, the run shown), commands, the data the panels read (catalogue, tables, flows, usable connections and their actions) |
+| `FlowDesigner.tsx`, `Canvas.tsx`, `StepPicker.tsx`, `StepPanel.tsx`, `TriggerPanel.tsx`, `SettingsPanel.tsx`, `FxField.tsx`, `fields.tsx`, `TestDialog.tsx`, `Versions.tsx`, `Gallery.tsx`, `approvalAdapter.tsx` | The UI |
+
+**The definition is the model.** The designer edits the version document itself (`FlowDoc`), never a translated copy:
+every edit is a function `(doc) -> doc` that copies only the path it changes, so fields the designer does not know (a
+newer runtime's options, package C's approval settings) travel through untouched. Step lists are addressed by a **slot**
+`{ parent: <container step id> | '', list: 'steps' | 'then' | 'else' | 'case:<i>' | 'default' }`. The canvas tree
+(`toTree`: nodes with the step minus its child lists, lanes with their slots) is derived for drawing and converts back
+losslessly (`fromTree`); `designer.test.ts` round-trips every step kind with unknown fields at every level. Step kinds the
+designer does not know are drawn as cards and edited as JSON.
+
+**Canvas.** Own HTML cards and SVG lines in one transformed layer (no canvas library; the data model designer's pan, zoom
+and minimap): HTML for the cards and "+" buttons (focus, keyboard, screen readers), SVG for connectors. `layoutFlow`
+measures bottom-up and places top-down; a container is a region with its lanes side by side, a collapsed one a single
+card. Moving a step drops it on the nearest insertion point; `moveSteps` refuses a container into itself, drops run-after
+entries that would no longer name an earlier sibling and notes references the step can no longer see (the validator
+then shows them as problems). Undo/redo keeps 100 snapshots of the (structurally shared) definition; typing in one field
+within a second is one undo step.
+
+**Draft and publish.** `ab_flows.draft` (jsonb: `{ doc, connections, baseVersion }`), `draft_by`, `draft_on` are added by
+`ADD COLUMN IF NOT EXISTS` in the environment DDL (idempotent, no schema version step); environment copies carry them
+along. `GET|PUT|DELETE /flows/:id/draft` (editors only; the draft is not validated; a new or changed connection reference
+needs "use" access when the draft is saved, so the maker learns at once). `PUT /flows/:id` (publish) clears it in the same
+transaction unless `keepDraft`. The runtime, solutions and exports never read the draft. The designer saves the draft 0.8 s
+after the last change and validates (`POST /flows/validate`) 0.5 s after it; problems carry step id and field and are shown
+next to the field and in the list; Publish and turning on are refused while there are errors.
+
+**Soft lock.** The Studio's lock on the live hub with the scope `studio:<flowId>` (flow ids never collide with app ids):
+first editor edits, others are read-only and may take over; read-only too in a locked production environment.
+
+**Expressions.** Plain values compile to formulas (`literal.ts`); the formula editor reuses the Studio's suggestions
+approach (functions, members of `Trigger`/`Steps`/`Variables` from the dynamic content tokens, `fx.signatureAt`), a
+client-side syntax check (`fx.check`) and the server's check through `/flows/validate`, so messages are the server
+engine's (the Studio's wording). A formula that reads a table shows "Runs on server", or "Can't run" when the server reports
+a read it cannot push down.
+
+**Test and overlay.** `POST /flows/:id/test` with the canvas's definition (`definition`) and a sample trigger (a recent
+run's stored trigger, a row read through Query v2, or a form), dry run by default. The run is loaded with
+`GET /flows/runs/:id` and refreshed on `table:sys_flow_runs` hub messages (and every 2.5 s while active); `overlayOf` maps
+step rows (`/each#2/inner`) to step ids, one loop iteration at a time. "Run again from this step" is the runtime's resubmit
+from the failed step.
+
+**Approvals.** The approval step's form is package C's `ApprovalStepForm` (`src/approvals/`), found with
+`import.meta.glob` by `approvalAdapter.tsx`, so the designer builds without it (a placeholder edits the core fields).
+`GET /flows/catalog` says whether an approvals service is registered (`approvals`); without one the picker and the
+gallery mark approval steps "needs approvals".
+
+**Templates.** `src/flows/templates/*.json`: `{ id, title, description, category, needs?, params, flow }` with `{{param}}`
+placeholders (tables, columns of given types, numbers, texts, time zones, connections). `templates.test.ts` fills each
+one and runs the server validator; `designer.integration.test.ts` creates them through the API.
+
+**Performance** (sandbox, headless Chrome, `p1-designer.mjs` part D): a 180-step flow (60 containers) opens and draws in
+about 0.26 s; opening a step's panel about 50 ms; adding a step about 0.3 s; undo about 60 ms; arrow-key navigation about
+30 ms per step.
+
 ## Not done yet
 
-The visual designer (package B); approvals themselves (package C: the step, the interface and a stub are here); the
-triggers `approvalDecided` and `formSubmitted` (reserved); per-record ordering across several dispatching servers; an
-idempotency key for in-app notifications.
+Approvals are package C ([approvals.md](approvals.md): the real `ApprovalsService`, the step's refinements `policy`, `fields`, `quorum`, `stages`, `dueMinutes`, `reminders`, `escalation`, the outputs `Status` and `Approvers`, and the trigger `approvalDecided`); the trigger `formSubmitted` (reserved); per-record ordering across several
+dispatching servers; an idempotency key for in-app notifications. Designer: no real-time co-editing (a soft lock instead);
+"run again from this step" is offered for the failed step only (the runtime resubmits from the failed step or the start);
+the visual diff is an outline, not a second canvas; marquee selection is not there (Ctrl/Shift + click instead).

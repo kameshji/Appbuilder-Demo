@@ -84,7 +84,8 @@ export function createCollab(deps: CollabDeps) {
     const all = await tables()
     const t = all.find((x) => x.id === nameOrId) ?? all.find((x) => x.name.toLowerCase() === nameOrId.toLowerCase())
     if (!t) throw invalid(`There is no table "${nameOrId.slice(0, 64)}".`, REGARDING.table)
-    if (t.system && t.id !== SYS.activities && t.id !== SYS.documents) throw invalid(`Rows of "${t.displayName}" cannot have comments, activities or files.`, REGARDING.table)
+    // P1-C: approval requests take comments and files too (they are readable by the approval rule)
+    if (t.system && t.id !== SYS.activities && t.id !== SYS.documents && t.id !== SYS.approvalRequests) throw invalid(`Rows of "${t.displayName}" cannot have comments, activities or files.`, REGARDING.table)
     return t
   }
 
@@ -501,6 +502,13 @@ export function createCollab(deps: CollabDeps) {
    * then every collaboration row about it is visible to them by the regarding rule, so the rows are read directly by
    * the timeline index. Audit details are reduced to the column names the caller may see.
    */
+  /** extra timeline items (kind 'event'), newest first, before the cursor; registered by other modules (approvals) */
+  type TimelineSource = (ctx: UserContext, table: TableDef, rowId: string, before: { at: string; id: string } | null, limit: number) => Promise<{ kind: 'event'; id: string; at: string; by: string | null; data: Record<string, unknown> }[]>
+  const timelineSources: TimelineSource[] = []
+  function addTimelineSource(fn: TimelineSource): void {
+    timelineSources.push(fn)
+  }
+
   async function timeline(ctx: UserContext, tableRef: string, rowIdIn: string, o: { cursor?: string | null; limit?: number } = {}) {
     const rowId = rowIdIn.length === 36 ? rowIdIn.toLowerCase() : rowIdIn
     const all = await tables()
@@ -563,6 +571,10 @@ export function createCollab(deps: CollabDeps) {
       if (r.action === 'row.update' && !cols.length) continue
       items.push({ kind: 'event', id: `a${String(r.id)}`, at: iso(r.at), by: (r.user_id as string) ?? null, data: { action: r.action === 'row.insert' ? 'created' : 'changed', columns: cols.map((c) => t.columns.find((x) => x.name === c)?.displayName ?? c) } })
     }
+    // more sources of a record's history (P1-C approvals: requested and decided, for those who may see the request)
+    for (const src of timelineSources) {
+      for (const it of await src(ctx, t, rowId, before, limit + 1)) items.push(it)
+    }
     items.sort((a, b) => (a.at === b.at ? (a.id < b.id ? 1 : -1) : a.at < b.at ? 1 : -1))
     const page = items.slice(0, limit)
     const more = items.length > limit
@@ -607,7 +619,7 @@ export function createCollab(deps: CollabDeps) {
   }
 
   return {
-    hooks, nextNumber, timeline, mentionable, regardingLabels, tableRemoved, sweepOrphans, notify, cascade, attachmentAdded, attachmentsRemoved,
+    hooks, nextNumber, timeline, addTimelineSource, mentionable, regardingLabels, tableRemoved, sweepOrphans, notify, cascade, attachmentAdded, attachmentsRemoved,
     checkRegarding, findTableOfRow, readersOf, settingValue,
     log: (m: string, e: unknown) => deps.log('warn', `${m}: ${errText(e)}`),
   }

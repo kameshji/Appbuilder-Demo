@@ -23,7 +23,7 @@ import { isRecord, toText } from '../values.ts'
 import { def, type CallCtx, type FnDef } from './types.ts'
 
 /** the names of the system tables in the current environment (a maker's older table may have taken a name) */
-const names: Record<string, string> = { Comments: 'Comments', Activities: 'Activities', Mentions: 'Mentions', Settings: 'Settings', UnitsOfMeasure: 'UnitsOfMeasure' }
+const names: Record<string, string> = { Comments: 'Comments', Activities: 'Activities', Mentions: 'Mentions', Settings: 'Settings', UnitsOfMeasure: 'UnitsOfMeasure', ApprovalRequests: 'ApprovalRequests', ApprovalAssignments: 'ApprovalAssignments' }
 /** the runtime tells the engine when a system table carries another name (Sys<Name>) */
 export function setSystemTableNames(map: Partial<Record<keyof typeof names, string>>): void {
   for (const [k, v] of Object.entries(map)) if (v && k in names) names[k] = v
@@ -35,6 +35,9 @@ const TEMPLATES: Record<string, { min: number; max: number; tables: (keyof typeo
   MyTasks: { min: 0, max: 0, tables: ['Activities'], formula: () => `SortByColumns(Filter(${names.Activities}, Type = "Task" && AssignedTo = User().Id && Status <> "Done" && Status <> "Cancelled"), "DueOn", SortOrder.Ascending)` },
   Mentions: { min: 0, max: 0, tables: ['Mentions'], formula: () => `SortByColumns(Filter(${names.Mentions}, MentionedUser = User().Id), "createdOn", SortOrder.Descending)` },
   Setting: { min: 1, max: 1, tables: ['Settings'], formula: () => `LookUp(${names.Settings}, Key = __a0, Value)` },
+  // P1-C approvals: the requests about a record (visible to the signed-in user), and what waits for the signed-in user
+  Approvals: { min: 1, max: 1, tables: ['ApprovalRequests'], formula: () => `SortByColumns(Filter(${names.ApprovalRequests}, regardingId = RecordId(__a0)), "createdOn", SortOrder.Descending)` },
+  MyApprovals: { min: 0, max: 0, tables: ['ApprovalAssignments'], formula: () => `SortByColumns(Filter(${names.ApprovalAssignments}, Approver = User().Id && Status = "pending" && RequestStatus = "pending"), "DueOn", SortOrder.Ascending)` },
   Convert: {
     min: 3, max: 3, tables: ['UnitsOfMeasure'],
     formula: () => `With({__f: LookUp(${names.UnitsOfMeasure}, Code = __a1), __t: LookUp(${names.UnitsOfMeasure}, Code = __a2)}, If(IsBlank(__a0) || IsBlank(__f) || IsBlank(__t) || __f.Dimension <> __t.Dimension || IsBlank(__t.Factor) || __t.Factor = 0, Blank(), __a0 * __f.Factor / __t.Factor))`,
@@ -129,6 +132,35 @@ export const collabFns: FnDef[] = [
   def('Activities', 'Activities(record)', 'The activities (tasks, calls, meetings, notes) about a record, newest first. Delegates like Filter.', 1, 1, runMacro),
   def('MyTasks', 'MyTasks()', 'Open tasks assigned to the signed-in user, by due date. Delegates like Filter.', 0, 0, runMacro),
   def('Mentions', 'Mentions()', 'Where the signed-in user was @mentioned, newest first. Delegates like Filter.', 0, 0, runMacro),
+  def('Approvals', 'Approvals(record)', 'The approval requests about a record that you may see (Approval requests: Title, Status, Outcome, RequestedBy, DueOn ...), newest first. Delegates like Filter.', 1, 1, runMacro),
+  def('MyApprovals', 'MyApprovals()', 'The approvals waiting for the signed-in user (Approval assignments: Request, Title, DueOn, regardingId ...), by due date. Delegates like Filter.', 0, 0, runMacro),
+  def('RequestApproval', 'RequestApproval(policyOrApprovers, record, title [, details [, fields]])', 'Asks for an approval about a record (server mode) and returns the request id at once. policyOrApprovers: the name of an approval policy, or approvers ("asha@example.com; role:Finance", "manager", a table of people). details: text every approver sees; fields: a record such as {Amount: ThisItem.Amount} (shown to approvers, read by threshold rules). You are the requester.', 3, 5, (c) => {
+    if (!c.host) return c.fail(null, 'RequestApproval only works in behaviour properties such as OnSelect', true)
+    if (!c.host.requestApproval) return c.fail(null, 'Approvals run on the server: RequestApproval is not available here (demo mode).', true)
+    const who = c.value(0)
+    const approvers: string[] = []
+    let policy: string | undefined
+    const addPerson = (v: FxValue) => {
+      if (isRecord(v)) {
+        for (const k of ['Email', 'Id', 'id', 'Code']) { const x = v[k]; if (typeof x === 'string' && x.trim()) { approvers.push(x.trim()); return } }
+      } else if (typeof v === 'string' && v.trim()) approvers.push(...v.split(/[;,\n]/).map((x) => x.trim()).filter(Boolean))
+    }
+    if (Array.isArray(who)) for (const r of who) addPerson(r as FxValue)
+    else if (isRecord(who)) addPerson(who)
+    else {
+      const s = toText(who, c.argNode(0)).trim()
+      if (!s) return c.fail(0, 'Name an approval policy or the approvers')
+      if (/[@:;,]/.test(s) || /^(manager|department-head)$/i.test(s)) addPerson(s)
+      else policy = s
+    }
+    const record = recordIdOf(c.value(1))
+    const title = c.text(2).trim()
+    if (!title) return c.fail(2, 'The title must not be empty')
+    const f = c.argc > 4 ? c.value(4) : null
+    if (f !== null && !isRecord(f)) return c.fail(4, 'fields must be a record, like {Amount: ThisItem.Amount}')
+    const id = `appr_${Array.from({ length: 20 }, () => 'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random() * 36)]).join('')}`
+    return c.host.requestApproval({ id, ...(policy ? { policy } : { approvers }), record, title, details: c.argc > 3 ? c.text(3) : '', fields: (f ?? {}) as FxRecord })
+  }, 'behaviour'),
   def('Setting', 'Setting(key)', 'The value (text) of a setting of this environment from the Settings table, such as Setting("FinancialYearStartMonth"). Blank when missing.', 1, 1, runMacro),
   def('Convert', 'Convert(value, fromUnit, toUnit)', 'Converts a quantity between units of the same dimension using the factors in Units of measure, such as Convert(2.5, "KG", "G"). Blank when a unit is unknown or the dimensions differ.', 3, 3, runMacro),
   def('NextNumber', 'NextNumber(sequence)', 'The next number of a number sequence, formatted with its prefix and padding. Gap-free on the server in a column default (=NextNumber("Invoices")) or a before-event; in apps it works in demo mode only.', 1, 1, (c) => hostCall(c, 'NextNumber', 'nextNumber', { name: c.text(0) }), 'behaviour'),

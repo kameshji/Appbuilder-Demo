@@ -11,6 +11,9 @@
  *   POST   /flows/run                     { flow: name or id, ... } (RunFlow() in apps)
  *   POST   /flows/:id/test                { trigger?, inputs?, dryRun = true, definition?, approvalOutcome? }
  *   GET    /flows/:id/permissions         PUT /flows/:id/permissions { roleIds }   (who may run it)
+ *   GET    /flows/:id/draft               PUT /flows/:id/draft { flow, connections, baseVersion }   DELETE /flows/:id/draft
+ *                                        (the designer's unpublished draft; saving a version clears it unless keepDraft)
+ *   POST   /flows/schedule-preview        { cron? | everyMinutes?, timeZone } -> { next: ISO[5], description } (designer)
  *   GET    /flows/runs?flowId=&status=&mode=&before=&limit=
  *   GET    /flows/runs/:runId             detail (owner, administrators); summary for the person who started it
  *   POST   /flows/runs/:runId/cancel      POST /flows/runs/:runId/resubmit { from: 'start' | 'failed' }
@@ -29,6 +32,7 @@ import { runInEnvironment } from '../env-context.ts'
 import { T, docOf, type FlowDoc } from './store.ts'
 import { isRunTerminal, toRunInfo } from './engine.ts'
 import { fromStored, fxToJson } from './values.ts'
+import { CronError, checkTimeZone, describeCron, nextCron, parseCron } from '../cron.ts'
 
 type Row = Record<string, unknown>
 
@@ -164,6 +168,8 @@ export function flowRoutes(router: ApiRouter, s: CoreServices): void {
         if (b.enabled !== undefined) await f().store.setEnabled(flowId, enabled, u.user.id)
       }
       await f().store.setConnections(flowId, conns.map((c) => ({ ...c, grantedBy: u.user.id })))
+      // the designer's draft is published by this save (package B)
+      if (cur && b.keepDraft !== true) await f().store.setDraft(flowId, null, null)
       const saved = (await f().store.get(flowId))!
       await f().syncSchedule(saved)
     })
@@ -183,7 +189,26 @@ export function flowRoutes(router: ApiRouter, s: CoreServices): void {
   /* ---------------------------------------------------------------- definitions */
 
   router.add('GET', '/flows', async (ctx) => ({ items: await f().listItems(me(ctx)), settings: await f().store.settings() }), { auth: 'maker' })
-  router.add('GET', '/flows/catalog', async () => f().catalog(), { auth: 'user' })
+  // approvals: whether an approvals service is registered (package C); the designer marks the approval step without one
+  router.add('GET', '/flows/catalog', async () => ({ ...f().catalog(), approvals: !!f().approvals() }), { auth: 'user' })
+  router.add('POST', '/flows/schedule-preview', async (ctx) => {
+    const b = body(ctx)
+    const tz = typeof b.timeZone === 'string' && b.timeZone ? b.timeZone : 'UTC'
+    try { checkTimeZone(tz) } catch (e) { return { next: [], error: (e as Error).message } }
+    const now = new Date()
+    const next: string[] = []
+    if (typeof b.cron === 'string' && b.cron.trim()) {
+      let spec
+      try { spec = parseCron(b.cron.trim()) } catch (e) { return { next: [], error: e instanceof CronError ? e.message : 'The cron expression is not valid.' } }
+      let t: Date | null = now
+      for (let i = 0; i < 5 && t; i++) { t = nextCron(spec, t, tz); if (t) next.push(t.toISOString()) }
+      return { next, description: describeCron(b.cron.trim()) }
+    }
+    const every = Number(b.everyMinutes)
+    if (!Number.isInteger(every) || every < 1) return { next: [], error: 'everyMinutes must be a whole number of at least 1.' }
+    for (let i = 1; i <= 5; i++) next.push(new Date(now.getTime() + Math.max(60, every * 60) * 1000 * i).toISOString())
+    return { next, description: `every ${every} minute${every === 1 ? '' : 's'} from when the flow is turned on` }
+  }, { auth: 'maker' })
   router.add('POST', '/flows', (ctx) => save(ctx, null), { auth: 'maker', design: true, maxBodyMB: 4 })
   router.add('PUT', '/flows/:id', (ctx) => save(ctx, ctx.params.id), { auth: 'maker', design: true, maxBodyMB: 4 })
   router.add('GET', '/flows/:id', async (ctx) => {
@@ -256,6 +281,33 @@ export function flowRoutes(router: ApiRouter, s: CoreServices): void {
     const out = await save(ctx, fl.id)
     await audit(s, ctx, 'flow.restore', { flow: fl.id, name: fl.name, from: Number(ctx.params.v), version: out.flow.version })
     return out
+  }, { auth: 'maker', design: true })
+
+  /* ---------------------------------------------------------------- the designer's draft (package B) */
+
+  router.add('GET', '/flows/:id/draft', async (ctx) => {
+    const fl = await need(ctx, ctx.params.id)
+    return { draft: f().canEdit(me(ctx), fl) ? await f().store.draft(fl.id) : null }
+  }, { auth: 'maker' })
+  router.add('PUT', '/flows/:id/draft', async (ctx) => {
+    const fl = await needEdit(ctx, ctx.params.id)
+    const b = body(ctx)
+    if (!b.flow || typeof b.flow !== 'object' || Array.isArray(b.flow)) throw new HttpError(422, 'invalid', 'The draft needs the flow definition (flow).', 'flow')
+    const doc = docFrom(b, fl)
+    const conns = connectionsFrom(b.connections, fl)
+    // a new or changed connection reference needs the right to use it: said now, not only at publish
+    for (const c of conns) {
+      const prev = fl.connections.find((x) => x.ref === c.ref)
+      if (!prev || prev.connectionId !== c.connectionId) await f().assertCanAttach(me(ctx), c.connectionId)
+    }
+    const baseVersion = Number.isInteger(b.baseVersion) ? Number(b.baseVersion) : fl.version
+    await f().store.setDraft(fl.id, { doc, connections: Object.fromEntries(conns.map((c) => [c.ref, c.connectionId])), baseVersion }, me(ctx).user.id)
+    return { draft: await f().store.draft(fl.id) }
+  }, { auth: 'maker', design: true, maxBodyMB: 4 })
+  router.add('DELETE', '/flows/:id/draft', async (ctx) => {
+    const fl = await needEdit(ctx, ctx.params.id)
+    await f().store.setDraft(fl.id, null, null)
+    return { ok: true }
   }, { auth: 'maker', design: true })
 
   /* ---------------------------------------------------------------- run permissions */

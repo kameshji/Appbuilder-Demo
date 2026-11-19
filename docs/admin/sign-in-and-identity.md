@@ -109,7 +109,29 @@ Admin console > **Sign-in and security** (install administrators change it; ever
 | Remember a device for | 30 days | 0: "Remember this device" is not offered. |
 | Allow email codes | On | Email codes as a second step (needs email). |
 
-### Sessions
+### Locked out: the last administrator
+
+If the only install administrator forgot their password or lost their second factor, recover on the **server machine**
+with the `appbuilder` command (installed servers; in a source checkout `node server/main.ts admin ...`). It needs the
+workspace's secret key and database login, so run it as a user who can read the workspace folder (Windows: an
+administrator PowerShell; Linux: `sudo`). It works whether the server runs or not.
+
+| Command | What it does |
+| --- | --- |
+| `appbuilder admin list` | The install administrators and environment administrators, with status and two-step verification |
+| `appbuilder admin reset-password <email>` | Prints a **one-time reset code valid 15 minutes** (never a password). On the sign-in screen choose *Forgot password?*, then *I have a reset code* |
+| `appbuilder admin reset-mfa <email>` | Removes the person's two-step verification and ends their sessions; they set it up again at the next sign-in if the policy requires it |
+| `appbuilder admin make-install-admin <email>` | Makes an account an install administrator (and enables it if it was disabled) |
+
+Every use is in the install audit log (`install.cli_reset_code`, `install.cli_mfa_reset`, `install.cli_make_admin`) with
+source `cli`, the operating-system user and the host name. Without access to the secret key the command refuses (it never
+creates a key).
+
+> **Warning.** Anyone with administrator rights on the server PC can take over Appbuilder this way. That is already true
+> of the database and the workspace (they hold everything); protect the machine, its administrator accounts and backups
+> accordingly ([hardening checklist](hardening-checklist.md)).
+
+## Sessions
 
 | Setting | Default | Meaning |
 | --- | --- | --- |

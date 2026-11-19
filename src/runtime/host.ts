@@ -1,7 +1,7 @@
 import type { AppDef, ControlNode, FxHost, FxRecord, FxValue } from '@/contracts'
 import { Evaluator, ROOT_CTX, enumName, type Env, type NodeCtx, type RuntimeView } from './evaluator'
 import { uid, isRecord } from './util'
-import { changeShare, collabAction, runFlowCall, sendNotification, currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableRows, tables } from './data'
+import { changeShare, collabAction, requestApprovalCall, runFlowCall, sendNotification, currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableRows, tables } from './data'
 import { pendingFilesOf } from './attachments'
 import { finishSubmit } from './submit'
 import { chainItems, prepareAction } from './delegation'
@@ -437,6 +437,11 @@ function beginRun(input: RunInput): Run {
       if (input.dryData) return runId
       void runFlowCall({ flow, inputs: toJsonValue(inputs), runId, wait: options.wait, timeoutSeconds: options.timeoutSeconds }, options.wait ? (v) => host.setVar(options.result, fromJsonValue(v)) : undefined)
       return runId
+    },
+    requestApproval(req) {
+      if (input.dryData) return req.id
+      void requestApprovalCall({ ...req, fields: toJsonValue(req.fields) })
+      return req.id
     },
   }
 
