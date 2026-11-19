@@ -51,10 +51,27 @@ export function parseDocument(text: string): Obj {
     throw new OpenApiError(`The document is not valid JSON or YAML: ${(e as Error).message.split('\n')[0].slice(0, 200)}`)
   }
   if (!isObj(doc)) throw new OpenApiError('The document is not an OpenAPI object.')
+  // P1-E security: YAML anchors and aliases share nodes, so a small document can stand for billions of nodes ("billion
+  // laughs"); the conversion below walks the expanded tree. Count the expanded nodes with a budget and refuse beyond it.
+  if (expandedNodes(doc, OPENAPI_MAX_NODES) > OPENAPI_MAX_NODES) throw new OpenApiError(`The document expands to more than ${OPENAPI_MAX_NODES.toLocaleString('en')} values (YAML anchors and aliases repeat parts of it); simplify it or send it as JSON.`)
   if (typeof doc.swagger === 'string') throw new OpenApiError('This is a Swagger 2.0 document; only OpenAPI 3 is supported. Convert it first (for example with the Swagger Editor: Edit > Convert to OpenAPI 3).')
   if (typeof doc.openapi !== 'string' || !/^3\./.test(doc.openapi)) throw new OpenApiError('The document has no "openapi: 3.x" version.')
   if (!isObj(doc.paths)) throw new OpenApiError('The document has no paths.')
   return doc
+}
+
+/** values of a document as if every alias were copied out; stops counting past `limit` */
+export const OPENAPI_MAX_NODES = 500_000
+export function expandedNodes(v: unknown, limit: number): number {
+  let n = 0
+  const stack: unknown[] = [v]
+  while (stack.length) {
+    const x = stack.pop()
+    if (++n > limit) return n
+    if (Array.isArray(x)) for (const y of x) stack.push(y)
+    else if (x && typeof x === 'object') for (const y of Object.values(x as Obj)) stack.push(y)
+  }
+  return n
 }
 
 function pointer(doc: Obj, ref: string): unknown {

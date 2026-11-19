@@ -31,6 +31,7 @@ import { SYS } from './system-tables'
 import { hiddenSystemColumns, nextNumberDefault, systemCanCreate } from './system-tables'
 import { applyFormulaColumns } from './demo-formulas'
 import { DEFAULT_ENVIRONMENT_ID, pickEnvironment, readSelectedEnvironment, selectEnvironment } from './environments'
+import { createDemoRecycleLog, recycleUnavailable, type DeletedEvent, type RecycleApi } from './recycle-api'
 import { MemoryStorage } from './storage'
 import {
   CONTACT_STATUSES, ORDER_STATUSES, SEED_CONTACTS, SEED_ORDERS, blankApp, contactsSampleApp,
@@ -1248,7 +1249,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     return addTable(def, rows)
   }
 
-  async function updateTableDef(id: string, patch: Partial<Pick<TableDef, 'displayName' | 'description' | 'primaryColumn' | 'teamOwnership' | 'sharing'>>): Promise<void> {
+  async function updateTableDef(id: string, patch: Partial<Pick<TableDef, 'displayName' | 'description' | 'primaryColumn' | 'teamOwnership' | 'sharing' | 'recycleDays'>>): Promise<void> {
     const rt = needTable(id)
     const def = { ...rt.def }
     if (patch.displayName !== undefined) {
@@ -1267,6 +1268,15 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       if (patch[k] === undefined) continue
       if (patch[k]) def[k] = true
       else delete def[k]
+    }
+    // recycle bin (docs/dev/recycle-bin.md): demo mode keeps deleted rows in memory for this session
+    if (patch.recycleDays !== undefined) {
+      const n = Number(patch.recycleDays)
+      if (!Number.isInteger(n) || n < 0 || n > 3650) fail('invalid', 'Keep deleted rows for: a whole number of days between 0 (off) and 3650.')
+      const why = n > 0 ? recycleUnavailable(def) : null
+      if (why) fail('invalid', why)
+      if (n > 0) def.recycleDays = n
+      else delete def.recycleDays
     }
     def.modifiedOn = iso()
     rt.def = def
@@ -1320,6 +1330,144 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     return st
   }
 
+  /* ------------------------------------------------------------------ recycle bin (demo: in memory, this session) */
+
+  const recycleLog = createDemoRecycleLog(nowFn)
+  const recycleListeners = new Set<(e: DeletedEvent) => void>()
+  const recycleChange = new Set<(tables: string[]) => void>()
+  const binChanged = (tables: string[]) => { for (const l of recycleChange) l(tables) }
+  const inBin = (tableId: string) => recycleLog.all().filter((b) => b.info.state === 'deleted').flatMap((b) => b.effects.filter((e) => e.kind === 'row' && e.table === tableId).map((e) => ({ e, b })))
+  const recycleApi: RecycleApi = {
+    onDeleted(l) {
+      recycleListeners.add(l)
+      return () => { recycleListeners.delete(l) }
+    },
+    onChange(l) {
+      recycleChange.add(l)
+      return () => { recycleChange.delete(l) }
+    },
+    async list(table, o = {}) {
+      const rt = needTable(table)
+      const admin = isAdminNow()
+      const del = rowTester(rt.def, 'delete')
+      const read = rowTester(rt.def, 'read')
+      let hits = inBin(rt.def.id).filter(({ e }) => admin || (del(e.row as Row) && read(e.row as Row)))
+      if (o.batch) hits = hits.filter(({ b }) => b.info.id === o.batch)
+      hits.sort((a, b) => (a.b.info.deletedOn < b.b.info.deletedOn ? 1 : -1))
+      const page = hits.slice(o.skip ?? 0, (o.skip ?? 0) + (o.limit ?? 100))
+      const day = 86_400_000
+      return {
+        total: hits.length,
+        batches: [...new Set(page.map((x) => x.b))].map((b) => ({ ...b.info })),
+        rows: page.map(({ e, b }) => ({
+          ...(e.row as Row), id: e.id,
+          __deleted: {
+            on: b.info.deletedOn, by: b.info.deletedBy, byName: b.info.deletedByName, batch: b.info.id, expiresOn: b.info.expiresOn,
+            daysLeft: Math.max(0, Math.ceil((Date.parse(b.info.expiresOn) - nowFn().getTime()) / day)), rootTable: b.info.tableId, rootTableName: b.info.tableName,
+            cascaded: b.info.tableId !== rt.def.id, batchRows: b.info.rows, source: b.info.source,
+          },
+        })),
+      }
+    },
+    async restore(table, what) {
+      const batchFirst = what.batch ? recycleLog.get(what.batch) : null
+      const rt = needTable(table ?? batchFirst?.info.tableId ?? '')
+      let b = batchFirst
+      if (!b && what.rowId) b = inBin(rt.def.id).find(({ e }) => e.id === what.rowId)?.b ?? null
+      if (!b) return fail('not-found', 'There is no deleted row or batch to restore here.')
+      if (b.info.state !== 'deleted') return fail('conflict', 'These rows have already been restored.')
+      const admin = isAdminNow()
+      const mine = (t: TableRt, r: Row) => admin || (rowTester(t.def, 'delete')(r) && rowTester(t.def, 'read')(r))
+      // one row: that row and the rows its delete took along (rows of the batch pointing at it, transitively)
+      let rows = b.effects.filter((e) => e.kind === 'row' && (!what.rowId || (e.id === what.rowId && e.table === rt.def.id)))
+      if (!rows.length) return fail('not-found', 'This row is not in the recycle bin.')
+      if (what.rowId) {
+        const chosen = new Set(rows.map((e) => e.id))
+        for (let grew = true; grew;) {
+          grew = false
+          for (const e of b.effects) {
+            if (e.kind !== 'row' || chosen.has(e.id)) continue
+            const t = findTable(e.table)
+            const r = e.row as Row
+            if (t?.def.columns.some((c) => c.type === 'lookup' && !c.system && typeof r[c.name] === 'string' && chosen.has(String(r[c.name])))) { chosen.add(e.id); grew = true }
+          }
+        }
+        rows = b.effects.filter((e) => e.kind === 'row' && chosen.has(e.id))
+      }
+      const root = findTable(b.info.tableId)
+      if (root && !rows.filter((e) => e.table === root.def.id).every((e) => mine(root, e.row as Row))) return fail('not-found', 'There is no deleted row or batch to restore here.')
+      const back = new Set(rows.map((e) => `${e.table}:${e.id}`))
+      for (const e of rows) {
+        const t = findTable(e.table)
+        if (!t) continue
+        const r = e.row as Row
+        for (const c of t.def.columns) {
+          // unique values used again since: refused, naming the row that has it
+          if (c.unique && r[c.name] !== null && r[c.name] !== undefined && r[c.name] !== '') {
+            const hit = t.rows.find((x) => x[c.name] !== null && x[c.name] !== undefined && uniqueKey(x[c.name] as never) === uniqueKey(r[c.name] as never))
+            if (hit) return fail('conflict', `Can't restore: ${c.displayName} "${String(r[c.name])}" is used by "${String(hit[t.def.primaryColumn] ?? hit.id)}" (id ${String(hit.id)}) now. Change or delete that row first, then restore again.`)
+          }
+          // one row (with what it took along): its parent must not be waiting in the same batch
+          if (what.rowId && c.type === 'lookup' && !c.system && typeof r[c.name] === 'string' && r[c.name]) {
+            const parent = b.effects.find((x) => x.kind === 'row' && x.id === r[c.name] && !back.has(`${x.table}:${x.id}`))
+            if (parent) return fail('conflict', `Can't restore this row on its own: ${c.displayName} points at a row deleted together with it. Restore the whole batch.`)
+          }
+        }
+      }
+      const touched = new Set<TableRt>()
+      for (const e of rows) {
+        const t = findTable(e.table)
+        if (!t) continue
+        t.rows = [...t.rows, e.row as Row].sort((x, y) => String(x.createdOn ?? '').localeCompare(String(y.createdOn ?? '')) || String(x.id).localeCompare(String(y.id)))
+        touched.add(t)
+      }
+      const warnings: string[] = []
+      for (const e of [...b.effects].reverse()) {
+        if (e.kind !== 'setBlank' || (what.rowId && !rows.some((x) => x.id === e.old))) continue
+        const t = findTable(e.table)
+        const row = t?.rows.find((r) => r.id === e.id)
+        if (!t || !row || !e.column) continue
+        if (row[e.column] !== null && row[e.column] !== undefined && row[e.column] !== '') {
+          warnings.push(`${t.def.displayName}: a row that pointed here has another ${e.column} since; that value was kept.`)
+          continue
+        }
+        t.rows = t.rows.map((r) => (r === row ? { ...r, [e.column!]: e.old as never } : r))
+        touched.add(t)
+      }
+      b.effects = b.effects.filter((e) => !(e.kind === 'row' ? back.has(`${e.table}:${e.id}`) : !what.rowId || rows.some((x) => x.id === e.old)))
+      if (!b.effects.some((e) => e.kind === 'row')) b.info.state = 'restored'
+      for (const t of touched) markFileModified(t.def)
+      setState({}, true)
+      for (const t of touched) saveTableLater(t.def.name)
+      binChanged([...touched].map((t) => t.def.name))
+      return { restored: rows.length, batch: b.info.id, tables: [...touched].map((t) => ({ tableId: t.def.id, rows: rows.filter((e) => e.table === t.def.id).length })), warnings }
+    },
+    async purge(table, what) {
+      const rt = needTable(table)
+      if (!isAdminNow()) return fail('denied', 'Only administrators can delete rows for good from the recycle bin.')
+      const list = 'all' in what ? (what.confirm.trim().toLowerCase() === rt.def.name.toLowerCase() ? recycleLog.forTable(rt.def.id) : fail('invalid', `Type the table name (${rt.def.name}) to confirm.`)) : [recycleLog.get(what.batch) ?? fail('not-found', 'This deletion batch is not in the recycle bin of this table.')]
+      let rows = 0
+      for (const b of list) {
+        for (const e of b.effects) {
+          if (e.kind !== 'row') continue
+          rows++
+          const t = findTable(e.table)
+          if (t) collab.hooks.afterDelete(t.def, [e.id])
+        }
+        b.info.state = 'purged'
+        recycleLog.drop(b.info.id)
+      }
+      setState({}, true)
+      binChanged([rt.def.name])
+      return { rows, batches: list.length }
+    },
+    async stats(table) {
+      const rt = needTable(table)
+      const n = inBin(rt.def.id).length
+      return { enabled: (rt.def.recycleDays ?? 0) > 0, keepDays: rt.def.recycleDays ?? 0, deletedRows: n, bytes: 0, batches: recycleLog.forTable(rt.def.id).length }
+    },
+  }
+
   const tablesApi: PlatformApi['tables'] = {
     update: tablesUpdate,
     async create(input) {
@@ -1338,6 +1486,8 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       const def: TableDef = {
         id: shortId('tbl'), name, displayName, primaryColumn: userCols[0].name,
         columns: [...SYSTEM_COLUMNS.map((c) => ({ ...c })), ...userCols], createdOn: now, modifiedOn: now,
+        // recycle bin: new tables keep deleted rows for 30 days (demo mode: for this browser session)
+        recycleDays: 30,
       }
       if (input.description) def.description = input.description
       return addTable(def, [])
@@ -1571,10 +1721,15 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
       }
       const plan = planDelete(rt, victims.map((r) => String(r.id)), all, options.relationships?.(state.environmentId || 'default') ?? [], canDelete)
       const touched = new Set<TableRt>()
+      // recycle bin: the first table decides (its setting on: one batch for the whole delete, like the server)
+      const keeps = (t: TableRt) => (t.def.recycleDays ?? 0) > 0
+      const u = currentUser()
+      const batch = keeps(rt) ? recycleLog.begin(rt.def, u ? { id: u.id, name: u.name } : null) : null
       for (const b of plan.blanks) {
         const t = findTable(b.table)
         const row = t?.rows.find((r) => r.id === b.id)
         if (!t || !row) continue
+        batch?.effects.push({ kind: 'setBlank', table: t.def.id, id: String(row.id), column: b.column, old: row[b.column] ?? null })
         t.rows = t.rows.map((r) => (r === row ? { ...r, [b.column]: null, modifiedOn: nowFn().toISOString() } : r))
         touched.add(t)
       }
@@ -1584,10 +1739,24 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
         const gone = t.rows.filter((r) => set.has(String(r.id)))
         if (!gone.length) continue
         t.rows = t.rows.filter((r) => !set.has(String(r.id)))
-        collab.hooks.afterDelete(t.def, gone.map((r) => String(r.id)))
+        if (batch && keeps(t)) {
+          // kept: the rows (and their collaboration rows, which stay where they are) come back with the batch
+          for (const r of gone) {
+            batch.effects.push({ kind: 'row', table: t.def.id, id: String(r.id), row: r })
+            if (t === rt) batch.info.rootIds.push(String(r.id))
+          }
+        } else {
+          if (batch) batch.info.finalRows += gone.length
+          collab.hooks.afterDelete(t.def, gone.map((r) => String(r.id)))
+        }
         touched.add(t)
       }
       for (const t of touched) markFileModified(t.def)
+      if (batch) {
+        recycleLog.commit(batch)
+        if (batch.info.rows) for (const l of recycleListeners) l({ table: rt.def.name, tableId: rt.def.id, batch: { ...batch.info }, keepDays: rt.def.recycleDays ?? 30 })
+        if (batch.info.rows) binChanged([...touched].map((t) => t.def.name))
+      }
       setState({}, true)
       for (const t of touched) saveTableLater(t.def.name)
     },
@@ -2523,6 +2692,7 @@ export function createPlatform(source: StorageSource, options: PlatformOptions =
     live: demoLive.live,
     notifications: demoLive.notifications,
     collab: collab.api,
+    recycle: recycleApi,
   }
 }
 

@@ -36,6 +36,8 @@ export interface ApprovalStageDef {
   quorum?: number
   /** a formula over the request's fields (e.g. `Amount > 10000`); the stage is skipped when it is false */
   condition?: string
+  /** P1-E: this stage is due this long after it starts (minutes); overrides the request's due date while it is active */
+  dueMinutes?: number
 }
 
 /** threshold rules ("amount thresholds"): every rule whose condition is true adds a stage after the base stages, in order */
@@ -46,6 +48,8 @@ export interface ApprovalRule {
   approvers: ApproverRef[]
   mode?: StageMode
   quorum?: number
+  /** P1-E: the stage this rule adds is due this long after it starts (minutes) */
+  dueMinutes?: number
 }
 
 /**
@@ -333,6 +337,7 @@ export function definitionProblems(d: unknown): { field: string; message: string
         if (Array.isArray(s.approvers) && !s.approvers.length) err(`stages.${i}.approvers`, 'A stage needs approvers.')
         checkMode(`stages.${i}.mode`, s.mode, s.quorum, Array.isArray(s.approvers) ? s.approvers.length : null)
         if (s.condition !== undefined && typeof s.condition !== 'string') err(`stages.${i}.condition`, 'condition must be a formula.')
+        if (s.dueMinutes !== undefined && (!Number.isFinite(s.dueMinutes) || s.dueMinutes < 1 || s.dueMinutes > 366 * 24 * 60)) err(`stages.${i}.dueMinutes`, 'dueMinutes must be from 1 minute to a year.')
       })
     }
   } else if (def.type) {
@@ -349,6 +354,7 @@ export function definitionProblems(d: unknown): { field: string; message: string
       checkRefs(`rules.${i}.approvers`, r?.approvers)
       if (Array.isArray(r?.approvers) && !r.approvers.length) err(`rules.${i}.approvers`, 'A rule needs approvers.')
       checkMode(`rules.${i}.mode`, r?.mode, r?.quorum, Array.isArray(r?.approvers) ? r.approvers.length : null)
+      if (r?.dueMinutes !== undefined && (!Number.isFinite(r.dueMinutes) || r.dueMinutes < 1 || r.dueMinutes > 366 * 24 * 60)) err(`rules.${i}.dueMinutes`, 'dueMinutes must be from 1 minute to a year.')
     })
   }
   if (def.responses !== undefined) {
@@ -376,7 +382,7 @@ export function definitionProblems(d: unknown): { field: string; message: string
     if (!e || !['manager', 'user', 'nextStage', 'approve', 'reject', 'expire'].includes(String(e.action))) err('escalation.action', 'action must be manager, user, nextStage, approve, reject or expire.')
     if (e?.action === 'user' && (!e.to || parseApproverRef(e.to)?.kind !== 'user')) err('escalation.to', 'Escalating to a user needs the user (an email or user id).')
     if (e?.afterMinutes !== undefined && !(Number(e.afterMinutes) >= 0)) err('escalation.afterMinutes', 'afterMinutes must be 0 or more.')
-    if (def.dueMinutes === undefined) err('escalation', 'Escalation needs a due date (dueMinutes), or the flow step\'s due date.')
+    if (def.dueMinutes === undefined && !(def.stages ?? []).some((x) => x?.dueMinutes) && !(def.rules ?? []).some((x) => x?.dueMinutes)) err('escalation', 'Escalation needs a due date (dueMinutes, or a stage\'s due date), or the flow step\'s due date.')
   }
   return out
 }
@@ -437,6 +443,10 @@ export interface ApprovalStepConfig {
   fields?: Record<string, string>
   quorum?: number
   stages?: ApprovalStageDef[]
+  /** P1-E: threshold rules on the step itself (read the fields below) */
+  rules?: ApprovalRule[]
+  /** P1-E: answers with their kinds (approve, reject, info, other) and required comments; overrides options */
+  responses?: ResponseOption[]
   dueMinutes?: number
   reminders?: ReminderDef
   escalation?: EscalationDef

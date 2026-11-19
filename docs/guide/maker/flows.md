@@ -190,7 +190,11 @@ The run is shown **on the canvas**: each step's status, duration and attempts, l
 got and gave back (**In this run**: inputs, output, error; passwords, tokens and Authorization headers are never shown).
 Inside a loop, the arrows on the loop's card page through its iterations. **Show a run on the canvas** opens any earlier
 run; the **Runs** tab lists them as a table (with **Show on the canvas**). A failed step's menu has **Run again from this
-step**: a new run that keeps the steps that succeeded.
+step**: a new run that keeps the steps that succeeded. Once a run has ended, a completed step **at the top level** of the
+flow has **Run again from this step…** too: the steps before it are not repeated (their results are used as they were),
+that step and every later one run again, emails and data changes included, so it asks first. A step inside a condition,
+loop or scope says why not ("only top-level steps": a half-run container cannot be rebuilt safely); run again from the step
+that holds it.
 
 ![A test run on the canvas](../../images/flow-designer-run.png)
 

@@ -43,6 +43,8 @@ export interface FakeSmtpOptions {
   password?: string
   /** listen address (default 127.0.0.1) */
   listen?: string
+  /** P1-E: offer AUTH XOAUTH2 and accept this bearer token (for the user `user`, when given) */
+  oauthToken?: string
 }
 
 /** a throw-away self-signed certificate for localhost (openssl must be installed) */
@@ -128,6 +130,7 @@ export async function startFakeSmtp(o: FakeSmtpOptions = {}): Promise<FakeSmtp> 
     let data = ''
     let authUser: string | null = null
     let loginStep: 0 | 1 | 2 = 0
+    let xoauthFailed = false
     let loginUser = ''
     const send = (l: string) => sock.write(l + '\r\n')
     const okCreds = (u: string, p: string) => (o.user === undefined || (u === o.user && p === (o.password ?? '')))
@@ -153,6 +156,11 @@ export async function startFakeSmtp(o: FakeSmtpOptions = {}): Promise<FakeSmtp> 
         data += (data ? '\r\n' : '') + line
         return
       }
+      if (xoauthFailed) {
+        // the client's empty answer to the error challenge (RFC 7628 style)
+        xoauthFailed = false
+        return send('535 5.7.3 Authentication unsuccessful')
+      }
       if (loginStep === 1) {
         loginUser = Buffer.from(line, 'base64').toString('utf8')
         loginStep = 2
@@ -170,7 +178,7 @@ export async function startFakeSmtp(o: FakeSmtpOptions = {}): Promise<FakeSmtp> 
       switch (verb.toUpperCase()) {
         case 'EHLO':
         case 'HELO':
-          sock.write(`250-fake.smtp Hello\r\n${o.tls && !isTls ? '250-STARTTLS\r\n' : ''}250-AUTH PLAIN LOGIN\r\n250 8BITMIME\r\n`)
+          sock.write(`250-fake.smtp Hello\r\n${o.tls && !isTls ? '250-STARTTLS\r\n' : ''}250-AUTH PLAIN LOGIN${o.oauthToken ? ' XOAUTH2' : ''}\r\n250 8BITMIME\r\n`)
           return
         case 'STARTTLS': {
           if (!o.tls || isTls) return send('454 TLS not available')
@@ -193,6 +201,15 @@ export async function startFakeSmtp(o: FakeSmtpOptions = {}): Promise<FakeSmtp> 
             if (!okCreds(parts[1] ?? '', parts[2] ?? '')) return send('535 5.7.8 Authentication failed')
             authUser = parts[1] ?? ''
             return send('235 2.7.0 Authentication successful')
+          }
+          if (mech?.toUpperCase() === 'XOAUTH2' && o.oauthToken) {
+            const m = /^user=([^\x01]*)\x01auth=Bearer ([^\x01]*)\x01\x01$/.exec(Buffer.from(initial ?? '', 'base64').toString('utf8'))
+            if (m && m[2] === o.oauthToken && (o.user === undefined || m[1] === o.user)) {
+              authUser = m[1]
+              return send('235 2.7.0 Authentication successful')
+            }
+            xoauthFailed = true
+            return send(`334 ${Buffer.from(JSON.stringify({ status: '401', schemes: 'bearer', scope: 'https://mail.google.com/' })).toString('base64')}`)
           }
           if (mech?.toUpperCase() === 'LOGIN') {
             loginStep = 1

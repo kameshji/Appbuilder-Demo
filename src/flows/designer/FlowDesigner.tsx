@@ -268,7 +268,13 @@ function DesignerBody({ flowId, initial, readOnly: roProp, onSaved, onCancel, on
         <div className="flex min-h-0 flex-1">
           <div className="relative min-w-0 flex-1">
             <Canvas onOpenPicker={openPicker} triggerTitle={triggerTitle(doc.trigger, triggerDocs)} triggerSummary={triggerSummary(doc.trigger)} triggerType={doc.trigger?.type ?? ''} problemCount={problemCount}
-              onResubmit={run ? (stepId) => flowsApi.resubmit(run.id, 'failed').then((r) => { toast(`Run again from ${findStep(doc.steps, stepId)?.step.name ?? 'the failed step'}: the steps that succeeded are not repeated.`, 'success'); loadRun(r.runId) }).catch((e) => toast(errMsg(e), 'error')) : undefined} />
+              onResubmit={run && !['queued', 'running', 'waiting'].includes(run.status) ? (stepId, from) => {
+                const name = findStep(doc.steps, stepId)?.step.name ?? 'this step'
+                if (from === 'step' && !window.confirm(`Run again from "${name}"? The steps before it are not repeated (their stored results are used as they were). "${name}" and every step after it run again, including their emails, data changes and calls to other systems.`)) return
+                ;(from === 'failed' ? flowsApi.resubmit(run.id, 'failed') : flowsApi.resubmit(run.id, 'step', stepId))
+                  .then((r) => { toast(from === 'failed' ? `Run again from ${name}: the steps that succeeded are not repeated.` : `Run again from ${name}: the steps before it are not repeated.`, 'success'); loadRun(r.runId) })
+                  .catch((e) => toast(errMsg(e), 'error'))
+              } : undefined} />
             {!run && flowId && <div className="absolute left-3 top-3"><RunPicker /></div>}
             {notes.length > 0 && (
               <div className="absolute left-1/2 top-3 z-10 max-w-md -translate-x-1/2 rounded-md border border-amber-500/40 bg-card px-3 py-2 text-xs shadow-md" role="status" data-testid="designer-notes">

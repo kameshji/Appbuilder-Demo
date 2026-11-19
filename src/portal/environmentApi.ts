@@ -65,15 +65,23 @@ export const fetchInstallAuditPage = (q: AuditQuery): Promise<AuditPageResponse>
 
 /* ------------------------------------------------------------------ solutions between environments */
 
+/** P1-E: the choices made on the plan screen (connection and people mapping, new flows turned on) */
+export interface PlanChoices { connectionMap?: Record<string, string>; peopleMap?: Record<string, string>; enableFlows?: boolean }
+export const choiceBody = (c: PlanChoices = {}): PlanChoices => ({
+  ...(c.connectionMap && Object.keys(c.connectionMap).length ? { connectionMap: c.connectionMap } : {}),
+  ...(c.peopleMap && Object.keys(c.peopleMap).length ? { peopleMap: c.peopleMap } : {}),
+  ...(c.enableFlows ? { enableFlows: true } : {}),
+})
+
 /** what importing this package into the current environment would do */
-export const planImport = (yaml: string, opts: { asCopy?: boolean } = {}): Promise<SolutionPlan> => send<SolutionPlan>('POST', '/solutions/import/plan', { yaml, ...(opts.asCopy ? { asCopy: true } : {}) })
+export const planImport = (yaml: string, opts: { asCopy?: boolean } & PlanChoices = {}): Promise<SolutionPlan> => send<SolutionPlan>('POST', '/solutions/import/plan', { yaml, ...(opts.asCopy ? { asCopy: true } : {}), ...choiceBody(opts) })
 
 /** import (install, or the upgrade confirmed by the plan's token) into the current environment; reloads the workspace */
-export const importWithPlan = (yaml: string, opts: { confirm?: string; asCopy?: boolean; filesAs?: 'database' | 'file' } = {}) => platform.solutions.importPackage(yaml, opts)
+export const importWithPlan = (yaml: string, opts: { confirm?: string; asCopy?: boolean; filesAs?: 'database' | 'file' } & PlanChoices = {}) => platform.solutions.importPackage(yaml, { ...opts, ...choiceBody(opts) })
 
 /** the plan of deploying a solution of the current environment into `target` */
-export const planDeploy = (solutionId: string, target: string, includeData = false): Promise<SolutionPlan> =>
-  send<SolutionPlan>('POST', `/solutions/${enc(solutionId)}/deploy`, { target, plan: true, includeData })
+export const planDeploy = (solutionId: string, target: string, includeData = false, choices: PlanChoices = {}): Promise<SolutionPlan> =>
+  send<SolutionPlan>('POST', `/solutions/${enc(solutionId)}/deploy`, { target, plan: true, includeData, ...choiceBody(choices) })
 
-export const deploy = (solutionId: string, target: string, confirm: string, includeData = false, opts: { proceedWithoutBackup?: boolean } = {}): Promise<SolutionImportResult> =>
-  send<SolutionImportResult>('POST', `/solutions/${enc(solutionId)}/deploy`, { target, confirm, includeData, ...(opts.proceedWithoutBackup ? { proceedWithoutBackup: true } : {}) })
+export const deploy = (solutionId: string, target: string, confirm: string, includeData = false, opts: { proceedWithoutBackup?: boolean } & PlanChoices = {}): Promise<SolutionImportResult> =>
+  send<SolutionImportResult>('POST', `/solutions/${enc(solutionId)}/deploy`, { target, confirm, includeData, ...(opts.proceedWithoutBackup ? { proceedWithoutBackup: true } : {}), ...choiceBody(opts) })

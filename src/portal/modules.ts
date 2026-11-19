@@ -63,7 +63,7 @@ export const MODULES: readonly ModuleEntry[] = [
     key: 'flows', label: 'Flows', icon: Workflow, modes: ['dev'], status: 'live', route: { page: 'flows' }, phase: 'P1', need: 'maker',
     tagline: 'Automate work when data changes, on a schedule or at a button press.',
     details: [
-      'Triggers (a row changes, a schedule, a button in an app, a web request) and steps (data, condition, loop, delay, approval, notify, email, HTTP, connector actions, child flows). Today a JSON editor; the visual designer follows.',
+      'Built on a visual canvas by clicking: triggers (a row changes, a schedule, a button in an app, a web request, an approval decided) and steps (data, condition, loop, delay, approval, notify, email, HTTP, connector actions, child flows), with templates, drafts, versions and test runs.',
       'Every run is recorded with its inputs, outputs and errors, live; flows act with the rights of their owner, of the person who starts them, or of a service account an administrator chose.',
     ],
   },
@@ -112,7 +112,7 @@ export const MODULES: readonly ModuleEntry[] = [
     tagline: 'Environments, users, licences and the audit log in one place.',
     details: [
       'Environments, users with their roles and sign-in state, sign-in and security, email, service accounts, organisation and licence passes.',
-      'The audit log, jobs and schedules, backups, server logs and health, usage and updates.',
+      'The audit log, jobs and schedules, flows (kill switch), backups, server logs, health alerts and heartbeat, usage and updates.',
     ],
   },
   {

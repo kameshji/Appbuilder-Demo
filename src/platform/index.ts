@@ -99,6 +99,8 @@ export function createPlatformFacade(deps: {
   let initPromise: Promise<void> | null = null
   const listeners = new Set<() => void>()
   const errorListeners = new Set<(e: Parameters<Parameters<PlatformApi['onDataError']>[0]>[0]) => void>()
+  const recycleListeners = new Set<(e: import('./recycle-api.ts').DeletedEvent) => void>()
+  const recycleChangeListeners = new Set<(tables: string[]) => void>()
   const notify = () => {
     for (const l of [...listeners]) {
       try {
@@ -117,6 +119,12 @@ export function createPlatformFacade(deps: {
         p.subscribe(notify)
         p.onDataError((e) => {
           for (const l of [...errorListeners]) l(e)
+        })
+        p.recycle?.onDeleted((e) => {
+          for (const l of [...recycleListeners]) l(e)
+        })
+        p.recycle?.onChange((t) => {
+          for (const l of [...recycleChangeListeners]) l(t)
         })
         impl = p
         notify()
@@ -152,6 +160,14 @@ export function createPlatformFacade(deps: {
         return (..._a: unknown[]) => notInit(`${String(name)}.${prop}`)
       },
     })
+  }
+
+  /** the recycle bin of the chosen backend (after init) */
+  const ready = async (): Promise<import('./recycle-api.ts').RecycleApi> => {
+    const p = impl ?? (await choose())
+    await p.init()
+    if (!p.recycle) throw new PlatformError('unavailable', 'Deleted rows are not available here.')
+    return p.recycle
   }
 
   const facade: PlatformApi = {
@@ -212,6 +228,21 @@ export function createPlatformFacade(deps: {
     }),
     notifications: group('notifications', ['list', 'markRead', 'remove', 'settings', 'saveSettings', 'send'], { onNotification: () => () => {} }),
     solutions: group('solutions', ['create', 'update', 'remove', 'addComponent', 'removeComponent', 'exportPackage', 'importPackage'], {}),
+    // recycle bin: listeners work before init; the rest waits for it
+    recycle: {
+      onDeleted(l) {
+        recycleListeners.add(l)
+        return () => { recycleListeners.delete(l) }
+      },
+      onChange(l) {
+        recycleChangeListeners.add(l)
+        return () => { recycleChangeListeners.delete(l) }
+      },
+      list: async (...a) => (await ready()).list(...a),
+      restore: async (...a) => (await ready()).restore(...a),
+      purge: async (...a) => (await ready()).purge(...a),
+      stats: async (...a) => (await ready()).stats(...a),
+    },
     // core data model (P0-N): every method is asynchronous, so before init they wait for it
     collab: new Proxy({} as NonNullable<PlatformApi['collab']>, {
       get(_t, prop) {

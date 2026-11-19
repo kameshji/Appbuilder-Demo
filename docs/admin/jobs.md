@@ -35,6 +35,7 @@ or kept running.
 | Audit log retention | off, keep 730 days | Deletes audit entries of this environment older than *Keep* days. Turn it on only if your policy allows deleting audit history |
 | Attachment orphan sweep | daily 03:37 UTC | Removes files no row refers to any more (older than an hour) |
 | Rollup reconcile | hourly | Recalculates every rollup column from its rows |
+| Recycle bin purge | hourly | Deletes for good the rows whose days in a table's recycle bin ran out, then their attachment files ([Recycle bins](operations.md#recycle-bins)) |
 | Collaboration orphan sweep | daily 03:47 UTC | Removes comments, activities, follows, tags and file links about records that no longer exist |
 | Sign-in log retention (Default environment only) | daily 03:53 UTC, keep 180 days | Deletes sign-in log entries of the whole install older than *Keep* days |
 | Email delivery log retention (Default environment only) | daily 03:57 UTC, keep 90 days | Deletes email delivery log entries (recipient, subject, status) of the whole install older than *Keep* days |

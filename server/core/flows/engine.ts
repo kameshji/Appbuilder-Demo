@@ -981,7 +981,7 @@ export function createFlowEngine(deps: EngineDeps) {
         if (!svc) throw new StepError('Notifications are not available on this server.', false)
         const res = await svc.notify({ userIds: ids.userIds, teamIds: ids.teamIds }, {
           kind: 'flow', title, ...(body ? { body: body.slice(0, 4000) } : {}), link: link || null, environmentId: env().id, source: `flow:${c.run.flowId}`,
-          ...({ channels: s.channels, idempotencyKey: idem } as object),
+          channels: s.channels, idempotencyKey: idem,
         })
         return { output: { Delivered: res.delivered, Skipped: [...res.skipped, ...ids.unknown] }, input }
       }
@@ -1072,7 +1072,9 @@ export function createFlowEngine(deps: EngineDeps) {
         const details = step.details ? String(fxToJson(await fx(c, step.details, 'details')) ?? '') : undefined
         const approvers = step.approvers !== undefined && step.approvers !== '' ? principals(await fx(c, step.approvers, 'approvers')) : []
         // P1-C: a policy may name the approvers instead of the step
-        if (!approvers.length && !step.policy) throw new StepError('Nobody to ask: approvers is blank.', true)
+        // P1-E: or the step's own stages (sequential) name them
+        const ownStages = step.type === 'sequential' && Array.isArray(step.stages) && step.stages.length > 0
+        if (!approvers.length && !step.policy && !ownStages) throw new StepError('Nobody to ask: approvers is blank.', true)
         let regarding: { tableId: string; rowId: string } | undefined
         if (step.regarding) regarding = { tableId: tableNamed(c.tables, step.regarding.table).id, rowId: rowIdOf(await fx(c, step.regarding.rowId, 'regarding.rowId')) }
         // P1-C: fields shown to approvers (and read by a policy's threshold rules)
@@ -1082,7 +1084,8 @@ export function createFlowEngine(deps: EngineDeps) {
           for (const [k, f] of Object.entries(step.fields)) fields[k] = fxToJson(await fx(c, f, `fields.${k}`))
         }
         const definition: Record<string, unknown> = {}
-        for (const k of ['quorum', 'stages', 'dueMinutes', 'reminders', 'escalation', 'allowSelfApproval', 'separationOfDuties', 'requireCommentOnReject'] as const) if (step[k] !== undefined) definition[k] = step[k]
+        // P1-E: threshold rules and answer options (with their kinds) can be set on the step too, not only in a policy
+        for (const k of ['quorum', 'stages', 'rules', 'responses', 'dueMinutes', 'reminders', 'escalation', 'allowSelfApproval', 'separationOfDuties', 'requireCommentOnReject'] as const) if ((step as unknown as Record<string, unknown>)[k] !== undefined) definition[k] = (step as unknown as Record<string, unknown>)[k]
         approvalReq = {
           environmentId: env().id, runId: run.id, flowId: run.flowId, flowName: run.flowName, stepKey: key, stepName: step.name, waitId, title, ...(details ? { details } : {}),
           approvers, type: step.type ?? 'single', options: step.options?.length ? step.options : ['Approve', 'Reject'], ...(regarding ? { regarding } : {}),
@@ -1097,6 +1100,14 @@ export function createFlowEngine(deps: EngineDeps) {
         if (target.trigger?.type !== 'manual') throw new StepError(`"${target.name}" cannot be called (it has no manual trigger).`, true)
         if (!target.enabled && run.mode === 'normal') throw new StepError(`"${target.name}" is turned off.`, true)
         if (run.callDepth + 1 > FLOW_LIMITS.callDepth) throw new StepError(`Child flows are nested more than ${FLOW_LIMITS.callDepth} deep.`, true, 'limit')
+        // P1-E security: a flow may only call a flow its run-as identity may run by hand (the owner, administrators,
+        // roles granted on it); otherwise a maker's flow could start an administrator's or a service account's flow
+        // with inputs of its choosing
+        {
+          const who = c.ident
+          const mayRun = !!who && (who.privileges.isAdmin || target.ownerId === who.user.id || await deps.store.grantedFlows(who.roles.map((r) => r.id)).then((g) => g.has(target.id) || g.has('*')))
+          if (!mayRun) throw new StepError(`${who?.user.name ?? 'This flow\'s identity'} may not run "${target.name}" (only its owner, administrators and the roles it is granted to).`, true, 'denied')
+        }
         const inputs: Record<string, unknown> = {}
         for (const [k, f] of Object.entries(step.inputs ?? {})) inputs[k] = await fx(c, f, `inputs.${k}`)
         child = { flowId: target.id, inputs }
@@ -1597,7 +1608,7 @@ export function createFlowEngine(deps: EngineDeps) {
   /* ---------------------------------------------------------------- resubmit */
 
   /** a new run with the same trigger: from the start, or keeping the steps that succeeded (the failed ones run again) */
-  async function resubmit(runId: string, from: 'start' | 'failed', by: string | null): Promise<{ id: string }> {
+  async function resubmit(runId: string, from: 'start' | 'failed' | { step: string }, by: string | null): Promise<{ id: string }> {
     const old = await loadRun(runId)
     if (!old) throw new HttpError(404, 'not-found', 'Run not found.')
     if (!isRunTerminal(old.state)) throw new HttpError(409, 'conflict', 'The run has not ended yet; cancel it first.')
@@ -1605,10 +1616,35 @@ export function createFlowEngine(deps: EngineDeps) {
     const doc = await docFor(old)
     const flow = await deps.store.get(old.flowId)
     if (!flow) throw new HttpError(404, 'not-found', 'The flow no longer exists.')
+    // P1-E: from a chosen step: the steps before it keep their stored results, it and everything after it run again
+    let copyBefore: Set<string> | null = null
+    let fromName = ''
+    if (typeof from === 'object') {
+      const rows = (await db().query<Row>(`SELECT * FROM ${T('ab_flow_steps')} WHERE run_id = $1 ORDER BY ord`, [runId])).map(toStep)
+      const check = resubmitFromStepCheck(doc, rows, from.step)
+      if (!check.ok) throw new HttpError(409, 'conflict', check.reason)
+      copyBefore = check.copy
+      fromName = check.name
+    }
     return db().tx(async () => {
       const id = `run_${randomBytes(9).toString('base64url')}`
       let variables: Record<string, unknown> = initialVariables(doc.variables)
-      if (from === 'failed') {
+      if (copyBefore) {
+        const rows = (await db().query<Row>(`SELECT * FROM ${T('ab_flow_steps')} WHERE run_id = $1 ORDER BY ord`, [runId])).map(toStep)
+        for (const r of rows) {
+          if (!copyBefore.has(topOf(r.key))) continue
+          await db().exec(
+            `INSERT INTO ${T('ab_flow_steps')} (run_id, step_key, step_id, scope, name, kind, state, attempt, input, output, error, data, simulated, truncated, started_on, finished_on)
+             SELECT $2, step_key, step_id, scope, name, kind, state, attempt, input, output, error, data, simulated, truncated, started_on, finished_on
+               FROM ${T('ab_flow_steps')} WHERE run_id = $1 AND step_key = $3`,
+            [runId, id, r.key],
+          )
+          if (r.kind === 'setVariable' && r.state === 'succeeded') {
+            const st = findStep(doc.steps, r.stepId)
+            if (st?.kind === 'setVariable') variables = { ...variables, [st.variable]: r.output }
+          }
+        }
+      } else if (from === 'failed') {
         // keep what succeeded; containers that failed run again from their first step that did not succeed
         const rows = (await db().query<Row>(`SELECT * FROM ${T('ab_flow_steps')} WHERE run_id = $1 ORDER BY ord`, [runId])).map(toStep)
         const failedContainers = new Set(rows.filter((r) => isContainer(r.kind) && r.state !== 'succeeded' && r.state !== 'skipped').map((r) => r.key))
@@ -1635,7 +1671,7 @@ export function createFlowEngine(deps: EngineDeps) {
       }
       const res = await createRun({
         id, flowId: old.flowId, flowName: flow.name, flowVersion: old.flowVersion, ownerId: flow.ownerId, mode: old.mode, dryRun: old.dryRun, triggerKind: old.triggerKind,
-        triggerSummary: `resubmitted (${from === 'start' ? 'from the start' : 'from the failed step'})`, trigger: fromStored(old.trigger), runAs: old.runAs, runAsKind: old.runAsKind,
+        triggerSummary: `resubmitted (${from === 'start' ? 'from the start' : from === 'failed' ? 'from the failed step' : `from the step ${fromName}`})`.slice(0, 200), trigger: fromStored(old.trigger), runAs: old.runAs, runAsKind: old.runAsKind,
         triggeredBy: by, chain: old.chain, depth: old.depth, callDepth: old.callDepth, resubmittedFrom: old.id, concurrencyKey: old.concurrencyKey, variables,
         timeoutMinutes: doc.settings?.timeoutMinutes ?? FLOW_LIMITS.runTimeoutMinutes, doc: old.doc, options: old.options,
       })
@@ -1701,6 +1737,41 @@ export function createFlowEngine(deps: EngineDeps) {
     /** tests: whether a step ran in a transaction with its effect */
     kinds: { DATA_KINDS, WRITE_KINDS, EXTERNAL_KINDS, SUSPEND_KINDS },
   }
+}
+
+/** the top-level step id of a step key ('/a/b.then/c' -> 'a', '/each#3/x' -> 'each') */
+function topOf(key: string): string {
+  const m = /^\/([^/#.]+)/.exec(key)
+  return m ? m[1] : ''
+}
+
+/**
+ * Whether a finished run can be run again from a step (P1-E). The safe rule: the step is a top-level step of the flow
+ * (not inside a condition, loop or scope: the state of a half-run container cannot be rebuilt reliably), it ran in the
+ * old run (it has a finished row), and every top-level step before it, with everything inside it, has finished rows (step
+ * outputs are always stored whole: a step whose output is over 1 MB fails). Then those steps are copied as they ended
+ * (their outputs are reused as they were, not read again) and the chosen step and all later ones run again.
+ */
+export function resubmitFromStepCheck(doc: FlowDoc, rows: StepRow[], stepId: string): { ok: true; copy: Set<string>; name: string } | { ok: false; reason: string } {
+  const idx = doc.steps.findIndex((x) => x.id === stepId)
+  if (idx < 0) {
+    const nested = findStep(doc.steps, stepId)
+    return { ok: false, reason: nested ? `"${nested.name}" is inside a container (condition, switch, loop or scope): run again from the container that holds it, or from the failed step.` : 'There is no such step in the version of the flow this run used.' }
+  }
+  const step = doc.steps[idx]
+  const byKey = new Map(rows.map((r) => [r.key, r]))
+  const own = byKey.get(`/${step.id}`)
+  const done = (st: string) => ['succeeded', 'failed', 'skipped', 'timedOut', 'cancelled'].includes(st)
+  if (!own || !done(own.state)) return { ok: false, reason: `"${step.name}" did not run in this run, so there is nothing to run again from there.` }
+  const copy = new Set<string>()
+  for (const prev of doc.steps.slice(0, idx)) {
+    const r = byKey.get(`/${prev.id}`)
+    if (!r || !done(r.state) || r.state === 'cancelled') return { ok: false, reason: `"${prev.name}" (before "${step.name}") has no finished result in this run.` }
+    const sub = rows.filter((x) => topOf(x.key) === prev.id)
+    if (sub.some((x) => !done(x.state))) return { ok: false, reason: `"${prev.name}" did not finish in this run.` }
+    copy.add(prev.id)
+  }
+  return { ok: true, copy, name: step.name }
 }
 
 function findStep(list: Step[], id: string): Step | null {

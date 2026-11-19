@@ -6,9 +6,13 @@ filters and column security. ("Appbuilder" is a working name.)
 
 ## Status
 
-Version **0.5.0** (Phase 0, "Kernel", is done: see [CHANGELOG](../CHANGELOG.md) and [the Phase 0 spec](plan/p0-spec.md)). Every
-page below describes what exists in this version; each page says what is not supported yet. "Current" means the page was
-checked against the code for 0.5.0.
+Version **0.6.0** (Phase 1, "Automation", is done: see [CHANGELOG](../CHANGELOG.md) and [the Phase 1 spec](plan/p1-spec.md);
+Phase 0, "Kernel", closed at 0.5.0: [the Phase 0 spec](plan/p0-spec.md)). Phase 1 added flows with a visual designer,
+approvals, connector actions (HTTP and Email connectors, OpenAPI import), inbound webhooks, notification delivery by email,
+scheduled reports, health alerts and a heartbeat, a recycle bin for deleted rows, and the `appbuilder admin` recovery
+commands. Every page below describes
+what exists in this version; each page says what is not supported yet. "Current" means the page was checked against the
+code for 0.6.0.
 
 ## For customers
 
@@ -17,12 +21,15 @@ checked against the code for 0.5.0.
 | [Getting started](guide/getting-started.md) | Anyone installing it on a Windows PC (one installer script) | current |
 | [Signing in, two-step verification, forgotten password](guide/signing-in.md) | Everyone using the server | current |
 | [Your settings](guide/settings.md) | Everyone | current |
-| [Maker guide](guide/maker/README.md): [apps](guide/maker/apps.md), [the Studio](guide/maker/studio.md), [formulas](guide/maker/formulas.md), [data](guide/maker/data.md), [data model designer](guide/maker/data-model.md), [core data model](guide/maker/core-data-model.md), [security for makers](guide/maker/security-for-makers.md), [solutions](guide/maker/solutions.md), [connections and actions](guide/maker/connections-and-actions.md), [webhooks](guide/maker/webhooks.md), [approvals](guide/maker/approvals.md), [scheduled reports](guide/maker/scheduled-reports.md), [notifications](guide/maker/notifications.md) | People who build apps and tables | current |
-| [Admin guide](admin/README.md): installation (Windows and Linux installers, offline, HTTPS), operations (services, logs, health, diagnostics), users and roles, sign-in and identity, organisation, reference data, environments, connections (and HTTP / Email actions, access, email limits), webhook security, backup and restore, disaster recovery, upgrades, audit log, jobs | The person who runs it | current |
+| [Maker guide](guide/maker/README.md): [apps](guide/maker/apps.md), [the Studio](guide/maker/studio.md), [formulas](guide/maker/formulas.md), [data](guide/maker/data.md), [data model designer](guide/maker/data-model.md), [core data model](guide/maker/core-data-model.md), [security for makers](guide/maker/security-for-makers.md), [solutions](guide/maker/solutions.md), [flows](guide/maker/flows.md), [connections and actions](guide/maker/connections-and-actions.md), [webhooks](guide/maker/webhooks.md), [approvals](guide/maker/approvals.md), [scheduled reports](guide/maker/scheduled-reports.md), [notifications](guide/maker/notifications.md) | People who build apps and tables | current |
+| [Admin guide](admin/README.md): installation (Windows and Linux installers, offline, HTTPS, email with Microsoft 365 / Google Workspace), operations (services, logs, health, health email and heartbeat, diagnostics), users and roles, sign-in and identity, organisation, reference data, environments, connections (and HTTP / Email actions, access, email limits), webhook security, [flows](admin/flows.md) (run-as, kill switch, limits), [approvals](admin/approvals.md), backup and restore, disaster recovery, upgrades, audit log, jobs | The person who runs it | current |
+| [Help centre for end users](help/index.md): signing in, finding apps, lists and forms, records, notifications, approvals (quick start for approvers), scheduled emails | People who use the apps | current |
 | [Security model](admin/security-model.md) and [hardening checklist](admin/hardening-checklist.md) | Admins and buyers evaluating it | current |
 | [UI components reference](reference/ui-components.md) | Makers (generated from the code) | current (generated) |
 | [Formula reference](reference/formulas.md) | Makers (generated from the code) | current (generated) |
 | [Connector actions reference](reference/connector-actions.md) | Makers (generated from the code) | current (generated) |
+| [Flows reference](reference/flows.md): every trigger and step kind | Makers (generated from the code) | current (generated) |
+| [Approvals reference](reference/approvals.md): types, approver references, escalation, step outputs | Makers (generated from the code) | current (generated) |
 | [Troubleshooting](guide/troubleshooting.md) | Everyone | current |
 
 ## For developers
@@ -42,15 +49,17 @@ checked against the code for 0.5.0.
 | [Core data model: system tables, the regarding rule, NextNumber](dev/core-data-model.md) | current |
 | [Backups: archive format, engine, restore](dev/backup.md) | current |
 | [Release process: building, signing, the installers and the updater](dev/release-process.md) | current |
-| [Approvals](dev/approvals.md) (routing, security, email links, flows) and the [recycle bin design](dev/recycle-bin.md) | current |
+| [Flows](dev/flows.md): the runtime (tables, execution, guarantees, triggers, security, ALM) and the designer | current |
+| [Approvals](dev/approvals.md) (routing, security, email links, flows, the visual editor) | current |
+| [Recycle bin](dev/recycle-bin.md): deleted rows kept and restored (batches, the live-row predicate, restore rules, purge) | current |
 | [Writing a connector](dev/connectors.md) (tables and actions: HTTP, Email, webhooks in) | current |
 | [Notification delivery: channels, email, digests, unsubscribe](dev/notifications-delivery.md) | current |
 | [Testing](dev/testing.md) | current |
 | [Decision log](decisions.md) | current |
 | [Changelog](../CHANGELOG.md) | current |
 | [Third-party notices](../THIRD-PARTY-NOTICES.md) | current (generated by `npm run notices`) |
-| Plans: [master plan](plan/master-plan.md), [Phase 0 spec](plan/p0-spec.md) | current |
-| Security review of Phase 0: [internal/security-review-p0.md](internal/security-review-p0.md) | current |
+| Plans: [master plan](plan/master-plan.md), [Phase 0 spec](plan/p0-spec.md), [Phase 1 spec](plan/p1-spec.md) | current |
+| Security reviews: [Phase 0](internal/security-review-p0.md), [Phase 1](internal/security-review-p1.md) | current |
 | Build specs used while developing earlier phases | [internal/specs](internal/specs) (historical, not maintained) |
 
 ## Documentation rules

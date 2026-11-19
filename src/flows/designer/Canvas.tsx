@@ -56,7 +56,8 @@ export interface CanvasProps {
   triggerTitle: string
   triggerSummary: string
   triggerType: string
-  onResubmit?(stepId: string): void
+  /** run the shown (ended) run again: from the failed step, or from a chosen top-level step */
+  onResubmit?(stepId: string, from: 'failed' | 'step'): void
   /** counts of problems per step id */
   problemCount: Map<string, number>
 }
@@ -382,7 +383,7 @@ export function Canvas(p: CanvasProps) {
 
 function Card({ c, selected, focused, dim, hit, ov, problems, iters, iteration, readOnly, onResubmit }: {
   c: ReturnType<typeof layoutFlow>['cards'][number]; selected: boolean; focused: boolean; dim: boolean; hit: boolean; ov?: StepOverlay; problems: number
-  iters?: number[]; iteration?: number; readOnly: boolean; onResubmit?(id: string): void
+  iters?: number[]; iteration?: number; readOnly: boolean; onResubmit?(id: string, from: 'failed' | 'step'): void
 }) {
   const s = c.step
   const info = kindInfo(s.kind)
@@ -440,7 +441,10 @@ function Card({ c, selected, focused, dim, hit, ov, problems, iters, iteration, 
             <DropdownMenuItem onSelect={() => { st().set({ selection: { kind: 'steps', ids: [c.id] } }); paste() }}>Paste after</DropdownMenuItem>
           </>}
           {isContainer && <DropdownMenuItem onSelect={() => st().toggleCollapsed(c.id)}>{c.collapsed ? 'Expand' : 'Collapse'}</DropdownMenuItem>}
-          {ov && onResubmit && (ov.status === 'failed' || ov.status === 'timedOut') && <DropdownMenuItem data-testid="menu-resubmit" onSelect={() => onResubmit(c.id)}>Run again from this step</DropdownMenuItem>}
+          {ov && onResubmit && (ov.status === 'failed' || ov.status === 'timedOut') && <DropdownMenuItem data-testid="menu-resubmit" onSelect={() => onResubmit(c.id, 'failed')}>Run again from this step</DropdownMenuItem>}
+          {ov && onResubmit && (ov.status === 'succeeded' || ov.status === 'skipped') && (c.depth === 0
+            ? <DropdownMenuItem data-testid="menu-resubmit-step" onSelect={() => onResubmit(c.id, 'step')}>Run again from this step…</DropdownMenuItem>
+            : <DropdownMenuItem disabled data-testid="menu-resubmit-nested" title="The state of a half-run condition, loop or scope cannot be rebuilt safely. Run again from the top-level step that holds this one.">Run again from here: only top-level steps</DropdownMenuItem>)}
           {!readOnly && <>
             <DropdownMenuSeparator />
             <DropdownMenuItem data-testid="menu-delete" className="text-destructive" onSelect={() => { st().set({ selection: { kind: 'steps', ids: [c.id] } }); deleteSelected() }}>Delete <span className="ml-auto text-[10px] text-muted-foreground">Del</span></DropdownMenuItem>

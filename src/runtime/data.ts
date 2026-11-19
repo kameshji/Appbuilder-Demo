@@ -413,7 +413,7 @@ export async function requestApprovalCall(input: { id: string; policy?: string; 
 
 /**
  * RunFlow(flow, inputs, options) from formulas: POST /api/v1/flows/run with a run id chosen here (so the formula gets it
- * at once and a retry does not start a second run). Failures are reported like SendNotification's; with Wait the
+ * at once and a retry does not start a second run), after the app's pending writes are stored. Failures are reported like SendNotification's; with Wait the
  * flow's response arrives later through onResponse.
  */
 export async function runFlowCall(input: { flow: string; inputs: unknown; runId: string; wait: boolean; timeoutSeconds: number }, onResponse?: (value: unknown) => void): Promise<void> {
@@ -421,6 +421,9 @@ export async function runFlowCall(input: { flow: string; inputs: unknown; runId:
     if (platformMode() !== 'server') throw new PlatformError('unavailable', 'Flows run on the server; they are not available in demo mode.')
     const { API_BASE, CSRF_HEADER } = await import('@/platform/http')
     const { environmentHeaders } = await import('@/platform/environments')
+    // like RequestApproval: a record the same formula just wrote with Patch (optimistic) must be stored before the
+    // flow reads it, so wait for the app's pending writes first
+    await platform.tables.flush().catch(() => {})
     const res = await fetch(`${API_BASE}/flows/run`, {
       method: 'POST', credentials: 'same-origin', cache: 'no-store',
       headers: { [CSRF_HEADER]: '1', 'Content-Type': 'application/json', ...environmentHeaders() },
@@ -433,4 +436,111 @@ export async function runFlowCall(input: { flow: string; inputs: unknown; runId:
     const message = `RunFlow: ${errorMessage(e)}`
     for (const l of [...shareErrorListeners]) l(message)
   }
+}
+
+/* ------------------------------------------------------------------ recycle bin (DeletedRows, Restore) */
+
+const deletedCache = new Map<string, { rows: FxRecord[]; loading: boolean; sig: string }>()
+let deletedFeed = false
+
+/** a delete in this session (or a restore) changes the recycle bin of these tables: reload what formulas show */
+function deletedChanged(tables: string[]): void {
+  for (const t0 of tables) {
+    const t = platform.tables.get(t0)?.name ?? t0
+    const key = t.toLowerCase()
+    const hit = deletedCache.get(key)
+    // reloaded in the background; the rows on screen stay until the new ones differ (no flicker, selections stay)
+    if (hit && !hit.loading) {
+      hit.loading = true
+      void loadDeleted(t, key)
+    }
+  }
+}
+
+function ensureDeletedFeed(): void {
+  if (deletedFeed) return
+  try {
+    const r = platform.recycle
+    if (!r) return
+    deletedFeed = true
+    // this session's deletes, restores and purges; other sessions' changes reach the table's queries (live): reload then
+    r.onChange((tables) => deletedChanged(tables))
+    const pending = new Set<string>()
+    let timer: ReturnType<typeof setTimeout> | null = null
+    platform.tables.onQueryChange((keys) => {
+      for (const k of keys) {
+        const m = /"table":"((?:[^"\\]|\\.)*)"/.exec(k)
+        if (m && deletedCache.has(m[1]!.toLowerCase())) pending.add(m[1]!)
+      }
+      if (!pending.size || timer) return
+      timer = setTimeout(() => { timer = null; const t = [...pending]; pending.clear(); deletedChanged(t) }, 400)
+    })
+  } catch {
+    deletedFeed = false
+  }
+}
+
+/** DeletedRows(Table): the cached Deleted view of a table (security-trimmed by the server); the first call loads it */
+export function deletedRowsOf(table: string): FxRecord[] {
+  ensureDeletedFeed()
+  const key = table.toLowerCase()
+  const hit = deletedCache.get(key)
+  if (hit) return hit.rows
+  deletedCache.set(key, { rows: [], loading: true, sig: '' })
+  void loadDeleted(table, key)
+  return []
+}
+
+async function loadDeleted(table: string, key: string): Promise<void> {
+  let rows: FxRecord[] = []
+  try {
+    const def = platform.tables.get(table)
+    if (def && platform.recycle) {
+      const res = await platform.recycle.list(def.name, { limit: 500 })
+      rows = res.rows.map((r) => {
+        const { __deleted: d, ...cols } = r
+        const rec: FxRecord = {}
+        for (const c of def.columns) if (c.name in cols) rec[c.name] = fromWire(c.type, cols[c.name])
+        return {
+          ...rec, __id: r.id, DeletedOn: d.on ? new Date(d.on) : null, DeletedBy: d.byName ?? d.by ?? '', DeleteBatch: d.batch, DaysLeft: d.daysLeft,
+          DeletedTable: def.name, CascadedFrom: d.cascaded ? d.rootTableName : '',
+        }
+      })
+    }
+  } catch {
+    rows = []
+  }
+  const sig = JSON.stringify(rows)
+  const prev = deletedCache.get(key)
+  if (prev && prev.sig === sig) {
+    prev.loading = false
+    return
+  }
+  deletedCache.set(key, { rows, loading: false, sig })
+  bumpQueryDeps([`q:del:${key}`])
+}
+
+/** wire value -> formula value (dates as Date) */
+function fromWire(type: string, v: unknown): FxRecord[string] {
+  if (v === null || v === undefined) return null
+  if ((type === 'date' || type === 'datetime') && typeof v === 'string') {
+    const d = new Date(type === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T00:00:00` : v)
+    return Number.isNaN(d.getTime()) ? v : d
+  }
+  return v as FxRecord[string]
+}
+
+/** Restore(row or batch) from formulas: asynchronous; the tables it brought rows back to refresh; failures are notified */
+export function restoreCall(what: { rowId?: string; table?: string; batch?: string }): void {
+  const run = async () => {
+    const r = platform.recycle
+    if (!r) throw new PlatformError('unavailable', 'Deleted rows cannot be restored here.')
+    const res = await r.restore(what.table ?? null, what.batch ? { batch: what.batch } : { rowId: what.rowId })
+    const names = res.tables.map((t) => platform.tables.get(t.tableId)?.name ?? t.tableId)
+    deletedChanged([...names, ...(what.table ? [what.table] : [])])
+    for (const w of res.warnings) for (const l of [...shareErrorListeners]) l(`Restore: ${w}`)
+  }
+  void run().catch((e) => {
+    for (const l of [...shareErrorListeners]) l(`Restore: ${errorMessage(e)}`)
+  })
 }

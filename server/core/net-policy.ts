@@ -27,11 +27,46 @@ function v4(ip: string): number[] | null {
   return p.length === 4 && p.every((x) => Number.isInteger(x) && x >= 0 && x <= 255) ? p : null
 }
 
-/** what kind of address this is (IPv4, IPv6, IPv4-mapped IPv6) */
+/** the 8 groups of an IPv6 address (with an embedded dotted IPv4 tail), or null */
+function v6groups(ip: string): number[] | null {
+  if (!net.isIPv6(ip)) return null
+  let s = ip.split('%')[0]!
+  const tail = /(\d+\.\d+\.\d+\.\d+)$/.exec(s)
+  if (tail) {
+    const a = v4(tail[1]!)
+    if (!a) return null
+    s = s.slice(0, -tail[1]!.length) + `${((a[0]! << 8) | a[1]!).toString(16)}:${((a[2]! << 8) | a[3]!).toString(16)}`
+  }
+  const [head, rest] = s.split('::') as [string, string | undefined]
+  const h = head ? head.split(':') : []
+  const r = rest !== undefined ? (rest ? rest.split(':') : []) : []
+  const fill = rest !== undefined ? 8 - h.length - r.length : 0
+  const all = [...h, ...Array(Math.max(0, fill)).fill('0'), ...r].map((x) => parseInt(x || '0', 16))
+  return all.length === 8 && all.every((x) => Number.isInteger(x) && x >= 0 && x <= 0xffff) ? all : null
+}
+
+/**
+ * P1-E security: IPv6 forms that carry an IPv4 address the operating system may reach: IPv4-mapped (::ffff:a.b.c.d, also
+ * written ::ffff:a9fe:a9fe), IPv4-compatible (::a.b.c.d), NAT64 (64:ff9b::/96) and 6to4 (2002:wwxx:yyzz::/48). They are
+ * classified as the IPv4 address inside, so "[::ffff:169.254.169.254]" is link-local, not "public".
+ */
+function embeddedV4(ip: string): string | null {
+  const g = v6groups(ip)
+  if (!g) return null
+  const four = (hi: number, lo: number) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`
+  const zeros = (n: number) => g.slice(0, n).every((x) => x === 0)
+  if (zeros(5) && g[5] === 0xffff) return four(g[6]!, g[7]!)
+  if (zeros(6) && (g[6] !== 0 || g[7]! > 1)) return four(g[6]!, g[7]!)
+  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) return four(g[6]!, g[7]!)
+  if (g[0] === 0x2002) return four(g[1]!, g[2]!)
+  return null
+}
+
+/** what kind of address this is (IPv4, IPv6, IPv4 inside IPv6) */
 export function classifyAddress(ipIn: string): AddressClass {
   let ip = ipIn.trim().replace(/^\[|\]$/g, '').toLowerCase()
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(ip)
-  if (mapped) ip = mapped[1]!
+  const inner = net.isIPv6(ip) ? embeddedV4(ip) : null
+  if (inner) ip = inner
   const a = v4(ip)
   if (a) {
     const [x, y] = a as [number, number, number, number]

@@ -395,6 +395,14 @@ const SYSTEM_COLS: ColumnDef[] = [
  * The TableDef of a system table: its platform columns plus the custom columns a maker added (`existing`, the stored
  * definition, keeps those). `name` may differ from the spec when a maker's table already had the name.
  */
+/**
+ * System tables whose rows people delete one by one and may want back: they can have a recycle bin (an administrator
+ * turns it on; off by default). The other collaboration tables (mentions, follows, tag links, attachment links,
+ * document versions) are bookkeeping rows: they go and come back with the record they are about. Reference data,
+ * projections and the communication placeholders never keep deleted rows.
+ */
+export const RECYCLABLE_SYSTEM_TABLES: string[] = [SYS.activities, SYS.comments, SYS.documents]
+
 export function systemTableDef(spec: SystemTableSpec, now: string, existing?: TableDef | null, name = spec.name): TableDef {
   const platform = new Set([...SYSTEM_COLS, ...spec.columns].map((c) => c.name))
   const custom = (existing?.columns ?? []).filter((c) => !platform.has(c.name) && !c.locked && !c.system)
@@ -409,6 +417,11 @@ export function systemTableDef(spec: SystemTableSpec, now: string, existing?: Ta
   else def.managed = true
   // roles granted the table's extra privilege (Approval requests: "Approvals: view"), set by the approvals settings
   if (existing?.systemPrivilegeRoles?.length) def.systemPrivilegeRoles = [...existing.systemPrivilegeRoles]
+  // recycle bin (docs/dev/recycle-bin.md): only Activities, Comments and Documents may keep deleted rows (off by default)
+  if (RECYCLABLE_SYSTEM_TABLES.includes(spec.id)) {
+    if (existing?.recycleBin) def.recycleBin = true
+    if (existing?.recycleDays) def.recycleDays = existing.recycleDays
+  }
   if (spec.regarding) def.regarding = { ...REGARDING }
   if (spec.uniqueTogether) def.uniqueTogether = spec.uniqueTogether.map((x) => [...x])
   return def

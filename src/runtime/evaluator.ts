@@ -2,7 +2,7 @@ import type { AppDef, ControlNode, FxDiagnostic, FxEngine, FxNamedFormula, FxRec
 import { createEngine, splitFormulas } from '@/fx'
 import { controls } from '@/controls'
 import { isRecord, walk } from './util'
-import { currentUserRecord, isTable, queryDepsSince, recordById, sharedWithRows, tableRows } from './data'
+import { currentUserRecord, deletedRowsOf, isTable, queryDepsSince, recordById, sharedWithRows, tableRows } from './data'
 import { deriveList, evaluateDelegated, type DelegationInfo, type ListView } from './delegation'
 
 /**
@@ -776,6 +776,13 @@ export class Evaluator {
       const id = name.slice(11)
       this.record('q:sw:' + id)
       return sharedWithRows(id)
+    }
+    // DeletedRows(Table) (recycle bin): the server's Deleted view of the table, cached; reloads after deletes and restores
+    if (name.startsWith('DeletedRows:')) {
+      const table = name.slice(12)
+      if (!isTable(table)) return undefined
+      this.record('q:del:' + table.toLowerCase())
+      return deletedRowsOf(table)
     }
     if (name.startsWith('Param:')) {
       try {

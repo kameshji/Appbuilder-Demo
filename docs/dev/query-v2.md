@@ -474,6 +474,10 @@ engine, every rows plan also paged by 7):
 The same run passes with `TZ=Asia/Kolkata`, `TZ=America/Los_Angeles` and `TZ=Pacific/Chatham`. The reference executor's own parity
 test runs both corpora against the engine without a database.
 
+**Recycle bin**: `where()` and lookup paths (`via`) always go through the v1 `buildWhere`, which puts the table's live-row
+predicate (`"deletedOn" IS NULL`) in front of every condition of a table with a recycle bin; the partial indexes of such a
+table serve the same plans (EXPLAIN parity and the 1,000,000-row comparison are in [recycle-bin.md](recycle-bin.md#performance)).
+
 **Scale check** (`scripts/bench/seed-million.mjs`): table *BigOrders*, 1,000,000 rows (Title, City, Status, Amount indexed; Qty, Note
 not), loaded with server-side batched `INSERT ... SELECT generate_series` (50,000 rows per statement; 88 s with the key and trigram
 indexes in place), then `POST /api/v1/query` over HTTP, median of 5 runs after a warm-up. Hardware: the development sandbox, 2 vCPUs

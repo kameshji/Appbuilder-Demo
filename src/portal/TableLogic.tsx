@@ -73,8 +73,8 @@ function useEvents(tableId: string, enabled: boolean) {
   return { items, error, reload: load }
 }
 
-const OPS: TableEventOperation[] = ['create', 'update', 'delete']
-const opLabel: Record<TableEventOperation, string> = { create: 'Create', update: 'Update', delete: 'Delete' }
+const OPS: TableEventOperation[] = ['create', 'update', 'delete', 'restore']
+const opLabel: Record<TableEventOperation, string> = { create: 'Create', update: 'Update', delete: 'Delete', restore: 'Restore' }
 
 /** a sample row for test runs: one of the table's loaded rows, or blank */
 function SamplePicker({ table, value, onChange }: { table: TableDef; value: string; onChange(id: string): void }) {
@@ -173,7 +173,7 @@ function EventEditor({ table, kind, event, onDone }: { table: TableDef; kind: 'v
   const test = async () => {
     setResult(null)
     try {
-      setResult(await testEvent(table.id, { ...inputOf(d, kind), name: d.name || 'Test' }, sampleOf(table, sampleId, {}), d.operations[0] ?? 'create'))
+      setResult(await testEvent(table.id, { ...inputOf(d, kind), name: d.name || 'Test' }, sampleOf(table, sampleId, {}), d.operations.find((o): o is 'create' | 'update' | 'delete' => o !== 'restore') ?? 'create'))
     } catch (e) {
       setError({ message: errMsg(e), field: (e as { field?: string }).field })
     }
@@ -191,8 +191,8 @@ function EventEditor({ table, kind, event, onDone }: { table: TableDef; kind: 'v
           </Field>
           <Field label="On">
             <div className="flex h-8 items-center gap-4">
-              {OPS.map((o) => (
-                <label key={o} className="flex items-center gap-1.5 text-sm">
+              {OPS.filter((o) => o !== 'restore' || d.timing === 'after').map((o) => (
+                <label key={o} className="flex items-center gap-1.5 text-sm" title={o === 'restore' ? 'Rows that come back from the recycle bin' : undefined}>
                   <Checkbox checked={d.operations.includes(o)} onCheckedChange={(v) => set({ operations: v === true ? [...d.operations, o] : d.operations.filter((x) => x !== o) })} />{opLabel[o]}
                 </label>
               ))}

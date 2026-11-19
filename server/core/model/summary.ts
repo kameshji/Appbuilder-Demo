@@ -6,7 +6,7 @@
  */
 import type { TableDef } from '../../../src/platform/contracts.ts'
 import type { SummaryDef } from '../../../src/model/types.ts'
-import { quoteId } from '../../connectors/postgres/sql.ts'
+import { hasRecycleBin, liveRowsSql, quoteId } from '../../connectors/postgres/sql.ts'
 import type { CoreServices } from '../services.ts'
 import { currentEnvironment } from '../env-context.ts'
 import { JobError } from '../jobs.ts'
@@ -44,7 +44,9 @@ export function summaryRefreshSql(schema: string, def: TableDef, src: TableDef):
   }
   const group = r.groupBy.length ? ` GROUP BY ${r.groupBy.map((g) => `s.${quoteId(g)}`).join(', ')}` : ''
   // one refresh at a time per table: two concurrent refreshes would each delete what they see and both insert
-  return [`LOCK TABLE ${T} IN SHARE ROW EXCLUSIVE MODE`, `DELETE FROM ${T}`, `INSERT INTO ${T} (${cols.join(', ')}) SELECT ${sel.join(', ')} FROM ${S} AS s${group}`]
+  // recycle bin: deleted source rows are not summarised
+  const live = hasRecycleBin(src) ? ` WHERE ${liveRowsSql(src, 's')}` : ''
+  return [`LOCK TABLE ${T} IN SHARE ROW EXCLUSIVE MODE`, `DELETE FROM ${T}`, `INSERT INTO ${T} (${cols.join(', ')}) SELECT ${sel.join(', ')} FROM ${S} AS s${live}${group}`]
 }
 
 export function registerSummaryJob(s: CoreServices): void {

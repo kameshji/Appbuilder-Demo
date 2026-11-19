@@ -1,7 +1,8 @@
 /**
  * A minimal SMTP client (RFC 5321) for the outbound relay: implicit TLS (port 465), STARTTLS (RFC 3207, required when
  * chosen) or plain, AUTH PLAIN / LOGIN (RFC 4954), one message to one recipient per connection, MIME multipart/alternative
- * (text + HTML, UTF-8, base64 bodies, RFC 2047 encoded headers). No dependency: nodemailer is MIT-0, which is not on our
+ * (text + HTML, UTF-8, base64 bodies, RFC 2047 encoded headers). P1-E: AUTH XOAUTH2 with an OAuth 2.0 access token
+ * (Microsoft 365, Google Workspace). No dependency: nodemailer is MIT-0, which is not on our
  * licence allow-list (scripts/lib/licences.mjs).
  *
  * Safety rules: header values containing CR or LF are refused (header injection); the password is never sent over a
@@ -28,6 +29,11 @@ export interface SmtpSettings {
   heloName?: string
   /** per step (default 20 s) */
   timeoutMs?: number
+  /**
+   * P1-E: OAuth 2.0 instead of a password: an access token (from oauth-token.ts) sent with AUTH XOAUTH2 for `username`
+   * (the mailbox), as Microsoft 365 and Google Workspace expect.
+   */
+  accessToken?: string
 }
 
 export interface MailAddress { address: string; name?: string }
@@ -336,7 +342,23 @@ export async function sendSmtp(s: SmtpSettings, msg: MailMessage): Promise<{ mes
       const auth = ehlo.lines.find((l) => /^AUTH[ =]/i.test(l))
       const mechs = auth ? auth.slice(5).toUpperCase().split(/\s+/) : []
       const pass = s.password ?? ''
-      if (mechs.includes('PLAIN')) {
+      if (s.accessToken !== undefined) {
+        if (!mechs.includes('XOAUTH2')) throw new SmtpError('The mail server does not offer OAuth 2.0 sign-in (AUTH XOAUTH2). Use a password, or check the host and port.')
+        assertHeaderSafe(s.username, 'The mailbox')
+        if (/[\x00-\x1f]/.test(s.accessToken)) throw new SmtpError('The access token is not valid.')
+        const token = Buffer.from(`user=${s.username}\x01auth=Bearer ${s.accessToken}\x01\x01`, 'utf8').toString('base64')
+        c.write(`AUTH XOAUTH2 ${token}\r\n`)
+        let r = await c.read()
+        if (r.code === 334) {
+          // an error challenge (base64 JSON with the reason): answer with an empty line, the server then fails the AUTH
+          let why = ''
+          try { why = Buffer.from(r.lines.join(''), 'base64').toString('utf8').slice(0, 200) } catch { /* not base64 */ }
+          c.write('\r\n')
+          r = await c.read()
+          throw new SmtpError(`The mail server refused the OAuth 2.0 sign-in: ${r.code} ${r.lines.join(' ').slice(0, 200)}${why ? ` (${why})` : ''}`, r.code >= 500 ? r.code : 535)
+        }
+        if (r.code !== 235) throw new SmtpError(`The mail server refused the OAuth 2.0 sign-in: ${r.code} ${r.lines.join(' ').slice(0, 300)}`, r.code)
+      } else if (mechs.includes('PLAIN')) {
         const token = Buffer.from(`\0${s.username}\0${pass}`, 'utf8').toString('base64')
         await c.cmd(`AUTH PLAIN ${token}`, [235], 'AUTH PLAIN (credentials hidden)')
       } else if (mechs.includes('LOGIN')) {

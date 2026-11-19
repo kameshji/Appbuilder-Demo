@@ -89,12 +89,13 @@ export function approvalRoutes(router: ApiRouter, services: CoreServices, a: () 
   }, { auth: 'user' })
 
   router.add('GET', '/approvals/policies', async () => ({ items: await a().listPolicies() }), { auth: 'user' })
-  router.add('POST', '/approvals/policies', async (ctx) => ({ policy: await a().savePolicy(me(ctx), null, body(ctx)) }), { auth: 'maker' })
-  router.add('PUT', '/approvals/policies/:id', async (ctx) => ({ policy: await a().savePolicy(me(ctx), ctx.params.id, body(ctx)) }), { auth: 'maker' })
+  // P1-E security: policies are design (they travel in solutions): read-only in a locked production environment
+  router.add('POST', '/approvals/policies', async (ctx) => ({ policy: await a().savePolicy(me(ctx), null, body(ctx)) }), { auth: 'maker', design: true })
+  router.add('PUT', '/approvals/policies/:id', async (ctx) => ({ policy: await a().savePolicy(me(ctx), ctx.params.id, body(ctx)) }), { auth: 'maker', design: true })
   router.add('DELETE', '/approvals/policies/:id', async (ctx) => {
     await a().deletePolicy(me(ctx), ctx.params.id)
     return { ok: true }
-  }, { auth: 'maker' })
+  }, { auth: 'maker', design: true })
 
   router.add('GET', '/approvals/settings', async () => ({ settings: await a().settings() }), { auth: 'admin' })
   router.add('PUT', '/approvals/settings', async (ctx) => ({ settings: await a().saveSettings(me(ctx), body(ctx)) }), { auth: 'admin' })

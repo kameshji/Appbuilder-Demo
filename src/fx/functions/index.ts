@@ -7,10 +7,11 @@ import { logicFns } from './logic.ts'
 import { mathFns } from './math.ts'
 import { tableFns } from './table.ts'
 import { textFns } from './text.ts'
+import { recycleFns } from './recycle.ts'
 import type { FnDef } from './types.ts'
 import { buildUserFunctions, EMPTY_USER_FUNCTIONS, userFunctionNoCase, type UserFunctionSet } from './user.ts'
 
-const ALL: FnDef[] = [...logicFns, ...textFns, ...mathFns, ...dateFns, ...tableFns, ...colorFns, ...behaviourFns, ...collabFns]
+const ALL: FnDef[] = [...logicFns, ...textFns, ...mathFns, ...dateFns, ...tableFns, ...colorFns, ...behaviourFns, ...collabFns, ...recycleFns]
 
 const BY_NAME = new Map<string, FnDef>()
 const BY_LOWER = new Map<string, FnDef>()

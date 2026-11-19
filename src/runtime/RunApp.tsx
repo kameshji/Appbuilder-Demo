@@ -12,6 +12,7 @@ import { loadAppDef } from './session'
 import { openChannel, type Channel } from './channel'
 import { errorMessage } from './data'
 import { AppLiveBar } from './presence'
+import { UndoDelete } from './UndoDelete'
 
 /**
  * `#run-<id>`: the player. Without a Studio it runs the saved app. When the Studio of the same app
@@ -152,6 +153,7 @@ function Player({ appId, embedded, onBack }: { appId: string; embedded: boolean;
       <DataLoading />
       <AppLiveBar appId={appId} store={store} />
       <Toasts contained={embedded} />
+      <UndoDelete contained={embedded} />
       {connected && !embedded && <DebugBar />}
     </div>
   )

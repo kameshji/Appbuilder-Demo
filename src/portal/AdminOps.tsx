@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { Spinner } from '@/components/ui/spinner'
 import { Empty, Field, Panel, errMsg, fmtDate, fmtRelative, useToast } from './kit'
 import { fmtBytes } from './AdminEnvironments'
@@ -172,6 +173,7 @@ export function ServerLogsSection({ title }: { title: Title }) {
           </p>
         </Panel>
       )}
+      <HealthAlertsPanel />
 
       <Panel className="mb-3 grid grid-cols-[8rem_minmax(0,1.6fr)_1fr_1fr_auto] items-end gap-3 p-3" data-testid="logs-filters">
         <Field label="Level" htmlFor="logs-level">
@@ -435,5 +437,74 @@ export function UpdatesSection({ title }: { title: Title }) {
         </>
       )}
     </div>
+  )
+}
+
+/* ------------------------------------------------------------------ health email and heartbeat (P1-E) */
+
+interface HealthAlertSettings {
+  email: { enabled: boolean; immediate: boolean; dailyTime: string; timeZone: string }
+  heartbeat: { enabled: boolean; everyMinutes: number; allowPrivateNetwork: boolean; hasUrl: boolean; urlHint: string; last?: { at: string; ok: boolean; message: string } }
+}
+
+function HealthAlertsPanel() {
+  const { toast, fail } = useToast()
+  const [s, setS] = useState<HealthAlertSettings | null>(null)
+  const [url, setUrl] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { json<{ settings: HealthAlertSettings }>('GET', '/admin/health-alerts').then((r) => setS(r.settings)).catch(() => setS(null)) }, [])
+  if (!s) return null
+  const save = async (patch: { email?: Partial<HealthAlertSettings['email']>; heartbeat?: Partial<HealthAlertSettings['heartbeat']> & { url?: string } }) => {
+    setBusy(true)
+    try {
+      const r = await json<{ settings: HealthAlertSettings }>('PUT', '/admin/health-alerts', patch)
+      setS(r.settings)
+      setUrl('')
+      toast('Saved', 'success')
+    } catch (e) { fail(e) } finally { setBusy(false) }
+  }
+  const test = async (what: 'daily' | 'heartbeat') => {
+    setBusy(true)
+    try {
+      const r = await json<{ sent: boolean; message?: string }>('POST', '/admin/health-alerts/test', { what })
+      toast(what === 'daily' ? (r.sent ? 'The health summary was sent to the install administrators.' : 'Not sent: turn the health email on first.') : (r.sent ? `Heartbeat sent (${r.message}).` : `Heartbeat not sent: ${r.message}`), r.sent ? 'success' : 'error')
+      if (what === 'heartbeat') json<{ settings: HealthAlertSettings }>('GET', '/admin/health-alerts').then((x) => setS(x.settings)).catch(() => {})
+    } catch (e) { fail(e) } finally { setBusy(false) }
+  }
+  return (
+    <Panel className="mb-4 grid gap-4 p-4" data-testid="health-alerts">
+      <div>
+        <div className="mb-2 flex items-center gap-2">
+          <span className="text-sm font-semibold">Health email</span>
+          <Switch aria-label="Health email" checked={s.email.enabled} disabled={busy} onCheckedChange={(v) => void save({ email: { enabled: v } })} data-testid="health-email-on" />
+        </div>
+        <p className="mb-2 text-xs text-muted-foreground">A daily summary to the install administrators, and an alert at once when the server is degraded, a backup failed, a job used up its retries or flow runs fail. Sent as "Server health" notifications: in the app, and by email right away (each person can change that in Settings &gt; Notifications). Needs email set up (Admin console &gt; Email).</p>
+        <div className="flex flex-wrap items-end gap-3">
+          <Field label="Daily summary at" htmlFor="health-daily"><Input id="health-daily" className="w-24" defaultValue={s.email.dailyTime} onBlur={(e) => e.target.value !== s.email.dailyTime && void save({ email: { dailyTime: e.target.value } })} data-testid="health-daily" /></Field>
+          <Field label="Time zone" htmlFor="health-tz"><Input id="health-tz" className="w-48" defaultValue={s.email.timeZone} onBlur={(e) => e.target.value !== s.email.timeZone && void save({ email: { timeZone: e.target.value } })} /></Field>
+          <label className="flex items-center gap-2 pb-2 text-sm"><Switch checked={s.email.immediate} disabled={busy} onCheckedChange={(v) => void save({ email: { immediate: v } })} aria-label="Alerts at once" />Alerts at once</label>
+          <Button size="sm" variant="outline" disabled={busy || !s.email.enabled} onClick={() => void test('daily')} data-testid="health-send-now">Send the summary now</Button>
+        </div>
+      </div>
+      <div>
+        <div className="mb-2 flex items-center gap-2">
+          <span className="text-sm font-semibold">Heartbeat</span>
+          <Switch aria-label="Heartbeat" checked={s.heartbeat.enabled} disabled={busy || (!s.heartbeat.hasUrl && !url)} onCheckedChange={(v) => void save({ heartbeat: { enabled: v, ...(url ? { url } : {}) } })} data-testid="heartbeat-on" />
+          {s.heartbeat.last && <Badge variant={s.heartbeat.last.ok ? 'secondary' : 'destructive'} data-testid="heartbeat-last">{s.heartbeat.last.ok ? 'last sent' : 'last failed'} {fmtRelative(s.heartbeat.last.at)}{s.heartbeat.last.ok ? '' : `: ${s.heartbeat.last.message}`}</Badge>}
+        </div>
+        <p className="mb-2 text-xs text-muted-foreground">Email cannot tell you that the PC is off. Create a check at a free uptime monitor (for example healthchecks.io or Uptime Kuma's push monitor) and paste its ping address: while the server is healthy it requests that address every few minutes; when the pings stop, the monitor alerts you. Nothing is sent but the request; the address is stored encrypted.</p>
+        <div className="flex flex-wrap items-end gap-3">
+          <Field label="Ping address" htmlFor="heartbeat-url" hint={s.heartbeat.hasUrl ? `Saved: ${s.heartbeat.urlHint} (enter a new one to replace it)` : undefined}><Input id="heartbeat-url" className="w-96" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://hc-ping.com/..." data-testid="heartbeat-url" /></Field>
+          <Field label="Every (minutes)" htmlFor="heartbeat-every">
+            <select id="heartbeat-every" className="h-9 rounded-md border border-input bg-background px-2 text-sm" value={s.heartbeat.everyMinutes} onChange={(e) => void save({ heartbeat: { everyMinutes: Number(e.target.value) } })}>
+              {[1, 2, 5, 10, 15, 30, 60].map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </Field>
+          <Button size="sm" disabled={busy || !url} onClick={() => void save({ heartbeat: { url } })} data-testid="heartbeat-save">Save address</Button>
+          <Button size="sm" variant="outline" disabled={busy || !s.heartbeat.hasUrl} onClick={() => void test('heartbeat')} data-testid="heartbeat-test">Send one now</Button>
+        </div>
+        <label className="mt-2 flex items-center gap-2 text-xs"><Switch checked={s.heartbeat.allowPrivateNetwork} disabled={busy} onCheckedChange={(v) => void save({ heartbeat: { allowPrivateNetwork: v } })} aria-label="Monitor in the local network" />The monitor is in this network (a private address)</label>
+      </div>
+    </Panel>
   )
 }

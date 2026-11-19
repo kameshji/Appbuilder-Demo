@@ -144,6 +144,17 @@ export interface TableDef {
    * records the role's members can read). Set by the approvals settings; kept by provisioning.
    */
   systemPrivilegeRoles?: string[]
+  /**
+   * Recycle bin (docs/dev/recycle-bin.md): keep deleted rows for this many days (1-3650), restorable; 0 or absent = off
+   * (a delete is final). Only tables of the default database. New tables start with 30; tables from before stay off.
+   */
+  recycleDays?: number
+  /**
+   * Server-owned (never taken from a client or a package): the physical table has the recycle bin columns (deletedOn,
+   * deletedBy, deleteBatch) and partial indexes, so every read leaves deleted rows out. Stays set when recycleDays goes
+   * back to 0 (rows already in the bin stay until their time runs out).
+   */
+  recycleBin?: boolean
 }
 
 export type SystemTableGroup = 'people' | 'collaboration' | 'files' | 'communication' | 'logging' | 'reference' | 'approvals'
@@ -567,7 +578,7 @@ export interface PlatformApi {
 
   tables: {
     create(input: { displayName: string; name?: string; description?: string; columns?: Partial<ColumnDef>[]; connectionId?: string }): Promise<TableDef>
-    update(id: string, patch: Partial<Pick<TableDef, 'displayName' | 'description' | 'primaryColumn' | 'teamOwnership' | 'sharing'>>): Promise<void>
+    update(id: string, patch: Partial<Pick<TableDef, 'displayName' | 'description' | 'primaryColumn' | 'teamOwnership' | 'sharing' | 'recycleDays'>>): Promise<void>
     /** dropSource (server mode, default false): also drop the physical table; only for tables Appbuilder created (`managed`) */
     remove(id: string, opts?: { dropSource?: boolean }): Promise<void>
     addColumn(tableId: string, col: Partial<ColumnDef> & { displayName: string; type: ColumnType }): Promise<ColumnDef>
@@ -688,6 +699,8 @@ export interface PlatformApi {
   notifications: NotificationsApi
   /** core data model (P0-N): timelines, comments, activities, follows, tags, tasks, mentions (src/platform/collab-api.ts) */
   collab?: import('./collab-api.ts').CollabApi
+  /** recycle bin (docs/dev/recycle-bin.md): Undo after a delete, the Deleted view, restore, purge (src/platform/recycle-api.ts) */
+  recycle?: import('./recycle-api.ts').RecycleApi
 
   attachments: {
     /** upload a file for a 'file'/'image' column of a row (the row must exist; uploading needs update access to that column) */
@@ -779,7 +792,7 @@ export interface PlatformApi {
      * server mode: a package whose solution or components (same ids) exist here is an in-place upgrade and needs
      * `confirm` = the token of the reviewed plan (src/portal/environmentApi.ts planImport); asCopy: new instances
      */
-    importPackage(yamlText: string, opts?: { filesAs?: 'database' | 'file'; confirm?: string; asCopy?: boolean; proceedWithoutBackup?: boolean }): Promise<SolutionDef & { warnings?: string[] }>
+    importPackage(yamlText: string, opts?: { filesAs?: 'database' | 'file'; confirm?: string; asCopy?: boolean; proceedWithoutBackup?: boolean; connectionMap?: Record<string, string>; peopleMap?: Record<string, string>; enableFlows?: boolean | string[] }): Promise<SolutionDef & { warnings?: string[] }>
   }
 }
 

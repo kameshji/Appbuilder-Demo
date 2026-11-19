@@ -28,8 +28,9 @@ Admin console > **Email**. Set up once for the install; the steps are in [Instal
 - Security modes: **STARTTLS** (required when chosen; the connection is refused if the relay does not offer it), **TLS**
   (implicit, port 465), **None** (only for a relay on this computer when a password is used). TLS 1.2 or newer.
   Certificates are verified unless you turn that off for an internal relay.
-- Sign-in methods: AUTH PLAIN, else AUTH LOGIN. OAuth (XOAUTH2) is not supported: use an app password or a relay account.
-- The password is sealed with the install's secret key (`workspace/.secret-key` or `APPBUILDER_SECRET_KEY`), like
+- Sign-in methods: a password (AUTH PLAIN, else AUTH LOGIN), or OAuth 2.0 (AUTH XOAUTH2, since 0.6.0) for Microsoft 365
+  and Google Workspace: see [installation](installation.md#email-with-microsoft-365-or-google-workspace).
+- The password (and an OAuth client secret and refresh token) is sealed with the install's secret key (`workspace/.secret-key` or `APPBUILDER_SECRET_KEY`), like
   connection passwords. Losing the key means entering it again.
 - Every email is a job of type `mail.send` in the Default environment's queue: 6 attempts with backoff (2 s doubling, at
   most 10 minutes) for temporary failures; a permanent refusal (5xx) is not retried. The message itself is sealed in the

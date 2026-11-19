@@ -10,6 +10,7 @@
  *
  * Tables: notifications-ddl.ts (part of the install schema `ab`).
  */
+import { createHash } from 'node:crypto'
 import { HttpError } from './contracts.ts'
 import type { NotificationService, NotifyInput, NotifyTarget, SqlDb } from './contracts.ts'
 import type { NotificationItem, NotificationSettings, UserEvent } from '../../src/platform/live-protocol.ts'
@@ -136,6 +137,14 @@ export function createNotificationService(deps: NotificationServiceDeps): Notifi
     return r.length ? parseNotificationSettings(r[0].value) : defaultNotificationSettings()
   }
 
+  /** keep the newest NOTIFICATIONS_PER_USER */
+  async function trim(d: SqlDb, userId: string): Promise<void> {
+    await d.exec(
+      `DELETE FROM ${A('notifications')} WHERE user_id = $1 AND id IN (SELECT id FROM ${A('notifications')} WHERE user_id = $1 ORDER BY created_on DESC, id DESC OFFSET $2)`,
+      [userId, NOTIFICATIONS_PER_USER],
+    ).catch((e) => log('warn', `notification trim failed: ${errText(e)}`))
+  }
+
   async function notify(target: NotifyTarget, input: NotifyInput): Promise<{ delivered: string[]; skipped: string[] }> {
     const kind = checkText(input.kind, 'kind', 32, true)
     if (!/^[a-z][a-z0-9_-]{0,31}$/.test(kind)) throw new HttpError(422, 'invalid', 'kind must be a short lowercase word.', 'kind')
@@ -165,22 +174,55 @@ export function createNotificationService(deps: NotificationServiceDeps): Notifi
       const plan = delivery
         ? await delivery.plan(u, kind, prefs)
         : { inApp: prefs.kinds[kind] !== false, inAppReason: '', email: 'off' as const, emailReason: '' }
+      // P1-E: with an idempotency key the id is derived (key, user), and what was already done for it is not done again
+      const keyed = typeof input.idempotencyKey === 'string' && input.idempotencyKey !== ''
+      const nid = keyed ? `ntf_k${createHash('sha256').update(`${input.idempotencyKey}\u0000${userId}`).digest('hex').slice(0, 30)}` : s.uid('ntf')
+      let haveInApp = false
+      let haveEmail = false
+      if (keyed) {
+        haveInApp = (await d.query(`SELECT 1 FROM ${A('notifications')} WHERE id = $1`, [nid])).length > 0
+        haveEmail = (await d.query(`SELECT 1 FROM ${A('notification_deliveries')} WHERE notification_id = $1 AND channel = 'email' LIMIT 1`, [nid]).catch(() => [])).length > 0
+        const seen = (await d.query(`SELECT 1 FROM ${A('notification_deliveries')} WHERE notification_id = $1 LIMIT 1`, [nid]).catch(() => [])).length > 0
+        if (haveInApp || seen) {
+          // handled before (in the app, or by the delivery module): finish only what is missing below
+          if ((!plan.inApp || haveInApp) && (plan.email === 'off' || haveEmail || !delivery)) {
+            ;(plan.inApp || plan.email !== 'off' ? delivered : skipped).push(userId)
+            continue
+          }
+        }
+      }
       const item: NotificationItem = {
-        id: s.uid('ntf'), kind, title, body, link, environmentId: input.environmentId ?? null, createdOn: now.toISOString(), readOn: null, source,
+        id: nid, kind, title, body, link, environmentId: input.environmentId ?? null, createdOn: now.toISOString(), readOn: null, source,
         ...(input.from?.name ? { from: input.from.name } : {}),
       }
       // P1-C: personal email buttons (approval answer links) ride along to the email channel only
       const emailItem = input.emailActions?.length ? Object.assign({}, item, { actions: input.emailActions.filter((a) => a && typeof a.label === 'string' && /^https?:\/\//.test(a.url)).slice(0, 6) }) : item
-      if (delivery) {
+      // keyed: the in-app row first (a crash after it and before the email repeats only the email part)
+      if (keyed && plan.inApp && !haveInApp) {
+        await d.exec(
+          `INSERT INTO ${A('notifications')} (id, user_id, environment_id, kind, title, body, link, source, sender_id, sender_name, created_on) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (id) DO NOTHING`,
+          [item.id, userId, item.environmentId, kind, title, body, link, source, input.from?.id ?? null, input.from?.name ?? null, now],
+        )
+        haveInApp = true
+        if (push) {
+          try {
+            push(userId, { event: 'notification', notification: item, unread: await unreadCount(userId) })
+          } catch (e) {
+            log('warn', `notification push failed: ${errText(e)}`)
+          }
+        }
+      }
+      if (delivery && !(keyed && haveEmail)) {
         try {
           await delivery.deliver(u, emailItem, plan, prefs)
         } catch (e) {
           log('warn', `notification delivery failed: ${errText(e)}`)
         }
       }
-      if (!plan.inApp) {
-        if (plan.email === 'off') skipped.push(userId)
+      if (!plan.inApp || keyed) {
+        if (!plan.inApp && plan.email === 'off') skipped.push(userId)
         else delivered.push(userId)
+        if (keyed && plan.inApp) await trim(d, userId)
         continue
       }
       await d.exec(
@@ -188,11 +230,7 @@ export function createNotificationService(deps: NotificationServiceDeps): Notifi
         [item.id, userId, item.environmentId, kind, title, body, link, source, input.from?.id ?? null, input.from?.name ?? null, now],
       )
       delivered.push(userId)
-      // keep the newest NOTIFICATIONS_PER_USER
-      await d.exec(
-        `DELETE FROM ${A('notifications')} WHERE user_id = $1 AND id IN (SELECT id FROM ${A('notifications')} WHERE user_id = $1 ORDER BY created_on DESC, id DESC OFFSET $2)`,
-        [userId, NOTIFICATIONS_PER_USER],
-      ).catch((e) => log('warn', `notification trim failed: ${errText(e)}`))
+      await trim(d, userId)
       if (push) {
         try {
           push(userId, { event: 'notification', notification: item, unread: await unreadCount(userId) })

@@ -33,12 +33,26 @@ export function unknownFunctionMessage(name: string, fns: FunctionTable = BUILTI
   return s ? `Did you mean ${s.name}?` : `Function isn't recognised: ${name}`
 }
 
+/**
+ * P1-E security: a time budget for one evaluation, set by the server (flows, table events, reports run in the one
+ * server process: a formula that loops over millions of rows must not stall it for everyone). 0: no budget (the
+ * browser). Checked every 65,536 evaluation steps, so it costs nothing measurable.
+ */
+let evaluationBudgetMs = 0
+export function setEvaluationBudget(ms: number): void { evaluationBudgetMs = Math.max(0, ms) }
+/** rows (x16) plus characters built by one evaluation on the server: about 50 MB of text or 3 million rows */
+export const EVALUATION_MAX_CELLS = 50_000_000
+
 class Evaluator {
   session: Session
   host: FxHost | undefined
   fns: FunctionTable
+  private deadline: number
+  private ops = 0
+  private cells = 0
 
   constructor(scope: FxScope, host: FxHost | undefined, fns: FunctionTable) {
+    this.deadline = evaluationBudgetMs ? Date.now() + evaluationBudgetMs : 0
     this.host = host
     this.fns = fns
     this.session = { scope, host, vars: new Map(), colls: new Map(), depth: 0 }
@@ -49,6 +63,7 @@ class Evaluator {
   }
 
   eval(n: Node, env: Frame | null): FxValue {
+    if (this.deadline && (++this.ops & 0xffff) === 0 && Date.now() > this.deadline) throw new RangeError('budget: the formula ran longer than its time budget and was stopped')
     switch (n.t) {
       case 'num': return n.value
       case 'str': return n.value
@@ -226,7 +241,15 @@ class Evaluator {
       if (r !== NOT_PURE) return r
     }
     if (def.kind === 'behaviour' && !this.host) fail(nameSpan, 'Behaviour function in a non-behaviour property', true)
-    return def.run(ctx)
+    const out = def.run(ctx)
+    // P1-E: on the server, what one evaluation builds is bounded too (rows of tables and characters of texts made by
+    // functions), so a formula cannot exhaust the memory of the one server process
+    if (this.deadline) {
+      if (Array.isArray(out)) this.cells += out.length * 16
+      else if (typeof out === 'string') this.cells += out.length
+      if (this.cells > EVALUATION_MAX_CELLS) throw new RangeError('budget: the formula builds too much data and was stopped')
+    }
+    return out
   }
 
   private ctx(n: CallNode, env: Frame | null): CallCtx {
@@ -302,7 +325,7 @@ export function evaluateSource(source: string, scope: FxScope, host?: FxHost, fn
     return { ok: true, value: v === undefined ? null : v }
   } catch (e) {
     if (e instanceof FxError) return { ok: false, error: e.toDiagnostic() }
-    if (e instanceof RangeError) return { ok: false, error: { message: 'This formula is too complex to calculate', start: 0, end: source.length } }
+    if (e instanceof RangeError) return { ok: false, error: { message: e.message.startsWith('budget: ') ? `This formula ${e.message.slice(12)}: it does too much work (for example loops inside loops over many rows).` : 'This formula is too complex to calculate', start: 0, end: source.length } }
     return { ok: false, error: { message: e instanceof Error && e.message ? e.message : 'Something went wrong calculating this formula', start: 0, end: source.length } }
   }
 }

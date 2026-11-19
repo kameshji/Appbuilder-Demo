@@ -60,6 +60,11 @@ Files are copied after the snapshot transaction ends. Attachments are content-ad
 between the snapshot and the copy is reported (`attachments.missing`, a warning). Data files are flushed (files connector)
 and copied before being added. Sizes are taken when a member starts; a source that grows or shrinks is an error.
 
+Recycle bins ([recycle-bin.md](recycle-bin.md)) are part of the data: deleted rows stay in their tables until purged and
+`ab_delete_batches` / `ab_delete_effects` are environment tables, so a backup contains them and an environment restore
+brings the bins back. A single-table restore brings the table's deleted rows without their batches; the purge job removes
+such rows once they are older than the table's retention.
+
 ## Verification
 
 `verifyArchive`: every manifest member is present with its size and sha256, no unlisted member, then rows are counted again

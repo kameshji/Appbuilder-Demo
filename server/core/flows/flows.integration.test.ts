@@ -311,6 +311,36 @@ describe.skipIf(!PG_URL)('flows (PostgreSQL)', () => {
     expect((await h.q<any>(`SELECT count(*)::int AS n FROM env_default.ab_flow_runs WHERE flow_id = $1`, [child.id]))[0].n).toBe(1)
   }, 60000)
 
+  it('resubmit from a chosen completed step: earlier results reused, that step and later ones run again; nested steps refused', async () => {
+    const f = await mkFlow({
+      name: 'FromStep', trigger: { type: 'manual', inputs: [], from: 'any' }, variables: [{ name: 'V', type: 'number' }],
+      steps: [
+        { id: 'a', name: 'A', kind: 'data.create', table: 'FLog', values: { Ref: '"fromstep-a"', N: '1' } },
+        { id: 'sv', name: 'SV', kind: 'setVariable', variable: 'V', value: '5' },
+        { id: 'b', name: 'B', kind: 'data.create', table: 'FLog', values: { Ref: '"fromstep-b"', N: 'Steps.A.Output.N + Variables.V' } },
+        { id: 'sc', name: 'Sc', kind: 'scope', steps: [{ id: 'in', name: 'In', kind: 'compose', value: '1' }] },
+      ],
+    })
+    const r = await A().post(`/flows/${f.id}/run`, {})
+    await drain()
+    expect((await run(r.data.runId)).status).toBe('succeeded')
+    const count = async (ref: string) => (await h.q<any>(`SELECT count(*)::int AS n FROM env_default.t_flog WHERE "Ref" = $1`, [ref]))[0].n
+    // a succeeded run, from the step B: A is not repeated, B is (reading A's stored output and the variable)
+    const rs = await A().post(`/flows/runs/${r.data.runId}/resubmit`, { from: 'step', step: 'b' })
+    expect(rs.status, JSON.stringify(rs.data)).toBe(200)
+    await drain()
+    const d2 = await run(rs.data.runId)
+    expect(d2.status, JSON.stringify(d2.steps)).toBe('succeeded')
+    expect(await count('fromstep-a')).toBe(1)
+    expect(await count('fromstep-b')).toBe(2)
+    expect((await h.q<any>(`SELECT "N" FROM env_default.t_flog WHERE "Ref" = 'fromstep-b' ORDER BY "N"`)).map((x: any) => Number(x.N))).toEqual([6, 6])
+    // a step inside a container: refused with the reason; an unknown step too
+    const nested = await A().post(`/flows/runs/${r.data.runId}/resubmit`, { from: 'step', step: 'in' })
+    expect(nested.status).toBe(409)
+    expect(nested.data.error.message).toMatch(/inside a container/)
+    expect((await A().post(`/flows/runs/${r.data.runId}/resubmit`, { from: 'step', step: 'nope' })).status).toBe(409)
+  }, 60000)
+
   it('cancel stops between steps and cancels waits', async () => {
     const f = await mkFlow({ name: 'Slow', trigger: { type: 'manual', inputs: [], from: 'any' }, steps: [{ id: 'd', name: 'D', kind: 'delay', minutes: 600 }, { id: 'x', name: 'X', kind: 'data.create', table: 'FLog', values: { Ref: '"after-cancel"' } }] })
     const r = await A().post(`/flows/${f.id}/run`, {})

@@ -48,6 +48,12 @@ links, Attachment links (the timeline and the per-record probes); `(AssignedTo, 
 `(MentionedUser, IsRead, createdOn DESC)` on Mentions (the inbox). The `createdBy` and `owner` columns of every table are
 lookups to Users, so `createdBy.FullName` works in formulas and Query v2.
 
+**Recycle bin** ([recycle-bin.md](recycle-bin.md)): when a record of a table that keeps deleted rows is deleted, the
+collaboration rows about it are removed as before but handed to its deletion batch in full (`afterDelete(def, ids,
+capture)`: `DELETE ... RETURNING to_jsonb(...)`; detached documents, channels and messages with their old link) and put back
+by a restore. Activities, Comments and Documents may have their own recycle bin (off by default); the timeline leaves their
+deleted rows out. The orphan sweep treats a record in a recycle bin as existing.
+
 ## The regarding rule (polymorphic security predicate)
 
 A collaboration row is readable when the record it is about is readable. `regardingCondition(collab, env)` builds one

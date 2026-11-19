@@ -12,7 +12,8 @@ export type Fx = string
 
 /* ------------------------------------------------------------------ triggers */
 
-export type TableOperation = 'create' | 'update' | 'delete'
+/** restore: rows that come back from a table's recycle bin (opt-in per trigger; off by default) */
+export type TableOperation = 'create' | 'update' | 'delete' | 'restore'
 
 export type InputType = 'text' | 'number' | 'boolean' | 'date' | 'datetime' | 'choice' | 'record' | 'table'
 export interface InputDef {

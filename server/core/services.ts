@@ -17,9 +17,11 @@ import { DEFAULT_ENVIRONMENT_ID, currentEnvironment, runInEnvironment } from './
 import { createInstallStore } from './install-store.ts'
 import { createEnvironmentManager, maxEnvironments, moveLegacyWorkspace } from './environments.ts'
 import { createBackupService, type BackupServiceImpl } from './backup/service.ts'
+import { createHealthAlerts, type HealthAlerts } from './diagnostics/health-alerts.ts'
 import { createSecurityEngine } from './security.ts'
 import { createConnectionManager, DEFAULT_CONNECTION_ID, FILES_CONNECTION_ID } from './connections.ts'
 import { createDataService } from './data.ts'
+import { createRecycleStore, registerRecycleJobs } from './recycle.ts'
 import { createAttachmentStore } from './attachment-store.ts'
 import { envDatabase, readServerJson, writeServerJson } from './config.ts'
 import { errText, log, nowIso, uid } from './util.ts'
@@ -125,6 +127,8 @@ export type CoreServices = Services & {
   environments: ReturnType<typeof createEnvironmentManager>
   /** backups and restores (backup/service.ts; package J) */
   backup: BackupServiceImpl
+  /** health email and heartbeat (diagnostics/health-alerts.ts; P1-E) */
+  healthAlerts: HealthAlerts
   /** the install store (503 while no database is configured) */
   install: InstallStore
   /** (re)writes the built-in connections (default database, data files) of the current environment */
@@ -221,7 +225,8 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   let kernelRef: { invalidate(): void } | null = null
   const connections = createConnectionManager(getMeta, env)
   const attachments = createAttachmentStore(() => environments.dirs(currentEnvironment().id).attachments, () => currentEnvironment().id)
-  const data = createDataService({ meta: getMeta, connections, attachments, log: env.log, hooks: () => (state.db ? kernel.hooks : null), system: () => (state.db ? collab.hooks : null) })
+  const recycleStore = createRecycleStore(() => state.db)
+  const data = createDataService({ meta: getMeta, connections, attachments, log: env.log, hooks: () => (state.db ? kernel.hooks : null), system: () => (state.db ? collab.hooks : null), recycle: () => (state.db ? recycleStore : null) })
   const kernel = createKernel({
     db: () => state.db,
     listenSettings: () => (state.settings ? { settings: state.settings, password: state.password ?? '' } : null),
@@ -236,6 +241,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   kernelRef = kernel
   // backups and restores (package J): registers its job types on the kernel before the worker starts
   const backup = createBackupService({ get: () => services, kernel, env: procEnv })
+  const healthAlerts = createHealthAlerts({ get: () => services, kernel })
   // core data model (P0-N): system-table hooks, polymorphic cascade, number sequences, timeline and notification jobs
   const collab = createCollab({
     db: () => state.db,
@@ -247,6 +253,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     log: (level, msg) => log(level, msg),
   })
   registerCollabJobs(kernel, collab)
+  registerRecycleJobs(kernel, () => data.recycle)
   setNextNumberProvider((name) => collab.nextNumber(name))
   // flows (P1 package A): job types, the outbox consumer for table triggers, the wait sweeper
   const flows = createFlows({
@@ -407,6 +414,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     }
     // backups: settings, interrupted backups and restores, the backup folder, schedules (package J)
     await backup.onDatabaseReady().catch((e) => log('warn', `backups: ${errText(e)}`))
+    await healthAlerts.onDatabaseReady()
   }
 
   let completeCache: boolean | null = null
@@ -547,6 +555,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     environment: currentEnvironment,
     environments,
     backup,
+    healthAlerts,
     get install() {
       if (!state.install) throw new HttpError(503, 'unavailable', 'The database is not configured yet.')
       return state.install

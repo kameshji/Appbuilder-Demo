@@ -81,6 +81,11 @@ designer has the same default until it is recorded (`delete-rules.ts`).
 | cascade | the caller must be allowed to delete **every** child row (checked with their delete predicate, including rows they cannot read): otherwise 403 and nothing is deleted. Then `del()` recurses for the children with the caller's context: their before-events, outbox rows, audit entries, attachments, shares and their own relationships; at most 8 levels; a seen-set stops loops |
 | setBlank | each child row is updated as the **system** (`update(null, ...)`): before-events, formula columns, outbox row, audit |
 
+With a **recycle bin** ([recycle-bin.md](recycle-bin.md)) on the table being deleted from, the same behaviours run, and
+every effect is recorded in the delete's batch: cascaded rows are soft-deleted when their table has a bin too (otherwise
+deleted for good and recorded as `final`), set-blank children keep their old parent id in the batch. Child counts for
+restrict see live rows only. A restore re-checks restrict, cascade and required parents.
+
 Self relationships with `preventCycles`: an update of the lookup walks the parent chain (at most 1,000 steps) and
 answers 422 when it reaches the row; a new row cannot name itself.
 

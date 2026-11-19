@@ -312,7 +312,9 @@ everything still works, with administrator reset codes and temporary passwords i
 2. Enter the relay: host, port and security. The usual choice is **STARTTLS on port 587**; **TLS** is port 465; **None**
    only for a relay on this computer (a user name and password are never sent unencrypted to another host). Leave
    *Verify the relay's certificate* on unless your internal relay has a self-signed certificate.
-3. User name and password of the relay account (stored encrypted with the install key, never shown again).
+3. **Sign-in**: **Password** (user name and password of the relay account) or **OAuth 2.0** (Microsoft 365, Google
+   Workspace, or another provider's token address; see below). Passwords, client secrets and refresh tokens are stored
+   encrypted with the install key and never shown again (or written to the audit log).
 4. The sender: from address (one the relay may send as), from name, optional reply-to, the **install name** shown in
    every email, and the **public address** people open Appbuilder at (links in emails start with it; behind a proxy use
    its `https://` address).
@@ -325,6 +327,27 @@ temporarily unavailable (up to 6 attempts); a permanent refusal (5xx) stops at o
 [Sign-in and identity](sign-in-and-identity.md#email).
 
 ![Admin console, Email](../images/admin-email.png)
+
+### Email with Microsoft 365 or Google Workspace
+
+Checked against the providers' documentation on 19 Nov 2026; their admin centres change, so follow their current pages
+for the clicks. What works with this version:
+
+| Provider | Setting in Admin console > Email | What you set up at the provider |
+| --- | --- | --- |
+| Microsoft 365, **OAuth 2.0, client credentials** (recommended) | Host `smtp.office365.com`, port 587, STARTTLS; Sign-in **OAuth 2.0**, provider **Microsoft 365**, grant **Client credentials**; tenant (directory id or `contoso.onmicrosoft.com`), client id, client secret; mailbox = the sending mailbox. Default scope `https://outlook.office365.com/.default`. | An app registration in Microsoft Entra with the application permission **SMTP.SendAsApp** (Office 365 Exchange Online) and admin consent; the app's service principal registered in Exchange Online (`New-ServicePrincipal`) and given access to the mailbox (`Add-MailboxPermission`); SMTP AUTH enabled for that mailbox. |
+| Microsoft 365, OAuth 2.0, refresh token | As above, grant **Refresh token**, with a refresh token you obtained once for the mailbox (delegated scope `https://outlook.office.com/SMTP.Send offline_access`). A rotated refresh token is stored automatically. | Delegated permission SMTP.Send; SMTP AUTH enabled for the mailbox. |
+| Microsoft 365, password | Host `smtp.office365.com`, port 587, STARTTLS, the mailbox and its password. | Works only while the tenant still allows Basic authentication for SMTP AUTH: Microsoft is retiring it (see Microsoft's current timeline), and it does not work with Microsoft Entra security defaults. Prefer OAuth 2.0. |
+| Microsoft 365, relay by IP (connector) | Your domain's MX host (for example `contoso-com.mail.protection.outlook.com`), port 25, STARTTLS, **no** user name. | An inbound connector in Exchange Online that accepts mail from your office's static public IP address. Needs a fixed IP; sends as any address of your domain. |
+| Google Workspace, **OAuth 2.0** (recommended) | Host `smtp.gmail.com`, port 587 STARTTLS (or 465 TLS); Sign-in **OAuth 2.0**, provider **Google Workspace** (grant: refresh token); client id, client secret, refresh token; mailbox = the sending account. Default scope `https://mail.google.com/`. | An OAuth client in Google Cloud for your organisation; a refresh token obtained once for the sending account with the scope `https://mail.google.com/`. |
+| Google Workspace, app password | Host `smtp.gmail.com`, port 587 STARTTLS; the account and an **app password**. | 2-Step Verification on for the account and app passwords allowed by your Workspace administrator. |
+| Google Workspace, SMTP relay service | Host `smtp-relay.gmail.com`, port 587 STARTTLS; no user name (when allowed by IP) or the account's credentials. | Gmail > Routing > **SMTP relay service** in the Google Admin console, allowing your static public IP address (or requiring SMTP authentication). |
+
+Not supported in this version: Google service accounts with domain-wide delegation (a signed JWT grant), certificate
+credentials for Microsoft app registrations, and sending through the Microsoft Graph or Gmail APIs instead of SMTP. The
+token request goes from the server to the token address through the outbound network policy (it must be `https://`);
+answers are cached in memory until a minute before the token expires. A refused token (wrong secret, revoked consent)
+fails the email at once with the provider's error code (`invalid_client`, `invalid_grant` ...) in the delivery log.
 
 ## Environment variables
 

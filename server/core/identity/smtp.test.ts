@@ -1,5 +1,7 @@
 import os from 'node:os'
+import http from 'node:http'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { checkTokenUrl, clearOAuthCache, getAccessToken, oauthDefaults, OAuthTokenError } from './oauth-token.ts'
 import { buildMime, dotStuff, encodeHeader, sendSmtp, SmtpError } from './smtp.ts'
 import { parseMessage, selfSignedCert, startFakeSmtp, type FakeSmtp } from './fake-smtp.ts'
 
@@ -120,5 +122,76 @@ describe('SMTP client against a local fake server', () => {
     const e = await sendSmtp({ host: '127.0.0.1', port: 1, security: 'none' }, msg).catch((x) => x)
     expect(e).toBeInstanceOf(SmtpError)
     expect(e.message).toMatch(/Could not connect/)
+  })
+})
+
+describe('OAuth 2.0 (XOAUTH2) for Microsoft 365 / Google Workspace relays', () => {
+  let srv: FakeSmtp
+  let tokenServer: http.Server
+  let tokenUrl = ''
+  const seen: URLSearchParams[] = []
+  let answer: { status: number; body: Record<string, unknown> } = { status: 200, body: { access_token: 'tok-1', expires_in: 3600, token_type: 'Bearer' } }
+  beforeAll(async () => {
+    srv = await startFakeSmtp({ user: 'mailbox@example.com', oauthToken: 'tok-1' })
+    tokenServer = http.createServer((req, res) => {
+      let b = ''
+      req.on('data', (d) => { b += d })
+      req.on('end', () => {
+        seen.push(new URLSearchParams(b))
+        res.writeHead(answer.status, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(answer.body))
+      })
+    })
+    await new Promise<void>((r) => tokenServer.listen(0, '127.0.0.1', () => r()))
+    tokenUrl = `http://127.0.0.1:${(tokenServer.address() as { port: number }).port}/tenant/oauth2/v2.0/token`
+  })
+  afterAll(async () => {
+    await srv?.close()
+    await new Promise((r) => tokenServer.close(r))
+  })
+
+  it('client credentials: fetches a token (cached), signs in with AUTH XOAUTH2 and delivers', async () => {
+    clearOAuthCache()
+    const cfg = { provider: 'microsoft' as const, grant: 'client_credentials' as const, tokenUrl, clientId: 'app-1', clientSecret: 'sec-1', scope: 'https://outlook.office365.com/.default' }
+    const t = await getAccessToken(cfg)
+    expect(t).toBe('tok-1')
+    expect(await getAccessToken(cfg)).toBe('tok-1')
+    expect(seen.length).toBe(1) // cached
+    expect(Object.fromEntries(seen[0])).toEqual({ grant_type: 'client_credentials', client_id: 'app-1', scope: 'https://outlook.office365.com/.default', client_secret: 'sec-1' })
+    const r = await sendSmtp({ host: '127.0.0.1', port: srv.port, security: 'none', username: 'mailbox@example.com', accessToken: t }, msg)
+    expect(r.response).toMatch(/^250/)
+    expect((await srv.waitFor(1))[0].authUser).toBe('mailbox@example.com')
+  })
+  it('a wrong token: the error challenge is answered and the sign-in fails permanently', async () => {
+    await expect(sendSmtp({ host: '127.0.0.1', port: srv.port, security: 'none', username: 'mailbox@example.com', accessToken: 'nope' }, msg)).rejects.toMatchObject({ permanent: true, message: expect.stringMatching(/OAuth 2.0 sign-in: 535/) })
+  })
+  it('a relay without XOAUTH2 is refused before sending anything', async () => {
+    const pw = await startFakeSmtp({ user: 'x', password: 'y' })
+    try {
+      await expect(sendSmtp({ host: '127.0.0.1', port: pw.port, security: 'none', username: 'x', accessToken: 'tok-1' }, msg)).rejects.toThrow(/does not offer OAuth 2.0/)
+    } finally { await pw.close() }
+  })
+  it('refresh token: a rotated refresh token is handed back; refusals carry the provider error, never the secrets', async () => {
+    clearOAuthCache()
+    answer = { status: 200, body: { access_token: 'tok-2', expires_in: 3600, refresh_token: 'rt-new' } }
+    const rotated: string[] = []
+    const cfg = { provider: 'google' as const, grant: 'refresh_token' as const, tokenUrl, clientId: 'g-1', clientSecret: 'gsec', refreshToken: 'rt-old', scope: 'https://mail.google.com/' }
+    expect(await getAccessToken(cfg, { onRefreshToken: (x) => { rotated.push(x) } })).toBe('tok-2')
+    expect(rotated).toEqual(['rt-new'])
+    expect(seen[seen.length - 1].get('refresh_token')).toBe('rt-old')
+    clearOAuthCache()
+    answer = { status: 400, body: { error: 'invalid_grant', error_description: 'Token has been expired or revoked.' } }
+    const err = await getAccessToken(cfg).catch((e) => e)
+    expect(err).toBeInstanceOf(OAuthTokenError)
+    expect(err.permanent).toBe(true)
+    expect(err.message).toMatch(/invalid_grant/)
+    expect(err.message).not.toMatch(/gsec|rt-old/)
+  })
+  it('token addresses: https only (http only to this computer), no user info, outbound policy applies', async () => {
+    expect(() => checkTokenUrl('http://login.example.com/token')).toThrow(/https/)
+    expect(() => checkTokenUrl('https://u:p@login.example.com/token')).toThrow(/user name/)
+    clearOAuthCache()
+    await expect(getAccessToken({ provider: 'custom', grant: 'client_credentials', tokenUrl: 'https://metadata.example/token', clientId: 'a', clientSecret: 'b', scope: 's' }, { lookup: async () => [{ address: '169.254.169.254' }] })).rejects.toThrow(/169\.254|not allowed|link-local|blocked/i)
+    expect(oauthDefaults('microsoft', 'client_credentials', 'contoso.onmicrosoft.com')).toEqual({ tokenUrl: 'https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token', scope: 'https://outlook.office365.com/.default' })
   })
 })

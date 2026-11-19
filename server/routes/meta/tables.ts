@@ -19,6 +19,8 @@ import {
 } from './tables-core.ts'
 import { denied } from './util.ts'
 import { formulaInputs } from '../../../src/fx/rowrules.ts'
+import { DEFAULT_RECYCLE_DAYS, recycleDaysOf, setRecycleDays } from '../../core/recycle.ts'
+import { RECYCLABLE_SYSTEM_TABLES } from '../../../src/platform/system-tables.ts'
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -183,6 +185,8 @@ export function registerTableRoutes(router: Router, s: Services): void {
       columns: [...systemColumns(), ...userCols], createdOn: now, modifiedOn: now,
       connectionId: record.id,
     }
+    // recycle bin: new tables of the default database keep deleted rows for 30 days unless asked otherwise
+    if (connector.capabilities.recycle) def.recycleDays = b.recycleDays === undefined ? DEFAULT_RECYCLE_DAYS : recycleDaysOf(b.recycleDays)
     const description = optString(b, 'description', { max: 1000 })
     if (description) def.description = description
     def.source = await pickSource(s, record, connector, name)
@@ -223,6 +227,7 @@ export function registerTableRoutes(router: Router, s: Services): void {
       id: s.uid('tbl'), name, displayName, primaryColumn: (cols.find((c) => c.type === 'text') ?? cols[0]).name,
       columns: [...systemColumns(), ...cols], createdOn: now, modifiedOn: now, connectionId: record.id,
     }
+    if (connector.capabilities.recycle) def.recycleDays = b.recycleDays === undefined ? DEFAULT_RECYCLE_DAYS : recycleDaysOf(b.recycleDays)
     def.source = await pickSource(s, record, connector, name)
     await createPhysical(s, record, connector, def)
     try {
@@ -238,9 +243,19 @@ export function registerTableRoutes(router: Router, s: Services): void {
 
   /* update */
   router.add('PATCH', '/api/v1/tables/:id', (ctx) => s.transaction(async () => {
-    const def = await requireTable(s, ctx.params.id)
-    systemGuard(def, 'renaming or changing its settings')
+    let def = await requireTable(s, ctx.params.id)
     const b = bodyObj(ctx)
+    // the recycle bin of Activities, Comments and Documents is the one setting of a system table a maker may change
+    if (!(def.system && Object.keys(b).every((k) => k === 'recycleDays'))) systemGuard(def, 'renaming or changing its settings')
+    if (b.recycleDays !== undefined && b.recycleDays !== (def.recycleDays ?? 0)) {
+      const before = def.recycleDays ?? 0
+      def = await setRecycleDays(s, def, b.recycleDays, RECYCLABLE_SYSTEM_TABLES)
+      await audit(s, ctx, 'table.recycle', { name: def.name, from: before, to: def.recycleDays ?? 0 }, def.id)
+      if (def.system) {
+        s.security.invalidate()
+        return def
+      }
+    }
     const next = clone(def)
     if (b.displayName !== undefined) next.displayName = reqString(b, 'displayName', 'The display name', 200)
     if (b.description !== undefined) {

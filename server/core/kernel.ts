@@ -50,6 +50,8 @@ export const BUILTIN_SCHEDULES: BuiltinSchedule[] = [
   { id: 'sched_attachment_sweep', name: 'Attachment orphan sweep', description: 'Removes attachment files whose row or cell no longer references them.', cron: '37 3 * * *', jobType: SWEEP_JOB, payload: { graceMinutes: 60 }, enabled: true },
   { id: 'sched_collab_sweep', name: 'Collaboration orphan sweep', description: 'Removes comments, activities, follows, tags and file links about records deleted outside Appbuilder (and about tables that are gone).', cron: '47 3 * * *', jobType: 'collab.orphan-sweep', payload: {}, enabled: true },
   { id: 'sched_rollup_reconcile', name: 'Rollup reconcile', description: 'Recomputes every rollup column from its rows, repairing anything a missed or failed update left behind.', cron: '7 * * * *', jobType: ROLLUP_RECONCILE_JOB, payload: {}, enabled: true },
+  // recycle bin (docs/dev/recycle-bin.md): the job type is registered by services.ts (registerRecycleJobs)
+  { id: 'sched_recycle_purge', name: 'Recycle bin purge', description: 'Deletes for good the rows whose time in a table\'s recycle bin has run out, with their attachment files.', cron: '23 * * * *', jobType: 'data.recycle-purge', payload: { batches: 50 }, enabled: true },
 ]
 
 export interface KernelDeps {

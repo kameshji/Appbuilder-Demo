@@ -37,7 +37,7 @@ import { JobError } from './jobs.ts'
 import type { Outbox, OutboxEvent, OutboxEntry } from './outbox.ts'
 import { snapshot } from './outbox.ts'
 import { DEFAULT_CONNECTION_ID } from './connections.ts'
-import { physicalName, quoteId } from '../connectors/postgres/sql.ts'
+import { hasRecycleBin, liveRowsSql, physicalName, quoteId } from '../connectors/postgres/sql.ts'
 import { errText, rowUid } from './util.ts'
 
 /* ------------------------------------------------------------------ settings */
@@ -224,8 +224,10 @@ export function normalizeEvent(input: TableEventInput, base: TableEventDef | nul
   const timing: TableEventTiming = kind === 'validation' ? 'before' : (input.timing ?? base?.timing ?? 'before')
   if (timing !== 'before' && timing !== 'after') throw invalid('timing must be "before" or "after".', 'timing')
   const opsIn = input.operations ?? base?.operations ?? (kind === 'validation' ? ['create', 'update'] : ['create', 'update'])
-  if (!Array.isArray(opsIn) || !opsIn.length || !opsIn.every((o) => o === 'create' || o === 'update' || o === 'delete')) throw invalid('operations must list create, update and/or delete.', 'operations')
+  if (!Array.isArray(opsIn) || !opsIn.length || !opsIn.every((o) => o === 'create' || o === 'update' || o === 'delete' || o === 'restore')) throw invalid('operations must list create, update, delete and/or restore.', 'operations')
   const operations = [...new Set(opsIn)] as TableEventOperation[]
+  // restore (recycle bin): rows come back as they were, nothing to check or refuse before; after-events only
+  if (operations.includes('restore') && (kind !== 'event' || timing !== 'after')) throw invalid('Restore (rows coming back from the recycle bin) can only start an after-event.', 'operations')
   if (kind === 'validation' && operations.includes('delete')) throw invalid('Validation rules check the record being saved; use an event with Reject to refuse deletes.', 'operations')
   const order = Number(input.order ?? base?.order ?? 100)
   if (!Number.isInteger(order) || order < -100000 || order > 100000) throw invalid('order must be a whole number.', 'order')
@@ -563,7 +565,8 @@ export function createTableEvents(deps: EventsDeps) {
   function rowsOf(ev: OutboxEvent): { op: TableEventOperation; rowId: string }[] {
     if (ev.op === 'insert' || ev.op === 'update' || ev.op === 'delete') return ev.rowId ? [{ op: OPS_OF[ev.op], rowId: ev.rowId }] : []
     const ids = ev.rowIds ?? []
-    const op: TableEventOperation = ev.op === 'import' ? 'create' : (ev.details as { action?: string } | null)?.action === 'update' ? 'update' : 'delete'
+    const action = (ev.details as { action?: string } | null)?.action
+    const op: TableEventOperation = ev.op === 'import' ? 'create' : action === 'update' ? 'update' : action === 'restore' ? 'restore' : 'delete'
     return ids.map((rowId) => ({ op, rowId }))
   }
 
@@ -644,7 +647,7 @@ export function createTableEvents(deps: EventsDeps) {
     }
     const recordRaw = (current ?? p.before ?? { id: p.rowId }) as Record<string, unknown>
     const record = recordOf(def, recordRaw)
-    const oldRec = p.op === 'create' ? null : recordOf(def, { ...recordRaw, ...(p.before ?? {}) })
+    const oldRec = p.op === 'create' || p.op === 'restore' ? null : recordOf(def, { ...recordRaw, ...(p.before ?? {}) })
     const actor = p.actorId ? await deps.meta().users.get(p.actorId) : null
     const user = userRecord(actor ? { id: actor.id, name: actor.name, email: actor.email } : null)
     const limits: EvalLimits = newLimits(afterBudgetMs(), MAX_ROWS_READ)
@@ -792,7 +795,9 @@ export function createTableEvents(deps: EventsDeps) {
     const via = quoteId(spec.via)
     const target = quoteId(col.name)
     const agg = spec.fn === 'count' ? 'count(*)' : `${spec.fn}(c.${quoteId(spec.column!)})`
-    const valueSql = spec.fn === 'count' || spec.fn === 'sum' ? `COALESCE((SELECT ${agg} FROM ${C} c WHERE c.${via} = p2."id"), 0)` : `(SELECT ${agg} FROM ${C} c WHERE c.${via} = p2."id")`
+    // recycle bin: deleted child rows do not count (they count again when restored: the restore's outbox reconciles)
+    const liveC = hasRecycleBin(child) ? ` AND ${liveRowsSql(child, 'c')}` : ''
+    const valueSql = spec.fn === 'count' || spec.fn === 'sum' ? `COALESCE((SELECT ${agg} FROM ${C} c WHERE c.${via} = p2."id"${liveC}), 0)` : `(SELECT ${agg} FROM ${C} c WHERE c.${via} = p2."id"${liveC})`
     let total = 0
     const batch = async (list: string[]) => {
       await unit(parent, async () => {

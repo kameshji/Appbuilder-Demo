@@ -55,3 +55,7 @@ the core data model (group Approvals) for reports, with the same visibility rule
 Requests are environment data: in backups, not in solutions, not in environment copies (policies and settings are
 copied). After a restore, open requests stay open; the flows that waited for them were cancelled by the restore; people
 still asked get one reminder.
+
+In a **locked production environment** policies are read-only (creating, changing and deleting them is refused; since
+0.6.0): they arrive by deploying a solution, where the plan screen asks you to map every person a policy names who has no
+account there (or to leave them unmapped knowingly).

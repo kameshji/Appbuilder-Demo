@@ -50,4 +50,32 @@ describe('flow templates (designer gallery)', () => {
     expect(def.settings.concurrency).toBe('perRecord')
     expect(t.needs).toContain('approvals')
   })
+
+  it('dynamic content of an approval step and the approvalDecided trigger lists Status, Approvers, Comments and passes the validator', async () => {
+    const approvalFlow = {
+      name: 'Dyn', runAs: 'owner', settings: DEFAULT_SETTINGS, trigger: { type: 'table', table: 'PurchaseRequests', on: ['create'] },
+      steps: [
+        { id: 'ap', name: 'Approve', kind: 'approval', type: 'single', approvers: ['"a@example.com"'], title: '"t"' },
+        { id: 'use', name: 'Use', kind: 'compose', value: '1' },
+      ],
+    }
+    const decided = { name: 'Dec', runAs: 'owner', settings: DEFAULT_SETTINGS, trigger: { type: 'approvalDecided' }, steps: [{ id: 'use', name: 'Use', kind: 'compose', value: '1' }] }
+    for (const [doc, want] of [
+      [approvalFlow, ['Steps.Approve.Output.Status', 'Steps.Approve.Output.Approvers', 'Steps.Approve.Output.Comments', 'Steps.Approve.Output.Outcome', 'Steps.Approve.Output.Responses']],
+      [decided, ['Trigger.Request.Status', 'Trigger.Request.Outcome', 'Trigger.Request.Title', 'Trigger.Request.RequestedByEmail', 'Trigger.Request.Fields', 'Trigger.Responses']],
+    ] as const) {
+      // the designer module uses the app's '@/' imports (vitest resolves them; the server typecheck does not)
+      const dynamicPath = '../../../src/flows/designer/dynamic.ts'
+      const { dynamicContent } = (await import(/* @vite-ignore */ dynamicPath)) as { dynamicContent: (doc: unknown, step: string, ctx: unknown) => { insert: string }[] }
+      const toks = dynamicContent(doc, 'use', { tables })
+      for (const w of want) expect(toks.map((t) => t.insert), w).toContain(w)
+      // every token offered is a formula the server accepts in that step
+      for (const t of toks) {
+        const d = JSON.parse(JSON.stringify(doc))
+        d.steps[d.steps.length - 1].value = t.insert
+        const problems = await validateFlow(d, { tables, flows: [], selfId: null, selfName: d.name, connections: new Map(), engine })
+        expect(problems.filter((p) => p.severity === 'error' && p.step === 'use'), `${t.insert}: ${JSON.stringify(problems)}`).toEqual([])
+      }
+    }
+  })
 })

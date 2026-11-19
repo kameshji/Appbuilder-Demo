@@ -4,7 +4,74 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-19
+
+**Phase 1 "Automation" is done** (docs/plan/p1-spec.md, with the exit check results). In one paragraph: Appbuilder now
+automates work. **Flows** start when a row changes, on a schedule, from a button in an app, on a signed web request or
+when an approval is decided, and run durable steps (conditions, loops, data changes, delays, approvals, email,
+notifications, HTTP calls, connector actions, child flows) that survive restarts, each step once; makers build them on a
+**visual designer** by clicking, with templates, drafts, versions and test runs shown on the canvas. **Approvals** (single,
+first to respond, everyone, quorum, sequential stages, amount thresholds, all edited visually) are answered from an inbox,
+the bell or an email link, with delegation, reminders and escalation. **Connector actions** (an HTTP connector with
+OpenAPI import and a strict outbound policy, an Email connector), **incoming webhooks**, **notification email** with
+per-person channels and digests, and **scheduled reports** reach outside the app. A **recycle bin** keeps deleted rows
+restorable for 30 days on new tables. Flows, approval policies and connection
+references travel in **solutions** and deploy between environments with a plan screen that maps connections and people.
+Package E closed the phase: nine gaps closed, the new surface reviewed for security with eight fixes
+(docs/internal/security-review-p1.md), the documentation checked end to end, and the exit check run.
+
 ### Added
+- **Phase close** (P1 package E):
+  - **Approvals: a visual editor** for policies and the flow step (no JSON for anything in the maker guide): approver
+    pickers (person, role, team, department, department head, manager N levels up, manager chain by levels or until a job
+    title or role), stages (add, reorder, any / all / quorum, a condition builder, a due date per stage), threshold rules
+    with a condition builder over the request's fields, answers (label, kind, comment required), the escalation target;
+    "Advanced" shows the same definition as JSON. **Per-stage due dates** (`dueMinutes` on stages and rules; escalation
+    re-armed per stage). The flow step may carry its own threshold rules and answers.
+  - **Plan screen mapping** for Deploy and Import: choose the target connection for each connection the flows use (blocked
+    until chosen), map or explicitly leave unmapped each person the approval policies name, allow service-account flows,
+    turn new flows on.
+  - **Run again from a completed step** of a finished run (top-level steps; earlier results reused; the designer says why
+    not for steps inside containers).
+  - **Admin console > Flows**: the kill switch with its state, the environment's run limit, every flow with its state,
+    health and an on/off switch.
+  - **Health email and heartbeat** (Admin console > Server logs): a daily summary and alerts at once (degraded server,
+    failed backup, dead jobs, failing flows) to install administrators as "Server health" notifications, and an optional
+    ping address for an outside uptime monitor while the server is healthy.
+  - **SMTP with OAuth 2.0 (XOAUTH2)** for Microsoft 365 (client credentials or refresh token) and Google Workspace (refresh
+    token), no new dependency; docs/admin/installation.md lists what works with each provider.
+  - Dynamic content of the flow designer lists the approval step's `Status`, `Approvers`, `Comments` and the fields of the
+    "When an approval is decided" trigger.
+  - `scripts/exit-check/p1.mjs` (the Phase 1 exit check); `server/core/security-p1*.test.ts`.
+
+- **Recycle bin for deleted rows** (decision D31; schema version 10; `docs/dev/recycle-bin.md`): tables in the default
+  database can keep deleted rows for N days (new tables 30, existing tables off; Settings > Recycle bin). Deleted rows
+  vanish from every query, report, export, rollup and timeline but can be restored: the **Undo** toast after a delete, the
+  grid's **Deleted** view, the formulas `DeletedRows(Table)` and `Restore(row or batch)`. Each delete is one batch that also
+  undoes its cascades, cleared (set blank) links, comments, tags, follows and shares; a restore checks the permission again,
+  unique values and parents. Table events and flow triggers get an opt-in `restore` operation. The hourly job
+  `data.recycle-purge` deletes expired batches for good; administrators can delete a batch or a table's whole bin for good
+  (Empty now, with a typed confirmation). MySQL, external PostgreSQL databases, data files and Google Sheets still delete
+  for good. Export environment data can include deleted rows (a tick).
+
+### Fixed
+- `RunFlow` from an app waits for the app's pending writes (a record just written with `Patch` exists when the flow reads it).
+- A flow's notify step no longer sends a second notification or email after a crash or retry (idempotency key per
+  recipient).
+
+### Security
+- The outbound address policy judges IPv6 addresses that carry an IPv4 address (IPv4-mapped in any notation, compatible,
+  NAT64, 6to4) as that IPv4 address (`[::ffff:169.254.169.254]` was treated as public).
+- A flow may only call a child flow that the saver, its owner and (at run time) its run-as identity may run.
+- Approval policies are read-only in a locked production environment.
+- OpenAPI import refuses documents whose YAML aliases expand to more than 500,000 values (memory exhaustion).
+- On the server, regular expressions with nested repeats are refused, and one formula evaluation stops after 30 s or
+  about 50 MB / 3 million rows built.
+- Only the flow's current owner or an administrator resubmits its runs.
+- Recycle bin: the details of a deletion batch (its row ids, who deleted) are given only to someone who sees one of its
+  rows; row ids are trimmed to those.
+
+### Added (packages A to D)
 - **Approvals** (P1 package C, decision D29; exit check 3, and exit check 1 against the real service): requests from
   flows (the step "Start and wait for an approval" with `policy`, `fields`, `quorum`, `stages`, `dueMinutes`, `reminders`,
   `escalation`; outputs `Outcome`, `Status`, `Responses`, `Approvers`, `Comments`), from apps (`RequestApproval(...)`,
@@ -36,9 +103,6 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 ### Changed
 - The setup screen says where the setup code is: the server window, or (installed as a service) the setup-code file with
   the command to read it (`/status` tells only which, never the path).
-
-### Designed, not built
-- A recycle bin for deleted rows: `docs/dev/recycle-bin.md`.
 
 - **Flows: the visual designer** (P1 package B, decision D28; exit check 2, `scripts/exit-check/p1-designer.mjs`): flows are
   built on a canvas by clicking, no JSON. Trigger card on top, step cards joined by lines, containers (condition branches

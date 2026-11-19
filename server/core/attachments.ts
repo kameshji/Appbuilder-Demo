@@ -112,7 +112,8 @@ export async function sweepOrphanAttachments(services: CoreServices, graceMs = 6
     }
     for (const a of list) {
       try {
-        const row = await services.data.internals.findRow(table, a.rowId)
+        // a row in the recycle bin keeps its files until the purge
+        const row = await services.data.internals.findRow(table, a.rowId, undefined, { rows: 'all' })
         if (!row || !attachmentIds(row[a.column]).includes(a.id)) orphans.push(a)
       } catch (e) {
         log('warn', `orphan sweep skipped table ${table.name}: ${errText(e)}`)

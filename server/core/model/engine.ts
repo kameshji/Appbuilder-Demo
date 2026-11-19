@@ -558,7 +558,7 @@ async function createView(s: Services, ctx: Ctx, t: ModelTable, r: ViewDef, real
   const def: TableDef = {
     id: s.uid('tbl'), name: t.name, displayName: t.displayName, primaryColumn: r.columns[0]?.name ?? 'id', columns, createdOn: now, modifiedOn: now,
     connectionId: record.id, readOnly: true, managed: true,
-    reporting: { kind: 'view', role: r.role, base: base.id, baseSource: base.source, columns: r.columns.map((c) => ({ ...c, type: columns.find((x) => x.name === c.name)!.type })) },
+    reporting: { kind: 'view', role: r.role, base: base.id, baseSource: base.source, ...(base.recycleBin ? { baseRecycle: true } : {}), columns: r.columns.map((c) => ({ ...c, type: columns.find((x) => x.name === c.name)!.type })) },
   }
   if (t.description) def.description = t.description
   def.source = (await pickSource(s, record, connector, t.name)).replace(/^t_/, 'v_')

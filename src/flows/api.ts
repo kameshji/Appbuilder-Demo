@@ -74,11 +74,12 @@ export const flowsApi = {
   },
   runDetail: (runId: string) => call<{ run: FlowRunDetail; summaryOnly?: boolean }>('GET', `/flows/runs/${enc(runId)}`),
   cancel: (runId: string) => call<{ ok: true }>('POST', `/flows/runs/${enc(runId)}/cancel`),
-  resubmit: (runId: string, from: 'start' | 'failed') => call<{ runId: string }>('POST', `/flows/runs/${enc(runId)}/resubmit`, { from }),
+  resubmit: (runId: string, from: 'start' | 'failed' | 'step', step?: string) => call<{ runId: string }>('POST', `/flows/runs/${enc(runId)}/resubmit`, { from, ...(step ? { step } : {}) }),
   permissions: (id: string) => call<{ roleIds: string[] }>('GET', `/flows/${enc(id)}/permissions`),
   setPermissions: (id: string, roleIds: string[]) => call<{ roleIds: string[] }>('PUT', `/flows/${enc(id)}/permissions`, { roleIds }),
   settings: () => call<EnvFlowSettings>('GET', '/flows/settings'),
   setPaused: (paused: boolean) => call<EnvFlowSettings>('PUT', '/flows/settings', { paused }),
+  setRunRate: (environmentRunsPerMinute: number) => call<EnvFlowSettings>('PUT', '/flows/settings', { environmentRunsPerMinute }),
 }
 
 /** the document the editor shows: what a maker changes, connections as ref -> connection id */

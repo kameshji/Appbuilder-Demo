@@ -10,6 +10,7 @@
  * `confirmed`, failure just drops the op, so a rollback can never clobber a later write.
  */
 import { remoteCollab } from './remote-collab.ts'
+import { remoteRecycle, type RecycleBatch } from './recycle-api.ts'
 import type { AppDef, FxRecord, FxValue } from '@/contracts'
 import { PlatformError } from './contracts'
 import { rememberErrorReference } from './errorMessages'
@@ -810,6 +811,16 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     return optimistic
   }
 
+  // recycle bin: restores refresh every table they brought rows back to (the live hub tells the other sessions)
+  const recycle = remoteRecycle(call, {
+    invalidate: (tableIds) => {
+      for (const id of tableIds) {
+        if (entries.get(id)) invalidateFromRemote(id)
+        else queries.invalidateTable(id)
+      }
+    },
+  })
+
   function deleteRows(tableName: string, ids: string[]): void {
     const e = needEntry(tableName)
     const def = e.def
@@ -829,7 +840,14 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     setState({}, true)
     enqueue(async () => {
       try {
-        await call<{ deleted: number }>('POST', `/data/${enc(def.name)}/delete`, { json: { ids: targets } })
+        const res = await call<{ deleted: number; batch?: RecycleBatch | null }>('POST', `/data/${enc(def.name)}/delete`, { json: { ids: targets } })
+        // recycle bin: the batch that can undo this delete (the app's Undo toast)
+        if (res.batch) {
+          recycle.emit({ table: def.name, tableId: def.id, batch: res.batch, keepDays: res.batch.daysLeft })
+          // the delete took related rows along (cascade): the other tables this page reads refetch too (the live hub
+          // does not push our own changes back to us)
+          if (res.batch.rows > targets.length) for (const id of [...entries.keys()]) if (id !== def.id) invalidateFromRemote(id)
+        }
         settle(e, op, () => {
           e.confirmed = e.confirmed.filter((r) => !op.ids.has(r.id as string))
         }, { kind: 'delete', ids: op.ids })
@@ -1334,6 +1352,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     async importPackage(yamlText, opts) {
       const sol = await call<SolutionDef & { warnings?: string[] }>('POST', '/solutions/import', { json: {
         yaml: yamlText, ...(opts?.filesAs ? { filesAs: opts.filesAs } : {}), ...(opts?.confirm ? { confirm: opts.confirm } : {}), ...(opts?.asCopy ? { asCopy: true } : {}), ...(opts?.proceedWithoutBackup ? { proceedWithoutBackup: true } : {}),
+        // P1-E: the mappings chosen on the plan screen (the plan's token covers them)
+        ...(opts?.connectionMap ? { connectionMap: opts.connectionMap } : {}), ...(opts?.peopleMap ? { peopleMap: opts.peopleMap } : {}), ...(opts?.enableFlows ? { enableFlows: opts.enableFlows } : {}),
       } })
       await refresh()
       return { ...(state.solutions.find((s) => s.id === sol.id) ?? sol), ...(sol.warnings ? { warnings: sol.warnings } : {}) }
@@ -1411,6 +1431,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     environments: environmentsApi,
     live: rl ? rl.live : offlineLive(),
     notifications: rl ? rl.notifications : offlineNotifications(),
+    recycle: recycle.api,
     // core data model (P0-N): timeline, comments, activities, follow, tags, my tasks, mentions
     collab: remoteCollab(call, {
       invalidate: (tableId) => {
@@ -1419,6 +1440,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
         else queries.invalidateTable(tableId)
       },
       upload: (tableId, column, rowId, file) => attachmentsApi.upload(tableId, column, rowId, file),
+      deleted: (tableId, batch) => recycle.emit({ table: findEntry(tableId)?.def.name ?? tableId, tableId, batch, keepDays: batch.daysLeft }),
     }),
   }
 }

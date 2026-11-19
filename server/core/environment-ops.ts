@@ -20,6 +20,7 @@ import { assertAdminRemains } from '../routes/meta/security.ts'
 import { errText, log } from './util.ts'
 import { SUMMARY_JOB } from './model/summary.ts'
 import { fillDateDimension } from './model/engine.ts'
+import { liveRowsSql } from '../connectors/postgres/sql.ts'
 
 const q = (id: string): string => `"${id.replace(/"/g, '""')}"`
 const TYPES: EnvironmentType[] = ['production', 'sandbox', 'developer']
@@ -152,12 +153,12 @@ async function columnsOf(db: SqlDb, schema: string, table: string): Promise<stri
   return rows.map((r) => r.column_name)
 }
 
-async function copyRows(db: SqlDb, from: string, to: string, table: string): Promise<void> {
+async function copyRows(db: SqlDb, from: string, to: string, table: string, where = 'TRUE'): Promise<void> {
   const target = new Set(await columnsOf(db, to, table))
   const cols = (await columnsOf(db, from, table)).filter((c) => target.has(c))
   if (!cols.length) return
   const list = cols.map(q).join(', ')
-  await db.exec(`INSERT INTO ${q(to)}.${q(table)} (${list}) SELECT ${list} FROM ${q(from)}.${q(table)}`)
+  await db.exec(`INSERT INTO ${q(to)}.${q(table)} (${list}) SELECT ${list} FROM ${q(from)}.${q(table)}${where === 'TRUE' ? '' : ` WHERE ${where}`}`)
 }
 
 /**
@@ -203,7 +204,8 @@ async function copyContent(s: CoreServices, src: EnvironmentRecord, dst: { id: s
     if (!(exists[0] as { ok?: boolean })?.ok) continue
     await runInEnvironment(dst.id, () => connector.createTable(def))
     if (mode === 'data' && def.reporting?.kind !== 'view') {
-      await copyRows(db, src.schema, dst.schema, def.source)
+      // recycle bin: deleted rows are not copied (the copy starts with an empty bin; ab_delete_batches is not copied)
+      await copyRows(db, src.schema, dst.schema, def.source, liveRowsSql(def))
       // planner statistics for the copied rows (also what the admin console's row estimate reads)
       await db.exec(`ANALYZE ${q(dst.schema)}.${q(def.source)}`)
     }

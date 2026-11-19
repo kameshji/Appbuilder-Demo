@@ -179,9 +179,11 @@ export function createFlows(deps: FlowsDeps) {
     }
   })
 
-  function rowsOf(ev: OutboxEvent): { op: 'create' | 'update' | 'delete'; rowId: string }[] {
+  function rowsOf(ev: OutboxEvent): { op: 'create' | 'update' | 'delete' | 'restore'; rowId: string }[] {
     if (OPS[ev.op]) return ev.rowId ? [{ op: OPS[ev.op], rowId: ev.rowId }] : []
-    const op = ev.op === 'import' ? 'create' as const : (ev.details as { action?: string } | null)?.action === 'update' ? 'update' as const : 'delete' as const
+    const action = (ev.details as { action?: string } | null)?.action
+    // restore: rows back from the recycle bin (only triggers that list 'restore' start; off by default)
+    const op = ev.op === 'import' ? 'create' as const : action === 'update' ? 'update' as const : action === 'restore' ? 'restore' as const : 'delete' as const
     return (ev.rowIds ?? []).map((rowId) => ({ op, rowId }))
   }
 
@@ -218,14 +220,14 @@ export function createFlows(deps: FlowsDeps) {
         if (ev.rowId === t.rowId && ev.after) raw = { ...raw, ...ev.after, id: t.rowId }
       } else raw = ev.rowId === t.rowId ? { ...(ev.before ?? {}), id: t.rowId } : { id: t.rowId }
       const record = engine.recordFor(rule.table, raw)!
-      const old = t.op === 'create' ? null : engine.recordFor(rule.table, { ...raw, ...(ev.rowId === t.rowId ? ev.before ?? {} : {}) })
+      const old = t.op === 'create' || t.op === 'restore' ? null : engine.recordFor(rule.table, { ...raw, ...(ev.rowId === t.rowId ? ev.before ?? {} : {}) })
       const actor = ev.actorId ? await deps.meta().users.get(ev.actorId) : null
       const user = { FullName: actor?.name ?? '', Email: actor?.email ?? '', Image: '', Id: actor?.id ?? '' }
       const trigger: FxRecord = { Record: record, Old: old, Operation: t.op, ChangedColumns: (ev.changed ?? []).map((c) => ({ Value: c })), Table: rule.table.name, User: user }
       const runAs = await engine.runAsFor(f, ev.actorId)
       const base = {
         flowId: f.id, flowName: f.name, flowVersion: f.version, ownerId: f.ownerId, triggerKind: 'table', triggerKey: key,
-        triggerSummary: `${rule.table.displayName} ${t.rowId} ${t.op === 'create' ? 'created' : t.op === 'update' ? 'changed' : 'deleted'}${actor ? ` by ${actor.name}` : ''}`,
+        triggerSummary: `${rule.table.displayName} ${t.rowId} ${t.op === 'create' ? 'created' : t.op === 'update' ? 'changed' : t.op === 'restore' ? 'restored' : 'deleted'}${actor ? ` by ${actor.name}` : ''}`,
         trigger, runAs, runAsKind: typeof f.runAs === 'object' ? 'serviceAccount' : f.runAs, triggeredBy: ev.actorId, correlationId: ev.correlationId ?? newWorkId(),
         chain: ev.chain, depth: ev.depth, seq: ev.id, variables: engine.initialVariables(f.variables), timeoutMinutes: f.settings.timeoutMinutes,
         regarding: { tableId: rule.table.id, rowId: t.rowId }, ...(f.settings.maxRunsPerMinute ? { maxRunsPerMinute: f.settings.maxRunsPerMinute } : {}),

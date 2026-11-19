@@ -347,7 +347,9 @@ with no CSP violation in the console.
 Appbuilder connects out to hosts administrators type in: database connections (and their introspection) and the SMTP
 relay. Always refused: link-local addresses (`169.254.0.0/16`, `fe80::/10`, where cloud metadata services live), the
 unspecified address (`0.0.0.0`, `::`), multicast and broadcast, and metadata host names (`metadata.google.internal`).
-Names are resolved and every address is checked. Loopback and private networks are allowed (an on-premises database and
+Names are resolved and every address is checked; an IPv6 address that carries an IPv4 address (IPv4-mapped in any
+notation such as `::ffff:a9fe:a9fe`, IPv4-compatible, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`) is judged as that IPv4
+address (since 0.6.0). Loopback and private networks are allowed (an on-premises database and
 mail relay live there); set `APPBUILDER_OUTBOUND_PRIVATE=deny` to refuse them too. The SMTP client connects to the
 address it checked; the database drivers resolve the name again when they connect, so a DNS answer that changes in
 between is not caught for database connections. Connection hosts can only be set by administrators.
@@ -432,6 +434,12 @@ beyond their role. Web pages the user visits are not trusted.
 | Connection secrets leaking through action outputs, errors, logs or the API | Secrets sealed, never returned; every secret value redacted from outputs and errors; activity rows keep no payloads (P1) |
 | A maker using a connection they were not given, or a user getting report data they cannot read | Per-connection "use" grants checked when attaching; reports run as each recipient (P1) |
 | Forged or replayed webhook calls | Path token (hash stored), HMAC-SHA256 signature with timestamp tolerance, replay table, rate and size limits (P1) |
+| A maker's flow acting with more rights than the maker has (run as an administrator, a service account, or another flow's identity) | Run-as owner by default; service accounts only by administrators (confirmed, audited); a flow that runs as a service account changes only by an administrator; child flows only if the saver, the owner and (at run time) the run-as identity may run them; owners change only by administrators (P1) |
+| A formula on the server stalling or exhausting the one server process (catastrophic regular expressions, loops over millions of rows, gigabytes of text) | Nested-repeat patterns refused on the server; one evaluation stops after 30 s or about 50 MB / 3 million rows built (P1) |
+| Flows triggering each other without end, or a burst of runs | Change chains stop at 8 levels, a flow ignores its own changes by default, per-flow and per-environment run limits (runs wait, nothing is dropped), the kill switch (P1) |
+| Approval answers by the wrong person, twice, or without a required comment | Only a pending assignment of the current stage answers (row lock, decisions immutable); email links single use, bound to the person, need a session; required comments also in bulk answers; the requester never approves their own request, also not through a delegation (P1) |
+| Restoring or seeing deleted rows one may not see (recycle bin) | Restore needs delete and see on the rows, checked again at restore time; the Deleted view, `DeletedRows` and batch details only for rows the caller could delete and can see; deleting for good: administrators (P1) |
+| A crafted OpenAPI document (alias bombs, remote references) | Size cap (2 MB), expanded-size cap (500,000 values), local `$ref` only (P1) |
 | A crafted backup archive (path traversal, links, oversized members) | Only regular files are read, paths checked, members read into memory capped, every file checked against the manifest's SHA-256 |
 | A zip bomb uploaded as a workbook (data file, model import) | The ZIP directory is checked first: at most 256 MB unpacked, 200x compression, 10,000 parts, no ZIP64 |
 | Hostile DBML text freezing the designer | Lines over 4,000 characters skipped, texts over 2 MB refused |
@@ -496,7 +504,17 @@ beyond their role. Web pages the user visits are not trusted.
 - Realtime state (subscriptions, presence, Studio locks) lives in the one server process. The Studio lock is a soft lock:
   without a live connection it cannot be checked (the Studio then says so and the last save wins). A "table changed"
   signal reveals to anyone who may read a table that something in it changed and when (not what).
-- In-app notifications cannot be recalled by the sender; there is no email or WhatsApp delivery yet.
+- In-app notifications cannot be recalled by the sender; notification email follows each person's choices (no WhatsApp yet).
+- Formulas on the server: the regular-expression guard refuses nested repeats only (other super-linear patterns are not
+  caught), and one native call (one regular expression, one sort) cannot be interrupted by the evaluation budget.
+- Webhooks: a slow request body holds a connection until the server's request timeout (10 minutes; behind Caddy, the
+  proxy's). Whether an environment id exists can be told from the answer time.
+- Makers can read the saved definition of every flow and change every approval policy (makers are trusted; changes to a
+  policy apply to new requests only). The HTTP connector's host allow-list is the boundary of what flows can reach.
+- Recycle bin: deleted rows stay in the database and in backups until they are purged (30 days by default for new
+  tables); use "delete for good" (administrators) when data must really be erased.
+- Loop protection stops chains of changes at 8 levels: two flows that write each other's tables still make up to 8 rows
+  per row a person wrote.
 
 ## Evidence
 
@@ -515,6 +533,7 @@ beyond their role. Web pages the user visits are not trusted.
 | Stale save answers 409 without revealing hidden columns | Test: `live.integration.test.ts` ("a stale save answers 409 ...") |
 | Forced password change (`password_change_required`) | Tests: `hardening.test.ts` (router), `hardening.integration.test.ts`, `routes/meta/hardening.test.ts`; run in headless Chrome |
 | Per-email login backoff | Test: `hardening.test.ts` |
+| Phase 1 re-check: IPv4 inside IPv6, address encodings, userinfo and IDN tricks, header injection, prototype pollution, regular expressions with nested repeats, the evaluation budget, OpenAPI bombs; child-flow privilege escalation, drafts, owners, run-as, resubmit, locked production for flows and approval policies, bulk answers, approver races, delegation to the requester, trigger storms and the environment run limit, notification HTML escaping, webhook enumeration, OAuth secrets never answered or audited | Tests: `security-p1.test.ts`, `security-p1.integration.test.ts`; review: `docs/internal/security-review-p1.md` |
 | Phase 0 re-check: environment selection, Query v2 plan and cursor tampering, hidden-column inference, collaboration spoofing, system-table writes, outbound hosts | Tests: `security-p0.integration.test.ts`, `security-p0.test.ts`; review: `docs/internal/security-review-p0.md` |
 | Schedule policy, log retention, directory visibility, export environment data | Test: `phase-close.integration.test.ts` |
 | Re-link refused (also through a second connection), linked tables never dropped, columns only unmapped | Tests: `routes/meta/connections.test.ts`, `routes/meta/hardening.test.ts`, `hardening.integration.test.ts` (PostgreSQL) |

@@ -100,8 +100,8 @@ function TableTrigger({ t }: { t: AnyTrigger }) {
         <TablePicker value={(t.table as string) ?? ''} disabled={ro} testId="trigger-table" onChange={(v) => setTrigger((x) => ({ ...x, table: v, columns: undefined }))} />
         <FieldError stepId="trigger" field="table" />
         <div className="flex gap-3 text-xs">
-          {(['create', 'update', 'delete'] as const).map((o) => (
-            <label key={o} className="flex items-center gap-1"><input type="checkbox" disabled={ro} checked={on.includes(o)} data-testid={`trigger-on-${o}`} onChange={(e) => setTrigger((x) => ({ ...x, on: e.target.checked ? [...on, o] : on.filter((y) => y !== o) }) as AnyTrigger)} />{o === 'create' ? 'Added' : o === 'update' ? 'Changed' : 'Deleted'}</label>
+          {(['create', 'update', 'delete', 'restore'] as const).map((o) => (
+            <label key={o} className="flex items-center gap-1" title={o === 'restore' ? 'Rows that come back from the recycle bin (off unless you tick it)' : undefined}><input type="checkbox" disabled={ro} checked={on.includes(o)} data-testid={`trigger-on-${o}`} onChange={(e) => setTrigger((x) => ({ ...x, on: e.target.checked ? [...on, o] : on.filter((y) => y !== o) }) as AnyTrigger)} />{o === 'create' ? 'Added' : o === 'update' ? 'Changed' : o === 'delete' ? 'Deleted' : 'Restored'}</label>
           ))}
         </div>
         <FieldError stepId="trigger" field="on" />

@@ -101,6 +101,28 @@ See [Sign-in and identity](sign-in-and-identity.md).
 - [ ] Decide **who sees the directory** (Admin console > Users > Directory visibility): everyone in the environment (the
   default), the same department, or administrators only.
 - [ ] Decide your **audit retention** (Audit log page): off (kept forever) by default.
+
+## Flows, approvals and connections (0.6.0)
+
+- [ ] **Turn on the health email and a heartbeat** (Admin console > Server logs > Health email / Heartbeat): a daily
+  summary, alerts at once on a degraded server, a failed backup, dead jobs and failing flows, and an outside uptime monitor
+  that alerts when the pings stop (the PC is off). Email must be set up first.
+- [ ] **Know where the kill switch is**: Admin console > Flows > Pause all flows (or the Flows page). It stops every flow
+  of the environment between steps; nothing is lost.
+- [ ] **Service accounts for flows only where needed**: a flow that runs as a service account ignores the rights of the
+  people who trigger it. Review the flows marked "runs as a service account" in Admin console > Flows and the audit
+  entries `flow.run_as_service`.
+- [ ] **Give "use" on connections narrowly** (Connections > Access): whoever may use a connection can attach it to a flow.
+  Keep each HTTP connection's host allow-list to the hosts it needs; leave "allow private network addresses" off unless
+  the API is in your network.
+- [ ] **Keep webhook signatures required** (the default) and give the signing secret only to the sending system; expose
+  `/api/v1/hooks/...` only through the HTTPS reverse proxy, never the built-in server directly.
+- [ ] **Use OAuth 2.0 for Microsoft 365 or Google Workspace mail** (Admin console > Email) instead of a mailbox password
+  where you can ([installation](installation.md#email-with-microsoft-365-or-google-workspace)).
+- [ ] **Lock the production environment** (Admin console > Environments): flows and approval policies then change only by
+  deploying a solution, and the plan screen asks you to map connections and people and to allow service-account flows.
+- [ ] Choose **who may run flows by hand** per flow (Flows > the flow > Permissions); the person who starts a run of a flow
+  that runs as its owner acts with the owner's rights.
 - [ ] If Appbuilder should only reach the internet (no databases or mail relay on your network), set
   `APPBUILDER_OUTBOUND_PRIVATE=deny`. Link-local and cloud metadata addresses are always refused.
 - [ ] Limit **formula and rollup columns** that summarise private rows or hidden columns with column security: their

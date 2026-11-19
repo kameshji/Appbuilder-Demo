@@ -26,6 +26,7 @@ import { DEFAULT_CONNECTION_ID } from './connections.ts'
 import { csvExportText } from './values.ts'
 import { requireRecentAuth } from './identity/index.ts'
 import { audit } from '../routes/meta/tables-core.ts'
+import { RECYCLE_COLUMN_NAMES, hasRecycleBin, liveRowsSql } from '../connectors/postgres/sql.ts'
 
 const PAGE = 2000
 
@@ -149,10 +150,14 @@ async function physicalColumns(db: SqlDb, schema: string, table: string): Promis
   return (await db.query<{ c: string }>('SELECT column_name AS c FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position', [schema, table])).map((r) => r.c)
 }
 
-async function* tableCsv(db: SqlDb, schema: string, def: TableDef, counts: Map<string, number>): AsyncGenerator<string> {
+async function* tableCsv(db: SqlDb, schema: string, def: TableDef, counts: Map<string, number>, includeDeleted: boolean): AsyncGenerator<string> {
   const have = new Set(await physicalColumns(db, schema, def.source!))
   const cols = def.columns.map((c) => c.name).filter((c) => have.has(c))
   if (!cols.length) return
+  // recycle bin: deleted rows only when the administrator asked for them (with the three columns that say so)
+  const bin = hasRecycleBin(def) && RECYCLE_COLUMN_NAMES.every((c) => have.has(c))
+  if (bin && includeDeleted) cols.push(...RECYCLE_COLUMN_NAMES)
+  const live = bin && !includeDeleted ? liveRowsSql(def) : 'TRUE'
   yield Papa.unparse({ fields: cols, data: [] }, { newline: '\r\n' }) + '\r\n'
   const sel = cols.map(qi).join(', ')
   const T = `${qi(schema)}.${qi(def.source!)}`
@@ -162,8 +167,8 @@ async function* tableCsv(db: SqlDb, schema: string, def: TableDef, counts: Map<s
   for (let offset = 0; ; offset += PAGE) {
     // keyset pages on the primary key (a table without id: offset pages)
     const rows: Record<string, unknown>[] = keyed
-      ? await db.query<Record<string, unknown>>(`SELECT ${sel} FROM ${T}${last === null ? '' : ' WHERE "id" > $1'} ORDER BY "id" LIMIT ${PAGE}`, last === null ? [] : [last])
-      : await db.query<Record<string, unknown>>(`SELECT ${sel} FROM ${T} LIMIT ${PAGE} OFFSET ${offset}`)
+      ? await db.query<Record<string, unknown>>(`SELECT ${sel} FROM ${T} WHERE ${live}${last === null ? '' : ' AND "id" > $1'} ORDER BY "id" LIMIT ${PAGE}`, last === null ? [] : [last])
+      : await db.query<Record<string, unknown>>(`SELECT ${sel} FROM ${T} WHERE ${live} LIMIT ${PAGE} OFFSET ${offset}`)
     if (!rows.length) break
     n += rows.length
     yield Papa.unparse({ fields: cols, data: rows.map((r) => cols.map((c) => cell(r[c]))) }, { header: false, newline: '\r\n' }) + '\r\n'
@@ -174,7 +179,7 @@ async function* tableCsv(db: SqlDb, schema: string, def: TableDef, counts: Map<s
 }
 
 /** the export as a stream of ZIP bytes (schema and tables captured up front: the stream runs after the route returned) */
-export function exportStream(db: SqlDb, env: { id: string; schema: string; name: string }, tables: TableDef[], o: { by: string; onDone?(counts: Map<string, number>): void }): Readable {
+export function exportStream(db: SqlDb, env: { id: string; schema: string; name: string }, tables: TableDef[], o: { by: string; includeDeleted?: boolean; onDone?(counts: Map<string, number>): void }): Readable {
   const counts = new Map<string, number>()
   const used = new Set<string>()
   const fileName = (t: TableDef) => {
@@ -189,7 +194,7 @@ export function exportStream(db: SqlDb, env: { id: string; schema: string; name:
     for (const t of tables) {
       const file = fileName(t)
       files.push({ table: t, file })
-      yield* zip.entry(file, tableCsv(db, env.schema, t, counts))
+      yield* zip.entry(file, tableCsv(db, env.schema, t, counts, o.includeDeleted === true))
     }
     const attachments = await db.query<Record<string, unknown>>(
       `SELECT id, table_id, row_id, col AS column_name, file_name, mime AS content_type, size_bytes AS size, sha256, created_on FROM ${qi(env.schema)}."ab_attachments" ORDER BY id`,
@@ -199,7 +204,7 @@ export function exportStream(db: SqlDb, env: { id: string; schema: string; name:
       yield Papa.unparse({ fields, data: attachments.map((a) => fields.map((f) => cell(a[f]))) }, { newline: '\r\n' }) + '\r\n'
     })())
     const manifest = {
-      kind: 'appbuilder/environment-data', version: 1, environment: { id: env.id, name: env.name }, exportedOn: new Date().toISOString(), exportedBy: o.by,
+      kind: 'appbuilder/environment-data', version: 1, environment: { id: env.id, name: env.name }, exportedOn: new Date().toISOString(), exportedBy: o.by, includesDeletedRows: o.includeDeleted === true,
       note: 'One CSV per table (UTF-8, comma separated, first line = column names). Text that a spreadsheet would read as a formula starts with an added single quote. attachments.csv lists the attachment files; the files themselves are in a backup, not in this export.',
       tables: files.map(({ table, file }) => ({ id: table.id, name: table.name, displayName: table.displayName, file, rows: counts.get(table.id) ?? 0, system: !!table.system, columns: table.columns.map((c) => ({ name: c.name, type: c.type })) })),
       attachments: attachments.length,
@@ -227,7 +232,9 @@ export function registerExportRoutes(router: ApiRouter, s: CoreServices): void {
     sweep()
     const t = randomBytes(24).toString('base64url')
     tickets.set(t, { user: u.user.id, env: currentEnvironment().id, until: Date.now() + 60_000 })
-    return { url: `/api/v1/admin/export-data?ticket=${t}&env=${encodeURIComponent(currentEnvironment().id)}` }
+    // recycle bin: deleted rows only when the administrator ticks "include deleted" (they then carry deletedOn)
+    const deleted = (ctx.body as { includeDeleted?: unknown } | null)?.includeDeleted === true ? '&includeDeleted=1' : ''
+    return { url: `/api/v1/admin/export-data?ticket=${t}&env=${encodeURIComponent(currentEnvironment().id)}${deleted}` }
   }, { auth: 'admin' })
 
   router.add('GET', '/admin/export-data', async (ctx): Promise<RawResponse> => {
@@ -242,7 +249,8 @@ export function registerExportRoutes(router: ApiRouter, s: CoreServices): void {
     const tables = exportableTables(await s.meta.tables.list())
     const rec = await s.environments.get(env.id).catch(() => null)
     const name = rec?.name ?? env.id
-    await audit(s, ctx, 'environment.export_data', { tables: tables.length })
+    const includeDeleted = ctx.query.get('includeDeleted') === '1'
+    await audit(s, ctx, 'environment.export_data', { tables: tables.length, ...(includeDeleted ? { includeDeleted: true } : {}) })
     const stamp = new Date().toISOString().slice(0, 10)
     return {
       raw: true,
@@ -251,7 +259,7 @@ export function registerExportRoutes(router: ApiRouter, s: CoreServices): void {
         'Content-Disposition': `attachment; filename="${`${name}-data-${stamp}`.replace(/[^A-Za-z0-9._-]/g, '_')}.zip"`,
         'Cache-Control': 'no-store',
       },
-      body: exportStream(db, { id: env.id, schema: env.schema, name }, tables, { by: u.user.email }),
+      body: exportStream(db, { id: env.id, schema: env.schema, name }, tables, { by: u.user.email, includeDeleted }),
     }
   }, { auth: 'admin' })
 }

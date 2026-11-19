@@ -113,7 +113,12 @@ export function stepOutputTokens(s: Step, ctx: DynContext): DynToken[] {
       ...rowTokens(g, `First(${base})`, t, ctx.tables, { prefix: 'First row →' }),
     ]; break
     case 'data.delete': out = fixed([['Deleted', 'boolean']]); break
-    case 'approval': out = fixed([['Outcome', 'text'], ['Comments', 'text'], ['CompletedOn', 'date'], ['ApprovalId', 'text'], ['Responses', 'table']]); break
+    case 'approval': out = [
+      ...fixed([['Outcome', 'text'], ['Status', 'text'], ['Comments', 'text'], ['CompletedOn', 'date'], ['ApprovalId', 'text'], ['Responses', 'table'], ['Approvers', 'table']]),
+      { group: g, label: 'Responses → first → Name', insert: `First(${base}.Responses).Name`, type: 'text' },
+      { group: g, label: 'Responses → first → Comment', insert: `First(${base}.Responses).Comment`, type: 'text' },
+      { group: g, label: 'Number of approvers', insert: `CountRows(${base}.Approvers)`, type: 'number' },
+    ]; break
     case 'http': {
       out = fixed([['Status', 'number'], ['Body', 'record'], ['Headers', 'record']])
       if (a.sample !== undefined) out.push(...sampleTokens(g, `${base}.Body`, a.sample, 'Body'))
@@ -162,6 +167,14 @@ export function triggerTokens(doc: FlowDoc, ctx: DynContext): DynToken[] {
       { group: g, label: 'Body', insert: 'Trigger.Body', type: 'record' },
       ...(tr.sample !== undefined ? sampleTokens(g, 'Trigger.Body', tr.sample, 'Body') : []),
       { group: g, label: 'Query', insert: 'Trigger.Query', type: 'record' }, { group: g, label: 'Headers', insert: 'Trigger.Headers', type: 'record' }, { group: g, label: 'Received on', insert: 'Trigger.ReceivedOn', type: 'date' },
+    ]
+    case 'approvalDecided': return [
+      ...([['Id', 'Request id', 'text'], ['Title', 'Title', 'text'], ['Status', 'Status', 'text'], ['Outcome', 'Outcome', 'text'], ['RequestedBy', 'Requested by (user id)', 'text'],
+        ['RequestedByEmail', 'Requested by: email', 'text'], ['Policy', 'Policy', 'text'], ['RegardingTable', 'Regarding table', 'text'], ['RegardingId', 'Regarding row id', 'text'],
+        ['CompletedOn', 'Completed on', 'date'], ['Fields', 'Fields', 'record']] as [string, string, ValueType][]).map(([f, label, type]) => ({ group: g, label: `Request ${label.charAt(0).toLowerCase()}${label.slice(1)}`, insert: `Trigger.Request.${f}`, type })),
+      { group: g, label: 'Responses', insert: 'Trigger.Responses', type: 'table', doc: 'Approver, Name, Response, Comment, Time, Stage, UserId' },
+      { group: g, label: 'Responses → first → Name', insert: 'First(Trigger.Responses).Name', type: 'text' },
+      { group: g, label: 'Responses → first → Comment', insert: 'First(Trigger.Responses).Comment', type: 'text' },
     ]
     default: return []
   }

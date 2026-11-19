@@ -42,6 +42,8 @@ export interface StagePlan {
   mode: StageMode
   quorum?: number
   refs: string[]
+  /** P1-E: due this long after the stage starts (minutes) */
+  dueMinutes?: number
 }
 
 export interface Assignee {
@@ -100,7 +102,7 @@ export function expandStages(def: ApprovalDefinition, o: { requesterId: string |
   const notes: RoutingNote[] = []
   const base: (StagePlan & { condition?: string })[] = []
   if (def.type === 'sequential') {
-    ;(def.stages ?? []).forEach((s, i) => base.push({ name: s.name?.trim() || `Stage ${i + 1}`, mode: s.mode ?? 'any', ...(s.quorum ? { quorum: s.quorum } : {}), refs: [...s.approvers], ...(s.condition ? { condition: s.condition } : {}) }))
+    ;(def.stages ?? []).forEach((s, i) => base.push({ name: s.name?.trim() || `Stage ${i + 1}`, mode: s.mode ?? 'any', ...(s.quorum ? { quorum: s.quorum } : {}), refs: [...s.approvers], ...(s.condition ? { condition: s.condition } : {}), ...(s.dueMinutes ? { dueMinutes: s.dueMinutes } : {}) }))
   } else if (def.approvers?.length) {
     base.push({ name: 'Approval', mode: modeOfType(def.type), ...(def.type === 'quorum' && def.quorum ? { quorum: def.quorum } : {}), refs: [...def.approvers] })
   }
@@ -110,13 +112,13 @@ export function expandStages(def: ApprovalDefinition, o: { requesterId: string |
       notes.push({ action: 'stage.skipped', text: `Stage "${s.name}" is not needed: ${s.condition} is false.` })
       continue
     }
-    planned.push({ name: s.name, mode: s.mode, ...(s.quorum ? { quorum: s.quorum } : {}), refs: s.refs })
+    planned.push({ name: s.name, mode: s.mode, ...(s.quorum ? { quorum: s.quorum } : {}), refs: s.refs, ...(s.dueMinutes ? { dueMinutes: s.dueMinutes } : {}) })
   }
   ;(def.rules ?? []).forEach((r, i) => {
     if (!o.evalCondition(r.condition)) return
     const name = r.name?.trim() || `Rule ${i + 1}`
     notes.push({ action: 'rule.matched', text: `Rule "${name}" applies: ${r.condition}.` })
-    planned.push({ name, mode: r.mode ?? 'any', ...(r.quorum ? { quorum: r.quorum } : {}), refs: [...r.approvers] })
+    planned.push({ name, mode: r.mode ?? 'any', ...(r.quorum ? { quorum: r.quorum } : {}), refs: [...r.approvers], ...(r.dueMinutes ? { dueMinutes: r.dueMinutes } : {}) })
   })
   // manager chains: one stage per level
   const stages: StagePlan[] = []
@@ -137,10 +139,10 @@ export function expandStages(def: ApprovalDefinition, o: { requesterId: string |
     }
     if (!picked.length) {
       notes.push({ action: 'routing.fallback', text: `${s.name}: the requester has no manager on record.` })
-      stages.push({ name: s.name, mode: 'any', refs: [] })
+      stages.push({ name: s.name, mode: 'any', refs: [], ...(s.dueMinutes ? { dueMinutes: s.dueMinutes } : {}) })
       continue
     }
-    picked.forEach((m, i) => stages.push({ name: picked.length === 1 ? s.name : `${s.name} (level ${i + 1})`, mode: 'any', refs: [`user:${m.id}`] }))
+    picked.forEach((m, i) => stages.push({ name: picked.length === 1 ? s.name : `${s.name} (level ${i + 1})`, mode: 'any', refs: [`user:${m.id}`], ...(s.dueMinutes ? { dueMinutes: s.dueMinutes } : {}) }))
   }
   if (!stages.length) throw new RoutingError('Nobody to ask: no approvers, no stage and no rule applies.')
   return { stages, notes }

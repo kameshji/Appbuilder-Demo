@@ -23,6 +23,7 @@ import {
 } from '../../src/platform/system-tables.ts'
 import { currentEnvironment } from './env-context.ts'
 import { errText } from './util.ts'
+import { liveRowsSql } from '../connectors/postgres/sql.ts'
 
 const q = (id: string): string => `"${id.replace(/"/g, '""')}"`
 const invalid = (m: string, field?: string) => new HttpError(422, 'invalid', m, field)
@@ -57,8 +58,12 @@ export interface SystemDataHooks {
   /** system tables: normalise and validate a row before the permission check; returns the columns to set */
   beforeWrite(ctx: UserContext | null, def: TableDef, op: 'create' | 'update', next: RawRow, old: RawRow | null, changed: Set<string> | null): Promise<RawRow>
   afterWrite(ctx: UserContext | null, def: TableDef, op: 'create' | 'update', row: RawRow, old: RawRow | null): Promise<void>
-  /** rows of any table were deleted: their collaboration rows go too */
-  afterDelete(def: TableDef, ids: string[]): Promise<void>
+  /**
+   * rows of any table were deleted: their collaboration rows go too. `capture` (recycle bin): every row removed is
+   * handed over in full ('collab') and every regarding link detached with its old value ('detach'), so a restore can
+   * put them back
+   */
+  afterDelete(def: TableDef, ids: string[], capture?: (e: { kind: 'collab' | 'detach'; tableId: string; rowId: string; old: unknown }) => void): Promise<void>
   /** a column default `=NextNumber("name")` */
   nextNumber(name: string): Promise<string>
 }
@@ -247,9 +252,9 @@ export function createCollab(deps: CollabDeps) {
       }
     },
 
-    async afterDelete(def, ids) {
+    async afterDelete(def, ids, capture) {
       if (!ids.length || !deps.db()) return
-      await cascade(def.id, ids)
+      await cascade(def.id, ids, 0, capture)
     },
 
     nextNumber: (name) => nextNumber(name),
@@ -266,29 +271,39 @@ export function createCollab(deps: CollabDeps) {
   }
 
   /** collaboration rows about deleted rows (and, one level deeper, about the activities removed with them) */
-  async function cascade(tableId: string | null, ids: string[] | null, depth = 0): Promise<number> {
+  async function cascade(tableId: string | null, ids: string[] | null, depth = 0, capture?: (e: { kind: 'collab' | 'detach'; tableId: string; rowId: string; old: unknown }) => void): Promise<number> {
     const all = await tables()
     const present = new Set(all.map((t) => t.id))
     let n = 0
     const lower = ids?.map((x) => (x.length === 36 ? x.toLowerCase() : x)) ?? null
     const where = (alias = '') => `${alias}${q(REGARDING.table)} = $1${lower ? ` AND ${alias}${q(REGARDING.id)} = ANY($2::text[])` : ''}`
     const params = lower ? [tableId, lower] : [tableId]
+    // recycle bin: the removed rows are returned in full (to_jsonb) and handed to `capture`
+    const remove = async (t: string, cond: string, p: unknown[]): Promise<string[]> => {
+      if (!capture) return (await db().query<{ id: string }>(`DELETE FROM ${S(t)} AS x WHERE ${cond} RETURNING x."id"`, p)).map((r) => String(r.id))
+      const rows = await db().query<{ id: string; j: unknown }>(`DELETE FROM ${S(t)} AS x WHERE ${cond} RETURNING x."id", to_jsonb(x.*) AS j`, p)
+      for (const r of rows) capture({ kind: 'collab', tableId: t, rowId: String(r.id), old: r.j })
+      return rows.map((r) => String(r.id))
+    }
     // deleted comments take their mentions with them
-    if (tableId === SYS.comments && lower && present.has(SYS.mentions)) n += (await db().exec(`DELETE FROM ${S(SYS.mentions)} WHERE "Comment" = ANY($1::text[])`, [lower])).affectedRows
+    if (tableId === SYS.comments && lower && present.has(SYS.mentions)) n += (await remove(SYS.mentions, `x."Comment" = ANY($1::text[])`, [lower])).length
     const removedActivities: string[] = []
     for (const t of CASCADE) {
       if (!present.has(t)) continue
-      if (t === SYS.activities) {
-        const r = await db().query<{ id: string }>(`DELETE FROM ${S(t)} WHERE ${where()} RETURNING "id"`, params)
-        removedActivities.push(...r.map((x) => x.id))
-        n += r.length
-      } else n += (await db().exec(`DELETE FROM ${S(t)} WHERE ${where()}`, params)).affectedRows
+      const gone = await remove(t, where('x.'), params)
+      if (t === SYS.activities) removedActivities.push(...gone)
+      n += gone.length
     }
     for (const t of DETACH) {
       if (!present.has(t)) continue
+      if (capture) {
+        for (const r of await db().query<{ id: string; rt: string; ri: string }>(`SELECT "id" AS id, ${q(REGARDING.table)} AS rt, ${q(REGARDING.id)} AS ri FROM ${S(t)} WHERE ${where()}`, params)) {
+          capture({ kind: 'detach', tableId: t, rowId: String(r.id), old: { table: r.rt, id: r.ri } })
+        }
+      }
       n += (await db().exec(`UPDATE ${S(t)} SET ${q(REGARDING.table)} = NULL, ${q(REGARDING.id)} = NULL WHERE ${where()}`, params)).affectedRows
     }
-    if (removedActivities.length && depth < 1) n += await cascade(SYS.activities, removedActivities, depth + 1)
+    if (removedActivities.length && depth < 1) n += await cascade(SYS.activities, removedActivities, depth + 1, capture)
     return n
   }
 
@@ -531,6 +546,11 @@ export function createCollab(deps: CollabDeps) {
       }
     }
     const has = (id: string) => all.some((x) => x.id === id)
+    // recycle bin (Activities, Comments, Documents may keep deleted rows): the timeline shows live rows only
+    const live = (id: string) => {
+      const d = all.find((x) => x.id === id)
+      return d?.recycleBin ? ` AND ${liveRowsSql(d)}` : ''
+    }
     const seek = before ? ` AND ("createdOn", "id") < ($2::timestamptz, $3::text)` : ''
     const params: unknown[] = before ? [rowId, before.at, before.id] : [rowId]
     type Item = { kind: 'comment' | 'activity' | 'file' | 'event'; id: string; at: string; by: string | null; data: Record<string, unknown> }
@@ -538,12 +558,12 @@ export function createCollab(deps: CollabDeps) {
     const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : new Date(String(v)).toISOString())
     const take = `ORDER BY "createdOn" DESC, "id" DESC LIMIT ${limit + 1}`
     if (has(SYS.comments)) {
-      for (const r of await db().query<Record<string, unknown>>(`SELECT * FROM ${S(SYS.comments)} WHERE "regardingId" = $1${seek} ${take}`, params)) {
+      for (const r of await db().query<Record<string, unknown>>(`SELECT * FROM ${S(SYS.comments)} WHERE "regardingId" = $1${live(SYS.comments)}${seek} ${take}`, params)) {
         items.push({ kind: 'comment', id: String(r.id), at: iso(r.createdOn), by: (r.createdBy as string) ?? null, data: { Body: r.Body, ParentComment: r.ParentComment, EditedOn: r.EditedOn ? iso(r.EditedOn) : null, MentionIds: mentionList(r.MentionIds), canEdit: r.createdBy === ctx.user.id || ctx.privileges.isAdmin } })
       }
     }
     if (has(SYS.activities)) {
-      for (const r of await db().query<Record<string, unknown>>(`SELECT * FROM ${S(SYS.activities)} WHERE "regardingId" = $1${seek} ${take}`, params)) {
+      for (const r of await db().query<Record<string, unknown>>(`SELECT * FROM ${S(SYS.activities)} WHERE "regardingId" = $1${live(SYS.activities)}${seek} ${take}`, params)) {
         items.push({ kind: 'activity', id: String(r.id), at: iso(r.createdOn), by: (r.createdBy as string) ?? null, data: {
           Type: r.Type, Subject: r.Subject, Status: r.Status, Priority: r.Priority, DueOn: r.DueOn ? iso(r.DueOn) : null, AssignedTo: r.AssignedTo, AssignedTeam: r.AssignedTeam,
           CompletedOn: r.CompletedOn ? iso(r.CompletedOn) : null, Description: r.Description,
@@ -557,7 +577,7 @@ export function createCollab(deps: CollabDeps) {
       }
     }
     if (has(SYS.documents)) {
-      for (const r of await db().query<Record<string, unknown>>(`SELECT * FROM ${S(SYS.documents)} WHERE "regardingId" = $1${seek} ${take}`, params)) {
+      for (const r of await db().query<Record<string, unknown>>(`SELECT * FROM ${S(SYS.documents)} WHERE "regardingId" = $1${live(SYS.documents)}${seek} ${take}`, params)) {
         items.push({ kind: 'file', id: String(r.id), at: iso(r.createdOn), by: (r.createdBy as string) ?? null, data: { Document: r.id, Attachment: r.File, FileName: r.Name, Mime: r.DocType, SizeBytes: Number(r.SizeBytes ?? 0), Version: r.VersionNumber, FolderPath: r.FolderPath } })
       }
     }

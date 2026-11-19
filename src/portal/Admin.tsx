@@ -1,12 +1,12 @@
 /**
  * Admin console (#admin, #admin-<section>; Dev mode, administrators): its own sub-navigation over environments,
- * users, licences, the audit log, jobs, backups (with the backup health line on every page), server logs, usage and
+ * users, licences, the audit log, jobs, flows (kill switch and per-flow state), backups (with the backup health line on every page), server logs, usage and
  * updates (AdminOps.tsx, package L).
  * Everything shown is real data or clearly marked: "preview" (derived, not enforced) and "Soon" (not built).
  */
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  Activity, Archive, BadgeCheck, KeySquare, Mail, ShieldCheck, ChevronLeft, ChevronRight, FileKey2, GitFork, Layers, ListChecks, Network, PackageCheck, RefreshCw, ScrollText, ShieldHalf, Upload, Users, UsersRound, Zap,
+  Activity, Archive, BadgeCheck, KeySquare, Mail, ShieldCheck, ChevronLeft, ChevronRight, FileKey2, GitFork, Layers, ListChecks, Network, PackageCheck, RefreshCw, ScrollText, ShieldHalf, Upload, Users, UsersRound, Workflow, Zap,
   type LucideIcon,
 } from 'lucide-react'
 import { usePlatform, type UserDef } from '@/platform'
@@ -21,6 +21,7 @@ import { SoonBadge } from './ComingSoon'
 import { ServerLogsSection, UpdatesSection, UsageSection } from './AdminOps'
 import { EnvironmentsSection } from './AdminEnvironments'
 import { EventRunsSection, JobsSection, RetentionSetting } from './AdminJobs'
+import { FlowsAdminSection } from './AdminFlows'
 import { BackupHealthBanner, BackupsSection } from './AdminBackups'
 import { fetchInstallAuditPage } from './environmentApi'
 import { useCaps } from './security'
@@ -32,7 +33,7 @@ import { DepartmentsSection, OrgChartSection, TeamsSection } from './Organisatio
 import { EmailSection, ServiceAccountsSection, SignInSecuritySection } from './AdminIdentity'
 import { NotificationAdmin } from './AdminNotifications'
 
-export type AdminSection = 'environments' | 'users' | 'security' | 'email' | 'service-accounts' | 'departments' | 'teams' | 'orgchart' | 'licences' | 'audit' | 'jobs' | 'events' | 'backups' | 'logs' | 'usage' | 'updates'
+export type AdminSection = 'environments' | 'users' | 'security' | 'email' | 'service-accounts' | 'departments' | 'teams' | 'orgchart' | 'licences' | 'audit' | 'jobs' | 'flows' | 'events' | 'backups' | 'logs' | 'usage' | 'updates'
 interface SectionDef { key: AdminSection; label: string; icon: LucideIcon; soon?: boolean }
 export const ADMIN_SECTIONS: SectionDef[] = [
   { key: 'environments', label: 'Environments', icon: Layers },
@@ -46,6 +47,7 @@ export const ADMIN_SECTIONS: SectionDef[] = [
   { key: 'licences', label: 'Licences', icon: FileKey2 },
   { key: 'audit', label: 'Audit log', icon: ScrollText },
   { key: 'jobs', label: 'Jobs', icon: ListChecks },
+  { key: 'flows', label: 'Flows', icon: Workflow },
   { key: 'events', label: 'Events run log', icon: Zap },
   { key: 'backups', label: 'Backups', icon: Archive },
   { key: 'logs', label: 'Server logs', icon: ScrollText },
@@ -93,6 +95,7 @@ export function AdminConsole({ section }: { section?: string }) {
           {current === 'licences' && <LicencesSection />}
           {current === 'audit' && <AuditSection />}
           {current === 'jobs' && <JobsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
+          {current === 'flows' && <FlowsAdminSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'events' && <EventRunsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'backups' && <BackupsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'logs' && <ServerLogsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}

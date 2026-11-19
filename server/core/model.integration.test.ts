@@ -112,7 +112,8 @@ describe.skipIf(!PG_URL)(PG_URL ? 'data model designer (PostgreSQL)' : `data mod
     const before = await count(`SELECT count(*)::int AS n FROM env_default.ab_outbox WHERE table_id = $1`, [line.id])
     const del = await h.admin.post(`/data/${inv.id}/delete`, { ids: [hd] })
     expect(del.status, JSON.stringify(del.data)).toBe(200)
-    expect(await count(`SELECT count(*)::int AS n FROM env_default.t_invoiceline`)).toBe(0)
+    // (new tables keep deleted rows in their recycle bin: live rows are counted)
+    expect(await count(`SELECT count(*)::int AS n FROM env_default.t_invoiceline WHERE "deletedOn" IS NULL`)).toBe(0)
     expect(await count(`SELECT count(*)::int AS n FROM env_default.ab_outbox WHERE table_id = $1`, [line.id])).toBe(before + 1)
     expect(await count(`SELECT count(*)::int AS n FROM env_default.ab_audit WHERE action = 'row.delete' AND table_id = $1`, [line.id])).toBe(1)
   })
@@ -138,12 +139,12 @@ describe.skipIf(!PG_URL)(PG_URL ? 'data model designer (PostgreSQL)' : `data mod
     const del = await clerk.post(`/data/${inv.id}/delete`, { ids: [hd] })
     expect(del.status).toBe(403)
     expect(del.data.error.message).toMatch(/also deletes 2 rows in "Invoice line".*not allowed to delete 1 of them/)
-    expect(await count(`SELECT count(*)::int AS n FROM env_default.t_invoice WHERE id = $1`, [hd])).toBe(1)
-    expect(await count(`SELECT count(*)::int AS n FROM env_default.t_invoiceline WHERE "Invoice" = $1`, [hd])).toBe(2)
+    expect(await count(`SELECT count(*)::int AS n FROM env_default.t_invoice WHERE id = $1 AND "deletedOn" IS NULL`, [hd])).toBe(1)
+    expect(await count(`SELECT count(*)::int AS n FROM env_default.t_invoiceline WHERE "Invoice" = $1 AND "deletedOn" IS NULL`, [hd])).toBe(2)
     // once the foreign line is gone, the clerk's delete cascades
     await h.q(`DELETE FROM env_default.t_invoiceline WHERE "Item" = 'Not mine'`)
     expect((await clerk.post(`/data/${inv.id}/delete`, { ids: [hd] })).status).toBe(200)
-    expect(await count(`SELECT count(*)::int AS n FROM env_default.t_invoiceline WHERE "Invoice" = $1`, [hd])).toBe(0)
+    expect(await count(`SELECT count(*)::int AS n FROM env_default.t_invoiceline WHERE "Invoice" = $1 AND "deletedOn" IS NULL`, [hd])).toBe(0)
   })
 
   it('restrict and set blank, including lookups that exist from before (implicit behaviour)', async () => {
@@ -179,9 +180,9 @@ describe.skipIf(!PG_URL)(PG_URL ? 'data model designer (PostgreSQL)' : `data mod
     const note = await byName('Note')
     const c2 = await insert(h.admin, cust.id, { Name: 'Bolt' })
     await insert(h.admin, note.id, { Text: 'x', Customer: c2 })
-    const before = await count(`SELECT count(*)::int AS n FROM env_default.t_note`)
+    const before = await count(`SELECT count(*)::int AS n FROM env_default.t_note WHERE "deletedOn" IS NULL`)
     expect((await h.admin.post(`/data/${cust.id}/delete`, { ids: [c2] })).status).toBe(200)
-    expect(await count(`SELECT count(*)::int AS n FROM env_default.t_note`)).toBe(before - 1)
+    expect(await count(`SELECT count(*)::int AS n FROM env_default.t_note WHERE "deletedOn" IS NULL`)).toBe(before - 1)
   })
 
   it('hierarchy: a self relationship refuses loops', async () => {
@@ -210,7 +211,7 @@ describe.skipIf(!PG_URL)(PG_URL ? 'data model designer (PostgreSQL)' : `data mod
     })
     const j = await byName('ProductSupplier')
     expect(j.uniqueTogether).toEqual([['Product', 'Supplier']])
-    const idx = await h.q<{ indexname: string }>(`SELECT indexname FROM pg_indexes WHERE schemaname = 'env_default' AND tablename = 't_productsupplier' AND indexdef LIKE 'CREATE UNIQUE INDEX%("Product", "Supplier")'`)
+    const idx = await h.q<{ indexname: string }>(`SELECT indexname FROM pg_indexes WHERE schemaname = 'env_default' AND tablename = 't_productsupplier' AND indexdef LIKE 'CREATE UNIQUE INDEX%("Product", "Supplier")%'`)
     expect(idx.length).toBe(1)
     const prod = await insert(h.admin, (await byName('Product')).id, { Name: 'P' })
     const sup = await insert(h.admin, (await byName('Supplier')).id, { Name: 'S' })
@@ -219,7 +220,7 @@ describe.skipIf(!PG_URL)(PG_URL ? 'data model designer (PostgreSQL)' : `data mod
     expect(dup.status).toBeGreaterThanOrEqual(400)
     // deleting a product removes its junction rows (cascade)
     expect((await h.admin.post(`/data/${(await byName('Product')).id}/delete`, { ids: [prod] })).status).toBe(200)
-    expect(await count(`SELECT count(*)::int AS n FROM env_default.t_productsupplier`)).toBe(0)
+    expect(await count(`SELECT count(*)::int AS n FROM env_default.t_productsupplier WHERE "deletedOn" IS NULL`)).toBe(0)
   })
 
   it('plans: conversion pre-check (blocking), destructive drops with row counts, index notes', async () => {

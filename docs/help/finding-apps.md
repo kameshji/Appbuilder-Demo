@@ -14,7 +14,7 @@ Choose **User mode**.)
 2. Use the search box at the top (**Search your apps...**) to find an app by name, or look under **Recently opened** and **All apps**.
 3. Click **Open** (or click the tile). The app opens as a **tab** under the top bar.
 
-![My apps and two open tabs. This picture was taken earlier: in this version Tasks, Mentions and Scheduled reports are no longer marked Soon.](../images/user-mode-tabs.png)
+![My apps and two open tabs](../images/user-mode-tabs.png)
 
 Each tile says whether the app is made for a desktop, a phone or a tablet screen.
 

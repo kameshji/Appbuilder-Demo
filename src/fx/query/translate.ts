@@ -139,7 +139,8 @@ const ROW_SCOPED = new Set([
   'Count', 'CountA', 'StdevP', 'VarP', 'Concat', 'UpdateIf', 'RemoveIf',
 ])
 /** first argument names a table to write to (or reset), it is not a read */
-const WRITE_TARGET = new Set(['Patch', 'Collect', 'ClearCollect', 'Remove', 'Defaults', 'Refresh', 'Clear'])
+// DeletedRows(Table) (recycle bin) names the table too: its rows come from the server's Deleted view, not from Table
+const WRITE_TARGET = new Set(['Patch', 'Collect', 'ClearCollect', 'Remove', 'Defaults', 'Refresh', 'Clear', 'DeletedRows'])
 /** functions that would process every row of their table in the browser */
 const BULK_WRITE = new Set(['UpdateIf', 'RemoveIf'])
 /** functions that pass an unbounded table through unchanged (or row by row) */

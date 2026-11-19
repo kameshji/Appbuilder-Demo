@@ -51,6 +51,28 @@ closed, then the process exits. The services start at boot (Windows: delayed aut
 
 ![Admin console, Server logs](../images/admin-logs.png)
 
+## Health email and heartbeat
+
+Under the health checks, Admin console > Server logs has two optional alerts (install administrators; settings
+`GET|PUT /api/v1/admin/health-alerts`, audited `install.health_alerts`):
+
+- **Health email**: a **daily summary** at the time you choose (in your time zone) and, with **Alerts at once** on, an alert
+  within five minutes when the server is degraded, a backup failed, jobs used up their retries (dead) in an environment,
+  or flow runs failed. Each condition alerts once (again after 12 hours if it lasts; a degraded server again after it
+  recovered). They are "Server health" notifications to every install administrator: in the bell, and by email right away
+  (email must be set up; each administrator can change the channel in Settings > Notifications). **Send the summary now**
+  tries it.
+- **Heartbeat**: email cannot tell you that the PC is off. Create a check at an uptime monitor (for example healthchecks.io,
+  or a push monitor in Uptime Kuma) and paste its ping address. While the server is healthy it requests the address every
+  1 to 60 minutes; when the PC is off, the server is stopped or unhealthy, the pings stop and the monitor alerts you. The
+  request carries no data, goes through the outbound policy (no redirects, 10 s; a monitor in your own network needs the
+  "in this network" switch), and the address is stored encrypted and never shown again (only its host). **Send one now**
+  tries it; the last result is shown.
+
+Jobs (Default environment, install schedules): `ops.health_watch` (every 5 minutes), `ops.health_daily`, `ops.heartbeat`.
+
+![Health email and heartbeat](../images/admin-health-alerts.png)
+
 ## Logs
 
 The server writes every log line twice: human-readable to its console (the service log: `journalctl -u appbuilder`, or the
@@ -107,6 +129,27 @@ Nothing is collected over time or sent anywhere.
 
 ![Admin console, Usage](../images/admin-usage.png)
 
+## Recycle bins
+
+Tables can keep deleted rows for a number of days ([Data](../guide/maker/data.md#deleted-rows-the-recycle-bin)): new tables
+30 days, tables from before version 10 off until a maker turns it on. What administrators should know:
+
+- **Retention**: per table (Settings > Recycle bin), 1 to 3,650 days. The built-in schedule **Recycle bin purge**
+  (`data.recycle-purge`, hourly at :23, Admin console > Jobs) deletes for good what ran out: the rows, then their
+  attachment files. You may change its time; turning it off lets the bins grow.
+- **Storage**: deleted rows stay in their tables until purged, with their attachment files. The table designer shows how
+  many rows are in a table's bin and about how much space they use (without files). Indexes leave deleted rows out, so
+  queries do not slow down; the space counts towards backups and disk.
+- **Empty now**: administrators can delete a table's bin for good (Settings > Recycle bin, type the table name) or single
+  deletes from the **Deleted** view. Both are in the audit log (`table.recycle.empty`, `row.purge`).
+- **Restoring** is open to people who could delete the row and can see it, and to administrators. The audit log records
+  `row.delete` (with the batch), `row.restore` and `row.purge`.
+- **Exports and copies**: export environment data leaves deleted rows out unless you tick **Include deleted rows**;
+  environment copies with data leave them out; solution data never carries them. **Backups** contain them (a restored
+  environment has its bins); a single table restored from a backup brings its deleted rows back without their undo
+  information, and the purge removes them after the table's retention.
+- **Not covered**: deleting a whole table (use a backup) and tables of other connections (they delete for good).
+
 ## Command-line tools
 
 | Command | What it does |
@@ -123,7 +166,6 @@ the service's environment file themselves.
 
 ## Not supported yet
 
-- Metrics endpoints for Prometheus or similar, alerts by email when a health check fails (the backup warning is the only
-  notification).
+- Metrics endpoints for Prometheus or similar; alerts by SMS or chat (the health email and the heartbeat are the alerts).
 - Usage over time (history, charts), app opens per app.
 - Sending the diagnostics bundle from the server: you download it and send it yourself.

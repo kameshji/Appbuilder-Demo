@@ -96,7 +96,8 @@ export interface DelegatedResult {
 
 /* ------------------------------------------------------------------ table references */
 
-const WRITE_TARGET = new Set(['Patch', 'Collect', 'ClearCollect', 'Remove', 'Defaults', 'Refresh', 'Clear'])
+// DeletedRows(Table) (recycle bin) names the table too: its rows come from the server's Deleted view, not from Table
+const WRITE_TARGET = new Set(['Patch', 'Collect', 'ClearCollect', 'Remove', 'Defaults', 'Refresh', 'Clear', 'DeletedRows'])
 const parsed = new Map<string, Node | null>()
 
 function astOf(formula: string): Node | null {

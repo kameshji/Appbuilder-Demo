@@ -40,8 +40,49 @@ function groupNamed(pattern: string): boolean[] {
   return out
 }
 
+/**
+ * P1-E security: whether a pattern repeats a group that itself repeats something ("(a+)+", "(\\w*)*", "(x|y+){2,}"):
+ * such patterns can backtrack for an exponential time on a short input that almost matches. JavaScript regular
+ * expressions cannot be interrupted, so on the server (flows, table events, reports; one process for everyone) they are
+ * refused (setRegexGuard). Character classes and escapes are skipped; a lazy or optional repeat ("?") alone is fine.
+ */
+export function nestedQuantifier(pattern: string): boolean {
+  const stack: { inner: boolean }[] = []
+  let lastGroupInner = false
+  let lastWasGroup = false
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]!
+    if (ch === '\\') { i++; lastWasGroup = false; continue }
+    if (ch === '[') {
+      for (i++; i < pattern.length && pattern[i] !== ']'; i++) if (pattern[i] === '\\') i++
+      lastWasGroup = false
+      continue
+    }
+    if (ch === '(') { stack.push({ inner: false }); lastWasGroup = false; continue }
+    if (ch === ')') {
+      const g = stack.pop()
+      lastGroupInner = !!g?.inner
+      lastWasGroup = true
+      if (g?.inner && stack.length) stack[stack.length - 1]!.inner = true
+      continue
+    }
+    const isRepeat = ch === '*' || ch === '+' || (ch === '{' && /^\{\d*,?\d*\}/.test(pattern.slice(i)) && !/^\{0?,?1\}/.test(pattern.slice(i)))
+    if (isRepeat) {
+      if (lastWasGroup && lastGroupInner) return true
+      if (stack.length) stack[stack.length - 1]!.inner = true
+    }
+    lastWasGroup = false
+  }
+  return false
+}
+
+let regexGuard = false
+/** the server turns this on: patterns with nested repeats are refused (see nestedQuantifier) */
+export function setRegexGuard(on: boolean): void { regexGuard = on }
+
 function buildRegex(c: CallCtx, patIdx: number, optIdx: number, fallback: Anchor, global: boolean): { re: RegExp; named: boolean[] } {
   const pat = c.text(patIdx)
+  if (regexGuard && nestedQuantifier(pat)) return c.fail(patIdx, 'This pattern repeats a group that repeats inside (like "(a+)+"): it can take exponential time on some inputs, so the server refuses it. Rewrite it without the nested repeat, for example "a+".')
   const o = readOptions(c, optIdx, fallback)
   const src = o.anchor === 'complete' ? `^(?:${pat})$` : o.anchor === 'begins' ? `^(?:${pat})` : o.anchor === 'ends' ? `(?:${pat})$` : pat
   const flags = (global ? 'g' : '') + (o.ignoreCase ? 'i' : '') + (o.multiline ? 'm' : '')

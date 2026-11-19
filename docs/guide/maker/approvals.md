@@ -42,11 +42,39 @@ automatically (recorded as an automatic decision), or let it expire.
 ## Policies
 
 A **policy** is a reusable definition: Approvals page > **Policies** (makers). Give it a name ("Purchase"), choose how
-they decide and who, and the rules. Stages, threshold rules and custom answers are JSON under **Advanced**, for example:
+they decide, and pick who, all by clicking:
+
+- **Approvers**: choose **A person** (type a name or email), **Everyone with a role**, **A team**, **A department**,
+  **Department head**, **The requester's manager** (direct, or 2 to 5 levels up), **Manager chain** (each level up to N,
+  one stage each), **Manager chain until a job title** (for example CEO) or **until a role**. Each choice shows as a chip
+  in words ("Role Finance", "Manager chain until "CEO"").
+- **Stages** (Sequential stages): **Add stage**, give it a name, its approvers, how they decide (first to respond,
+  everyone, quorum N of them), optionally **Only when** (a condition on the fields, for example *Amount is more than
+  10000*) and its own **Due in (hours)**: a stage's due date counts from when that stage starts. Move stages up and down
+  with the arrows.
+- **Threshold rules**: **Add a threshold rule**: *When Amount is more than 500000*, then also ask *Manager chain until
+  "CEO"*. Each rule that holds adds a stage after the others. Conditions are built from **Field**, a comparison (is more
+  than, is at least, is, is not, contains, is blank ...) and a value, joined by *and* / *or*; **Edit as a formula** shows
+  the formula (`Amount > 500000`). The fields are the ones the flow step or the app declares; list them under **Fields the
+  conditions read** so the builders offer them.
+- **Answers**: Approve and Reject by default. **Add an answer** and choose what it does: *approves*, *rejects*, *asks the
+  requester for more information* ("Need more info"), or *ends the request with this answer* (a custom outcome such as
+  "Rework"); tick **comment required** where needed.
+- **Due in**, **Remind after** / **Then every**, **When overdue** (and **Escalate after the due date**), **Escalate to** (a
+  person picker), and the switches (comment to reject, separation of duties, self-approval, bulk answers).
+
+Problems are listed under the form (for example "A manager chain must be the only approver of its stage") and Save waits
+for them.
+
+![The policy editor: two stages, a threshold rule, answers](../../images/approvals-policy-editor.png)
+
+**Advanced: the definition as JSON** shows the same definition as JSON, for experts; changes there show in the
+form above. For example, the Purchase policy is:
 
 ```json
 {
-  "stages": [{ "name": "Manager", "approvers": ["manager"] }, { "name": "Finance", "approvers": ["role:Finance"], "condition": "Amount > 10000" }],
+  "type": "sequential",
+  "stages": [{ "name": "Manager", "approvers": ["manager"] }, { "name": "Finance", "approvers": ["role:Finance"], "condition": "Amount > 10000", "dueMinutes": 1440 }],
   "rules": [{ "name": "Board", "condition": "Amount > 500000", "approvers": ["manager-chain-until-title:CEO"] }],
   "responses": [{ "label": "Approve", "kind": "approve" }, { "label": "Reject", "kind": "reject", "requireComment": true }, { "label": "Need more info", "kind": "info" }]
 }
@@ -58,8 +86,10 @@ account there.
 
 ## In a flow
 
-Add the step **Start and wait for an approval** (group Approvals in the designer). Fill in the title, the approvers or a
-policy, the record it is about, and the **fields shown to approvers**: these are what an approver sees even when they
+Add the step **Start and wait for an approval** (group Approvals in the designer). Fill in the title, the approvers (picked
+like in a policy, or **Take them from the record or another step** for a formula such as `Trigger.Record.Manager`) or a
+policy, the record it is about, and the **fields shown to approvers**. The step has the same stage, threshold rule and
+answer editors as a policy (no JSON), so a one-off approval needs no policy: these are what an approver sees even when they
 cannot open the record (for example Amount and Requester), and what threshold rules read. The run waits (costing
 nothing) until the request is decided, then continues with:
 

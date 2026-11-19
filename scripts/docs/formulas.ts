@@ -53,7 +53,7 @@ export const CATEGORY_OF: Record<string, CategoryId> = {
   // JSON and regular expressions
   JSON: 'data', ParseJSON: 'data', IsMatch: 'data', Match: 'data', MatchAll: 'data',
   // context
-  Language: 'context', User: 'context', Param: 'context', GUID: 'context', SharedWith: 'context',
+  Language: 'context', User: 'context', Param: 'context', GUID: 'context', SharedWith: 'context', DeletedRows: 'table',
   // core data model (P0-N)
   RecordId: 'collab', Comments: 'collab', Activities: 'collab', MyTasks: 'collab', Mentions: 'collab', Setting: 'collab', Convert: 'collab',
 }

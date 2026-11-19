@@ -569,3 +569,61 @@ change jobs during long sequential approvals); storing approvals as ordinary tab
 inferred from reporting lines. Restores keep open requests but cut their link to the (cancelled) flow run.
 
 **Status.** Accepted, 19 Nov 2026.
+
+## D30. Phase 1 close: guards for formulas on the server, child flows by run rights, resubmit from top-level steps only, health alerts as notifications (P1 package E, Nov 2026)
+
+**Context.** The phase close re-checked everything Phase 1 added (docs/internal/security-review-p1.md) and closed nine
+gaps. Some fixes are rules worth recording.
+
+**Decision.**
+1. **Formulas evaluated on the server** (flows, table events, reports share one process) refuse regular expressions that
+   repeat a group which itself repeats, and stop one evaluation after 30 s or about 50 MB of text / 3 million rows built.
+   The browser keeps no such limits (one user's tab).
+2. **Child flows need run rights**: the person saving, the flow's owner, and at run time the run-as identity must be
+   allowed to run the child by hand (owner, administrators, granted roles). A flow is otherwise a way to borrow another
+   flow's identity.
+3. **"Run again from this step"** for a completed step of a finished run is offered for top-level steps only; earlier
+   steps' stored results are reused as they were. Rebuilding the state of a half-run condition, loop or scope is not
+   reliable enough to offer.
+4. **Health alerts are notifications** of the kind "Server health" to install administrators (emailed right away by
+   default), so the person's channels, quiet hours, digests and the delivery log apply; the heartbeat is a plain GET
+   through the outbound policy to an address the administrator chose.
+5. **SMTP OAuth 2.0** is implemented without a dependency (form POST to the token endpoint through the outbound policy,
+   AUTH XOAUTH2); refresh tokens rotated by the provider are stored.
+6. Approval **per-stage due dates** re-arm the request's due date and escalation when the stage starts (one escalation
+   action per policy).
+
+**Alternatives.** Running formulas in worker threads with a hard timeout (a much larger change; the guards cover the
+practical cases); a regex engine with linear time (a new dependency); letting any flow call any manual flow (the
+pre-close behaviour); per-stage escalation actions (more UI and routing for a rare need).
+
+**Consequences.** A maker pattern such as `(a+)+` works in an app but fails in a flow, with a message saying why. A
+maker's flow cannot call an administrator's flow unless that flow is granted to the maker's role.
+
+**Status.** Accepted, 19 Nov 2026.
+
+## D31. Recycle bin: deleted rows stay in place, one live-row predicate, one undo batch per delete, restore opt-in for events (P1, Nov 2026)
+
+**Context.** Deleting a row was final. People delete by mistake; a delete also cascades, clears links and removes
+comments, tags, follows and shares. Design: `docs/dev/recycle-bin.md` (with its deviations).
+
+**Decision.**
+1. Tables of the default database can keep deleted rows for N days (new tables 30, existing tables off; 1 to 3,650).
+   Rows **stay in their table** with `deletedOn`, `deletedBy`, `deleteBatch` (never shown as columns).
+2. The **live-row predicate lives in exactly one place** (the PostgreSQL builder's `buildWhere` / `liveRowsSql`), so
+   system reads, administrators, counts, updates, rollups, exports and timelines all leave deleted rows out; a test fails
+   on raw SQL against such tables that was not reviewed. Indexes become **partial** (live rows) under the same names, with
+   expression statistics.
+3. **One undo batch per delete**: the rows (own and cascaded), cleared set-blank links and collaboration rows, so Undo,
+   the Deleted view, `DeletedRows(Table)` and `Restore(row or batch)` put back exactly that operation. Restore checks the
+   permission again (delete and see), unique values and parents.
+4. **Restore is opt-in** for table events and flow triggers (`restore` operation); an hourly job purges expired batches;
+   administrators may delete for good. Other connections keep the hard delete.
+
+**Alternatives.** A separate archive table per table (copies, schema drift, foreign keys); the predicate in the security
+engine (system reads and administrators would bypass it); restoring by row only (cascades and links not undone).
+
+**Consequences.** Unique values are free while a row is deleted and checked on restore; turning the bin on for a large
+table rebuilds its indexes (1,000,000 rows: 17 s); deleted rows take space until purged.
+
+**Status.** Accepted, 19 Nov 2026.

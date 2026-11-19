@@ -78,6 +78,8 @@ export interface ViewDef {
   base: string
   /** the base table's physical name, filled by the server when the view is created (never trusted from a client) */
   baseSource?: string
+  /** the base table has a recycle bin: the view leaves deleted rows out (set by the server with baseSource, never trusted) */
+  baseRecycle?: boolean
   columns: ViewColumn[]
 }
 

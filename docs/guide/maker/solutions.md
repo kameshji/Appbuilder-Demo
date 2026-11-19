@@ -63,9 +63,16 @@ is recorded in the audit log. Importing as a copy brings such events switched of
 Add flows to a solution like apps and tables. In the target environment a **new flow arrives turned off** (turn it on after
 checking it; the import request can say `enableFlows`), a changed one becomes a new version and keeps its on/off state, one
 removed from the solution is deleted (its history stays). The plan shows which connection there takes the place of each
-connection the flows use: the one with the same id, else the same name and kind; if there is none, choose one (the import
-request's `connectionMap`) before the import can go ahead. A flow that runs as a service account needs an administrator of
-the target to confirm it. See [flows](flows.md).
+connection the flows use: the one with the same id, else the same name and kind. On the plan screen (Deploy, and Import
+on the Solutions page) you **choose the connection** of the target for each one from a list of the connections of that
+kind; the import stays blocked until every one is chosen. People that approval policies name by email are matched to the
+target's accounts; for a person without an account there, type the email of the person who takes their place, or tick
+**leave unmapped** (requests then go to the requester's manager or an administrator). A flow that runs as a service
+account needs an administrator of the target to tick **I allow these flows**. **Turn on the new flows after the import**
+is a tick too (otherwise they arrive off). Changing a choice plans again. (The same through the API: `connectionMap`,
+`peopleMap`, `enableFlows` on the plan and import requests.) See [flows](flows.md).
+
+![The Deploy dialog asks for the target connection and a person](../../images/solutions-deploy-mapping.png)
 
 ### The data model travels with the tables
 

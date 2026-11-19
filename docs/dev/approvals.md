@@ -162,8 +162,25 @@ custom answers, reassign, cancel, delegation, reminders and escalation with the 
 API, `approvalDecided`, ALM export), `approvals-exit.integration.test.ts` (exit check 1), and the headless run
 `scripts/docs-shots/approvals.mjs` (three people and a deputy, a phone at 360 px, the email link through sign-in).
 
+## Visual editor (P1-E)
+
+`src/approvals/DefinitionEditor.tsx` (React) and `src/approvals/definitionKit.ts` (pure, `definitionKit.test.ts`): approver
+pickers that write references (person by email from the organisation directory, `role:`, `team:`, `department:`,
+`department-head[:code]`, `manager[:n]`, `manager-chain:n`, `manager-chain-until-title:`, `manager-chain-until-role:`),
+stages (add, reorder, remove; approvers; any / all / quorum; a condition; a due date), threshold rules (a condition builder
+over the request's fields, compiled with the flow designer's filter compiler and parsed back; any other formula stays a
+formula), answers (label, kind, comment required). Used by the policy editor (`PoliciesPanel.tsx`; "Advanced" shows the
+same definition as JSON, two-way) and by `ApprovalStepForm` (the step's approvers stay a formula when they come from the
+record; the step may carry its own `rules` and `responses`, passed to the service like `stages`; a sequential step with its
+own stages needs no approvers). Every example of the maker guide is expressible without JSON (`definitionKit.test.ts`).
+
+**Per-stage due dates.** `ApprovalStageDef.dueMinutes` and `ApprovalRule.dueMinutes`; the stage plan keeps them
+(`ab_approval_stages.due_minutes`, added with `ADD COLUMN IF NOT EXISTS`); when a stage with its own due date starts, the
+request's `due_on` and `escalate_at` are set from that moment (escalation re-armed per stage; `nextStage` escalation then
+moves on stage by stage). Stages without one keep the request's current due date.
+
 ## Not done
 
-Answering by replying to the email; approvals in chat cards; a visual editor for stages and rules (JSON under
-"Advanced"); per-stage due dates (one due date per request; `nextStage` re-arms); timeline events for each answer (only
-"requested" and "decided"); department heads are inferred from reporting lines (no explicit head field).
+Answering by replying to the email; approvals in chat cards; per-stage escalation actions (one escalation per policy,
+re-armed per stage); timeline events for each answer (only "requested" and "decided"); department heads are inferred from
+reporting lines (no explicit head field).

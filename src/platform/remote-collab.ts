@@ -5,10 +5,11 @@
 import type { CollabApi, MentionItem, PersonOption, TaskItem, TimelinePage } from './collab-api.ts'
 import { SYS } from './system-tables.ts'
 import { PlatformError } from './contracts.ts'
+import type { RecycleBatch } from './recycle-api.ts'
 
 type Call = <T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, o?: { json?: unknown; raw?: BodyInit; contentType?: string; query?: Record<string, string | undefined> }) => Promise<T>
 
-export function remoteCollab(call: Call, o: { invalidate(tableId: string): void; upload(tableId: string, column: string, rowId: string, file: File): Promise<unknown> }): CollabApi {
+export function remoteCollab(call: Call, o: { invalidate(tableId: string): void; upload(tableId: string, column: string, rowId: string, file: File): Promise<unknown>; deleted?(table: string, batch: RecycleBatch): void }): CollabApi {
   const insert = async (table: string, values: Record<string, unknown>): Promise<string> => {
     const r = await call<{ row: { id: string } }>('POST', `/data/${table}/rows`, { json: { values } })
     o.invalidate(table)
@@ -19,8 +20,10 @@ export function remoteCollab(call: Call, o: { invalidate(tableId: string): void;
     o.invalidate(table)
   }
   const remove = async (table: string, id: string) => {
-    await call('POST', `/data/${table}/delete`, { json: { ids: [id] } })
+    const r = await call<{ deleted: number; batch?: RecycleBatch }>('POST', `/data/${table}/delete`, { json: { ids: [id] } })
     o.invalidate(table)
+    // Activities, Comments and Documents with a recycle bin: the Undo toast of the page
+    if (r?.batch) o.deleted?.(table, r.batch)
   }
   const regarding = (rowId: string | null | undefined, table?: string) => (rowId ? { regardingId: rowId, ...(table ? { regardingTable: table } : {}) } : {})
   return {

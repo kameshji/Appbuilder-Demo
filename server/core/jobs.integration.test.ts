@@ -125,7 +125,7 @@ describe.skipIf(!PG_URL)('job queue and kernel guarantees (PostgreSQL)', () => {
     const list = (await A().get('/admin/schedules')).data.items
     // the backup schedules (package J) are managed on the Backups page; they live in Default's schedules too, as do the
     // install-wide log retention schedules (package M)
-    expect(list.filter((x: any) => x.builtIn && !x.jobType.startsWith('backup.')).map((x: any) => x.jobType).sort()).toEqual(['actions.retention', 'approval.retention', 'attachments.sweep', 'audit.retention', 'collab.orphan-sweep', 'flow.digest', 'flow.retention', 'identity.mail-log.retention', 'identity.signin-log.retention', 'notifications.delivery-retention', 'notifications.digest', 'outbox.retention', 'rollup.reconcile'])
+    expect(list.filter((x: any) => x.builtIn && !x.jobType.startsWith('backup.')).map((x: any) => x.jobType).sort()).toEqual(['actions.retention', 'approval.retention', 'attachments.sweep', 'audit.retention', 'collab.orphan-sweep', 'data.recycle-purge', 'flow.digest', 'flow.retention', 'identity.mail-log.retention', 'identity.signin-log.retention', 'notifications.delivery-retention', 'notifications.digest', 'ops.health_daily', 'ops.health_watch', 'ops.heartbeat', 'outbox.retention', 'rollup.reconcile'])
     expect((await A().post('/admin/schedules', { name: 'bad', cron: '61 * * * *', jobType: 'test.noop' })).status).toBe(422)
   }, 60000)
 
@@ -253,8 +253,8 @@ describe.skipIf(!PG_URL)('job queue and kernel guarantees (PostgreSQL)', () => {
     expect(bad[0].n).toBe(0)
     const totals = await h.q<{ id: string; total: string; items: number; want_total: string; want_items: number }>(
       `SELECT b.id, b."Total"::text AS total, b."Items"::int AS items,
-              COALESCE((SELECT sum(i."Amount") FROM env_default.t_basketitems i WHERE i."Basket" = b.id), 0)::text AS want_total,
-              (SELECT count(*)::int FROM env_default.t_basketitems i WHERE i."Basket" = b.id) AS want_items
+              COALESCE((SELECT sum(i."Amount") FROM env_default.t_basketitems i WHERE i."Basket" = b.id AND i."deletedOn" IS NULL), 0)::text AS want_total,
+              (SELECT count(*)::int FROM env_default.t_basketitems i WHERE i."Basket" = b.id AND i."deletedOn" IS NULL) AS want_items
        FROM env_default.t_baskets b`)
     expect(totals.length).toBe(4)
     for (const t of totals) {

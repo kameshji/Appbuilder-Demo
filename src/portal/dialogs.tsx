@@ -11,8 +11,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CodeDialog, Empty, Field, Segmented, errMsg, slugName, useToast } from './kit'
 import { createAppWithData } from './actions'
-import { BackupRefusal, PlanView, isBackupRefusal, useConfirmable } from './SolutionPlan'
-import { planImport } from './environmentApi'
+import { BackupRefusal, PlanView, isBackupRefusal, useConfirmable, usePlanMappings } from './SolutionPlan'
+import { choiceBody, planImport } from './environmentApi'
 import type { SolutionPlan } from '@/platform/http'
 import { SizePicker } from './SizePicker'
 import { DEFAULT_DESKTOP, presetById, sizeError } from '@/runtime/sizes'
@@ -188,6 +188,8 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
   const [plan, setPlan] = useState<SolutionPlan | null>(null)
   const [refused, setRefused] = useState('')
   const { ok: confirmable, box } = useConfirmable(plan)
+  // P1-E: connection and people mapping on the plan (changing one plans again)
+  const mapping = usePlanMappings(plan, (c) => { void planImport(text, { asCopy, ...c }).then(setPlan).catch(fail) })
   const fileRef = useRef<HTMLInputElement>(null)
   useEffect(() => { if (open) { setText(''); setFileName(''); setFilesAs('database'); setAsCopy(false); setPlan(null) } }, [open])
   useEffect(() => { setPlan(null); setRefused('') }, [text, asCopy])
@@ -210,7 +212,7 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
       }
       const res = kind === 'app'
         ? await platform.apps.importPackage(text)
-        : await platform.solutions.importPackage(text, server ? { filesAs, ...(asCopy ? { asCopy: true } : {}), ...(plan && (plan.mode === 'upgrade' || plan.systemEvents?.length) ? { confirm: plan.token } : {}), ...(proceedWithoutBackup ? { proceedWithoutBackup: true } : {}) } : undefined)
+        : await platform.solutions.importPackage(text, server ? { filesAs, ...(asCopy ? { asCopy: true } : {}), ...(plan ? { confirm: plan.token } : {}), ...(proceedWithoutBackup ? { proceedWithoutBackup: true } : {}), ...choiceBody(mapping.choices) } : undefined)
       const warn = 'warnings' in res && Array.isArray(res.warnings) && res.warnings.length ? ` ${res.warnings.join(' ')}` : ''
       toast(`Imported ${kind} "${'displayName' in res ? res.displayName : res.name}".${warn}`, 'success')
       onOpenChange(false)
@@ -252,7 +254,8 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
               Import as a copy (new identities: never upgrades what is here)
             </label>
           )}
-          {plan && <PlanView plan={plan} />}
+          {plan && <PlanView plan={plan} mappingEditable />}
+          {mapping.box}
           {box}
           {refused && <BackupRefusal message={refused} busy={busy} onProceed={() => void run(true)} />}
           {kind === 'solution' && server && (
@@ -266,7 +269,7 @@ export function ImportDialog({ open, onOpenChange, kind, onDone }: { open: boole
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button disabled={busy || !text.trim() || (!!plan && !confirmable)} variant={plan?.destructive ? 'destructive' : 'default'} onClick={() => void run()} data-testid="import-run">{planned && !plan ? 'Review plan' : plan?.mode === 'upgrade' ? 'Upgrade' : 'Import'}</Button>
+          <Button disabled={busy || !text.trim() || (!!plan && (!confirmable || !mapping.ready))} variant={plan?.destructive ? 'destructive' : 'default'} onClick={() => void run()} data-testid="import-run">{planned && !plan ? 'Review plan' : plan?.mode === 'upgrade' ? 'Upgrade' : 'Import'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

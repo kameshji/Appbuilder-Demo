@@ -11,6 +11,8 @@
 import { PACKAGE_CONNECTORS, importConnectionActions } from '../../core/actions/solution-parts.ts'
 import { SYSTEM_TABLES } from '../../../src/platform/system-tables.ts'
 import { prepareViewDef, relationshipPlanLines, restorePkgRelationships } from '../../core/model/packages.ts'
+import { setRecycleDays } from '../../core/recycle.ts'
+import { RECYCLABLE_SYSTEM_TABLES } from '../../../src/platform/system-tables.ts'
 import { createSummary, fillDateDimension, setUniqueTogether } from '../../core/model/engine.ts'
 import { isSystemColumn } from '../../../src/model/ops.ts'
 import type { ReportingDef } from '../../../src/model/types.ts'
@@ -120,7 +122,7 @@ export function readSolutionPkg(text: unknown, s: Services): SolutionPkg | null 
 
 const COLUMN_PROPS: (keyof ColumnDef)[] = ['displayName', 'required', 'unique', 'indexed', 'default', 'choices', 'lookupTable', 'prefix', 'multiple', 'accept', 'maxSizeMB', 'computed']
 /** table properties an upgrade carries (F: team ownership, sharing) */
-const TABLE_PROPS = ['displayName', 'description', 'primaryColumn', 'teamOwnership', 'sharing'] as const
+const TABLE_PROPS = ['displayName', 'description', 'primaryColumn', 'teamOwnership', 'sharing', 'recycleDays'] as const
 const EVENT_PROPS = ['name', 'kind', 'timing', 'operations', 'order', 'enabled', 'condition', 'actions', 'message', 'field', 'runAs', 'description'] as const
 /** JSON with object keys sorted: definitions read back from jsonb come with their keys in another order */
 const canonical = (v: unknown): string => JSON.stringify(v ?? null, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, (x as Record<string, unknown>)[k]])) : x))
@@ -134,7 +136,7 @@ function normReporting(r: ReportingDef | undefined, map?: Map<string, string>): 
   if (!r) return undefined
   const m = (id: string) => map?.get(id) ?? id
   if (r.kind === 'view') {
-    const { baseSource: _b, ...rest } = r as ReportingDef & { baseSource?: string }
+    const { baseSource: _b, baseRecycle: _r, ...rest } = r as ReportingDef & { baseSource?: string; baseRecycle?: boolean }
     return { ...rest, base: m(r.base) } as ReportingDef
   }
   if (r.kind === 'summary') return { ...r, source: m(r.source) }
@@ -568,6 +570,8 @@ async function changeTable(s: Services, existing: TableDef, pkg: TableDef, colum
   }
   cur.modifiedOn = s.now()
   await s.meta.tables.upsert(cur)
+  // recycle bin setting (travels in solutions): turning it on adds the columns and partial indexes here
+  if ((pkg.recycleDays ?? 0) !== (cur.recycleDays ?? 0)) cur = await setRecycleDays(s, cur, pkg.recycleDays ?? 0, RECYCLABLE_SYSTEM_TABLES)
   // unique pairs: old indexes dropped, new ones built (a repeated pair stops the upgrade)
   if (!same(existing.uniqueTogether, pkg.uniqueTogether)) {
     try {

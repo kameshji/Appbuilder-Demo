@@ -303,6 +303,23 @@ the caller can read may not be deleted, the answer is 403 and nothing is deleted
 curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"ids":["3b1f6f7a-2c1e-4c5e-9d3a-0f7c9d2e8a11"]}' $BASE/data/Tickets/delete
 ```
 
+When the table keeps deleted rows ([recycle-bin.md](recycle-bin.md)) the rows go to its recycle bin and the answer also
+carries `batch` (`{ id, tableId, tableName, rows, rootIds, deletedBy, deletedOn, expiresOn, daysLeft, source, state,
+finalRows }`: what "Undo" restores); attachments then stay until the purge. Without a recycle bin there is no `batch`.
+
+### Recycle bin (user unless noted)
+
+| Route | Body / query | Answer |
+| --- | --- | --- |
+| `GET /data/:table/deleted` | `?limit` (1-500, default 100) `&skip` `&batch` | `{ rows, total, batches }`: rows the caller could delete and can see (administrators: all), newest first, each with `__deleted { on, by, byName, batch, expiresOn, daysLeft, rootTable, rootTableName, cascaded, batchRows, source }` |
+| `POST /data/:table/restore` | `{ batch }` or `{ rowId }` | `{ restored, batch, tables: [{ tableId, rows }], warnings }`; 409 when a unique value is used again, a parent is in another batch or gone, or (non-administrators) the delete removed rows of a table without a bin; 403/404 for rows the caller may not restore |
+| `POST /recycle/restore` | `{ batch }` | as above, by batch id alone (the batch's table decides) |
+| `POST /data/:table/purge` | `{ batch }` or `{ all: true, confirm: "<table name>" }` | administrators: `{ rows }` / `{ batches, rows }`, deleted for good now |
+| `GET /data/:table/recycle` | `?batch` | `{ enabled, keepDays }`; makers and administrators also `deletedRows`, `bytes`, `batches`; with `batch`: `{ batch }` |
+
+The table setting is `PATCH /tables/:id { recycleDays }` (0 = off, 1-3,650; `POST /tables` takes it too, default 30 on the
+default database).
+
 ### `POST /data/:table/import` (user)
 
 Body `{ csv: string, mode?: 'append' | 'replace' }` (default `append`) -> `{ imported: number }`. `mode` anything else: 422

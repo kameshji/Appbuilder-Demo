@@ -18,6 +18,14 @@ import { analyze, bindResult, residualScope } from '../../../src/fx/query/index.
 import { parse } from '../../../src/fx/parser.ts'
 import { childrenOf, type Node } from '../../../src/fx/ast.ts'
 import { isRecord } from '../../../src/fx/values.ts'
+import { setRegexGuard } from '../../../src/fx/functions/text.ts'
+import { setEvaluationBudget } from '../../../src/fx/evaluate.ts'
+
+// P1-E security: formulas evaluated on the server (flows, table events, reports) refuse regular expressions with nested
+// repeats (catastrophic backtracking would stall the one server process for everyone)
+setRegexGuard(true)
+// and one evaluation stops after 30 s of pure computation (the step's time budget for reads is the same)
+setEvaluationBudget(30_000)
 import { checkDeadline, schemaOf, toFx, type EvalLimits } from '../event-fx.ts'
 
 export interface FlowClock { now(): Date }

@@ -160,7 +160,7 @@ export async function validateFlow(doc: { name?: unknown; description?: unknown;
     else if (trig.type === 'table') {
       const t = tableOf(ctx, trig.table)
       if (!t) err('trigger', 'table', `There is no table "${String(trig.table ?? '')}".`)
-      if (!Array.isArray(trig.on) || !trig.on.length || !trig.on.every((o) => ['create', 'update', 'delete'].includes(o))) err('trigger', 'on', 'on must list one or more of create, update, delete.')
+      if (!Array.isArray(trig.on) || !trig.on.length || !trig.on.every((o) => ['create', 'update', 'delete', 'restore'].includes(o))) err('trigger', 'on', 'on must list one or more of create, update, delete, restore.')
       if (trig.columns !== undefined) {
         if (!Array.isArray(trig.columns)) err('trigger', 'columns', 'columns must be a list of column names.')
         else if (t) for (const c of trig.columns) if (!t.columns.some((x) => x.name === c) && !SYSTEM_COLS.has(c)) err('trigger', 'columns', `${t.displayName} has no column "${String(c)}".`)
@@ -429,7 +429,8 @@ export async function validateFlow(doc: { name?: unknown; description?: unknown;
         checkFx(id, 'title', s.title, lc)
         checkFx(id, 'details', s.details, lc, false)
         // P1-C: approvers may come from a policy
-        checkFx(id, 'approvers', s.approvers, lc, !s.policy)
+        // P1-E: or the step's own stages (sequential)
+        checkFx(id, 'approvers', s.approvers, lc, !s.policy && !(s.type === 'sequential' && Array.isArray(s.stages) && s.stages.length > 0))
         if (s.policy !== undefined && (typeof s.policy !== 'string' || !s.policy.trim())) err(id, 'policy', 'policy must name an approval policy.')
         if (s.fields !== undefined) {
           if (!s.fields || typeof s.fields !== 'object' || Array.isArray(s.fields)) err(id, 'fields', 'fields must map labels to formulas.')
@@ -441,7 +442,7 @@ export async function validateFlow(doc: { name?: unknown; description?: unknown;
         {
           const { definitionProblems } = approvalsPlatform
           const def: Record<string, unknown> = { type: s.type ?? 'single', approvers: s.policy ? undefined : ['x@example.com'] }
-          for (const k of ['quorum', 'stages', 'dueMinutes', 'reminders', 'escalation'] as const) if (s[k] !== undefined) def[k] = s[k]
+          for (const k of ['quorum', 'stages', 'rules', 'responses', 'dueMinutes', 'reminders', 'escalation'] as const) if ((s as unknown as Record<string, unknown>)[k] !== undefined) def[k] = (s as unknown as Record<string, unknown>)[k]
           if (s.type === 'sequential' && !s.stages && s.policy) def.stages = [{ approvers: ['manager'] }]
           if (s.type === 'sequential' && !s.stages && !s.policy) def.stages = undefined
           if (def.escalation && def.dueMinutes === undefined && s.timeoutMinutes) def.dueMinutes = s.timeoutMinutes

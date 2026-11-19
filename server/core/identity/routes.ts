@@ -723,8 +723,11 @@ export function identityRoutes(router: ApiRouter, services: CoreServices): void 
     installAdmin(ctx, 'change the email settings')
     const b = obj(ctx.body)
     const saved = await idn.mail.saveSettings(b)
-    const { password, ...shown } = b
-    await audit(ctx, me(ctx).id, 'install.email_settings', { ...shown, passwordChanged: password !== undefined }, true)
+    const { password, oauth2, ...shown } = b
+    // never audit secrets (the password, the OAuth client secret and refresh token)
+    const o = (oauth2 && typeof oauth2 === 'object' ? oauth2 : null) as Record<string, unknown> | null
+    const oauthShown = o ? { provider: o.provider, grant: o.grant, tenant: o.tenant, tokenUrl: o.tokenUrl, clientId: o.clientId, scope: o.scope, clientSecretChanged: o.clientSecret !== undefined, refreshTokenChanged: o.refreshToken !== undefined } : undefined
+    await audit(ctx, me(ctx).id, 'install.email_settings', { ...shown, passwordChanged: password !== undefined, ...(oauthShown ? { oauth2: oauthShown } : {}) }, true)
     return { settings: saved }
   }, { auth: 'admin', noEnvironment: true })
 

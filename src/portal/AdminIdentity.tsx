@@ -19,7 +19,7 @@ import { SignInTable, isCancelled, useReauth } from './Identity'
 import {
   createApiKey, createServiceAccount, deleteServiceAccount, emailLog, getEmailSettings, getPolicy, removeEmailSettings, revokeApiKey, saveEmailSettings,
   savePolicy, sendTestEmail, serviceAccounts, signInLog, updateServiceAccount, type MailLogEntry, type MfaMode, type SecurityPolicy, type ServiceAccount,
-  type SignInEntry, type SmtpSettings,
+  type SignInEntry, type SmtpOAuth, type SmtpSettings,
 } from './identityApi'
 
 type TitleFn = (title: string, subtitle?: ReactNode, actions?: ReactNode) => ReactNode
@@ -158,6 +158,7 @@ export function SignInSecuritySection({ title }: { title: TitleFn }) {
 
 /* ================================================================ email */
 
+const OAUTH_DEFAULT: SmtpOAuth = { provider: 'microsoft', grant: 'client_credentials', tenant: '', tokenUrl: '', clientId: '', scope: '' }
 const EMPTY_SMTP: SmtpSettings = { host: '', port: 587, security: 'starttls', username: '', hasPassword: false, verifyCertificate: true, fromAddress: '', fromName: '', replyTo: '', installName: 'Appbuilder', publicUrl: '' }
 
 export function EmailSection({ title }: { title: TitleFn }) {
@@ -168,6 +169,8 @@ export function EmailSection({ title }: { title: TitleFn }) {
   const [cur, setCur] = useState<SmtpSettings | null | undefined>(undefined)
   const [f, setF] = useState<SmtpSettings>(EMPTY_SMTP)
   const [password, setPassword] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [refreshToken, setRefreshToken] = useState('')
   const [busy, setBusy] = useState(false)
   const [testTo, setTestTo] = useState('')
   const [testResult, setTestResult] = useState('')
@@ -192,10 +195,13 @@ export function EmailSection({ title }: { title: TitleFn }) {
   const save = async () => {
     setBusy(true)
     try {
-      const r = await saveEmailSettings({ ...f, ...(password ? { password } : {}) })
+      const oauth = f.auth === 'oauth2' ? { ...(f.oauth2 ?? OAUTH_DEFAULT), ...(clientSecret ? { clientSecret } : {}), ...(refreshToken ? { refreshToken } : {}) } : undefined
+      const r = await saveEmailSettings({ ...f, oauth2: oauth, ...(password ? { password } : {}) })
       setCur(r.settings)
       setF(r.settings)
       setPassword('')
+      setClientSecret('')
+      setRefreshToken('')
       toast('Email settings saved', 'success')
     } catch (e) {
       fail(e)
@@ -230,10 +236,38 @@ export function EmailSection({ title }: { title: TitleFn }) {
         <Field label="Security" hint="STARTTLS on port 587 is the usual choice; TLS for port 465; None only for a relay on this computer.">
           <Segmented label="Security" value={f.security} onChange={(v) => set({ security: v, port: v === 'tls' ? 465 : v === 'starttls' && f.port === 465 ? 587 : f.port })} options={[{ value: 'starttls', label: 'STARTTLS' }, { value: 'tls', label: 'TLS' }, { value: 'none', label: 'None' }]} />
         </Field>
+        <Field label="Sign-in" hint="Microsoft 365 and Google Workspace accept OAuth 2.0 (AUTH XOAUTH2); a password works where the provider still allows SMTP AUTH with a password or an app password.">
+          <Segmented label="Sign-in" value={f.auth ?? 'password'} onChange={(v) => set({ auth: v, ...(v === 'oauth2' && !f.oauth2 ? { oauth2: OAUTH_DEFAULT } : {}) })} options={[{ value: 'password', label: 'Password' }, { value: 'oauth2', label: 'OAuth 2.0' }]} />
+        </Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="User name" htmlFor="smtp-user"><Input id="smtp-user" autoComplete="off" value={f.username} onChange={(e) => set({ username: e.target.value })} data-testid="smtp-user" /></Field>
-          <Field label="Password" htmlFor="smtp-password" hint={cur?.hasPassword ? 'Stored encrypted. Leave empty to keep it.' : 'Stored encrypted with the install key; never shown again.'}><PasswordInput id="smtp-password" autoComplete="new-password" value={password} onChange={setPassword} testId="smtp-password" /></Field>
+          <Field label={f.auth === 'oauth2' ? 'Mailbox (sends the mail)' : 'User name'} htmlFor="smtp-user"><Input id="smtp-user" autoComplete="off" value={f.username} onChange={(e) => set({ username: e.target.value })} data-testid="smtp-user" placeholder={f.auth === 'oauth2' ? 'appbuilder@example.com' : ''} /></Field>
+          {f.auth !== 'oauth2' && <Field label="Password" htmlFor="smtp-password" hint={cur?.hasPassword ? 'Stored encrypted. Leave empty to keep it.' : 'Stored encrypted with the install key; never shown again.'}><PasswordInput id="smtp-password" autoComplete="new-password" value={password} onChange={setPassword} testId="smtp-password" /></Field>}
         </div>
+        {f.auth === 'oauth2' && (() => {
+          const o = f.oauth2 ?? OAUTH_DEFAULT
+          const setO = (p: Partial<SmtpOAuth>) => set({ oauth2: { ...o, ...p } })
+          return (
+            <div className="grid gap-3 rounded-lg border border-border p-3" data-testid="smtp-oauth">
+              <Field label="Provider">
+                <Segmented label="Provider" value={o.provider} onChange={(v) => setO({ provider: v, grant: v === 'google' ? 'refresh_token' : o.grant, tokenUrl: '', scope: '' })} options={[{ value: 'microsoft', label: 'Microsoft 365' }, { value: 'google', label: 'Google Workspace' }, { value: 'custom', label: 'Other' }]} />
+              </Field>
+              {o.provider !== 'google' && (
+                <Field label="Grant" hint={o.grant === 'client_credentials' ? 'App-only: the app has the application permission SMTP.SendAsApp, its service principal is registered in Exchange Online and has rights on the mailbox.' : 'A refresh token obtained once for the mailbox (delegated permission SMTP.Send with offline_access).'}>
+                  <Segmented label="Grant" value={o.grant} onChange={(v) => setO({ grant: v, scope: '' })} options={[{ value: 'client_credentials', label: 'Client credentials' }, { value: 'refresh_token', label: 'Refresh token' }]} />
+                </Field>
+              )}
+              <div className="grid grid-cols-2 gap-3">
+                {o.provider === 'microsoft' && <Field label="Tenant" htmlFor="smtp-oauth-tenant" hint="Directory id or domain, e.g. contoso.onmicrosoft.com"><Input id="smtp-oauth-tenant" value={o.tenant} onChange={(e) => setO({ tenant: e.target.value })} data-testid="smtp-oauth-tenant" /></Field>}
+                <Field label="Client (application) id" htmlFor="smtp-oauth-client"><Input id="smtp-oauth-client" autoComplete="off" value={o.clientId} onChange={(e) => setO({ clientId: e.target.value })} data-testid="smtp-oauth-client" /></Field>
+                <Field label="Client secret" htmlFor="smtp-oauth-secret" hint={o.hasClientSecret ? 'Stored encrypted. Leave empty to keep it.' : o.grant === 'refresh_token' ? 'Needed by Google and by confidential Microsoft apps.' : 'Stored encrypted; never shown again.'}><PasswordInput id="smtp-oauth-secret" autoComplete="new-password" value={clientSecret} onChange={setClientSecret} testId="smtp-oauth-secret" /></Field>
+                {o.grant === 'refresh_token' && <Field label="Refresh token" htmlFor="smtp-oauth-refresh" hint={o.hasRefreshToken ? 'Stored encrypted. Leave empty to keep it; a rotated token is stored automatically.' : 'Stored encrypted; never shown again.'}><PasswordInput id="smtp-oauth-refresh" autoComplete="off" value={refreshToken} onChange={setRefreshToken} testId="smtp-oauth-refresh" /></Field>}
+                <Field label="Token address (optional)" htmlFor="smtp-oauth-url" hint="Empty: the provider's default."><Input id="smtp-oauth-url" value={o.tokenUrl} onChange={(e) => setO({ tokenUrl: e.target.value })} placeholder={o.provider === 'google' ? 'https://oauth2.googleapis.com/token' : o.provider === 'microsoft' ? 'https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token' : 'https://...'} /></Field>
+                <Field label="Scope (optional)" htmlFor="smtp-oauth-scope" hint="Empty: the provider's default."><Input id="smtp-oauth-scope" value={o.scope} onChange={(e) => setO({ scope: e.target.value })} placeholder={o.provider === 'google' ? 'https://mail.google.com/' : o.grant === 'client_credentials' ? 'https://outlook.office365.com/.default' : 'https://outlook.office.com/SMTP.Send offline_access'} /></Field>
+              </div>
+              <p className="text-xs text-muted-foreground">The token is fetched by the server through the outbound network policy and kept in memory until it expires. See the admin guide, installation, "Email with Microsoft 365 or Google Workspace".</p>
+            </div>
+          )
+        })()}
         <label className="flex items-center gap-2 text-sm"><Checkbox checked={f.verifyCertificate} onCheckedChange={(v) => set({ verifyCertificate: v === true })} /> Verify the relay's certificate (turn off only for an internal relay with a self-signed certificate)</label>
       </Section>
       <Section title="Sender and branding" testId="email-sender">

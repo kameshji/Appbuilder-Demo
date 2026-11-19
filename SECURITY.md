@@ -30,9 +30,9 @@ We ask you to give us reasonable time to fix a problem before you publish detail
 
 ## Supported versions
 
-Only the **latest version on the `main` branch** is supported and receives security fixes (0.5.0 is the first numbered
-version, the end of Phase 0). Older commits and forks do not. The Phase 0 security review is in
-`docs/internal/security-review-p0.md`.
+Only the **latest version on the `main` branch** is supported and receives security fixes (0.5.0 was the first numbered
+version, the end of Phase 0; 0.6.0 is the end of Phase 1, automation). Older commits and forks do not. The internal
+security reviews are in `docs/internal/security-review-p0.md` and `docs/internal/security-review-p1.md`.
 
 ## Scope
 
@@ -42,7 +42,10 @@ In scope:
   sessions, API keys, outbound email, roles and privileges (including row and column restrictions, organisation scopes,
   record sharing, the collaboration "regarding" rule), Query v2 plans, the realtime connection, jobs and schedules, request
   checks, secret storage, connection handling and the outbound host policy, backups and restores (including crafted
-  archives), data exports, file and attachment handling, audit logging.
+  archives), data exports, file and attachment handling, audit logging; since 0.6.0 also flows (run-as identities, child
+  flows, formulas evaluated on the server), connector actions and the HTTP connector (SSRF), inbound webhooks, outgoing
+  email and notification delivery, scheduled reports, approvals (answers, email answer links, delegation, escalation),
+  health alerts and the heartbeat, and the `appbuilder admin` recovery commands.
 - The web portal and runtime (`src/`): for example cross-site scripting, or any way to see or change data that the signed-in
   user's roles do not allow.
 - The install and setup scripts (`scripts/`) and the documentation in `docs/admin/` where they lead to an insecure setup.

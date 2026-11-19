@@ -4,6 +4,8 @@
  * row import/export through the DataService (system context).
  */
 import { prepareViewDef } from '../../core/model/packages.ts'
+import { recycleAllowed, recycleDaysOf } from '../../core/recycle.ts'
+import { RECYCLABLE_SYSTEM_TABLES } from '../../../src/platform/system-tables.ts'
 import type { ColumnDef, ConnectionRef, TableDef, TablePrivilege } from '../../../src/platform/contracts.ts'
 import { DEFAULT_ROW_CAP } from '../../../src/platform/http.ts'
 import type { QueryValue } from '../../../src/platform/http.ts'
@@ -133,6 +135,12 @@ export async function createPhysical(s: Services, record: ConnectionRecord, conn
   def.managed = true
   // a reporting view (package K): its base must exist here; CREATE VIEW from the lineage
   if (def.reporting?.kind === 'view' && !def.reporting.baseSource) await prepareViewDef(s, def)
+  // recycle bin: the columns come with the table when it keeps deleted rows (never taken from the caller's def)
+  delete def.recycleBin
+  if ((def.recycleDays ?? 0) > 0 && connector.capabilities.recycle && recycleAllowed(def, RECYCLABLE_SYSTEM_TABLES).ok) {
+    def.recycleDays = recycleDaysOf(def.recycleDays)
+    def.recycleBin = true
+  } else delete def.recycleDays
   try {
     await connector.createTable(def)
   } catch (e) {
@@ -288,7 +296,12 @@ export function plainTableDef(def: TableDef): TableDef {
   delete c.managed
   delete c.missingSystem
   // the physical name of a view's base belongs to this environment (package K)
-  if (c.reporting?.kind === 'view') delete c.reporting.baseSource
+  if (c.reporting?.kind === 'view') {
+    delete c.reporting.baseSource
+    delete c.reporting.baseRecycle
+  }
+  // recycle bin: the setting (recycleDays) travels; whether the physical table has the columns is this environment's
+  delete c.recycleBin
   return c
 }
 

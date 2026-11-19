@@ -3,6 +3,7 @@
  * teams, or mine unassigned: a list and a board by status, quick add with assignee and due date, the record each task
  * is about) and "Mentions" (where I was @mentioned, with a link back to the app it was written in).
  */
+import { UndoDelete } from '@/runtime/UndoDelete'
 import { useCallback, useEffect, useState } from 'react'
 import { AtSign, CheckSquare, ExternalLink, Loader2, Plus, UserRound } from 'lucide-react'
 import { platform, usePlatform } from '@/platform'
@@ -154,6 +155,8 @@ export function TasksPage() {
           })}
         </div>
       )}
+      {/* Activities with a recycle bin: Undo after deleting a task */}
+      <UndoDelete />
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, ChevronsUpDown, Eye, FileDown, FileUp, Lock, Plus, Rows3, Search, Share2, Trash2, TriangleAlert, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronsUpDown, Eye, FileDown, FileUp, Lock, Plus, Rows3, Search, Share2, Trash2, TriangleAlert, Undo2, X } from 'lucide-react'
 import { platform, usePlatform, type ColumnDef, type TableDef } from '@/platform'
 import type { FxRecord } from '@/contracts'
 import { cn } from '@/lib/utils'
@@ -17,6 +17,8 @@ import { ShareDialog } from './Share'
 import { WhoCanSeeDialog } from './Explain'
 import { QUERY_FALLBACK_ROW_CAP, columnKind, type QueryPlan } from '@/platform/query'
 import { useQuery } from '@/platform/useQuery'
+import { DeletedRowsView, hasDeletedView } from './RecycleBin'
+import { UndoDelete } from '@/runtime/UndoDelete'
 
 const PAGE = 200
 
@@ -167,6 +169,8 @@ export function DataGrid({ table }: { table: TableDef }) {
   const [dlg, setDlg] = useState<'add' | 'import' | 'export' | 'delete' | null>(null)
   const [shareRow, setShareRow] = useState<{ id: string; label: string } | null>(null)
   const [whoRow, setWhoRow] = useState<string | null>(null)
+  // recycle bin: the table's live rows, or its Deleted view
+  const [binView, setBinView] = useState<'rows' | 'deleted'>('rows')
   const caps = useCaps()
   const editingRef = useRef(false)
   editingRef.current = editing
@@ -226,7 +230,7 @@ export function DataGrid({ table }: { table: TableDef }) {
       return next.size === s.size ? s : next
     })
   }, [rows])
-  useEffect(() => { setActive(null); setEditing(false); setSelected(new Set()); setSort(null); setFilter(''); setLimit(PAGE) }, [table.id])
+  useEffect(() => { setActive(null); setEditing(false); setSelected(new Set()); setSort(null); setFilter(''); setLimit(PAGE); setBinView('rows') }, [table.id])
   useEffect(() => {
     gridRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }, [active])
@@ -299,9 +303,28 @@ export function DataGrid({ table }: { table: TableDef }) {
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(shown.map((_, i) => idOf(i))))
   const toggleRow = (id: string) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
 
+  const keeps = (table.recycleDays ?? 0) > 0
+  const binToggle = hasDeletedView(table) && (
+    <Segmented label="Rows or deleted rows" size="sm" value={binView} onChange={setBinView} options={[{ value: 'rows', label: 'Rows' }, { value: 'deleted', label: <span data-testid="view-deleted" className="flex items-center gap-1"><Undo2 className="size-3.5" /> Deleted</span>, title: 'Rows in the recycle bin of this table' }]} />
+  )
+  // the Undo toast stays mounted across both views (switching to Deleted keeps it)
+  const undo = <UndoDelete tables={[table.name]} testId="grid-undo" />
+  if (binView === 'deleted') {
+    return (
+      <>
+        <div data-testid="data-tab" className="flex min-h-0 flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">{binToggle}</div>
+          <DeletedRowsView table={table} cols={cols} lookups={lookups} />
+        </div>
+        {undo}
+      </>
+    )
+  }
   return (
+    <>
     <div data-testid="data-tab" className="flex min-h-0 flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
+        {binToggle}
         <div className="relative w-64">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
@@ -513,7 +536,9 @@ export function DataGrid({ table }: { table: TableDef }) {
         open={dlg === 'delete'}
         onOpenChange={(o) => !o && setDlg(null)}
         title={`Delete ${selected.size} ${selected.size === 1 ? 'row' : 'rows'}?`}
-        description="This permanently removes the selected rows from the table."
+        description={keeps
+          ? `The selected rows go to this table's recycle bin for ${table.recycleDays} ${table.recycleDays === 1 ? 'day' : 'days'}: you can restore them from Deleted (with the related rows deleted together with them).`
+          : table.connectionId && table.connectionId !== 'conn_default' ? "This permanently removes the selected rows. This table's connection deletes rows for good (no recycle bin)." : 'This permanently removes the selected rows from the table.'}
         onConfirm={() => {
           platform.tables.delete(table.name, [...selected], { secure: false })
           setSelected(new Set())
@@ -521,5 +546,7 @@ export function DataGrid({ table }: { table: TableDef }) {
         }}
       />
     </div>
+    {undo}
+    </>
   )
 }

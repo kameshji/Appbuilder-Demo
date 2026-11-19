@@ -88,3 +88,12 @@ Retention 90 days (`notifications.delivery-retention`).
 - The digest job runs every 5 minutes, so a daily digest at 08:00 leaves between 08:00 and 08:05.
 - Rate limits and breaker state of connector actions are per process (D19); the delivery limits are counted in the
   database and survive restarts.
+
+## Idempotency and the health kind (P1-E)
+
+`NotifyInput.idempotencyKey` makes a call safe to repeat (flows pass `<run>:<step path>`; health alerts
+`health:<condition>:<period>`): each recipient's notification id is `ntf_k` + 30 hex characters of
+SHA-256(key, user); the in-app row is inserted first with `ON CONFLICT DO NOTHING`, and the email channel is skipped when
+`notification_deliveries` already has an email row for that id (index `ab_ix_ndeliveries_ntf`). The kind **health**
+(Server health, install administrators) is emailed right away unless the administrator's policy or the person says
+otherwise (`effectiveChannels`); it carries the daily health summary and the alerts of `diagnostics/health-alerts.ts`.

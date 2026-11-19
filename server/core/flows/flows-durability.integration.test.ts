@@ -130,6 +130,39 @@ describe.skipIf(!PG_URL)('flow durability (PostgreSQL)', () => {
     setFaultHook(null)
   }, 300000)
 
+  it('notify after a crash between sending and recording: one in-app notification (idempotency key)', async () => {
+    const settings = { concurrency: 'parallel', timeoutMinutes: 60, retentionDays: 30, onError: 'fail' }
+    const r = await h.admin.post('/flows', {
+      name: 'NotifyOnce', settings, enabled: true,
+      trigger: { type: 'manual', inputs: [{ name: 'Ref', type: 'text' }], from: 'any' },
+      steps: [{ id: 'n', name: 'N', kind: 'notify', to: '"mona@example.com"', title: '"once " & Trigger.Inputs.Ref', body: '"b"', channels: ['inApp', 'email'] }],
+    })
+    expect(r.status, JSON.stringify(r.data)).toBe(200)
+    let fired = 0
+    let runId = ''
+    setFaultHook((p, info) => {
+      if (p === 'external:after-call' && info.runId === runId && fired === 0) {
+        fired++
+        throw new FaultCrash('crash after the notification was sent')
+      }
+    })
+    runId = (await inEnv(() => fl().runManual(admin, r.data.flow, { Ref: 'n1' }))).id
+    await drain()
+    setFaultHook(null)
+    expect(fired).toBe(1)
+    expect((await q('SELECT state FROM env_default.ab_flow_runs WHERE id = $1', [runId]))[0].state).toBe('succeeded')
+    const mona = await app.services.meta.users.byEmail('mona@example.com')
+    const rows = await q(`SELECT id FROM ab.notifications WHERE user_id = $1 AND title = 'once n1'`, [mona!.id])
+    expect(rows.length).toBe(1)
+    // the email channel (no SMTP here: logged as skipped) is recorded once too
+    const log = await q(`SELECT channel FROM ab.notification_deliveries WHERE notification_id = $1 AND channel = 'email'`, [rows[0].id])
+    expect(log.length).toBeLessThanOrEqual(1)
+    // a direct second call with the same key is a no-op for that recipient
+    const again = await app.services.notifications!.notify({ userIds: [mona!.id] }, { kind: 'flow', title: 'once n1', source: 'test', environmentId: 'default', idempotencyKey: `${runId}:/n` })
+    expect(again.delivered).toEqual([mona!.id])
+    expect((await q(`SELECT id FROM ab.notifications WHERE user_id = $1 AND title = 'once n1'`, [mona!.id])).length).toBe(1)
+  }, 120000)
+
   it('throughput: runs of a 6-step flow', async () => {
     const N = Number(process.env.FLOW_THROUGHPUT_RUNS) || 2000
     now = new Date()

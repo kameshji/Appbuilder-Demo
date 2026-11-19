@@ -97,6 +97,7 @@ export function BackupsSection({ title }: { title: Title }) {
   const [data, setData] = useState<{ items: BackupInfo[]; health: BackupHealth; ops: BackupOp[] } | null>(null)
   const [error, setError] = useState('')
   const [tab, setTab] = useState('list')
+  const [includeDeleted, setIncludeDeleted] = useState(false)
   const [now, setNow] = useState(false)
   const [restoreOf, setRestoreOf] = useState<BackupInfo | null>(null)
   const [busy, setBusy] = useState(false)
@@ -140,9 +141,10 @@ export function BackupsSection({ title }: { title: Title }) {
     <Panel className="mb-4 flex flex-wrap items-center gap-3 p-3 text-sm" data-testid="export-data">
       <div className="min-w-0 flex-1">
         <div className="font-medium">Export environment data</div>
-        <div className="text-xs text-muted-foreground">Every table of this environment as CSV files in one ZIP, with a list of the attachment files and a manifest. For moving data to another system or keeping a readable copy; it is not a backup (use a backup to restore).</div>
+        <div className="text-xs text-muted-foreground">Every table of this environment as CSV files in one ZIP, with a list of the attachment files and a manifest. For moving data to another system or keeping a readable copy; it is not a backup (use a backup to restore). Rows in recycle bins are left out unless you include them.</div>
       </div>
-      <Button size="sm" variant="outline" onClick={() => void withReauth(() => downloadEnvironmentData())} data-testid="export-data-button"><Download /> Export data</Button>
+      <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={includeDeleted} onChange={(e) => setIncludeDeleted(e.target.checked)} data-testid="export-data-include-deleted" />Include deleted rows</label>
+      <Button size="sm" variant="outline" onClick={() => void withReauth(() => downloadEnvironmentData({ includeDeleted }))} data-testid="export-data-button"><Download /> Export data</Button>
     </Panel>
   )
 

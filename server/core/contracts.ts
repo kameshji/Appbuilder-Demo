@@ -166,7 +166,15 @@ export interface ConnectorCapabilities {
   /** translates Condition / orderBy / top / skip into the source (otherwise the service filters in memory) */
   pushdown: boolean
   transactions: boolean
+  /**
+   * recycle bin (docs/dev/recycle-bin.md): tables of this connection can keep deleted rows (only the default
+   * PostgreSQL database: soft delete, restore, purge run in the system database's unit of work)
+   */
+  recycle?: boolean
 }
+
+/** which rows a read sees (recycle bin): live rows (default, every product read), deleted rows, or both */
+export type RowScope = 'live' | 'deleted' | 'all'
 
 export interface SourceColumn { name: string; type: ColumnDef['type'] }
 
@@ -191,7 +199,7 @@ export interface Connector {
   dropColumn(def: TableDef, name: string): Promise<void>
   dropTable(def: TableDef): Promise<void>
   /** `where` may reference only columns of def. Return typed RawRows (Date for date/datetime). */
-  select(def: TableDef, q: Query): Promise<{ rows: RawRow[]; total?: number }>
+  select(def: TableDef, q: Query, opts?: { rows?: RowScope }): Promise<{ rows: RawRow[]; total?: number }>
   insert(def: TableDef, rows: RawRow[]): Promise<void>
   /** update rows with this id that also satisfy `guard` (RLS); returns affected count (0 = not found or not allowed) */
   update(def: TableDef, id: string, changes: RawRow, guard?: Condition): Promise<number>
@@ -211,6 +219,18 @@ export interface Connector {
    * Connectors without it are served by the DataService fallback (reference executor over a capped read).
    */
   queryV2?(def: TableDef, input: QueryV2Input): Promise<QueryV2Raw>
+  /**
+   * capabilities.recycle only: the recycle bin's statements (docs/dev/recycle-bin.md). enable: the columns and partial
+   * indexes of an existing table (`def` with recycleBin set); softDelete / restore / purge return the affected row ids.
+   */
+  recycle?: {
+    enable(def: TableDef): Promise<void>
+    softDelete(def: TableDef, ids: string[], batch: { id: string; by: string | null; at: Date }, guard?: Condition): Promise<string[]>
+    restore(def: TableDef, batchId: string, ids?: string[]): Promise<string[]>
+    purge(def: TableDef, batchId: string, limit: number): Promise<string[]>
+    /** deleted rows of the table: how many, and their size on disk (approximate, bytes) */
+    stats(def: TableDef): Promise<{ rows: number; bytes: number }>
+  }
   close(): Promise<void>
 }
 
@@ -733,6 +753,14 @@ export interface NotifyInput {
    * to a confirmation page in the app. One recipient per call when the links are personal.
    */
   emailActions?: { label: string; url: string }[]
+  /**
+   * P1-E: makes the call safe to repeat (a flow's notify step after a crash or a retry): each recipient's notification id
+   * is derived from the key and the user, so a second call with the same key stores no second in-app row and sends no
+   * second email for a recipient already handled.
+   */
+  idempotencyKey?: string
+  /** P1-D: channels the caller asks for (flows' notify step); the recipient's preferences still apply */
+  channels?: string[]
 }
 
 /**

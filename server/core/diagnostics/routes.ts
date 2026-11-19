@@ -39,6 +39,27 @@ export function diagnosticsRoutes(router: Router, services: CoreServices, live: 
     return detailedHealth(services, live)
   }, opts)
 
+  // P1-E: health email and heartbeat
+  router.add('GET', '/api/v1/admin/health-alerts', async (ctx) => {
+    installAdmin(ctx, 'see the health alert settings')
+    return { settings: await services.healthAlerts.settings() }
+  }, opts)
+  router.add('PUT', '/api/v1/admin/health-alerts', async (ctx) => {
+    const u = installAdmin(ctx, 'change the health alert settings')
+    const b = (ctx.body && typeof ctx.body === 'object' ? ctx.body : {}) as Record<string, unknown>
+    const saved = await services.healthAlerts.save(b)
+    const hb = (b.heartbeat && typeof b.heartbeat === 'object' ? b.heartbeat : {}) as Record<string, unknown>
+    // the heartbeat address may hold a secret token: audited as changed, never its value
+    await services.install.audit({ userId: u.user.id, action: 'install.health_alerts', details: { email: saved.email, heartbeat: { enabled: saved.heartbeat.enabled, everyMinutes: saved.heartbeat.everyMinutes, allowPrivateNetwork: saved.heartbeat.allowPrivateNetwork, urlChanged: hb.url !== undefined } } }).catch(() => {})
+    return { settings: saved }
+  }, opts)
+  router.add('POST', '/api/v1/admin/health-alerts/test', async (ctx) => {
+    installAdmin(ctx, 'test the health alerts')
+    const b = (ctx.body && typeof ctx.body === 'object' ? ctx.body : {}) as Record<string, unknown>
+    if (b.what === 'heartbeat') return services.healthAlerts.heartbeat(new Date(), { force: true })
+    return services.healthAlerts.daily()
+  }, opts)
+
   router.add('GET', '/api/v1/admin/logs', async (ctx): Promise<LogPage> => {
     installAdmin(ctx, 'read the server logs')
     const fl = activeFileLog()

@@ -16,7 +16,7 @@
  *   POST   /flows/schedule-preview        { cron? | everyMinutes?, timeZone } -> { next: ISO[5], description } (designer)
  *   GET    /flows/runs?flowId=&status=&mode=&before=&limit=
  *   GET    /flows/runs/:runId             detail (owner, administrators); summary for the person who started it
- *   POST   /flows/runs/:runId/cancel      POST /flows/runs/:runId/resubmit { from: 'start' | 'failed' }
+ *   POST   /flows/runs/:runId/cancel      POST /flows/runs/:runId/resubmit { from: 'start' | 'failed' | 'step', step? }
  * Administrators:
  *   GET/PUT /flows/settings               { paused } (kill switch)    GET/PUT /flows/permissions/all { roleIds }
  * Other systems:
@@ -26,7 +26,7 @@ import { HttpError } from '../contracts.ts'
 import type { Ctx, UserContext } from '../contracts.ts'
 import type { ApiRouter } from '../router.ts'
 import type { CoreServices } from '../services.ts'
-import { DEFAULT_SETTINGS, type FlowDef, type FlowRunDetail, type FlowStepRun, type FlowWaitInfo, type RunAs, type RunStatus, type ValidationProblem } from '../../../src/platform/flows.ts'
+import { DEFAULT_SETTINGS, childLists, type FlowDef, type FlowRunDetail, type FlowStepRun, type FlowWaitInfo, type RunAs, type RunStatus, type ValidationProblem } from '../../../src/platform/flows.ts'
 import { errText, log } from '../util.ts'
 import { runInEnvironment } from '../env-context.ts'
 import { T, docOf, type FlowDoc } from './store.ts'
@@ -123,6 +123,24 @@ export function flowRoutes(router: ApiRouter, s: CoreServices): void {
     return out
   }
 
+  /**
+   * P1-E security: a child flow (callFlow) must be one the saving maker may run by hand, and (unless the flow runs as the
+   * person who triggers it) one its owner may run; the engine checks the run-as identity again at run time.
+   */
+  async function checkCalledFlows(ctx: Ctx, doc: FlowDoc, cur: FlowDef | null, ownerId: string): Promise<void> {
+    const targets = new Set<string>()
+    const walk = (list: FlowDoc['steps']) => { for (const st of list ?? []) { if (st.kind === 'callFlow' && typeof st.flow === 'string') targets.add(st.flow); for (const l of childLists(st)) walk(l.steps) } }
+    walk(doc.steps)
+    if (!targets.size) return
+    const owner = ownerId === me(ctx).user.id ? me(ctx) : await (async () => { const o = await s.meta.users.get(ownerId); return o ? s.security.forUser(o) : null })()
+    for (const name of targets) {
+      const t = await f().store.resolve(name)
+      if (!t || (cur && t.id === cur.id)) continue
+      if (!(await f().canRun(me(ctx), t))) throw new HttpError(403, 'denied', `You may not run "${t.name}", so this flow cannot call it.`, 'steps')
+      if (owner && !(await f().canRun(owner, t))) throw new HttpError(403, 'denied', `The owner of this flow may not run "${t.name}", so the flow cannot call it.`, 'steps')
+    }
+  }
+
   async function checkRunAs(ctx: Ctx, doc: FlowDoc, cur: FlowDef | null): Promise<void> {
     const admin = me(ctx).privileges.isAdmin
     if ((isService(doc.runAs) || isService(cur?.runAs)) && !sameRunAs(doc.runAs, cur?.runAs) && !admin) {
@@ -156,6 +174,7 @@ export function flowRoutes(router: ApiRouter, s: CoreServices): void {
       throw new HttpError(409, 'conflict', `${ownerChanged ? 'The owner changes' : 'The flow will run as another identity'}: runs then read and write with ${isService(doc.runAs) ? 'the service account\'s' : doc.runAs === 'triggeringUser' ? 'the rights of the person who triggers them' : 'the owner\'s'} rights. Confirm the change.`, 'confirmRunAs')
     }
     const conns = await checkConnections(ctx, connectionsFrom(b.connections, cur), cur)
+    await checkCalledFlows(ctx, doc, cur, ownerId)
     const problems = await f().validate(doc, cur?.id ?? null, conns)
     const errors = problems.filter((p) => p.severity === 'error')
     if (errors.length) throw new HttpError(422, 'invalid', `The flow has ${errors.length} problem${errors.length === 1 ? '' : 's'}: ${errors[0].step ? `step ${errors[0].step}, ` : ''}${errors[0].field ? `${errors[0].field}: ` : ''}${errors[0].message}`, errors[0].field || undefined, { problems })
@@ -465,9 +484,15 @@ export function flowRoutes(router: ApiRouter, s: CoreServices): void {
   }, { auth: 'maker' })
   router.add('POST', '/flows/runs/:runId/resubmit', async (ctx) => {
     const r = await runFor(ctx)
-    const from = body(ctx).from === 'failed' ? 'failed' : 'start'
+    // P1-E security: a run is resubmitted with its stored run-as identity; only the flow's current owner or an
+    // administrator may do that (not a former owner of a flow that was given to someone else)
+    const cur = await f().store.get(String(r.flow_id))
+    if (!cur) throw new HttpError(404, 'not-found', 'The flow no longer exists.')
+    if (!me(ctx).privileges.isAdmin && cur.ownerId !== me(ctx).user.id) throw new HttpError(403, 'denied', 'Only the owner of the flow or an administrator can run it again.')
+    const b = body(ctx)
+    const from: 'start' | 'failed' | { step: string } = b.from === 'failed' ? 'failed' : b.from === 'step' && typeof b.step === 'string' && b.step ? { step: b.step.slice(0, 80) } : 'start'
     const out = await f().engine.resubmit(String(r.id), from, me(ctx).user.id)
-    await audit(s, ctx, 'flow.run.resubmit', { flow: String(r.flow_id), run: String(r.id), newRun: out.id, from })
+    await audit(s, ctx, 'flow.run.resubmit', { flow: String(r.flow_id), run: String(r.id), newRun: out.id, from: typeof from === 'object' ? `step:${from.step}` : from })
     return { runId: out.id }
   }, { auth: 'maker' })
 

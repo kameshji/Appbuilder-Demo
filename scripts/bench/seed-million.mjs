@@ -46,6 +46,8 @@ let def = ws.tables.find((t) => t.name === TABLE)
 if (!def) {
   def = await api('POST', '/tables', {
     displayName: TABLE, name: TABLE,
+    // recycle bin (P1): RECYCLE_DAYS=0 creates the table without one (as before), 30 with one
+    ...(process.env.RECYCLE_DAYS !== undefined ? { recycleDays: Number(process.env.RECYCLE_DAYS) } : {}),
     columns: [
       { displayName: 'Title', name: 'Title', type: 'text', required: true, indexed: true },
       { displayName: 'City', name: 'City', type: 'text', indexed: true },
@@ -63,6 +65,7 @@ if (!def) {
 const db = new pg.Client({ connectionString: PG_URL })
 await db.connect()
 const phys = `"env_default"."${def.source}"`
+// every row, live or in the recycle bin (the recycle bench marks 10 % deleted after loading)
 const have = Number((await db.query(`SELECT count(*)::bigint AS n FROM ${phys}`)).rows[0].n)
 if (have < ROWS) {
   const t0 = Date.now()

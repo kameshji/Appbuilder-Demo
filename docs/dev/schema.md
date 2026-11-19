@@ -9,7 +9,7 @@ Decision D14 in `/home/claude/appbuilder-demo/docs/decisions.md` records the mov
    (at most `APPBUILDER_MAX_ENVIRONMENTS`, default 5). Each holds the environment's metadata tables (`ab_roles`, `ab_tables`,
    `ab_apps`, `ab_audit`, ...) **and** the data tables of its default connection (`t_orders`, `t_contacts`, ...).
 
-Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 9`),
+Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 10`),
 `/home/claude/appbuilder-demo/server/core/install-store.ts` (the `ab` registry, access and install audit)
 and, for data tables, `/home/claude/appbuilder-demo/server/connectors/postgres/sql.ts` (`createTableSql`, `sqlType`).
 
@@ -133,6 +133,11 @@ that the flow tables exist (`ab_flows`, `ab_flow_versions`, `ab_flow_runs`, `ab_
 `ab_flow_connections`, `ab_flow_run_grants`, `ab_flow_settings`, `ab_flow_alerts`) and drops the empty placeholder table
 `sys_flow_runs` of version 7 (kept as `sys_flow_runs_placeholder_v7` if it holds rows); `provisionSystemTables` then creates
 `sys_flow_runs` as a view over `ab_flow_runs` (it also converts a leftover placeholder at any later start).
+
+**9 to 10, recycle bin** (independent environment step `upgradeEnvironmentTo10Recycle`, `server/core/recycle-ddl.ts`):
+`ab_delete_batches` and `ab_delete_effects` come from `environmentDdl`; the step checks they exist. No data table is
+changed: tables keep final deletes until a maker turns their recycle bin on (then `enableRecycleSql` adds the columns and
+rebuilds the partial indexes of that table). A server of version 9 refuses a version 10 schema (downgrade guard).
 
 ## Types and conventions
 
@@ -553,6 +558,16 @@ data model shows them as the views `sys_approval_requests`, `sys_approval_stages
 `sys_approval_history`, `sys_approval_delegations`, `sys_approval_policies` (group Approvals). Environment copies copy
 `ab_approval_policies` and `ab_approval_settings`; restores keep requests (see approvals.md).
 
+### Recycle bin: `ab_delete_batches`, `ab_delete_effects` (version 10)
+
+DDL in `server/core/recycle-ddl.ts` (`recycleEnvironmentDdl`). `ab_delete_batches`: `id` PK (`del_<uuid>`), `table_id`,
+`root_ids` jsonb (at most 1,000), `row_count`, `deleted_by`, `deleted_on`, `expires_on`, `source`, `state` (`deleted`,
+`partial`, `restored`, `purged`), `restored_by`, `restored_on`, `purged_on`, `details` jsonb; indexes `(table_id,
+deleted_on DESC)` and partial `(expires_on)` of open batches. `ab_delete_effects`: PK `(batch_id, seq)`, `kind` (`row`,
+`setBlank`, `collab`, `detach`, `share`, `final`), `table_id`, `row_id`, `column_name`, `old_value` jsonb; partial index
+`(table_id, row_id)` of `row` effects. Not copied by environment copies; part of backups. Purpose and rules:
+[recycle-bin.md](recycle-bin.md).
+
 ## Data tables (default connection, PostgreSQL)
 
 A table created through the API on the default connection becomes the physical table `"env_<id>"."<source>"`, where `source` is
@@ -569,6 +584,12 @@ starting with `ab_` is refused** (403): the metadata tables are not reachable th
 | `createdBy`, `owner` | `text` | user ids; `owner` has an index and drives the `own` scope |
 
 All other columns are nullable. `required`, defaults and so on are enforced by the service layer; `unique` by an index too.
+
+A table with a **recycle bin** (`TableDef.recycleBin`, [recycle-bin.md](recycle-bin.md)) also has `deletedOn`
+`timestamptz(3)`, `deletedBy` `text` and `deleteBatch` `text` (never part of `TableDef.columns`). Its `uq_`, `ix_`, `kx_`,
+`kd_`, natural-order and unique-pair indexes are partial (`WHERE "deletedOn" IS NULL`), with expression statistics
+`stk_<table>_<col>` / `stf_<table>_<col>` / `stk_<table>__natural` standing in for the statistics PostgreSQL does not keep
+for partial expression indexes; `ix_<table>_deletedOn` and `ix_<table>_deleteBatch` are partial on the deleted rows.
 
 ### Column type map (`sqlType`)
 

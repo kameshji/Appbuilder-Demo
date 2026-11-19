@@ -214,7 +214,9 @@ export class V2Builder {
     const col = this.cols.get(v.col)
     const sub = new V2Builder(this.d, rel.def, this.p)
     const t = tableId(this.d, rel.def)
-    const rf = rel.rowFilter && !('const' in rel.rowFilter && rel.rowFilter.const) ? `(${buildWhere(this.d, rel.def, rel.rowFilter, this.p).sql})` : T
+    // the target's row filter and its live rows (recycle bin): one buildWhere, like the statement's own table
+    const rw = buildWhere(this.d, rel.def, rel.rowFilter && !('const' in rel.rowFilter && rel.rowFilter.const) ? rel.rowFilter : undefined, this.p).sql
+    const rf = rw === T ? T : `(${rw})`
     const q = quoteId(col.name)
     const hit = `(${q} IS NOT NULL AND ${q} IN (SELECT "id" FROM ${t} WHERE "id" IS NOT NULL AND ${sub.cond(v.where)} AND ${rf}))`
     if (!v.orMissing) return hit
@@ -273,12 +275,11 @@ export class V2Builder {
 
   where(plan: QueryPlan, rowFilter: Condition | undefined): string {
     const parts: string[] = []
-    if (rowFilter && !('const' in rowFilter && rowFilter.const)) {
-      // v1 semantics for row filters, parameters continue in the same list. The parts are ANDed at the top of the WHERE,
-      // where NULL already excludes the row: no COALESCE around it, so the owner, lookup and id indexes stay usable
-      const w = buildWhere(this.d, this.def, rowFilter, this.p)
-      parts.push(`(${w.sql})`)
-    }
+    // v1 semantics for row filters, parameters continue in the same list. The parts are ANDed at the top of the WHERE,
+    // where NULL already excludes the row: no COALESCE around it, so the owner, lookup and id indexes stay usable.
+    // Always through buildWhere, also without a row filter: it adds the live-row predicate of the recycle bin
+    const w = buildWhere(this.d, this.def, rowFilter && !('const' in rowFilter && rowFilter.const) ? rowFilter : undefined, this.p)
+    if (w.sql !== T) parts.push(`(${w.sql})`)
     if (plan.filter) parts.push(this.cond(plan.filter))
     if (plan.search && plan.search.text !== '' && plan.search.columns.length) {
       const needle = this.p.add('%' + likeEscape(plan.search.text.toLowerCase()) + '%', 'text')

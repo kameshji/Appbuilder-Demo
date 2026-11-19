@@ -240,6 +240,7 @@ export const NOTIFICATION_KINDS: readonly { kind: string; label: string; descrip
   { kind: 'approval', label: 'Approvals', description: 'Approval requests waiting for you.' },
   { kind: 'mention', label: 'Mentions and comments', description: 'Someone mentioned you or commented on a record you follow.' },
   { kind: 'task', label: 'Tasks', description: 'A task was assigned to you.' },
+  { kind: 'health', label: 'Server health', description: 'Install administrators: the daily health summary and alerts (degraded server, failed backup, dead jobs, failing flows), when turned on in Admin console > Server logs.' },
 ]
 
 export function defaultNotificationSettings(): NotificationSettings {

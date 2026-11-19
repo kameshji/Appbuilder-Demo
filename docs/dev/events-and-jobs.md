@@ -53,6 +53,11 @@ Tables on other connections (external PostgreSQL/MySQL, files, Google Sheets) ge
 in the same transaction as their data: the outbox row is written after the connector's write; a crash in between loses that
 one event. Rollups need both tables on the default database.
 
+**Recycle bin** ([recycle-bin.md](recycle-bin.md)): a delete of a table that keeps deleted rows writes the same outbox
+rows as before with `details.batch`; a restore writes one `bulk` row per table with `details.action = 'restore'` (rollups
+reconcile, the live hub sends an import-like change). Table events see the operation `restore` (after-events only,
+opt-in: an event lists it in `operations`); a before-event with `restore` is refused.
+
 ## Guarantees
 
 | Area | Guarantee | How | Test |

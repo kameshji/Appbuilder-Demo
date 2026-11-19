@@ -150,6 +150,8 @@ export const DELIVERY_INSTALL_DDL: string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS ab_ix_ndeliveries_user ON ${A('notification_deliveries')} (user_id, at DESC)`,
   `CREATE INDEX IF NOT EXISTS ab_ix_ndeliveries_at ON ${A('notification_deliveries')} (at)`,
+  // P1-E: a notify call with an idempotency key looks up what was already delivered for its derived notification id
+  `CREATE INDEX IF NOT EXISTS ab_ix_ndeliveries_ntf ON ${A('notification_deliveries')} (notification_id) WHERE notification_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS ${A('notification_digest')} (
     id text PRIMARY KEY,
     user_id text NOT NULL REFERENCES ${A('users')} (id) ON DELETE CASCADE,

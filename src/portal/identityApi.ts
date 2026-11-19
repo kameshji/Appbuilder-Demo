@@ -117,12 +117,19 @@ export interface SecurityPolicy {
 export const getPolicy = () => idCall<{ policy: SecurityPolicy }>('GET', '/identity/policy')
 export const savePolicy = (policy: Partial<SecurityPolicy>) => idCall<{ policy: SecurityPolicy }>('PUT', '/identity/policy', { policy })
 
+export interface SmtpOAuth {
+  provider: 'microsoft' | 'google' | 'custom'; grant: 'client_credentials' | 'refresh_token'; tenant: string; tokenUrl: string; clientId: string; scope: string
+  hasClientSecret?: boolean; hasRefreshToken?: boolean
+}
 export interface SmtpSettings {
   host: string; port: number; security: 'starttls' | 'tls' | 'none'; username: string; hasPassword: boolean; verifyCertificate: boolean
   fromAddress: string; fromName: string; replyTo: string; installName: string; publicUrl: string
+  /** P1-E: OAuth 2.0 (XOAUTH2) for Microsoft 365 / Google Workspace */
+  auth?: 'password' | 'oauth2'
+  oauth2?: SmtpOAuth
 }
 export const getEmailSettings = () => idCall<{ settings: SmtpSettings | null }>('GET', '/identity/email')
-export const saveEmailSettings = (s: Partial<SmtpSettings> & { password?: string }) => idCall<{ settings: SmtpSettings }>('PUT', '/identity/email', s)
+export const saveEmailSettings = (s: Omit<Partial<SmtpSettings>, 'oauth2'> & { password?: string; oauth2?: Partial<SmtpOAuth> & { clientSecret?: string; refreshToken?: string } }) => idCall<{ settings: SmtpSettings }>('PUT', '/identity/email', s)
 export const removeEmailSettings = () => idCall<{ ok: true }>('DELETE', '/identity/email')
 export const sendTestEmail = (to: string) => idCall<{ ok: true; to: string; response: string }>('POST', '/identity/email/test', { to })
 export interface MailLogEntry { id: string; createdOn: string; sentOn: string | null; status: 'queued' | 'sent' | 'retrying' | 'failed'; attempts: number; to: string; subject: string; template: string; lastError: string | null }

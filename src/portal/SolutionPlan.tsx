@@ -4,7 +4,8 @@
  * "Deploy to..." dialog of a solution page: export from this environment and import into another in one step, after
  * the administrator reviewed and confirmed the plan.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { platform } from '@/platform'
 import { ArrowRight, Boxes, Cable, ClipboardCheck, CircleAlert, FileSpreadsheet, Info, LayoutGrid, Rocket, ShieldCheck, Table2, TriangleAlert, Workflow, Zap, type LucideIcon } from 'lucide-react'
 import { ENVIRONMENT_TYPE_LABEL, usePlatform, type SolutionDef } from '@/platform'
 import type { PlanItem, SolutionPlan } from '@/platform/http'
@@ -16,7 +17,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { TypeBadge } from './EnvironmentPicker'
 import { Field, errMsg, useToast } from './kit'
-import { deploy, planDeploy } from './environmentApi'
+import { deploy, planDeploy, type PlanChoices } from './environmentApi'
 
 const KIND_ICON: Record<PlanItem['kind'], LucideIcon> = { app: LayoutGrid, table: Table2, role: ShieldCheck, connection: Cable, file: FileSpreadsheet, event: Zap, flow: Workflow, approvalPolicy: ClipboardCheck }
 const KIND_LABEL: Record<PlanItem['kind'], string> = { app: 'App', table: 'Table', role: 'Role', connection: 'Connection', file: 'Data file', event: 'Table event', flow: 'Flow', approvalPolicy: 'Approval policy' }
@@ -27,7 +28,7 @@ const CHANGE_STYLE: Record<PlanItem['change'], string> = {
   unchanged: 'bg-muted text-muted-foreground',
 }
 
-export function PlanView({ plan }: { plan: SolutionPlan }) {
+export function PlanView({ plan, mappingEditable }: { plan: SolutionPlan; /** P1-E: the mappings are edited in PlanMappings below */ mappingEditable?: boolean }) {
   const [showSame, setShowSame] = useState(false)
   const order: PlanItem['change'][] = ['removed', 'changed', 'new', 'unchanged']
   const items = [...plan.items].sort((a, b) => order.indexOf(a.change) - order.indexOf(b.change))
@@ -62,7 +63,7 @@ export function PlanView({ plan }: { plan: SolutionPlan }) {
           <span><b>Data will be lost.</b> Items marked in red drop a table or a column in {plan.target.name}; their values cannot be brought back by this import.</span>
         </div>
       )}
-      {plan.flowConnections && plan.flowConnections.length > 0 && (
+      {!mappingEditable && plan.flowConnections && plan.flowConnections.length > 0 && (
         <div className="grid gap-1 rounded-md border border-border p-2.5 text-xs" data-testid="plan-flow-connections">
           <span className="font-semibold">Connections the flows use here</span>
           {plan.flowConnections.map((c) => (
@@ -71,7 +72,7 @@ export function PlanView({ plan }: { plan: SolutionPlan }) {
           <span className="text-muted-foreground">New flows arrive turned off. Another mapping: connectionMap in the import request (docs/guide/maker/solutions.md).</span>
         </div>
       )}
-      {plan.approvalPeople && plan.approvalPeople.length > 0 && (
+      {!mappingEditable && plan.approvalPeople && plan.approvalPeople.length > 0 && (
         <div className="grid gap-1 rounded-md border border-border p-2.5 text-xs" data-testid="plan-approval-people">
           <span className="font-semibold">People the approval policies name</span>
           {plan.approvalPeople.map((p) => (
@@ -114,6 +115,89 @@ export function PlanView({ plan }: { plan: SolutionPlan }) {
       </p>
     </div>
   )
+}
+
+/**
+ * P1-E: the choices of a plan, made on the plan screen: a target connection for every connection the flows use (required:
+ * the import is blocked until each one is chosen), the person each approval policy's named person becomes here (a person
+ * without an account must be mapped or explicitly left unmapped), the run-as-service-account flows (an administrator
+ * allows them), and whether new flows arrive turned on. Changing a mapping plans again (the token covers it).
+ */
+export function usePlanMappings(plan: SolutionPlan | null, replan: (c: PlanChoices) => void): { choices: PlanChoices; ready: boolean; box: React.ReactNode } {
+  const [choices, setChoices] = useState<PlanChoices>({})
+  const [leaveUnmapped, setLeaveUnmapped] = useState<Set<string>>(new Set())
+  const [serviceOk, setServiceOk] = useState(false)
+  const [people, setPeople] = useState<{ name: string; email: string }[]>([])
+  const [draft, setDraft] = useState<Record<string, string>>({})
+  const hasPeople = !!plan?.approvalPeople?.length
+  useEffect(() => { if (hasPeople) platform.org.directory().then((d) => setPeople(d.users)).catch(() => {}) }, [hasPeople])
+  // the allowance stands while the same service-account flows are listed (a mapping change plans again)
+  const serviceKey = (plan?.serviceFlows ?? []).join('\n')
+  useEffect(() => { setServiceOk(false) }, [serviceKey])
+  const reset = () => { setChoices({}); setLeaveUnmapped(new Set()); setDraft({}) }
+  const conns = plan?.flowConnections ?? []
+  const missingPeople = (plan?.approvalPeople ?? []).filter((p) => !p.to)
+  const service = plan?.serviceFlows ?? []
+  const newFlows = (plan?.items ?? []).filter((i) => i.kind === 'flow' && i.change === 'new')
+  const ready = !!plan && conns.every((c) => !!c.to) && missingPeople.every((p) => leaveUnmapped.has(p.email)) && (!service.length || serviceOk)
+  const change = (next: PlanChoices) => { setChoices(next); replan(next) }
+  const box = useMemo(() => {
+    if (!plan || (!conns.length && !plan.approvalPeople?.length && !service.length && !newFlows.length)) return null
+    return (
+      <div className="grid gap-3 rounded-md border border-border p-2.5 text-xs" data-testid="plan-mappings">
+        {conns.length > 0 && (
+          <div className="grid gap-1.5" data-testid="plan-map-connections">
+            <span className="font-semibold">Connections the flows use: choose the connection of {plan.target.name} for each</span>
+            {conns.map((c) => (
+              <label key={c.from} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-2" data-testid="plan-map-connection">
+                <span><span className="font-medium">{c.fromName ?? c.from}</span> ({c.connector ?? 'connection'}) <span className="text-muted-foreground">for {c.usedBy.map((u) => u.flowName).join(', ')}</span></span>
+                <select className={cn('h-8 rounded-md border bg-background px-2 text-sm', !c.to && 'border-destructive')} value={c.to ?? ''} data-testid={`plan-map-connection-${c.fromName ?? c.from}`}
+                  onChange={(e) => change({ ...choices, connectionMap: { ...(choices.connectionMap ?? {}), [c.from]: e.target.value } })}>
+                  <option value="" disabled>Choose a connection{c.candidates.length ? '' : ' (none of this kind here: create one first)'}</option>
+                  {c.candidates.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+                </select>
+              </label>
+            ))}
+          </div>
+        )}
+        {plan.approvalPeople && plan.approvalPeople.length > 0 && (
+          <div className="grid gap-1.5" data-testid="plan-map-people">
+            <span className="font-semibold">People the approval policies name: who they are in {plan.target.name}</span>
+            <datalist id="plan-people">{people.map((p) => <option key={p.email} value={p.email}>{p.name}</option>)}</datalist>
+            {plan.approvalPeople.map((p) => (
+              <div key={p.email} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-2" data-testid={p.to ? 'plan-person-found' : 'plan-person-missing'}>
+                <span><span className="font-medium">{p.email}</span> <span className="text-muted-foreground">in {p.usedBy.join(', ')}</span>{p.to && <span className="text-emerald-700 dark:text-emerald-300"> → {p.toName ?? p.to}</span>}</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input className={cn('h-8 w-52 rounded-md border bg-background px-2 text-sm', !p.to && !leaveUnmapped.has(p.email) && 'border-destructive')} list="plan-people" placeholder={p.to ? 'Another person (email)' : 'Email of the person here'} data-testid={`plan-map-person-${p.email}`}
+                    value={draft[p.email] ?? choices.peopleMap?.[p.email] ?? ''} onChange={(e) => setDraft({ ...draft, [p.email]: e.target.value })}
+                    onBlur={(e) => { const v = e.target.value.trim(); if (v !== (choices.peopleMap?.[p.email] ?? '')) { const m = { ...(choices.peopleMap ?? {}) }; if (v) m[p.email] = v; else delete m[p.email]; change({ ...choices, peopleMap: m }) } }} />
+                  {!p.to && (
+                    <label className="flex items-center gap-1.5"><Checkbox checked={leaveUnmapped.has(p.email)} onCheckedChange={(v) => { const n = new Set(leaveUnmapped); if (v === true) n.add(p.email); else n.delete(p.email); setLeaveUnmapped(n) }} data-testid={`plan-leave-${p.email}`} />leave unmapped (requests go to the requester's manager or an administrator)</label>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {service.length > 0 && (
+          <label className="flex items-start gap-2 text-sm">
+            <Checkbox checked={serviceOk} onCheckedChange={(v) => setServiceOk(v === true)} className="mt-0.5" data-testid="plan-ack-service-flows" />
+            <span>These flows run as a service account and ignore the rights of the people who trigger them: {service.join(', ')}. I allow them (recorded in the audit log).</span>
+          </label>
+        )}
+        {newFlows.length > 0 && (
+          <label className="flex items-start gap-2 text-sm">
+            <Checkbox checked={!!choices.enableFlows} onCheckedChange={(v) => change({ ...choices, enableFlows: v === true })} className="mt-0.5" data-testid="plan-enable-flows" />
+            <span>Turn on the new flows after the import ({newFlows.map((f) => f.name).join(', ')}). Otherwise they arrive turned off.</span>
+          </label>
+        )}
+        {!ready && <span className="text-destructive" data-testid="plan-mappings-missing">Choose every connection{missingPeople.length ? ', map or leave unmapped every person without an account' : ''}{service.length ? ', and allow the service-account flows' : ''} before importing.</span>}
+      </div>
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan, choices, leaveUnmapped, serviceOk, people, draft])
+  useEffect(() => { if (!plan) reset() }, [plan])
+  return { choices, ready, box }
 }
 
 /** the backup before an upgrade failed (409, field "backup"): the administrator may go on without it, or cancel */
@@ -167,6 +251,7 @@ export function DeployDialog({ open, onOpenChange, solution }: { open: boolean; 
   const [error, setError] = useState('')
   const [refused, setRefused] = useState('')
   const { ok, box } = useConfirmable(plan)
+  const mapping = usePlanMappings(plan, (c) => { void planDeploy(solution.id, target, includeData, c).then(setPlan).catch((e) => setError(errMsg(e))) })
   useEffect(() => {
     if (!open) return
     setPlan(null); setError(''); setRefused(''); setIncludeData(false)
@@ -190,7 +275,7 @@ export function DeployDialog({ open, onOpenChange, solution }: { open: boolean; 
     if (!plan) return
     setBusy(true)
     try {
-      const res = await deploy(solution.id, target, plan.token, includeData, { proceedWithoutBackup })
+      const res = await deploy(solution.id, target, plan.token, includeData, { proceedWithoutBackup, ...mapping.choices })
       const t = list.find((e) => e.id === target)
       toast(`Deployed "${solution.displayName}" v${res.version} to ${t?.name ?? target}${res.backup && !res.backup.taken ? ' (no backup was taken)' : ''}`, 'success')
       onOpenChange(false)
@@ -226,9 +311,10 @@ export function DeployDialog({ open, onOpenChange, solution }: { open: boolean; 
               </label>
             </div>
             {error && <p className="text-sm text-destructive" role="alert" data-testid="deploy-error">{error}</p>}
-            {plan ? <PlanView plan={plan} /> : (
+            {plan ? <PlanView plan={plan} mappingEditable /> : (
               <p className="rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">Review the plan first: you see every app, table, column and role that will be added, changed or removed before anything happens.</p>
             )}
+            {mapping.box}
             {box}
             {refused && <BackupRefusal message={refused} busy={busy} onProceed={() => void run(true)} />}
           </div>
@@ -238,7 +324,7 @@ export function DeployDialog({ open, onOpenChange, solution }: { open: boolean; 
           {!plan ? (
             <Button onClick={review} disabled={!target || busy} data-testid="deploy-review">{busy ? <Spinner /> : null} Review plan</Button>
           ) : (
-            <Button onClick={() => void run()} disabled={!ok || busy} variant={plan.destructive ? 'destructive' : 'default'} data-testid="deploy-confirm">{busy ? <Spinner /> : <Rocket />} {plan.mode === 'upgrade' ? 'Upgrade' : 'Install'} in {list.find((e) => e.id === target)?.name ?? target}</Button>
+            <Button onClick={() => void run()} disabled={!ok || !mapping.ready || busy} variant={plan.destructive ? 'destructive' : 'default'} data-testid="deploy-confirm">{busy ? <Spinner /> : <Rocket />} {plan.mode === 'upgrade' ? 'Upgrade' : 'Install'} in {list.find((e) => e.id === target)?.name ?? target}</Button>
           )}
         </DialogFooter>
       </DialogContent>

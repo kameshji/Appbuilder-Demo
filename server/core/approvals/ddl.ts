@@ -82,6 +82,8 @@ export function approvalsEnvironmentDdl(schema: string): string[] {
       completed_on timestamptz NULL,
       PRIMARY KEY (request_id, idx)
     )`,
+    // P1-E: per-stage due dates (idempotent, no schema version step)
+    `ALTER TABLE ${E('ab_approval_stages')} ADD COLUMN IF NOT EXISTS due_minutes integer NULL`,
     `CREATE TABLE IF NOT EXISTS ${E('ab_approval_assignments')} (
       id text PRIMARY KEY,
       request_id text NOT NULL,

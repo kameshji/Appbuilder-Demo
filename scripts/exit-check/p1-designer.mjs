@@ -167,6 +167,8 @@ async function approvalForm(title, approvers, timeoutDays) {
   const external = await page.$(T('approval-step-form'))
   if (external) {
     await typeInto(T('appr-title'), title)
+    // P1-E: approvers are picked visually; a formula from the record is one click away ("Take them from the record ...")
+    if (await page.$(T('appr-approvers-formula'))) await click(T('appr-approvers-formula'))
     await typeInto(T('appr-approvers'), approvers)
     await typeInto('#appr-timeout', String(timeoutDays * 24))
   } else {

@@ -60,8 +60,8 @@ export const uploadBackup = (file: File) => call<BackupInfo>('POST', '/backups/u
 export const reauthenticate = (password: string) => call<unknown>('POST', '/auth/reauth', { password })
 
 /** export environment data (package M): a ZIP of CSVs of the current environment; needs a recent sign-in like a backup download */
-export async function downloadEnvironmentData(): Promise<void> {
-  const t = await call<{ url: string }>('POST', '/admin/export-data/ticket', {})
+export async function downloadEnvironmentData(o: { includeDeleted?: boolean } = {}): Promise<void> {
+  const t = await call<{ url: string }>('POST', '/admin/export-data/ticket', o.includeDeleted ? { includeDeleted: true } : {})
   const a = document.createElement('a')
   a.href = t.url
   a.rel = 'noopener'

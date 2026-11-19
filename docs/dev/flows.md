@@ -3,7 +3,8 @@
 Flows automate work: when a row changes, on a schedule, at a button press in an app or on a web request, a flow runs a
 list of steps (conditions, loops, data changes, approvals, messages, HTTP calls, connector actions, child flows). This page
 is the design of the runtime: tables, the execution model, guarantees per step kind, security, limits and the interfaces
-of the packages around it. Contract: `docs/plan/p1-spec.md` ("Fixed contracts"); decision D27 in `docs/decisions.md`.
+of the packages around it. Contract: `docs/plan/p1-spec.md` ("Fixed contracts"); decision D27 in `docs/decisions.md`. Phase close (package E): notification
+idempotency, run again from a step, child-flow permissions, the server formula guards, Admin console > Flows.
 Maker view: [guide/maker/flows.md](../guide/maker/flows.md); administrators: [admin/flows.md](../admin/flows.md);
 reference of every trigger and step kind: [reference/flows.md](../reference/flows.md) (generated); HTTP API:
 [data-api.md](data-api.md#flows).
@@ -103,7 +104,15 @@ job sees the ended run and stops: cancellation takes effect between steps.
 
 **Resubmit.** From the start: a new run with the same trigger payload. From the failed step: a new run that copies the rows
 of the steps that succeeded (containers that failed are copied as running so they continue, failed loop iterations run
-again, variables are rebuilt from the setVariable steps that succeeded) and runs the rest.
+again, variables are rebuilt from the setVariable steps that succeeded) and runs the rest. **From a chosen step**
+(`{ from: 'step', step: <id> }`, P1-E) of any finished run: allowed for a **top-level** step that ran (has a finished row)
+when every top-level step before it finished (`resubmitFromStepCheck`); those steps are copied as they ended, their
+outputs are reused as stored (not read again), variables are rebuilt from their setVariable rows, and the chosen step and
+everything after it run again (with their side effects: the designer asks first). Steps inside a condition, switch, loop or
+scope are refused with the reason: the state of a half-run container cannot be rebuilt reliably (run again from the
+container, or from the failed step). Outputs are always stored whole (a step whose output is over 1 MB fails), so
+"earlier outputs still stored" holds for every finished run until retention deletes it. Only the flow's current owner or an
+administrator resubmits.
 
 **Restart safety.** Nothing lives only in memory: a run's state is its rows. A worker that dies loses its jobs' heartbeat;
 the reaper puts them back after 30 s and the advance runs again from the database. `flows-durability.integration.test.ts`
@@ -125,7 +134,7 @@ and call `services.flows.sweep()`.
 | data.create, data.update, data.delete on the default database | **exactly once** | the change, its outbox row, the step row and the next advance commit in one transaction |
 | data.* on other connections (external databases, files, sheets) | at least once, deduplicated | create uses a stable row id from run and step (a retry finds the row); update and delete are idempotent |
 | http, action, email | at least once with the idempotency key `<run>:<step path>` | the step row is committed as running before the call; the result commits after it. A crash between the call and the commit repeats the call with the same key: the actions service replays a stored result for non-idempotent actions (24 h); http POST/PATCH send it as `Idempotency-Key` |
-| notify | at least once | in-app notifications have no idempotency key today; a crash after sending and before recording sends twice |
+| notify | effectively once per recipient | the key `<run>:<step path>` is passed to `notifications.notify` (`NotifyInput.idempotencyKey`): each recipient's notification id is derived from key and user, the in-app row is written first (`ON CONFLICT DO NOTHING`) and the email is skipped when the delivery log already has it. Left: a crash between handing an email to the mail queue and logging it can repeat that email |
 | approval | the request once per step execution (key `<run>:<step path>`, made inside the step's transaction); the answer resumes once | wait row state changes once |
 | delay, waitForCallback | resumes once | wait row state changes once; a callback that arrives before the step waits is kept (`early`) |
 | callFlow | the child run is created once (trigger key `call:<run>:<step path>`, in the step's transaction); its end resumes the parent once | |
@@ -143,7 +152,7 @@ and call `services.flows.sweep()`.
 evaluated on the **after-image** of that change (the row as stored now, with the columns the change wrote as it wrote
 them, so later changes of other columns are seen but this change's values are its own) with `Trigger.Old` (the row before,
 from the outbox snapshot); reads in the condition run as the run-as identity, budget 1 s, 5 queries. A condition that fails
-records a failed run (never silently dropped). Deleted rows: the delete snapshot (every column). **Coalescing**
+records a failed run (never silently dropped). Deleted rows: the delete snapshot (every column). Restored rows (recycle bin): operation `restore`, only for triggers whose `on` lists it (off by default), `Trigger.Old` blank. **Coalescing**
 (`coalesce: true`): while a run of the same record is still queued (not started), a later change replaces its trigger
 payload instead of adding a run.
 
@@ -200,6 +209,12 @@ refuse the save (422 with `problems`); warnings are returned with the saved flow
   (`flow.run_as_changed`, `flow.owner_changed`). Attaching a connection (a new or changed reference) needs the right to
   use it: administrators always, others `services.actions.assertCanUse` (package D's grants); audited
   `flow.connection_granted`. Data rights are not checked at save time (they are enforced at run time).
+* **Child flows** (P1-E): saving a flow with a `callFlow` step needs the right to run the target, for the person saving and for
+  the flow's owner; at run time the run-as identity must be allowed to run the target (owner, administrators, granted
+  roles), else the step fails ("may not run"). Without this a maker's flow could start an administrator's or a service
+  account's flow (security review P1, finding 2).
+* **Formulas on the server** (P1-E): `setRegexGuard` refuses regular expressions with nested repeats, `setEvaluationBudget`
+  stops one evaluation after 30 s or about 50 MB of text / 3 million rows built (`src/fx/evaluate.ts`).
 * **Running by hand**: the owner, administrators, and roles granted on the flow or on every flow (`ab_flow_run_grants`).
   A flow that runs as its owner runs with the owner's rights for whoever the owner lets run it; that is the owner's
   decision. The person who started a run sees its status, not its steps and data.
@@ -341,7 +356,8 @@ run's stored trigger, a row read through Query v2, or a form), dry run by defaul
 step rows (`/each#2/inner`) to step ids, one loop iteration at a time. "Run again from this step" is the runtime's resubmit
 from the failed step.
 
-**Approvals.** The approval step's form is package C's `ApprovalStepForm` (`src/approvals/`), found with
+**Approvals.** The approval step's form is package C's `ApprovalStepForm` (`src/approvals/`; P1-E: approvers, stages,
+threshold rules, answers and the escalation target are edited visually with `src/approvals/DefinitionEditor.tsx`), found with
 `import.meta.glob` by `approvalAdapter.tsx`, so the designer builds without it (a placeholder edits the core fields).
 `GET /flows/catalog` says whether an approvals service is registered (`approvals`); without one the picker and the
 gallery mark approval steps "needs approvals".
@@ -356,7 +372,7 @@ about 0.26 s; opening a step's panel about 50 ms; adding a step about 0.3 s; und
 
 ## Not done yet
 
-Approvals are package C ([approvals.md](approvals.md): the real `ApprovalsService`, the step's refinements `policy`, `fields`, `quorum`, `stages`, `dueMinutes`, `reminders`, `escalation`, the outputs `Status` and `Approvers`, and the trigger `approvalDecided`); the trigger `formSubmitted` (reserved); per-record ordering across several
-dispatching servers; an idempotency key for in-app notifications. Designer: no real-time co-editing (a soft lock instead);
-"run again from this step" is offered for the failed step only (the runtime resubmits from the failed step or the start);
-the visual diff is an outline, not a second canvas; marquee selection is not there (Ctrl/Shift + click instead).
+The trigger `formSubmitted` (reserved); per-record ordering across several dispatching servers. Designer: no real-time
+co-editing (a soft lock instead); "run again from this step" runs from the failed step anywhere, or from a completed
+**top-level** step (not from inside a container); the visual diff is an outline, not a second canvas; marquee selection is
+not there (Ctrl/Shift + click instead).

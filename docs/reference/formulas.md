@@ -117,15 +117,15 @@ Gross(net: Number): Number = net * (1 + TaxRate);
 
 ## Functions
 
-173 built-in functions. A signature in square brackets means the argument is optional; "..." means more of the same may follow. A function marked as behaviour works only in behaviour properties.
+175 built-in functions. A signature in square brackets means the argument is optional; "..." means more of the same may follow. A function marked as behaviour works only in behaviour properties.
 
 - [Logic and errors](#logic-and-errors) (16)
 - [Text](#text) (23)
 - [Math](#math) (28)
 - [Date and time](#date-and-time) (20)
-- [Table](#table) (25)
+- [Table](#table) (26)
 - [Colour](#colour) (3)
-- [Behaviour](#behaviour) (39)
+- [Behaviour](#behaviour) (40)
 - [JSON and regular expressions](#json-and-regular-expressions) (5)
 - [Context and environment](#context-and-environment) (5)
 - [Core data model](#core-data-model) (7)
@@ -257,6 +257,7 @@ Functions that read, filter, sort, reshape and group tables. Most of them evalua
 | `CountIf(table, condition)` | Number of rows where the condition is true. |
 | `CountRows(table)` | Number of rows in a table. |
 | `Defaults(collection)` | An empty record, used with Patch to create a new row. |
+| `DeletedRows(table)` | The rows in the recycle bin of a table that you could delete and can see (administrators: all), newest first (at most 500), with DeletedOn, DeletedBy, DeleteBatch, DaysLeft, DeletedTable and CascadedFrom. Empty while loading and for tables that keep no deleted rows. |
 | `Distinct(table, formula)` | A one-column table (Value) of the different results of a formula. |
 | `DropColumns(table, "column" [, "column2", ...])` | Removes columns from every row. |
 | `Filter(table, condition [, condition2, ...])` | Rows of the table where every condition is true. |
@@ -318,6 +319,7 @@ Functions with side effects. They work only in behaviour properties such as OnSe
 | `RequestApproval(policyOrApprovers, record, title [, details [, fields]])` | Asks for an approval about a record (server mode) and returns the request id at once. policyOrApprovers: the name of an approval policy, or approvers ("asha@example.com; role:Finance", "manager", a table of people). details: text every approver sees; fields: a record such as {Amount: ThisItem.Amount} (shown to approvers, read by threshold rules). You are the requester. |
 | `Reset(component)` | Puts an input UI component back to its default value. |
 | `ResetForm(Form)` | Puts every field of a form back to its starting value. |
+| `Restore(deletedRowOrBatch)` | Brings back a deleted row (a row of DeletedRows(...)) or a whole deletion batch (its id, such as ThisItem.DeleteBatch), undoing what that delete did. Only rows you could delete and can see. |
 | `RunFlow(flow, inputs [, options])` | Starts a run of a flow that people and apps may start (server mode) and returns its run id. inputs is a record of the flow's inputs, like {Order: ThisItem.id}. options: {Wait: true, Timeout: 10, Result: "Answer"} puts the flow's response (its Respond step) in the global variable Answer (default FlowResult) when it arrives. You need the permission to run the flow. |
 | `Select(component)` | Runs the OnSelect of a UI component. |
 | `SendNotification(user, title [, body] [, link])` | Sends an in-app notification (the bell) to a person in this environment: user is an email, a user id or a record such as User(). link is a link inside Appbuilder such as "#u". Unlike Notify, it reaches the other person; it is rate-limited. |

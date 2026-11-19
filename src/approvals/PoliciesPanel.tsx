@@ -1,13 +1,14 @@
 /**
  * Approval policies (makers) and the approval settings (administrators) on the Approvals page (P1 package C). A policy is
  * a reusable definition: who decides and how (type, approvers, stages, threshold rules), the answers, due date,
- * reminders, escalation and the rules (self-approval, separation of duties, bulk answers). Stages, rules and answers are
- * edited as JSON under "Advanced" (the shape is in docs/guide/maker/approvals.md).
+ * reminders, escalation and the rules (self-approval, separation of duties, bulk answers). P1-E: approvers, stages,
+ * threshold rules and answers are edited visually (DefinitionEditor.tsx); "Advanced" shows the same definition as JSON
+ * for experts, in sync.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Loader2, Plus, Save, Trash2 } from 'lucide-react'
 import { usePlatform } from '@/platform'
-import { APPROVAL_TYPE_DOCS, ESCALATION_DOCS, type ApprovalDefinition, type ApprovalPolicy, type ApprovalSettings, type ApprovalType, type EscalationAction } from '@/platform/approvals'
+import { APPROVAL_TYPE_DOCS, ESCALATION_DOCS, definitionProblems, type ApprovalDefinition, type ApprovalPolicy, type ApprovalSettings, type ApprovalType, type EscalationAction } from '@/platform/approvals'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -16,32 +17,31 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { errMsg, useToast } from '@/portal/kit'
 import { useCaps } from '@/portal/security'
 import { approvalsApi } from './api'
+import { ApproverPicker, ResponsesEditor, RulesEditor, StagesEditor, useApproverDirectory } from './DefinitionEditor'
 
 const blank = (): ApprovalPolicy => ({ id: '', name: '', definition: { type: 'single', approvers: ['manager'] } })
 
 function PolicyEditor({ value, onSaved, onCancel }: { value: ApprovalPolicy; onSaved(): void; onCancel(): void }) {
   const { toast } = useToast()
+  const dir = useApproverDirectory()
   const [p, setP] = useState<ApprovalPolicy>(value)
   const d = p.definition
-  const [advanced, setAdvanced] = useState(() => JSON.stringify({ stages: d.stages, rules: d.rules, responses: d.responses }, null, 2))
+  const [showJson, setShowJson] = useState(false)
+  const [json, setJson] = useState('')
+  const [jsonError, setJsonError] = useState('')
   const [busy, setBusy] = useState(false)
-  const set = (patch: Partial<ApprovalDefinition>) => setP({ ...p, definition: { ...d, ...patch } })
+  const [fieldNames, setFieldNames] = useState(() => [...new Set(['Amount', ...[...(d.stages ?? []).map((x) => x.condition ?? ''), ...(d.rules ?? []).map((x) => x.condition)].flatMap((c) => [...c.matchAll(/\b([A-Z][A-Za-z0-9_]*)\b/g)].map((m) => m[1])).filter((n) => !['IsBlank', 'StartsWith'].includes(n))])].join(', '))
+  const fields = fieldNames.split(',').map((x) => x.trim()).filter(Boolean)
+  const set = (patch: Partial<ApprovalDefinition>) => {
+    const next = { ...d, ...patch } as ApprovalDefinition & Record<string, unknown>
+    for (const [k, v] of Object.entries(patch)) if (v === undefined || (Array.isArray(v) && !v.length && k !== 'approvers')) delete next[k]
+    setP({ ...p, definition: next })
+  }
+  const problems = definitionProblems(d)
   const save = async () => {
-    let extra: Partial<ApprovalDefinition> = {}
-    try {
-      extra = JSON.parse(advanced || '{}') as Partial<ApprovalDefinition>
-    } catch {
-      toast('Advanced is not valid JSON.', 'error')
-      return
-    }
-    const def: ApprovalDefinition = { ...d }
-    for (const k of ['stages', 'rules', 'responses'] as const) {
-      if (extra[k] === undefined || (Array.isArray(extra[k]) && !(extra[k] as unknown[]).length)) delete def[k]
-      else (def as unknown as Record<string, unknown>)[k] = extra[k]
-    }
     setBusy(true)
     try {
-      await approvalsApi.savePolicy({ ...p, ...(p.id ? {} : { id: undefined }), definition: def })
+      await approvalsApi.savePolicy({ ...p, ...(p.id ? {} : { id: undefined }), definition: d })
       toast('Policy saved.', 'success')
       onSaved()
     } catch (e) {
@@ -55,26 +55,47 @@ function PolicyEditor({ value, onSaved, onCancel }: { value: ApprovalPolicy; onS
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         <label className="flex flex-col gap-1 text-xs font-medium">Name<Input value={p.name} onChange={(e) => setP({ ...p, name: e.target.value })} data-testid="policy-name" /></label>
         <label className="flex flex-col gap-1 text-xs font-medium">How they decide
-          <select className="h-9 rounded-md border bg-background px-2 text-sm" value={d.type} onChange={(e) => set({ type: e.target.value as ApprovalType })}>
+          <select className="h-9 rounded-md border bg-background px-2 text-sm" value={d.type} onChange={(e) => {
+            const t = e.target.value as ApprovalType
+            set({ type: t, ...(t === 'sequential' && !d.stages?.length ? { stages: [{ name: 'Stage 1', approvers: d.approvers ?? [] }] } : {}), ...(t !== 'quorum' ? { quorum: undefined } : { quorum: d.quorum ?? 2 }) })
+          }} data-testid="policy-type">
             {APPROVAL_TYPE_DOCS.map((t) => <option key={t.type} value={t.type}>{t.title}</option>)}
           </select>
         </label>
         <label className="flex flex-col gap-1 text-xs font-medium sm:col-span-2">Description<Input value={p.description ?? ''} onChange={(e) => setP({ ...p, description: e.target.value })} /></label>
-        {d.type !== 'sequential' && (
-          <label className="flex flex-col gap-1 text-xs font-medium sm:col-span-2">Approvers (one per line: email, role:Finance, team:QA, manager, manager-chain:2, department-head ...)
-            <Textarea className="min-h-16 font-mono text-xs" value={(d.approvers ?? []).join('\n')} onChange={(e) => set({ approvers: e.target.value.split('\n').map((x) => x.trim()).filter(Boolean) })} data-testid="policy-approvers" />
-          </label>
-        )}
-        {d.type === 'quorum' && <label className="flex flex-col gap-1 text-xs font-medium">How many must approve<Input type="number" min={1} value={d.quorum ?? ''} onChange={(e) => set({ quorum: e.target.value ? Number(e.target.value) : undefined })} /></label>}
-        <label className="flex flex-col gap-1 text-xs font-medium">Due in (hours)<Input type="number" min={0} step="any" value={d.dueMinutes ? d.dueMinutes / 60 : ''} onChange={(e) => set({ dueMinutes: e.target.value ? Math.round(Number(e.target.value) * 60) : undefined })} /></label>
-        <label className="flex flex-col gap-1 text-xs font-medium">Remind after (hours)<Input type="number" min={0} step="any" value={d.reminders ? d.reminders.afterMinutes / 60 : ''} onChange={(e) => set({ reminders: e.target.value ? { ...(d.reminders ?? {}), afterMinutes: Math.round(Number(e.target.value) * 60) } : undefined })} /></label>
+      </div>
+      {d.type !== 'sequential' && (
+        <div className="flex flex-col gap-1 text-xs font-medium">Approvers
+          <ApproverPicker value={d.approvers ?? []} onChange={(a) => set({ approvers: a })} dir={dir} testId="policy-approvers" />
+        </div>
+      )}
+      {d.type === 'quorum' && <label className="flex w-fit flex-col gap-1 text-xs font-medium">How many must approve<Input type="number" min={1} className="w-24" value={d.quorum ?? ''} onChange={(e) => set({ quorum: e.target.value ? Number(e.target.value) : undefined })} data-testid="policy-quorum" /></label>}
+      {d.type === 'sequential' && (
+        <div className="flex flex-col gap-1 text-xs font-medium">Stages, one after another
+          <StagesEditor stages={d.stages ?? []} onChange={(st) => set({ stages: st })} dir={dir} fields={fields} />
+        </div>
+      )}
+      <div className="flex flex-col gap-1 text-xs font-medium">Threshold rules <span className="font-normal text-muted-foreground">Each rule whose condition holds adds a stage after the others (e.g. when Amount is more than 50000, also ask the manager chain until the CEO).</span>
+        <RulesEditor rules={d.rules ?? []} onChange={(r) => set({ rules: r })} dir={dir} fields={fields} />
+      </div>
+      <label className="flex flex-col gap-1 text-xs font-medium">Fields the conditions read <span className="font-normal text-muted-foreground">The fields a flow step or app declares, comma-separated (offered in the condition builders).</span>
+        <Input className="h-8" value={fieldNames} onChange={(e) => setFieldNames(e.target.value)} data-testid="policy-fields" />
+      </label>
+      <div className="flex flex-col gap-1 text-xs font-medium">Answers
+        <ResponsesEditor responses={d.responses} onChange={(r) => set({ responses: r })} />
+      </div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <label className="flex flex-col gap-1 text-xs font-medium">Due in (hours)<Input type="number" min={0} step="any" value={d.dueMinutes ? d.dueMinutes / 60 : ''} onChange={(e) => set({ dueMinutes: e.target.value ? Math.round(Number(e.target.value) * 60) : undefined })} data-testid="policy-due" /></label>
+        <label className="flex flex-col gap-1 text-xs font-medium">Remind after (hours)<Input type="number" min={0} step="any" value={d.reminders ? d.reminders.afterMinutes / 60 : ''} onChange={(e) => set({ reminders: e.target.value ? { ...(d.reminders ?? {}), afterMinutes: Math.round(Number(e.target.value) * 60) } : undefined })} data-testid="policy-remind" /></label>
+        <label className="flex flex-col gap-1 text-xs font-medium">Then every (hours)<Input type="number" min={0} step="any" disabled={!d.reminders} value={d.reminders?.everyMinutes ? d.reminders.everyMinutes / 60 : ''} onChange={(e) => d.reminders && set({ reminders: { ...d.reminders, everyMinutes: e.target.value ? Math.max(5, Math.round(Number(e.target.value) * 60)) : undefined } })} /></label>
         <label className="flex flex-col gap-1 text-xs font-medium">When overdue
-          <select className="h-9 rounded-md border bg-background px-2 text-sm" value={d.escalation?.action ?? ''} onChange={(e) => set({ escalation: e.target.value ? { ...(d.escalation ?? {}), action: e.target.value as EscalationAction } : undefined })}>
+          <select className="h-9 rounded-md border bg-background px-2 text-sm" value={d.escalation?.action ?? ''} onChange={(e) => set({ escalation: e.target.value ? { ...(d.escalation ?? {}), action: e.target.value as EscalationAction } : undefined })} data-testid="policy-escalation">
             <option value="">Nothing</option>
-            {ESCALATION_DOCS.map((x) => <option key={x.action} value={x.action}>{x.action}: {x.summary}</option>)}
+            {ESCALATION_DOCS.map((x) => <option key={x.action} value={x.action}>{ESCALATION_LABEL[x.action]}</option>)}
           </select>
         </label>
-        {d.escalation?.action === 'user' && <label className="flex flex-col gap-1 text-xs font-medium">Escalate to (email)<Input value={d.escalation.to ?? ''} onChange={(e) => set({ escalation: { ...d.escalation!, to: e.target.value } })} /></label>}
+        {d.escalation && <label className="flex flex-col gap-1 text-xs font-medium">Escalate after the due date (hours)<Input type="number" min={0} step="any" value={d.escalation.afterMinutes ? d.escalation.afterMinutes / 60 : ''} onChange={(e) => set({ escalation: { ...d.escalation!, afterMinutes: e.target.value ? Math.round(Number(e.target.value) * 60) : undefined } })} /></label>}
+        {d.escalation?.action === 'user' && <div className="flex flex-col gap-1 text-xs font-medium">Escalate to<ApproverPicker value={d.escalation.to ? [d.escalation.to] : []} onChange={(a) => set({ escalation: { ...d.escalation!, to: a[0] } })} dir={dir} single testId="policy-escalate-to" /></div>}
       </div>
       <div className="flex flex-col gap-1.5 text-xs">
         <label className="flex items-center gap-2"><Switch checked={!!d.requireCommentOnReject} onCheckedChange={(v) => set({ requireCommentOnReject: v || undefined })} />A comment is required to reject</label>
@@ -83,17 +104,26 @@ function PolicyEditor({ value, onSaved, onCancel }: { value: ApprovalPolicy; onS
         <label className="flex items-center gap-2"><Switch checked={d.allowBulk !== false} onCheckedChange={(v) => set({ allowBulk: v ? undefined : false })} />Approvers may answer several of these at once</label>
         {d.type === 'all' && <label className="flex items-center gap-2"><Switch checked={d.rejectOnFirst !== false} onCheckedChange={(v) => set({ rejectOnFirst: v ? undefined : false })} />The first rejection rejects at once</label>}
       </div>
-      <label className="flex flex-col gap-1 text-xs font-medium">Advanced: stages, threshold rules, answers (JSON)
-        <Textarea className="min-h-32 font-mono text-[11px]" value={advanced} onChange={(e) => setAdvanced(e.target.value)} data-testid="policy-advanced" />
-        <span className="font-normal text-muted-foreground">{'stages: [{ "name": "Manager", "approvers": ["manager"] }, { "name": "Finance", "approvers": ["role:Finance"], "mode": "any", "condition": "Amount > 10000" }]; rules: [{ "condition": "Amount > 50000", "approvers": ["manager-chain-until-title:CEO"] }]; responses: [{ "label": "Approve", "kind": "approve" }, { "label": "Need more info", "kind": "info" }]'}</span>
-      </label>
+      {problems.length > 0 && <ul className="list-disc pl-5 text-xs text-destructive" data-testid="policy-problems">{problems.map((x, i) => <li key={i}>{x.message}</li>)}</ul>}
+      <div className="flex flex-col gap-1">
+        <button type="button" className="w-fit text-xs text-primary hover:underline" onClick={() => { setShowJson((x) => !x); setJson(JSON.stringify(d, null, 2)); setJsonError('') }} data-testid="policy-json-toggle">{showJson ? 'Hide the definition (JSON)' : 'Advanced: the definition as JSON'}</button>
+        {showJson && <>
+          <Textarea className="min-h-32 font-mono text-[11px]" value={json} onChange={(e) => {
+            setJson(e.target.value)
+            try { const v = JSON.parse(e.target.value) as ApprovalDefinition; setP({ ...p, definition: v }); setJsonError('') } catch { setJsonError('Not valid JSON yet; the editor above keeps the last valid definition.') }
+          }} data-testid="policy-advanced" />
+          {jsonError && <span className="text-xs text-destructive">{jsonError}</span>}
+        </>}
+      </div>
       <div className="flex gap-2">
-        <Button disabled={busy || !p.name.trim()} onClick={() => void save()} data-testid="policy-save">{busy ? <Loader2 className="animate-spin" /> : <Save />}Save</Button>
+        <Button disabled={busy || !p.name.trim() || problems.length > 0} onClick={() => void save()} data-testid="policy-save">{busy ? <Loader2 className="animate-spin" /> : <Save />}Save</Button>
         <Button variant="ghost" onClick={onCancel}>Cancel</Button>
       </div>
     </div>
   )
 }
+
+const ESCALATION_LABEL: Record<EscalationAction, string> = { manager: 'Ask the manager of whoever has not answered', user: 'Ask a named person', nextStage: 'Skip to the next stage', approve: 'Approve automatically', reject: 'Reject automatically', expire: 'Let it expire' }
 
 function SettingsBox() {
   const { toast } = useToast()

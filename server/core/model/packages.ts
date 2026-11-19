@@ -95,6 +95,9 @@ export async function prepareViewDef(s: Services, def: TableDef, map?: Map<strin
   }
   for (const c of r.columns) if (!base.columns.some((x) => x.name === c.source)) throw new HttpError(422, 'invalid', `The reporting view "${def.displayName}" reads "${c.source}", which ${base.displayName} does not have.`)
   def.reporting = { ...r, base: base.id, baseSource: base.source }
+  // the base's recycle bin: the view shows live rows only (derived here, never taken from a package)
+  if (base.recycleBin) def.reporting.baseRecycle = true
+  else delete def.reporting.baseRecycle
   def.readOnly = true
   if (def.source?.startsWith('t_')) def.source = `v_${def.source.slice(2)}`
 }

@@ -13,7 +13,8 @@ screen is open, a notification may also appear in the corner for a few seconds.
 
 ## Choose what you get
 
-Open **Settings > Notifications**. For each kind (from apps, from Appbuilder, from table events, from flows, approvals, mentions, tasks):
+Open **Settings > Notifications**. For each kind (from apps, from Appbuilder, from table events, from flows, approvals, mentions,
+tasks; install administrators also see **Server health**, the daily health summary and alerts):
 
 - **In the app**: on or off.
 - **Email**: **No email**, **Right away** or **In a digest** (hourly or daily at a time you choose).
@@ -38,7 +39,9 @@ into one.
 
 ## The email
 
-It shows the title and text, who sent it, and an **Open in Appbuilder** button that goes straight to the record. At the bottom is the reason you got it and a link that stops
+It shows the title and text, who sent it, and an **Open in ...** button (with your company's name for Appbuilder) that goes
+straight to the record. Approval emails also have a button per answer (**Approve**, **Reject** ...): see
+[Quick-start for approvers](quick-start-approver.md). At the bottom is the reason you got it and a link that stops
 emails of that kind (it works without signing in).
 
 ## I do not get emails

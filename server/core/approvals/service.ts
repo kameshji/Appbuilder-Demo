@@ -356,7 +356,7 @@ export function createApprovals(services: CoreServices) {
           input.flow?.waitId ?? null, input.flow?.stepKey ?? null, key, escalateAt, at],
       )
       for (const [i, s] of plan.stages.entries()) {
-        await db().exec(`INSERT INTO ${T('ab_approval_stages')} (request_id, idx, name, mode, quorum, refs, status) VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'waiting')`, [id, i, s.name, s.mode, s.quorum ?? null, JSON.stringify(s.refs)])
+        await db().exec(`INSERT INTO ${T('ab_approval_stages')} (request_id, idx, name, mode, quorum, refs, status, due_minutes) VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'waiting', $7)`, [id, i, s.name, s.mode, s.quorum ?? null, JSON.stringify(s.refs), s.dueMinutes ?? null])
       }
       await hist(id, actor, 'requested', null, { title, source: input.source, stages: plan.stages.map((s) => s.name), ...(input.flow ? { flow: input.flow.flowName, run: input.flow.runId } : {}) })
       for (const n of plan.notes) await hist(id, SYSTEM, n.action, null, { text: n.text })
@@ -405,6 +405,12 @@ export function createApprovals(services: CoreServices) {
     const quorum = st.quorum === null ? null : Math.min(Number(st.quorum), res.assignees.length)
     await db().exec(`UPDATE ${T('ab_approval_stages')} SET status = 'active', started_on = $3, quorum = $4 WHERE request_id = $1 AND idx = $2`, [id, idx, at, quorum])
     await db().exec(`UPDATE ${T('ab_approval_requests')} SET current_stage = $2, modified_on = $3 WHERE id = $1`, [id, idx, at])
+    // P1-E: a stage with its own due date: the request is due then while this stage is active (escalation re-armed)
+    if (st.due_minutes !== null && st.due_minutes !== undefined && Number(st.due_minutes) > 0) {
+      const due = new Date(at.getTime() + Number(st.due_minutes) * 60_000)
+      const escAt = def.escalation ? new Date(due.getTime() + (def.escalation.afterMinutes ?? 0) * 60_000) : null
+      await db().exec(`UPDATE ${T('ab_approval_requests')} SET due_on = $2, escalate_at = $3 WHERE id = $1`, [id, due, escAt])
+    }
     if (idx > 0) await hist(id, SYSTEM, 'stage.started', idx, { name: str(st.name) })
     for (const aid of created) await services.kernel.jobs.enqueue(APPROVAL_NOTIFY_JOB, { requestId: id, assignmentId: aid, kind: 'asked' }, { idempotencyKey: `asked:${aid}`, priority: 1 })
   }

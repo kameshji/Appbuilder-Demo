@@ -10,7 +10,7 @@ import type { ColumnDef, TableDef } from '../../../src/platform/contracts.ts'
 import type { Condition, Query } from '../../../src/platform/http.ts'
 import { HttpError } from '../../core/contracts.ts'
 import type {
-  Connector, ConnectorEnv, ConnectorFactory, ConnectionRecord, DatabaseSettings, QueryV2Input, QueryV2Raw, RawRow, SourceColumn, SqlDb,
+  Connector, ConnectorEnv, ConnectorFactory, ConnectionRecord, DatabaseSettings, QueryV2Input, QueryV2Raw, RawRow, RowScope, SourceColumn, SqlDb,
 } from '../../core/contracts.ts'
 import { cursorFromKeys, type KeyValue } from '../../../src/fx/query/cursor.ts'
 import { buildV2 } from './query-v2.ts'
@@ -18,7 +18,7 @@ import { createPgDb, friendlyConnectionError, mapPgError, withClient, formatServ
 import { isPgError } from './db.ts'
 import type { PgError } from './db.ts'
 import {
-  SYSTEM_COLUMNS, buildCountById, buildDeletes, buildInserts, buildSelect, buildUpdate, checkSource, columnSql, columnTypesByName,
+  SYSTEM_COLUMNS, buildCountById, buildDeletes, buildInserts, buildPurge, buildRestore, buildSelect, buildSoftDeletes, buildUpdate, checkSource, enableRecycleSql, liveRowsSql, columnSql, columnTypesByName,
   createIndexSql, createTableSql, createViewSql, dropIndexesSql, dropViewSql, fromDb, indexName, jsNumberText, keyIndexesSql, kindOf, mapSqlType, naturalIndexSql,
   physicalName, quoteId, sqlType, tableId, wantedIndex,
 } from './sql.ts'
@@ -280,10 +280,10 @@ export const createPostgresConnector: ConnectorFactory = (conn: ConnectionRecord
   function dataOps(bound: SqlDb | undefined): Pick<Connector, 'select' | 'insert' | 'update' | 'delete' | 'queryV2'> {
     return {
       queryV2: (def, input) => queryV2(def, input, bound),
-      async select(def: TableDef, q: Query) {
+      async select(def: TableDef, q: Query, opts?: { rows?: RowScope }) {
         const types = columnTypesByName(def)
         return run(async (d, dl) => {
-          const plan = buildSelect(dl, def, q)
+          const plan = buildSelect(dl, def, q, opts?.rows ?? 'live')
           const raw = await d.query<Record<string, unknown>>(plan.sql, plan.params)
           const rows: RawRow[] = raw.map((r) => {
             const out: RawRow = {}
@@ -426,9 +426,42 @@ export const createPostgresConnector: ConnectorFactory = (conn: ConnectionRecord
     }
   }
 
+  /** recycle bin statements (default connection only): on the pool, so they join the caller's unit of work */
+  const recycle: NonNullable<Connector['recycle']> = {
+    async enable(def) {
+      await ddl(async (t, dl) => { for (const s of enableRecycleSql(dl, def)) await t.exec(s) })
+    },
+    async softDelete(def, ids, batch, guard) {
+      return run(async (d, dl) => {
+        const out: string[] = []
+        for (const st of buildSoftDeletes(dl, def, ids, batch, guard)) out.push(...(await d.query<{ id: string }>(st.sql, st.params)).map((r) => String(r.id)))
+        return out
+      })
+    },
+    async restore(def, batchId, ids) {
+      return run(async (d, dl) => {
+        const st = buildRestore(dl, def, batchId, ids)
+        return (await d.query<{ id: string }>(st.sql, st.params)).map((r) => String(r.id))
+      })
+    },
+    async purge(def, batchId, limit) {
+      return run(async (d, dl) => {
+        const st = buildPurge(dl, def, batchId, limit)
+        return (await d.query<{ id: string }>(st.sql, st.params)).map((r) => String(r.id))
+      })
+    },
+    async stats(def) {
+      return run(async (d, dl) => {
+        const r = await d.query<{ n: string; b: string }>(`SELECT count(*)::bigint AS n, COALESCE(sum(pg_column_size(x.*)), 0)::bigint AS b FROM ${tableId(dl, def)} AS x WHERE ${liveRowsSql(def, 'x', 'deleted')}`)
+        return { rows: Number(r[0]?.n ?? 0), bytes: Number(r[0]?.b ?? 0) }
+      })
+    },
+  }
+
   const connector: Connector = {
     kind: 'postgres',
-    capabilities: { ddl: true, write: true, pushdown: true, transactions: true },
+    capabilities: { ddl: true, write: true, pushdown: true, transactions: true, ...(system ? { recycle: true } : {}) },
+    ...(system ? { recycle } : {}),
 
     async test() {
       if (system) {

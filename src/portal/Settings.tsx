@@ -472,7 +472,7 @@ function NotificationsSection() {
   return (
     <>
       {mode !== 'server' && <Group title="In the app" testId="settings-notifications">
-        {NOTIFICATION_KINDS.map((k) => {
+        {NOTIFICATION_KINDS.filter((k) => k.kind !== 'health').map((k) => {
           const future = k.kind === 'approval'
           return (
             <Row key={k.kind} title={k.label} description={k.description} soon={future ? later : undefined} testId={`setting-notify-${k.kind}`}>

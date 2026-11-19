@@ -31,6 +31,9 @@ import { CursorError } from '../../src/fx/query/cursor.ts'
 import type { SystemDataHooks } from './collab.ts'
 import { nextNumberDefault } from '../../src/platform/system-tables.ts'
 import { childRelationships, MAX_CASCADE_DEPTH, selfCycleColumns } from './model/delete-rules.ts'
+import type { RowScope } from './contracts.ts'
+import { createRecycle, deleteSourceOf, newBatch } from './recycle.ts'
+import type { BatchCtx, BatchInfo, DeleteSource, Effect, RecycleStore, RestoreResult } from './recycle.ts'
 
 type JsonRow = Record<string, QueryValue>
 type Cell = RawRow[string]
@@ -61,13 +64,16 @@ export interface DataDeps {
   hooks?: () => WriteHooks | null
   /** core data model (collab.ts): system-table write hooks, polymorphic cascade, NextNumber column defaults */
   system?: () => SystemDataHooks | null
+  /** recycle bin (recycle.ts): the batch store of the system database; absent / null: every delete is final */
+  recycle?: () => RecycleStore | null
 }
 
 /** extra helpers for the attachment routes (same module boundary as the service) */
 export interface DataInternals {
   physical(table: TableDef): TableDef
   connectorFor(table: TableDef): Promise<Connector>
-  findRow(table: TableDef, id: string, guard?: Condition): Promise<RawRow | null>
+  /** opts.rows: 'all' also finds a row in the recycle bin (attachment sweep: its files stay until the purge) */
+  findRow(table: TableDef, id: string, guard?: Condition, opts?: { rows?: RowScope }): Promise<RawRow | null>
   rowOut(ctx: UserContext | null, table: TableDef, raw: RawRow): JsonRow
   /** guarded single-cell write (sets modifiedOn); returns affected rows */
   writeCells(ctx: UserContext | null, table: TableDef, rowId: string, changes: RawRow): Promise<number>
@@ -136,6 +142,9 @@ function checkQuery(q: unknown): Query {
   return o
 }
 
+/** a delete operation down the relationship tree: depth, rows already seen, and the recycle bin batch (when it keeps rows) */
+interface Cascade { depth: number; seen: Set<string>; batch?: BatchCtx | null }
+
 const pad4 = (n: number) => String(n).padStart(4, '0')
 const isConstFalse = (c: Condition | undefined): boolean => !!c && 'const' in c && !c.const
 const isConstTrue = (c: Condition | undefined): boolean => !c || ('const' in c && c.const)
@@ -143,7 +152,14 @@ const isConstTrue = (c: Condition | undefined): boolean => !c || ('const' in c &
 const uniqueKey = (v: Cell): string => (v instanceof Date ? `d:${v.getTime()}` : typeof v === 'string' ? `s:${v.trim().toLowerCase()}` : `v:${String(v)}`)
 const ID_CHUNK = 500
 
-export function createDataService(deps: DataDeps): DataService & { internals: DataInternals } {
+/** the recycle bin's part of the DataService (server-side callers: routes, formula host, jobs) */
+export interface RecycleApi {
+  deleteRows(ctx: UserContext | null, table: TableDef, ids: string[], opts?: { source?: DeleteSource }): Promise<{ deleted: number; batch: BatchInfo | null }>
+  restore(ctx: UserContext | null, table: TableDef, input: { batch?: string; rowId?: string }): Promise<RestoreResult>
+  recycle: import('./recycle.ts').Recycle
+}
+
+export function createDataService(deps: DataDeps): DataService & RecycleApi & { internals: DataInternals } {
   const meta = () => deps.meta()
 
   function physical(table: TableDef): TableDef {
@@ -154,19 +170,28 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     return deps.connections.get(table.connectionId || DEFAULT_CONNECTION_ID)
   }
 
-  async function runSelect(connector: Connector, def: TableDef, q: Query): Promise<{ rows: RawRow[]; total?: number }> {
-    if (connector.capabilities.pushdown) return connector.select(def, q)
+  async function runSelect(connector: Connector, def: TableDef, q: Query, rows?: RowScope): Promise<{ rows: RawRow[]; total?: number }> {
+    if (connector.capabilities.pushdown) return rows && rows !== 'live' ? connector.select(def, q, { rows }) : connector.select(def, q)
     const all = await connector.select(def, {})
     return applyQuery(all.rows, q)
   }
 
-  async function findRow(table: TableDef, id: string, guard?: Condition, conn?: Connector): Promise<RawRow | null> {
+  async function findRow(table: TableDef, id: string, guard?: Condition, conn?: Connector, rows?: RowScope): Promise<RawRow | null> {
     const def = physical(table)
     const connector = conn ?? (await connectorFor(def))
     const where = guard && !('const' in guard && guard.const) ? and({ col: 'id', op: 'eq', value: id }, guard) : { col: 'id', op: 'eq' as const, value: id }
     if (guard && 'const' in guard && !guard.const) return null
-    const res = await runSelect(connector, def, { where, top: 2 })
+    const res = await runSelect(connector, def, { where, top: 2 }, rows)
     return res.rows.find((r) => String(r.id) === id) ?? null
+  }
+
+  /* ---------------------------------------------------------------- recycle bin (recycle.ts) */
+
+  /** does a delete of this table keep the rows (recycle bin on, default database with the batch store)? */
+  async function keepsDeleted(def: TableDef): Promise<Connector | null> {
+    if (def.recycleBin !== true || !((def.recycleDays ?? 0) > 0) || !deps.recycle?.()) return null
+    const c = await connectorFor(def)
+    return c.capabilities.recycle && c.recycle ? c : null
   }
 
   function visibleColumns(ctx: UserContext | null, table: TableDef): ColumnDef[] {
@@ -640,12 +665,18 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
 
   /* ---------------------------------------------------------------- relationships (package K, docs/dev/data-model.md) */
 
-  /** ids of the rows of `child` whose `column` points at one of `parents` (every row: integrity ignores security) */
-  async function childIds(conn: Connector, child: TableDef, column: string, parents: string[]): Promise<string[]> {
+  /**
+   * ids of the live rows of `child` whose `column` points at one of `parents` (every row: integrity ignores security),
+   * with the parent each points at (the recycle bin keeps it for set blank)
+   */
+  async function childIds(conn: Connector, child: TableDef, column: string, parents: string[], linkOf?: Map<string, string>): Promise<string[]> {
     const out: string[] = []
     for (let i = 0; i < parents.length; i += ID_CHUNK) {
-      const res = await runSelect(conn, child, { where: { col: column, op: 'in', value: parents.slice(i, i + ID_CHUNK) }, select: ['id'] })
-      for (const r of res.rows) out.push(String(r.id))
+      const res = await runSelect(conn, child, { where: { col: column, op: 'in', value: parents.slice(i, i + ID_CHUNK) }, select: linkOf ? ['id', column] : ['id'] })
+      for (const r of res.rows) {
+        out.push(String(r.id))
+        if (linkOf) linkOf.set(String(r.id), String(r[column] ?? ''))
+      }
     }
     return [...new Set(out)]
   }
@@ -658,7 +689,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
    *  - setBlank: the lookup of the child rows is cleared as a system write (events and outbox rows as any update).
    * Rows of the same table that are being deleted together are not counted as children.
    */
-  async function onParentDelete(ctx: UserContext | null, def: TableDef, targets: string[], cascade: { depth: number; seen: Set<string> }): Promise<void> {
+  async function onParentDelete(ctx: UserContext | null, def: TableDef, targets: string[], cascade: Cascade): Promise<void> {
     const store = meta().relationships
     const rels = await childRelationships(def, () => meta().tables.list(), store ? (id) => store.toTable(id) : null)
     if (!rels.length) return
@@ -667,7 +698,8 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     for (const r of rels) {
       const child = physical(r.child)
       const conn = await connectorFor(child)
-      let ids = await childIds(conn, child, r.column.name, targets)
+      const linkOf = cascade.batch ? new Map<string, string>() : undefined
+      let ids = await childIds(conn, child, r.column.name, targets, linkOf)
       if (child.id === def.id) ids = ids.filter((x) => !deleting.has(x))
       ids = ids.filter((x) => !cascade.seen.has(`${child.id}:${x}`))
       if (!ids.length) continue
@@ -682,11 +714,14 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
           const refused = ids.filter((x) => !allowed.has(x)).length
           if (refused) throw new HttpError(403, 'denied', `Deleting this also deletes ${what} (${r.column.displayName || r.column.name}), and you are not allowed to delete ${refused === ids.length ? (ids.length === 1 ? 'it' : 'them') : `${refused} of them`}. Nothing was deleted.`)
         }
-        await del(ctx, child, ids, { depth: cascade.depth + 1, seen: cascade.seen })
+        await del(ctx, child, ids, { depth: cascade.depth + 1, seen: cascade.seen, batch: cascade.batch })
         continue
       }
-      // set blank: a system write, the child rows stay without their parent
-      for (const id of ids) await update(null, child, id, { [r.column.name]: null })
+      // set blank: a system write, the child rows stay without their parent (the recycle bin keeps the old value)
+      for (const id of ids) {
+        await update(null, child, id, { [r.column.name]: null })
+        cascade.batch?.effects.push({ kind: 'setBlank', tableId: child.id, rowId: id, column: r.column.name, old: linkOf?.get(id) ?? null })
+      }
     }
   }
 
@@ -722,13 +757,18 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
    * All or nothing: the permission of EVERY target row is checked before anything is deleted (403 and no change when
    * one readable row may not be deleted), then the rows go in one connector call (PostgreSQL and MySQL: one transaction).
    */
-  async function del(ctx: UserContext | null, table: TableDef, idsIn: string[], cascade: { depth: number; seen: Set<string> } = { depth: 0, seen: new Set() }): Promise<number> {
+  async function del(ctx: UserContext | null, table: TableDef, idsIn: string[], cascade: Cascade = { depth: 0, seen: new Set() }, source?: DeleteSource): Promise<number> {
     const def = physical(table)
     checkWritableTable(def)
     if (!Array.isArray(idsIn) || !idsIn.every((x) => typeof x === 'string')) throw new HttpError(422, 'invalid', 'ids must be a list of row ids.')
     const ids = [...new Set(idsIn.filter((x) => x && x.length <= 64))]
     if (!ids.length) return 0
     const connector = await writableConnector(def)
+    // recycle bin: the first table of the delete decides (its setting on: one batch for the whole operation; its
+    // setting off: every row goes for good, as before). Cascaded tables keep their rows when they have a bin too.
+    const binConn = await keepsDeleted(def)
+    if (cascade.depth === 0 && binConn) cascade.batch = newBatch(def, ctx, source ?? deleteSourceOf(ctx))
+    const soft = !!cascade.batch && !!binConn
     let guard: Condition | undefined
     let targets: string[]
     if (ctx) {
@@ -760,21 +800,39 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     }
     // relationships (package K): restrict, cascade or set blank the child rows first (same unit of work)
     if (targets.length) await onParentDelete(ctx, def, targets, cascade)
-    const total = targets.length ? await connector.delete(def, targets, guard) : 0
-    if (targets.length) await removeAttachments(await meta().attachments.forRows(def.id, targets))
-    if (targets.length && def.sharing) await meta().org?.shares.removeForRows(def.id, targets).catch((e) => deps.log('warn', `share cleanup failed: ${errText(e)}`))
-    // polymorphic integrity: comments, activities, follows, tags, mentions and file links about these rows go too
-    if (targets.length) await deps.system?.()?.afterDelete(def, targets)
+    const batch = cascade.batch
+    let total: number
+    if (soft && batch) {
+      // recycle bin: the rows stay, stamped with the batch; their attachments stay until the purge; shares and
+      // collaboration rows are kept in the batch (restored with the rows)
+      const gone = targets.length ? await binConn!.recycle!.softDelete(def, targets, { id: batch.id, by: batch.by, at: batch.at }, guard) : []
+      total = gone.length
+      if (cascade.depth === 0) batch.rootIds.push(...gone)
+      for (const id of gone) batch.effects.push({ kind: 'row', tableId: def.id, rowId: id })
+      if (gone.length && def.sharing) for (const sh of await deps.recycle!()!.takeShares(def.id, gone)) batch.effects.push({ kind: 'share', tableId: def.id, rowId: sh.rowId, old: sh.row })
+      if (gone.length) await deps.system?.()?.afterDelete(def, gone, (e) => batch.effects.push(e))
+    } else {
+      total = targets.length ? await connector.delete(def, targets, guard) : 0
+      // a cascade from a table with a recycle bin into one without: these rows cannot come back (restore says so)
+      if (batch && total) for (const id of targets) batch.effects.push({ kind: 'final', tableId: def.id, rowId: id })
+      if (targets.length) await removeAttachments(await meta().attachments.forRows(def.id, targets))
+      if (targets.length && def.sharing) await meta().org?.shares.removeForRows(def.id, targets).catch((e) => deps.log('warn', `share cleanup failed: ${errText(e)}`))
+      // polymorphic integrity: comments, activities, follows, tags, mentions and file links about these rows go too
+      if (targets.length) await deps.system?.()?.afterDelete(def, targets)
+    }
     if (total === 0 && ids.length === 1) throw new HttpError(404, 'not-found', 'Row not found.')
     if (total > 0) {
       await markFileModified(def)
-      await audit(ctx, 'row.delete', def, ids.length === 1 ? ids[0] : undefined, ids.length > 1 ? { ...auditIds(targets), deleted: total } : undefined)
+      const b = batch && soft ? { batch: batch.id } : {}
+      await audit(ctx, 'row.delete', def, ids.length === 1 ? ids[0] : undefined, ids.length > 1 ? { ...auditIds(targets), deleted: total, ...b } : batch && soft ? b : undefined)
       changed(ctx, def, 'delete', targets, [])
       if (hooks) {
-        if (targets.length === 1) await hooks.outbox(ctx, def, { op: 'delete', rowId: targets[0], before: keep[0] ?? { id: targets[0] }, snapshotColumns: 'all' })
-        else await hooks.outbox(ctx, def, { op: 'bulk', rowIds: targets, rowCount: total, details: { action: 'delete' } })
+        if (targets.length === 1) await hooks.outbox(ctx, def, { op: 'delete', rowId: targets[0], before: keep[0] ?? { id: targets[0] }, snapshotColumns: 'all', ...(batch && soft ? { details: { batch: batch.id } } : {}) })
+        else await hooks.outbox(ctx, def, { op: 'bulk', rowIds: targets, rowCount: total, details: { action: 'delete', ...b } })
       }
     }
+    // the root of the operation writes the batch (after everything the delete did is known)
+    if (cascade.depth === 0 && batch && batch.effects.some((e) => e.kind === 'row')) await deps.recycle!()!.save(batch)
     return total
   }
 
@@ -855,13 +913,26 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     }
     // SQL connectors: delete + inserts in one transaction. Connectors without transactions (files, Google Sheets): the delete
     // and the insert are separate writes (see docs/dev/connectors.md).
+    // recycle bin: the replaced rows go to the bin as one batch (source import); their unique values are free at once
+    const binConn = targets.length ? await keepsDeleted(def) : null
+    const bin = binConn ? newBatch(def, ctx, 'import') : null
     const write = async (c: Connector) => {
-      if (targets.length) await c.delete(def, targets, guard)
+      if (targets.length && bin) {
+        const gone = await binConn!.recycle!.softDelete(def, targets, { id: bin.id, by: bin.by, at: bin.at }, guard)
+        bin.rootIds.push(...gone)
+        for (const id of gone) bin.effects.push({ kind: 'row', tableId: def.id, rowId: id })
+      } else if (targets.length) await c.delete(def, targets, guard)
       if (rows.length) await c.insert(def, rows)
     }
     if (connector.capabilities.transactions && connector.transaction) await connector.transaction(write)
     else await write(connector)
-    if (targets.length) {
+    if (targets.length && bin) {
+      const gone = bin.rootIds
+      if (gone.length && def.sharing) for (const sh of await deps.recycle!()!.takeShares(def.id, gone)) bin.effects.push({ kind: 'share', tableId: def.id, rowId: sh.rowId, old: sh.row })
+      if (gone.length) await deps.system?.()?.afterDelete(def, gone, (e) => bin.effects.push(e))
+      if (gone.length) await deps.recycle!()!.save(bin)
+      await audit(ctx, 'row.delete', def, undefined, { ...auditIds(gone), import: true, batch: bin.id })
+    } else if (targets.length) {
       await removeAttachments(await meta().attachments.forRows(def.id, targets))
       await deps.system?.()?.afterDelete(def, targets)
       await audit(ctx, 'row.delete', def, undefined, { ...auditIds(targets), import: true })
@@ -870,7 +941,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     const n = rows.length
     await audit(ctx, 'table.import', def, undefined, { mode, rows: n })
     if (targets.length || n) changed(ctx, def, 'import', [...targets, ...rows.map((r) => String(r.id))], [...new Set([...mapping.values()].map((c) => c.name))])
-    if (hooks && targets.length) await hooks.outbox(ctx, def, { op: 'bulk', rowIds: targets, rowCount: targets.length, details: { action: 'delete', import: true } })
+    if (hooks && targets.length) await hooks.outbox(ctx, def, { op: 'bulk', rowIds: targets, rowCount: targets.length, details: { action: 'delete', import: true, ...(bin ? { batch: bin.id } : {}) } })
     if (hooks && n) await hooks.outbox(ctx, def, { op: 'import', rowIds: rows.map((r) => String(r.id)), rowCount: n, changed: [...new Set([...mapping.values()].map((c) => c.name))], details: { mode } })
     return n
   }
@@ -1059,9 +1130,45 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     return out
   }
 
+  /* ---------------------------------------------------------------- recycle bin: restore, purge, Deleted view */
+
+  const recycle = createRecycle({
+    meta,
+    get store() {
+      const st = deps.recycle?.()
+      if (!st) throw new HttpError(503, 'unavailable', 'The recycle bin needs the database.')
+      return st
+    },
+    physical, connectorFor, unit,
+    rowOut: (ctx, t, r) => rowOut(ctx, t, r),
+    updateAsSystem: async (t, id, changes) => { await update(null, t, id, changes) },
+    audit, removeAttachments, log: deps.log,
+    outbox: async (ctx, t, e) => { await deps.hooks?.()?.outbox(ctx, t, e) },
+    changed: (ctx, t, ids) => changed(ctx, t, 'insert', ids, []),
+  })
+
+  /** delete with the recycle bin's answer: how many rows, and the batch that can undo it (null: the delete was final) */
+  async function deleteRows(ctx: UserContext | null, table: TableDef, ids: string[], opts: { source?: DeleteSource } = {}): Promise<{ deleted: number; batch: BatchInfo | null }> {
+    const cascade: Cascade = { depth: 0, seen: new Set() }
+    const deleted = await unit(table, () => del(ctx, table, ids, cascade, opts.source))
+    const b = cascade.batch
+    if (!b || !b.effects.some((e: Effect) => e.kind === 'row')) return { deleted, batch: null }
+    const rows = b.effects.filter((e: Effect) => e.kind === 'row').length
+    return {
+      deleted,
+      batch: {
+        id: b.id, tableId: b.tableId, tableName: table.displayName || table.name, rows, rootIds: b.rootIds.slice(0, 1000), deletedBy: b.by, deletedByName: ctx?.user.name ?? null,
+        deletedOn: b.at.toISOString(), expiresOn: b.expiresOn.toISOString(), daysLeft: b.keepDays, source: b.source, state: 'deleted', finalRows: b.effects.filter((e: Effect) => e.kind === 'final').length,
+      },
+    }
+  }
+
   return {
     query: (ctx, table, q) => doQuery(ctx, table, q, DEFAULT_ROW_CAP),
     queryV2,
+    deleteRows,
+    restore: (ctx: UserContext | null, table: TableDef, input: { batch?: string; rowId?: string }): Promise<RestoreResult> => recycle.restore(ctx, table, input),
+    recycle,
     // writes run as one unit of work each (kernel.ts): the change, its outbox row and the jobs it causes commit together
     insert: (ctx, table, values) => unit(table, () => insertOne(ctx, table, asObject(values, 'values'), { preserve: true })),
     update: (ctx, table, id, changes, opts) => unit(table, () => update(ctx, table, id, changes, opts)),
@@ -1069,7 +1176,7 @@ export function createDataService(deps: DataDeps): DataService & { internals: Da
     importCsv: (ctx, table, csv, mode, opts) => unit(table, () => importCsv(ctx, table, csv, mode, opts)),
     exportCsv,
     internals: {
-      physical, connectorFor, findRow, rowOut: (ctx, t, r) => rowOut(ctx, physical(t), r),
+      physical, connectorFor, findRow: (t, id, guard, opts) => findRow(t, id, guard, undefined, opts?.rows), rowOut: (ctx, t, r) => rowOut(ctx, physical(t), r),
       writeCells: (ctx, t, rowId, changes) => unit(t, () => writeCells(ctx, t, rowId, changes)),
       removeAttachments, markFileModified,
     },

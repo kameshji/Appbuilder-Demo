@@ -120,6 +120,8 @@ export interface OutboxLike {
   rowId: string | null
   rowIds: string[] | null
   changed: string[] | null
+  /** bulk rows: { action: 'delete' | 'update' | 'restore', ... } */
+  details?: unknown
   actorId: string | null
   requestId?: string | null
 }
@@ -128,7 +130,9 @@ const userNames = new Map<string, string>()
 
 /** an outbox row -> a table change (bulk = a delete of many rows; an import lists its rows) */
 export function outboxToChange(e: OutboxLike, actor: { id: string; name: string } | null, origin?: string): TableChange {
-  const op: TableChangeOp = e.op === 'bulk' ? 'delete' : e.op
+  // a bulk row is a delete of many rows, or (recycle bin) rows coming back: an import-like change for the clients
+  const action = (e.details as { action?: string } | null | undefined)?.action
+  const op: TableChangeOp = e.op === 'bulk' ? (action === 'restore' ? 'import' : 'delete') : e.op
   const rowIds = e.rowIds ?? (e.rowId ? [e.rowId] : [])
   return { op, rowIds, changedColumns: op === 'delete' ? [] : (e.changed ?? []), actor, seq: e.id, ...(origin ? { origin } : {}) }
 }

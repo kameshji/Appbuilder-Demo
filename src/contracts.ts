@@ -144,6 +144,8 @@ export interface FxHost {
    * returns its id at once (chosen here, so a retry does not ask twice); the request is made asynchronously.
    */
   requestApproval?(input: { id: string; policy?: string; approvers?: string[]; record: string; title: string; details: string; fields: FxRecord }): string
+  /** Restore(row or batch) (recycle bin, docs/dev/recycle-bin.md): asynchronous; failures are notified */
+  restore?(what: { rowId?: string; table?: string; batch?: string }): void
 }
 
 export interface FxFunctionDoc {

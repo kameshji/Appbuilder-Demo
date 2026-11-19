@@ -46,7 +46,7 @@ export interface DeliveryPolicy {
   perRecipientPerHour: number
 }
 
-/** out of the box: approvals by email right away (not locked); everything else in the app only */
+/** out of the box: approvals (and server health alerts, see effectiveChannels) by email right away (not locked); everything else in the app only */
 export function defaultPolicy(): DeliveryPolicy {
   return { kinds: { approval: { email: 'immediate' } }, logoUrl: '', perRecipientPerHour: DEFAULT_PER_RECIPIENT_PER_HOUR }
 }
@@ -87,7 +87,8 @@ const label = (kind: string) => NOTIFICATION_KINDS.find((k) => k.kind === kind)?
 
 /** the channels of one kind for one user, with the reasons shown in the delivery log */
 export function effectiveChannels(policy: DeliveryPolicy, prefs: NotificationSettings, kind: string): Effective {
-  const p = policy.kinds[kind] ?? {}
+  // server health alerts (install administrators, turned on by them) are emailed right away unless set otherwise
+  const p = policy.kinds[kind] ?? (kind === 'health' ? { email: 'immediate' as const } : {})
   const what = `"${label(kind)}"`
   if (p.lock) {
     const inApp = p.inApp ?? true
@@ -514,7 +515,9 @@ export function deliveryRoutes(router: ApiRouter, services: CoreServices, d: Del
   router.add('GET', '/notifications/channels', async (ctx) => {
     const prefs = await services.notifications!.settings(me(ctx))
     const p = await d.policy()
+    // "Server health" (P1-E) reaches install administrators only: nobody else needs the choice
     const kinds = [...NOTIFICATION_KINDS.map((k) => k.kind), ...Object.keys(p.kinds).filter((k) => !NOTIFICATION_KINDS.some((x) => x.kind === k))]
+      .filter((k) => k !== 'health' || !!ctx.user?.user.isInstallAdmin)
     return {
       emailAvailable: await identity(services).mail.configured(),
       email: ctx.user!.user.email,

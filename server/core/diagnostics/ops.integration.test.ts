@@ -108,6 +108,57 @@ describe.skipIf(!PG_URL)(PG_URL ? 'operations endpoints (PostgreSQL)' : `operati
     expect(d.data.logs.dir).toBe(path.join(tmp, 'logs'))
   })
 
+  it('health alerts (P1-E): settings, immediate alerts once per condition, daily summary, heartbeat through the outbound policy', async () => {
+    expect((await new Client(base).req('GET', '/api/v1/admin/health-alerts')).status).toBe(401)
+    // a heartbeat receiver on this computer (an uptime monitor in the local network)
+    const pings: string[] = []
+    const mon = http.createServer((req, res) => { pings.push(String(req.url)); res.writeHead(200).end('OK') })
+    await new Promise<void>((r) => mon.listen(0, '127.0.0.1', r))
+    const monUrl = `http://127.0.0.1:${(mon.address() as AddressInfo).port}/ping/secret-check-id`
+    try {
+      expect((await A.req('PUT', '/api/v1/admin/health-alerts', { heartbeat: { enabled: true } })).status).toBe(422) // no address yet
+      expect((await A.req('PUT', '/api/v1/admin/health-alerts', { heartbeat: { url: 'http://169.254.169.254/latest' } })).status).toBe(422)
+      expect((await A.req('PUT', '/api/v1/admin/health-alerts', { heartbeat: { url: monUrl, everyMinutes: 7 } })).status).toBe(422)
+      const r = await A.req('PUT', '/api/v1/admin/health-alerts', { email: { enabled: true, dailyTime: '06:45', timeZone: 'Asia/Kolkata' }, heartbeat: { url: monUrl, enabled: true, everyMinutes: 5 } })
+      expect(r.status, JSON.stringify(r.data)).toBe(200)
+      expect(r.data.settings.heartbeat).toMatchObject({ enabled: true, hasUrl: true, everyMinutes: 5 })
+      expect(JSON.stringify(r.data)).not.toContain('secret-check-id')
+      // a private address needs the administrator's tick
+      const blocked = await A.req('POST', '/api/v1/admin/health-alerts/test', { what: 'heartbeat' })
+      expect(blocked.data.sent).toBe(false)
+      expect(pings.length).toBe(0)
+      await A.req('PUT', '/api/v1/admin/health-alerts', { heartbeat: { allowPrivateNetwork: true } })
+      const ok = await A.req('POST', '/api/v1/admin/health-alerts/test', { what: 'heartbeat' })
+      expect(ok.data, JSON.stringify(ok.data)).toMatchObject({ sent: true, message: 'HTTP 200' })
+      expect(pings).toEqual(['/ping/secret-check-id'])
+      // schedules exist in the Default environment
+      const sched = await app.services.kernel.jobs.schedules.get('sched_health_daily')
+      expect(sched).toMatchObject({ enabled: true, cron: '45 6 * * *', timeZone: 'Asia/Kolkata' })
+      // the audit entry says the address changed, never what it is
+      const audit = await app.services.state.db!.query<{ details: unknown }>(`SELECT details FROM ab.audit WHERE action = 'install.health_alerts'`)
+      expect(JSON.stringify(audit)).not.toContain('secret-check-id')
+      // immediate alerts: a failed flow run in Default -> one alert to the install administrators, not repeated
+      await app.services.state.db!.exec(`INSERT INTO env_default.ab_flow_runs (id, flow_id, flow_name, flow_version, owner_id, state, mode, trigger_kind, trigger_key, run_as_kind, correlation_id, created_on, finished_on)
+        SELECT 'run_healthtest', 'flow_x', 'Broken flow', 1, id, 'failed', 'normal', 'manual', 'manual:healthtest', 'owner', 'c1', now(), now() FROM ab.users LIMIT 1`).catch((e) => { throw e })
+      const w1 = await app.services.healthAlerts.watch()
+      expect(w1.sent.some((k) => k.startsWith('flows:default:'))).toBe(true)
+      const w2 = await app.services.healthAlerts.watch()
+      expect(w2.sent).toEqual([])
+      const admin = await app.services.meta.users.byEmail('ada@example.test')
+      const n = await app.services.state.db!.query<{ title: string; kind: string }>(`SELECT title, kind FROM ab.notifications WHERE user_id = $1 AND kind = 'health'`, [admin!.id])
+      expect(n.map((x) => x.title)).toEqual(['Flows are failing in Default'])
+      const d = await A.req('POST', '/api/v1/admin/health-alerts/test', { what: 'daily' })
+      expect(d.data.sent).toBe(true)
+      const n2 = await app.services.state.db!.query<{ title: string; body: string }>(`SELECT title, body FROM ab.notifications WHERE user_id = $1 AND kind = 'health' AND title LIKE 'Daily health%'`, [admin!.id])
+      expect(n2.length).toBe(1)
+      expect(n2[0].body).toMatch(/Flows in Default: 1 failed run/)
+      await app.services.state.db!.exec(`DELETE FROM env_default.ab_flow_runs WHERE id = 'run_healthtest'`)
+      await A.req('PUT', '/api/v1/admin/health-alerts', { email: { enabled: false }, heartbeat: { enabled: false, url: '' } })
+    } finally {
+      await new Promise<void>((r) => mon.close(() => r()))
+    }
+  }, 60000)
+
   it('a non-administrator gets 403 on every operations route', async () => {
     const created = await A.req('POST', '/api/v1/users', { name: 'Bob', email: 'bob@example.test', password: 'bob-password-12', roleIds: [] })
     expect(created.status).toBeLessThan(300)

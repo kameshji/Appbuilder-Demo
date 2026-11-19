@@ -7,7 +7,8 @@ import type { QueryValue } from './http.ts'
 /* ------------------------------------------------------------------ table events */
 
 export type TableEventTiming = 'before' | 'after'
-export type TableEventOperation = 'create' | 'update' | 'delete'
+/** restore (recycle bin): rows that come back from a table's recycle bin; after-events only, opt-in per event */
+export type TableEventOperation = 'create' | 'update' | 'delete' | 'restore'
 /** validation: condition + message + field (a before-event that only rejects); event: condition + action formula */
 export type TableEventKind = 'validation' | 'event'
 

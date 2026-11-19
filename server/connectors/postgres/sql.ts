@@ -90,8 +90,43 @@ const SYSTEM_SQL: Record<string, string> = {
   modifiedOn: 'timestamptz(3)',
   createdBy: 'text',
   owner: 'text',
+  // recycle bin columns (only tables with TableDef.recycleBin have them)
+  deletedOn: 'timestamptz(3)',
+  deletedBy: 'text',
+  deleteBatch: 'text',
 }
 export const isSystemName = (n: string): boolean => n in SYSTEM_SQL
+
+/* ------------------------------------------------------------------ recycle bin (docs/dev/recycle-bin.md) */
+
+/** the columns of a table with a recycle bin, after the system columns; never part of TableDef.columns */
+export const RECYCLE_COLUMNS: ColumnDef[] = [
+  { name: 'deletedOn', displayName: 'Deleted on', type: 'datetime', system: true },
+  { name: 'deletedBy', displayName: 'Deleted by', type: 'text', system: true },
+  { name: 'deleteBatch', displayName: 'Deletion batch', type: 'text', system: true },
+]
+export const RECYCLE_COLUMN_NAMES = RECYCLE_COLUMNS.map((c) => c.name)
+
+/** which rows a statement sees: live rows (every read of the product), the recycle bin, or both (backups, purge) */
+export type RowScope = 'live' | 'deleted' | 'all'
+
+/** does the physical table carry the recycle bin columns (and so leave deleted rows out of every read)? */
+export const hasRecycleBin = (def: Pick<TableDef, 'recycleBin'>): boolean => def.recycleBin === true
+
+/**
+ * THE deleted-row predicate. Every statement this connector builds for a table goes through buildWhere (selects,
+ * counts, updates, deletes, Query v2 rows, counts, aggregates, searches and lookup paths, security semi-joins); raw SQL
+ * elsewhere in the server (rollups, summary refresh, timeline, exports, copies, reporting views) calls this function.
+ * `ref`: the table's alias or qualified name when the statement needs one. 'TRUE' for a table without a recycle bin.
+ */
+export function liveRowsSql(def: Pick<TableDef, 'recycleBin'>, ref?: string, scope: RowScope = 'live'): string {
+  if (!hasRecycleBin(def) || scope === 'all') return 'TRUE'
+  const c = `${ref ? `${ref}.` : ''}"deletedOn"`
+  return scope === 'live' ? `${c} IS NULL` : `${c} IS NOT NULL`
+}
+
+/** the WHERE of a partial index that only holds live rows (unique values, key and natural-order indexes) */
+const livePart = (def: Pick<TableDef, 'recycleBin'>): string => (hasRecycleBin(def) ? ' WHERE "deletedOn" IS NULL' : '')
 
 type Kind = 'text' | 'num' | 'bool' | 'date' | 'datetime'
 export function kindOf(t: ColumnType): Kind {
@@ -167,10 +202,10 @@ export function naturalTerms(def: Pick<TableDef, 'missingSystem'>, prefix = ''):
 }
 
 /** the natural-order index of a table (unsorted pages and every tie-break) */
-export function naturalIndexSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 'missingSystem'>, concurrently = false): string | null {
+export function naturalIndexSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 'missingSystem' | 'recycleBin'>, concurrently = false): string | null {
   const nat = naturalTerms(def)
   if (!nat.length) return null
-  return `CREATE INDEX ${concurrently ? 'CONCURRENTLY ' : ''}IF NOT EXISTS ${quoteId(indexName(physicalName(def), 'index', 'natural'))} ON ${tableId(d, def)} (${nat.join(', ')})`
+  return `CREATE INDEX ${concurrently ? 'CONCURRENTLY ' : ''}IF NOT EXISTS ${quoteId(indexName(physicalName(def), 'index', 'natural'))} ON ${tableId(d, def)} (${nat.join(', ')})${livePart(def)}`
 }
 
 /**
@@ -182,9 +217,9 @@ export function wantsKeyIndex(col: ColumnDef): boolean {
   return col.type === 'lookup' || !!col.unique || !!col.indexed
 }
 
-export function keyIndexSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 'missingSystem'>, col: ColumnDef, desc = false): string {
+export function keyIndexSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 'missingSystem' | 'recycleBin'>, col: ColumnDef, desc = false): string {
   const key = sortKeyExpr(d, col.type, quoteId(col.name)) + (desc ? ' DESC' : '')
-  return `CREATE INDEX IF NOT EXISTS ${quoteId(indexName(physicalName(def), desc ? 'keydesc' : 'key', col.name))} ON ${tableId(d, def)} (${[key, ...naturalTerms(def)].join(', ')})`
+  return `CREATE INDEX IF NOT EXISTS ${quoteId(indexName(physicalName(def), desc ? 'keydesc' : 'key', col.name))} ON ${tableId(d, def)} (${[key, ...naturalTerms(def)].join(', ')})${livePart(def)}`
 }
 
 /**
@@ -192,17 +227,50 @@ export function keyIndexSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 
  * (key DESC, natural), because a descending sort still breaks ties by natural order ASCENDING, which a backward scan of
  * the first index cannot give.
  */
-export function keyIndexesSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 'missingSystem'>, col: ColumnDef, trgmSchema?: string | null): { create: string[]; drop: string[] } {
+export function keyIndexesSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 'missingSystem' | 'recycleBin'>, col: ColumnDef, trgmSchema?: string | null): { create: string[]; drop: string[] } {
   const table = physicalName(def)
   const dropOf = (k: 'key' | 'keydesc' | 'trgm') => `DROP INDEX IF EXISTS ${quoteId(d.schema)}.${quoteId(indexName(table, k, col.name))}`
-  if (!wantsKeyIndex(col)) return { create: [], drop: [dropOf('key'), dropOf('keydesc'), dropOf('trgm')] }
-  if (!col.indexed) return { create: [keyIndexSql(d, def, col)], drop: [dropOf('keydesc'), dropOf('trgm')] }
-  const create = [keyIndexSql(d, def, col), keyIndexSql(d, def, col, true)]
+  const stats = liveStatsSql(d, def, col)
+  if (!wantsKeyIndex(col)) return { create: stats.create, drop: [dropOf('key'), dropOf('keydesc'), dropOf('trgm'), ...stats.drop] }
+  if (!col.indexed) return { create: [keyIndexSql(d, def, col), ...stats.create], drop: [dropOf('keydesc'), dropOf('trgm')] }
+  const create = [keyIndexSql(d, def, col), keyIndexSql(d, def, col, true), ...stats.create]
   const drop: string[] = []
   // text columns marked indexed: a trigram index makes "contains" and Search fast (needs the pg_trgm extension)
   if (kindOf(col.type) === 'text' && trgmSchema) create.push(trigramIndexSql(d, def, col, trgmSchema))
   else drop.push(dropOf('trgm'))
   return { create, drop }
+}
+
+/**
+ * Recycle bin: PostgreSQL keeps no statistics on the expressions of a PARTIAL index (the planner skips partial indexes
+ * when it looks for expression statistics), so the live-row partial key and unique indexes would leave the planner with
+ * default selectivities. Expression statistics on the same expressions give them back (PostgreSQL 14+). Only for
+ * tables with a recycle bin (the others keep full indexes, whose expression statistics PostgreSQL collects itself).
+ */
+export function liveStatsSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 'recycleBin'>, col: ColumnDef): { create: string[]; drop: string[] } {
+  const table = physicalName(def)
+  const names = { key: statsName(table, 'key', col.name), fold: statsName(table, 'fold', col.name) }
+  const drop = [names.key, names.fold].map((n) => `DROP STATISTICS IF EXISTS ${quoteId(d.schema)}.${quoteId(n)}`)
+  const foldIndexed = wantedIndex(col) !== null && kindOf(col.type) === 'text'
+  if (!hasRecycleBin(def) || (!wantsKeyIndex(col) && !foldIndexed)) return { create: [], drop }
+  const t = tableId(d, def)
+  const create: string[] = []
+  if (wantsKeyIndex(col)) create.push(`CREATE STATISTICS IF NOT EXISTS ${quoteId(d.schema)}.${quoteId(names.key)} ON (${sortKeyExpr(d, col.type, quoteId(col.name))}) FROM ${t}`)
+  // the lowercased value of unique, lookup and owner columns (v1 conditions compare it)
+  if (foldIndexed) create.push(`CREATE STATISTICS IF NOT EXISTS ${quoteId(d.schema)}.${quoteId(names.fold)} ON (${fold(d, quoteId(col.name))}) FROM ${t}`)
+  return { create, drop }
+}
+function statsName(table: string, kind: 'key' | 'fold', col: string): string {
+  const base = `st${kind === 'key' ? 'k' : 'f'}_${table}_${col}`
+  if (base.length <= 63) return base
+  return `${base.slice(0, 52)}_${createHash('sha1').update(`${table}\u0000${kind}\u0000${col}`).digest('hex').slice(0, 10)}`
+}
+
+/** recycle bin: statistics of the natural-order expression (its index is partial; see liveStatsSql) */
+export function naturalStatsSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 'missingSystem' | 'recycleBin'>): string[] {
+  const nat = naturalTerms(def)
+  if (!hasRecycleBin(def) || !nat.length || !nat[0]!.startsWith('COALESCE(')) return []
+  return [`CREATE STATISTICS IF NOT EXISTS ${quoteId(d.schema)}.${quoteId(statsName(physicalName(def), 'key', '_natural'))} ON (${nat[0]}) FROM ${tableId(d, def)}`]
 }
 
 /** GIN trigram index on a text column's key (pg_trgm installed in `trgmSchema`) */
@@ -214,16 +282,23 @@ export function trigramIndexSql(d: Dialect, def: Pick<TableDef, 'name' | 'source
  * CREATE INDEX for a column. Text kinds are indexed on their lowercased form, which is what conditions compare
  * (case-insensitive uniqueness like MySQL's _ci collations; lookups and owner filters use the index).
  */
-export function createIndexSql(d: Dialect, def: Pick<TableDef, 'name' | 'source'>, col: ColumnDef, kind: 'unique' | 'index'): string {
+export function createIndexSql(d: Dialect, def: Pick<TableDef, 'name' | 'source' | 'recycleBin'>, col: ColumnDef, kind: 'unique' | 'index'): string {
   const table = physicalName(def)
   const target = kindOf(col.type) === 'text' ? `(${fold(d, quoteId(col.name))})` : quoteId(col.name)
-  return `CREATE ${kind === 'unique' ? 'UNIQUE ' : ''}INDEX IF NOT EXISTS ${quoteId(indexName(table, kind, col.name))} ON ${tableId(d, def)} (${target})`
+  // recycle bin: a unique value is unique among the live rows only (a deleted row never blocks re-creating it); the
+  // other indexes hold live rows only too, so every read (which always says "deletedOn" IS NULL) can use them, also
+  // for an index-only count
+  return `CREATE ${kind === 'unique' ? 'UNIQUE ' : ''}INDEX IF NOT EXISTS ${quoteId(indexName(table, kind, col.name))} ON ${tableId(d, def)} (${target})${livePart(def)}`
 }
 
 /** DROP INDEX for both possible index names of a column (before a type change or rename) */
 export function dropIndexesSql(d: Dialect, def: Pick<TableDef, 'name' | 'source'>, colName: string): string[] {
   const table = physicalName(def)
-  return (['unique', 'index', 'key', 'keydesc', 'trgm'] as const).map((k) => `DROP INDEX IF EXISTS ${quoteId(d.schema)}.${quoteId(indexName(table, k, colName))}`)
+  return [
+    ...(['unique', 'index', 'key', 'keydesc', 'trgm'] as const).map((k) => `DROP INDEX IF EXISTS ${quoteId(d.schema)}.${quoteId(indexName(table, k, colName))}`),
+    // recycle bin: the expression statistics of the column's live-row indexes
+    ...(['key', 'fold'] as const).map((k) => `DROP STATISTICS IF EXISTS ${quoteId(d.schema)}.${quoteId(statsName(table, k, colName))}`),
+  ]
 }
 
 /** Columns of the physical table: system columns first, then the user columns (a def that already lists them wins). */
@@ -236,6 +311,44 @@ export function allColumns(def: TableDef): ColumnDef[] {
     return { ...s, ...(given ?? {}), name: s.name, system: true, type: s.type }
   })
   for (const c of def.columns) if (!isSystemName(c.name)) out.push(c)
+  if (hasRecycleBin(def)) out.push(...RECYCLE_COLUMNS)
+  return out
+}
+
+/** the indexes of the recycle bin itself: the Deleted view and the purge (by time), restores (by batch) */
+export function recycleIndexesSql(d: Dialect, def: Pick<TableDef, 'name' | 'source'>): string[] {
+  const t = physicalName(def)
+  return [
+    `CREATE INDEX IF NOT EXISTS ${quoteId(indexName(t, 'index', 'deletedOn'))} ON ${tableId(d, def)} ("deletedOn" DESC, "id") WHERE "deletedOn" IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS ${quoteId(indexName(t, 'index', 'deleteBatch'))} ON ${tableId(d, def)} ("deleteBatch") WHERE "deleteBatch" IS NOT NULL`,
+  ]
+}
+
+/**
+ * Turning the recycle bin on for an existing table (one transaction): the three columns (nullable: no table rewrite),
+ * and every index that must only hold live rows rebuilt as a partial index (unique values, unique pairs, key and
+ * natural-order indexes; same names), plus the recycle bin's own indexes. `def` is the table WITH recycleBin set.
+ */
+export function enableRecycleSql(d: Dialect, def: TableDef): string[] {
+  const t = physicalName(def)
+  const tbl = tableId(d, def)
+  const drop = (name: string) => `DROP INDEX IF EXISTS ${quoteId(d.schema)}.${quoteId(name)}`
+  const out: string[] = RECYCLE_COLUMNS.map((c) => `ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS ${columnSql(c)}`)
+  for (const c of allColumns(def)) {
+    const w = wantedIndex(c)
+    if (w) out.push(drop(indexName(t, w, c.name)), createIndexSql(d, def, c, w))
+    if (wantsKeyIndex(c)) {
+      out.push(drop(indexName(t, 'key', c.name)), keyIndexSql(d, def, c))
+      if (c.indexed) out.push(drop(indexName(t, 'keydesc', c.name)), keyIndexSql(d, def, c, true))
+    }
+    out.push(...liveStatsSql(d, def, c).create)
+  }
+  const nat = naturalIndexSql(d, def)
+  if (nat) out.push(drop(indexName(t, 'index', 'natural')), nat, ...naturalStatsSql(d, def))
+  for (const set of (def.uniqueTogether ?? []).filter((x) => x.length > 1)) out.push(drop(uniqueTogetherIndexName(def, set)))
+  out.push(...uniqueTogetherSql(d, def), ...recycleIndexesSql(d, def))
+  // the new expression statistics need values now (autovacuum would get there later)
+  out.push(`ANALYZE ${tbl}`)
   return out
 }
 
@@ -257,8 +370,9 @@ export function createTableSql(d: Dialect, def: TableDef, trgmSchema?: string | 
     out.push(...keyIndexesSql(d, def, c, trgmSchema).create)
   }
   const nat = naturalIndexSql(d, def)
-  if (nat) out.push(nat)
+  if (nat) out.push(nat, ...naturalStatsSql(d, def))
   out.push(...uniqueTogetherSql(d, def))
+  if (hasRecycleBin(def)) out.push(...recycleIndexesSql(d, def))
   return out
 }
 
@@ -273,7 +387,7 @@ export function uniqueTogetherSql(d: Dialect, def: TableDef): string[] {
       if (!c) throw new HttpError(422, 'invalid', `The unique pair names a missing column "${name}".`)
       return kindOf(c.type) === 'text' && c.type !== 'lookup' ? `(${fold(d, quoteId(c.name))})` : quoteId(c.name)
     })
-    return `CREATE UNIQUE INDEX IF NOT EXISTS ${quoteId(uniqueTogetherIndexName(def, set))} ON ${tableId(d, def)} (${parts.join(', ')})`
+    return `CREATE UNIQUE INDEX IF NOT EXISTS ${quoteId(uniqueTogetherIndexName(def, set))} ON ${tableId(d, def)} (${parts.join(', ')})${livePart(def)}`
   })
 }
 export const uniqueTogetherIndexName = (def: Pick<TableDef, 'name' | 'source'>, set: string[]): string => indexName(physicalName(def), 'unique', `pair_${set.join('_')}`)
@@ -304,7 +418,8 @@ export function createViewSql(d: Dialect, def: TableDef): string[] {
     if (!fn) throw new HttpError(422, 'invalid', `Unknown view expression "${String(c.expr)}"`)
     sel.push(`${fn(`b.${quoteId(c.source)}`)} AS ${quoteId(c.name)}`)
   }
-  return [`CREATE VIEW ${tableId(d, def)} AS SELECT ${sel.join(', ')} FROM ${base} AS b`]
+  // the base table's recycle bin: a view shows its live rows only (baseRecycle is derived from the base by the server)
+  return [`CREATE VIEW ${tableId(d, def)} AS SELECT ${sel.join(', ')} FROM ${base} AS b${r.baseRecycle ? ` WHERE ${liveRowsSql({ recycleBin: true }, 'b')}` : ''}`]
 }
 export const dropViewSql = (d: Dialect, def: TableDef): string => `DROP VIEW IF EXISTS ${tableId(d, def)}`
 
@@ -694,17 +809,23 @@ function semiJoin(s: { col: string; table: TableDef; key: string; where: Conditi
     const outerRef = expr(outer, ctx.managed, `${ctx.outer}.${quoteId(outer.name)}`, mixed)
     const innerRef = expr(inner, target.managed === true, `${alias}.${quoteId(inner.name)}`, mixed)
     const w = translate(s.where, tcols, { d: ctx.d, p: ctx.p, managed: target.managed === true, outer: alias, exact: exactCols(target) }, false)
-    return `EXISTS (SELECT 1 FROM ${tableId(ctx.d, target)} AS ${alias} WHERE ${innerRef} = ${outerRef} AND ${w})`
+    // recycle bin: a deleted row of the rule's table never grants anything
+    return `EXISTS (SELECT 1 FROM ${tableId(ctx.d, target)} AS ${alias} WHERE ${innerRef} = ${outerRef} AND ${liveRowsSql(target, alias)} AND ${w})`
   }
   const where = translate(s.where, tcols, { d: ctx.d, p: ctx.p, managed: target.managed === true, outer: tableId(ctx.d, target), exact: exactCols(target) }, false)
-  return `(${left} IN (SELECT ${right} FROM ${tableId(ctx.d, target)} WHERE ${right} IS NOT NULL AND ${where}))`
+  return `(${left} IN (SELECT ${right} FROM ${tableId(ctx.d, target)} WHERE ${right} IS NOT NULL AND ${liveRowsSql(target, tableId(ctx.d, target))} AND ${where}))`
 }
 let aliasSeq = 0
 
-/** WHERE fragment; parameters continue after `offset` existing ones */
-export function buildWhere(d: Dialect, def: TableDef, cond: Condition | undefined, params: Params = new Params()): Built {
+/**
+ * WHERE fragment of a table's rows; parameters continue after the existing ones. The single enforcement point of the
+ * recycle bin: the row scope (default: live rows only) is ANDed in front of the condition, unqualified (the statement's
+ * own table) or qualified by `ref`. Callers that may see deleted rows (the Deleted view, restore, purge) say so.
+ */
+export function buildWhere(d: Dialect, def: TableDef, cond: Condition | undefined, params: Params = new Params(), scope: RowScope = 'live', ref?: string): Built {
   const sql = translate(cond, new Cols(def), { d, p: params, managed: def.managed === true, outer: tableId(d, def), exact: exactCols(def) }, false)
-  return { sql, params: params.list }
+  const live = liveRowsSql(def, ref, scope)
+  return { sql: live === 'TRUE' ? sql : sql === 'TRUE' ? `(${live})` : `(${live} AND ${sql})`, params: params.list }
 }
 
 /* ------------------------------------------------------------------ statements */
@@ -724,12 +845,12 @@ export interface SelectPlan {
   columns: ColumnDef[]
 }
 
-export function buildSelect(d: Dialect, def: TableDef, q: Query): SelectPlan {
+export function buildSelect(d: Dialect, def: TableDef, q: Query, scope: RowScope = 'live'): SelectPlan {
   const cols = new Cols(def)
   const hasId = !(def.missingSystem ?? []).includes('id')
   const names = q.select && q.select.length ? [...new Set([...q.select, ...(hasId ? ['id'] : [])])] : cols.all().map((c) => c.name)
   const selected = names.map((n) => cols.get(n))
-  const where = buildWhere(d, def, q.where)
+  const where = buildWhere(d, def, q.where, undefined, scope)
   const t = tableId(d, def)
   const order: string[] = []
   for (const o of q.orderBy ?? []) {
@@ -826,6 +947,42 @@ export function buildDeletes(d: Dialect, def: TableDef, ids: string[], guard?: C
     out.push({ sql: `DELETE FROM ${tableId(d, def)} WHERE "id" = ANY(${idsRef}) AND ${g.sql}`, params: p.list })
   }
   return out
+}
+
+/* ------------------------------------------------------------------ recycle bin statements */
+
+/**
+ * Soft delete: the live rows among `ids` that also match `guard` (the caller's delete permission) get the batch stamp.
+ * RETURNING id: exactly the rows this statement deleted (a concurrent delete of the same row deletes it once).
+ */
+export function buildSoftDeletes(d: Dialect, def: TableDef, ids: string[], batch: { id: string; by: string | null; at: Date }, guard?: Condition): Built[] {
+  const out: Built[] = []
+  for (let i = 0; i < ids.length; i += DELETE_CHUNK) {
+    const p = new Params()
+    const idsRef = p.add(ids.slice(i, i + DELETE_CHUNK), 'text[]')
+    const at = p.add(batch.at.toISOString(), 'timestamptz')
+    const by = p.add(batch.by, 'text')
+    const b = p.add(batch.id, 'text')
+    const g = buildWhere(d, def, guard, p, 'live')
+    out.push({ sql: `UPDATE ${tableId(d, def)} SET "deletedOn" = ${at}, "deletedBy" = ${by}, "deleteBatch" = ${b} WHERE "id" = ANY(${idsRef}) AND ${g.sql} RETURNING "id"`, params: p.list })
+  }
+  return out
+}
+
+/** Restore: the rows of a batch (optionally only `ids`) that are still deleted become live again */
+export function buildRestore(d: Dialect, def: TableDef, batchId: string, ids?: string[]): Built {
+  const p = new Params()
+  const b = p.add(batchId, 'text')
+  const only = ids ? ` AND "id" = ANY(${p.add(ids, 'text[]')})` : ''
+  return { sql: `UPDATE ${tableId(d, def)} SET "deletedOn" = NULL, "deletedBy" = NULL, "deleteBatch" = NULL WHERE "deleteBatch" = ${b} AND ${liveRowsSql(def, undefined, 'deleted')}${only} RETURNING "id"`, params: p.list }
+}
+
+/** Purge: the rows of a batch that are still deleted go for good (in chunks: `limit` rows per statement) */
+export function buildPurge(d: Dialect, def: TableDef, batchId: string, limit: number): Built {
+  const p = new Params()
+  const b = p.add(batchId, 'text')
+  const t = tableId(d, def)
+  return { sql: `DELETE FROM ${t} WHERE "id" IN (SELECT "id" FROM ${t} WHERE "deleteBatch" = ${b} AND ${liveRowsSql(def, undefined, 'deleted')} LIMIT ${intArg(limit, 'limit')}) RETURNING "id"`, params: p.list }
 }
 
 export function columnTypesByName(def: TableDef): Map<string, ColumnType> {

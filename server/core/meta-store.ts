@@ -26,6 +26,7 @@ import { dropSystemViews, provisionSystemTables } from './system-tables.ts'
 import { FLOW_TABLES, flowsEnvironmentDdl, upgradeEnvironmentTo8Flows } from './flows/ddl.ts'
 import { APPROVAL_TABLES, approvalsEnvironmentDdl, upgradeEnvironmentTo9Approvals } from './approvals/ddl.ts'
 import { ACTIONS_TABLES, DELIVERY_INSTALL_DDL, DELIVERY_TABLES, actionsEnvironmentDdl } from './actions/ddl.ts'
+import { RECYCLE_TABLES, recycleEnvironmentDdl, upgradeEnvironmentTo10Recycle } from './recycle-ddl.ts'
 
 /**
  * 1-3: the MySQL system store (no longer supported, never upgraded: there is no migration path from MySQL).
@@ -53,7 +54,7 @@ import { ACTIONS_TABLES, DELIVERY_INSTALL_DDL, DELIVERY_TABLES, actionsEnvironme
  *    ab_approval_stages, ab_approval_assignments, ab_approval_history, ab_approval_delegations, ab_approval_links,
  *    ab_approval_settings) shown in the core data model as the projections of the group "Approvals" (sys_approval_*).
  */
-export const SCHEMA_VERSION = 9
+export const SCHEMA_VERSION = 10
 
 /** the database was upgraded by a newer server: this one must not touch it (downgrade guard) */
 export class SchemaTooNewError extends Error {
@@ -296,13 +297,14 @@ export function environmentDdl(schema: string): string[] {
     ...flowsEnvironmentDdl(schema),
     // P1-C approvals: policies, requests, stages, assignments, history, delegations, email links, settings (idempotent)
     ...approvalsEnvironmentDdl(schema),
+    ...recycleEnvironmentDdl(schema),
   ]
 }
 
 /** names of the metadata tables inside an environment schema (never reachable through a connector: prefix ab_) */
 export const ENVIRONMENT_TABLES = [
   'ab_roles', 'ab_user_roles', 'ab_role_tables', 'ab_tables', 'ab_apps', 'ab_connections', 'ab_solutions', 'ab_data_files',
-  'ab_attachments', 'ab_counters', 'ab_audit', ...KERNEL_TABLES, 'ab_shares', ...MODEL_TABLES, ...ACTIONS_TABLES, ...FLOW_TABLES, ...APPROVAL_TABLES,
+  'ab_attachments', 'ab_counters', 'ab_audit', ...KERNEL_TABLES, 'ab_shares', ...MODEL_TABLES, ...ACTIONS_TABLES, ...FLOW_TABLES, ...APPROVAL_TABLES, ...RECYCLE_TABLES,
 ]
 /** names of the tables in schema ab */
 export const INSTALL_TABLES = ['settings', 'users', 'sessions', 'environments', 'environment_access', 'audit', 'licence', 'departments', 'teams', 'team_members', ...NOTIFICATION_TABLES, ...IDENTITY_TABLES, ...BACKUP_TABLES, ...DELIVERY_TABLES]
@@ -380,6 +382,13 @@ export const ENVIRONMENT_STEPS: { to: number; describe: string; run(db: SqlDb, s
     to: 9,
     describe: 'approvals (ab_approval_policies, ab_approval_requests, ab_approval_stages, ab_approval_assignments, ab_approval_history, ab_approval_delegations, ab_approval_links, ab_approval_settings) and their system tables in the group Approvals',
     run: upgradeEnvironmentTo9Approvals,
+  },
+  {
+    // P1 recycle bin (independent step): batch and effect tables; data tables keep final deletes until a maker turns the
+    // setting on (no column is added to an existing table here, so nothing changes for them)
+    to: 10,
+    describe: 'recycle bin for deleted rows (ab_delete_batches, ab_delete_effects); existing tables keep final deletes until enabled',
+    run: upgradeEnvironmentTo10Recycle,
   },
 ]
 

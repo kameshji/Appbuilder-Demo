@@ -58,3 +58,17 @@ You do not have access to that record. Tell your administrator if you think you 
 ## If the timeline says "Nothing here yet."
 
 There are no comments, tasks or files for this record yet. Use **Show older** to load more when there are many.
+
+## I deleted something by mistake
+
+Many tables keep deleted records for a while (usually 30 days). What you can do depends on the app:
+
+- **Right after deleting**: a message appears at the bottom, "1 row deleted ... **Undo**". Click **Undo** within ten
+  seconds and everything comes back, including the lines or tasks that were deleted with it.
+- **Later**: if your app has a recycle bin screen (ask whoever made the app), open it, select the record and choose
+  **Restore**. Otherwise ask your administrator: they can restore it from the table's **Deleted** list, as long as the
+  days have not run out. Tell them which record, which app and roughly when.
+- You can restore only records you were allowed to delete. If restoring says another record now uses the same number or
+  code, that record has to change first.
+- If no Undo appeared, that table deletes for good. Your administrator may be able to get the data back from a backup.
+

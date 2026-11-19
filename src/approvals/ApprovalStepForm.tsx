@@ -6,8 +6,10 @@
  *   <ApprovalStepForm value={step} onChange={setStep} context={{ tables, tokens, policies }} />
  *
  * Formula fields are plain text (the designer's expression editor may replace them later); `context.tokens` are dynamic
- * content tokens (e.g. "Trigger.Record.Title") offered as one-click inserts. No server calls: policies come in
- * `context.policies` (names) when the caller has them.
+ * content tokens (e.g. "Trigger.Record.Title") offered as one-click inserts. Policies come in `context.policies` (names)
+ * when the caller has them. P1-E: approvers, stages, threshold rules, answers and the escalation target are picked
+ * visually (DefinitionEditor.tsx; people and teams come from the organisation directory); approvers stay a formula
+ * when they come from the record (Trigger.Record.Manager).
  */
 import { useMemo, useState } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
@@ -16,7 +18,9 @@ import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { APPROVAL_TYPE_DOCS, type ApprovalStepConfig, type ApprovalType, type EscalationAction, type StageMode } from '@/platform/approvals'
+import { APPROVAL_TYPE_DOCS, guessKind, type ApprovalStepConfig, type ApprovalType, type EscalationAction } from '@/platform/approvals'
+import { ApproverPicker, ResponsesEditor, RulesEditor, StagesEditor, useApproverDirectory } from './DefinitionEditor'
+import { formulaOfRefs, refsOfFormula } from './definitionKit'
 
 export interface ApprovalStepFormContext {
   /** tables of the environment (for "about a record"), with their column names */
@@ -97,11 +101,14 @@ export function ApprovalStepForm({ value, onChange, context, readOnly }: Approva
     for (const [k, v] of Object.entries(patch)) if (v === undefined || v === '') delete next[k]
     onChange(next)
   }
+  const dir = useApproverDirectory()
+  const approverRefs = refsOfFormula(value.approvers)
+  const [approversAsFormula, setApproversAsFormula] = useState(approverRefs === null)
   const type: ApprovalType = value.type ?? 'single'
   const usesPolicy = !!value.policy
   const stages = value.stages ?? []
   const fields = useMemo(() => Object.entries(value.fields ?? {}), [value.fields])
-  const options = (value.options ?? []).join(', ')
+  const fieldNames = useMemo(() => Object.keys(value.fields ?? {}), [value.fields])
   const esc = value.escalation
   const dueHours = value.dueMinutes ? String(Math.round((value.dueMinutes / 60) * 100) / 100) : ''
 
@@ -122,13 +129,23 @@ export function ApprovalStepForm({ value, onChange, context, readOnly }: Approva
         )}
       </Row>
 
-      <Row label={usesPolicy ? 'Approvers (optional, overrides the policy)' : 'Approvers'} hint={'A formula: emails or user ids, "role:Finance", "team:QA", "manager", "manager-chain:2", "department-head", or a table of people.'} htmlFor="appr-approvers">
-        <FormulaField id="appr-approvers" value={String(value.approvers ?? '')} onChange={(v) => set({ approvers: v })} tokens={tokens} placeholder={'Trigger.Record.Manager'} disabled={readOnly} testId="appr-approvers" />
+      <Row label={usesPolicy ? 'Approvers (optional, overrides the policy)' : 'Approvers'} hint={approverRefs !== null && !approversAsFormula ? 'People, roles, teams, departments or the requester\'s manager chain. They keep working when people change jobs.' : 'A formula: emails or user ids, "role:Finance", "team:QA", "manager", "manager-chain:2", "department-head", or a table of people (for example Trigger.Record.Manager).'} htmlFor="appr-approvers">
+        {approverRefs !== null && !approversAsFormula ? (
+          <>
+            <ApproverPicker value={approverRefs} onChange={(refs) => set({ approvers: formulaOfRefs(refs) || undefined })} dir={dir} readOnly={readOnly} testId="appr-approver-picker" />
+            {!readOnly && <button type="button" className="w-fit text-[11px] text-primary hover:underline" onClick={() => setApproversAsFormula(true)} data-testid="appr-approvers-formula">Take them from the record or another step (formula)</button>}
+          </>
+        ) : (
+          <>
+            <FormulaField id="appr-approvers" value={String(value.approvers ?? '')} onChange={(v) => set({ approvers: v })} tokens={tokens} placeholder={'Trigger.Record.Manager'} disabled={readOnly} testId="appr-approvers" />
+            {!readOnly && <button type="button" className="w-fit text-[11px] text-primary hover:underline" onClick={() => { if (approverRefs === null && value.approvers && !window.confirm('Replace the formula with people you pick?')) return; if (approverRefs === null) set({ approvers: undefined }); setApproversAsFormula(false) }} data-testid="appr-approvers-pick">Pick people, roles or managers instead</button>}
+          </>
+        )}
       </Row>
 
       {!usesPolicy && (
         <Row label="How they decide" htmlFor="appr-type" hint={APPROVAL_TYPE_DOCS.find((t) => t.type === type)?.summary}>
-          <NativeSelect id="appr-type" value={type} disabled={readOnly} testId="appr-type" onChange={(v) => set({ type: v === 'single' ? undefined : v })} options={APPROVAL_TYPE_DOCS.map((t) => ({ value: t.type, label: t.title }))} />
+          <NativeSelect id="appr-type" value={type} disabled={readOnly} testId="appr-type" onChange={(v) => set({ type: v === 'single' ? undefined : v, ...(v === 'sequential' && !stages.length ? { stages: [{ name: 'Stage 1', approvers: approverRefs ?? [] }] } : {}) })} options={APPROVAL_TYPE_DOCS.map((t) => ({ value: t.type, label: t.title }))} />
         </Row>
       )}
       {!usesPolicy && type === 'quorum' && (
@@ -138,23 +155,19 @@ export function ApprovalStepForm({ value, onChange, context, readOnly }: Approva
       )}
       {!usesPolicy && type === 'sequential' && (
         <div className="flex flex-col gap-2 rounded-md border p-2" data-testid="appr-stages">
-          <div className="text-xs font-medium">Stages</div>
-          {stages.map((s, i) => (
-            <div key={i} className="flex flex-wrap items-center gap-2">
-              <Input className="h-8 w-28" placeholder={`Stage ${i + 1}`} value={s.name ?? ''} disabled={readOnly} onChange={(e) => set({ stages: stages.map((x, j) => (j === i ? { ...x, name: e.target.value || undefined } : x)) })} />
-              <Input className="h-8 min-w-40 flex-1 font-mono text-xs" placeholder="manager; role:Finance" value={s.approvers.join('; ')} disabled={readOnly} onChange={(e) => set({ stages: stages.map((x, j) => (j === i ? { ...x, approvers: e.target.value.split(/[;\n]/).map((a) => a.trim()).filter(Boolean) } : x)) })} />
-              <NativeSelect<StageMode> value={s.mode ?? 'any'} disabled={readOnly} onChange={(m) => set({ stages: stages.map((x, j) => (j === i ? { ...x, mode: m } : x)) })} options={[{ value: 'any', label: 'Any one' }, { value: 'all', label: 'Everyone' }, { value: 'quorum', label: 'Quorum' }]} />
-              <Input className="h-8 w-40 font-mono text-xs" placeholder="Condition (optional)" value={s.condition ?? ''} disabled={readOnly} onChange={(e) => set({ stages: stages.map((x, j) => (j === i ? { ...x, condition: e.target.value || undefined } : x)) })} />
-              {!readOnly && <Button variant="ghost" size="icon" className="size-8" aria-label="Remove stage" onClick={() => set({ stages: stages.filter((_, j) => j !== i) })}><Trash2 className="size-3.5" /></Button>}
-            </div>
-          ))}
-          {!readOnly && <Button variant="outline" size="sm" className="w-fit" onClick={() => set({ stages: [...stages, { approvers: [] }] })}><Plus className="size-3.5" />Add stage</Button>}
-          <p className="text-[11px] text-muted-foreground">Stage approvers are references (not formulas), separated by ;. Conditions read the fields below, e.g. Amount &gt; 10000.</p>
+          <div className="text-xs font-medium">Stages, one after another</div>
+          <StagesEditor stages={stages} onChange={(st) => set({ stages: st.length ? st : undefined })} dir={dir} fields={fieldNames} readOnly={readOnly} />
+          <p className="text-[11px] text-muted-foreground">A stage's condition reads the fields shown to approvers (below), e.g. Amount is more than 10000. A stage's own due date counts from when it starts.</p>
         </div>
       )}
+      <div className="flex flex-col gap-2 rounded-md border p-2" data-testid="appr-rules">
+        <div className="text-xs font-medium">Threshold rules (optional)</div>
+        <p className="text-[11px] text-muted-foreground">When a rule's condition on the fields holds, a stage is added after the others. {usesPolicy ? 'They come after the policy\'s own rules.' : ''}</p>
+        <RulesEditor rules={value.rules ?? []} onChange={(r) => set({ rules: r.length ? r : undefined })} dir={dir} fields={fieldNames} readOnly={readOnly} />
+      </div>
 
-      <Row label="Answers" hint="Comma-separated. Default: Approve, Reject. A label with 'more info' sends the request back to the requester." htmlFor="appr-options">
-        <Input id="appr-options" className="h-9" value={options} placeholder="Approve, Reject" disabled={readOnly} onChange={(e) => set({ options: e.target.value.trim() ? e.target.value.split(',').map((o) => o.trim()).filter(Boolean) : undefined })} data-testid="appr-options" />
+      <Row label="Answers" hint="What approvers can answer. 'Asks for more information' sends the request back to the requester; 'ends the request' is a custom outcome such as Rework.">
+        <ResponsesEditor responses={value.responses ?? (value.options?.length ? value.options.map((l, i) => ({ label: l, kind: guessKind(l, i) })) : undefined)} onChange={(r) => set({ responses: r, options: undefined })} readOnly={readOnly} />
       </Row>
 
       <div className="flex flex-col gap-2 rounded-md border p-2">
@@ -197,9 +210,14 @@ export function ApprovalStepForm({ value, onChange, context, readOnly }: Approva
         <Row label="When it is overdue" htmlFor="appr-esc">
           <NativeSelect id="appr-esc" value={esc?.action ?? ''} disabled={readOnly} testId="appr-escalation" onChange={(a) => set({ escalation: a ? { ...(esc ?? {}), action: a } : undefined })} options={ESCALATIONS} />
         </Row>
+        {esc && (
+          <Row label="Escalate after the due date (hours)" htmlFor="appr-esc-after">
+            <Input id="appr-esc-after" type="number" min={0} step="any" className="h-9" value={esc.afterMinutes ? String(Math.round((esc.afterMinutes / 60) * 100) / 100) : ''} disabled={readOnly} onChange={(e) => set({ escalation: { ...esc, afterMinutes: e.target.value ? Math.max(0, Math.round(Number(e.target.value) * 60)) : undefined } })} />
+          </Row>
+        )}
         {esc?.action === 'user' && (
-          <Row label="Escalate to" htmlFor="appr-esc-to">
-            <Input id="appr-esc-to" className="h-9" placeholder="email@example.com" value={esc.to ?? ''} disabled={readOnly} onChange={(e) => set({ escalation: { ...esc, to: e.target.value } })} />
+          <Row label="Escalate to">
+            <ApproverPicker value={esc.to ? [esc.to] : []} onChange={(a) => set({ escalation: { ...esc, to: a[0] } })} dir={dir} readOnly={readOnly} single testId="appr-escalate-to" />
           </Row>
         )}
       </div>

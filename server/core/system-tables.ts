@@ -26,7 +26,7 @@ import {
 } from '../../src/platform/system-tables.ts'
 import type { SystemTableSpec } from '../../src/platform/system-tables.ts'
 import { COUNTRIES, CURRENCIES } from '../../src/platform/system-reference-data.ts'
-import { columnSql, createTableSql, indexName, quoteId } from '../connectors/postgres/sql.ts'
+import { columnSql, createTableSql, indexName, liveRowsSql, quoteId } from '../connectors/postgres/sql.ts'
 import type { Dialect } from '../connectors/postgres/sql.ts'
 
 const q = (id: string): string => `"${id.replace(/"/g, '""')}"`
@@ -343,7 +343,9 @@ export async function copySystemData(db: SqlDb, from: string, to: string): Promi
     if (!cols.length) continue
     await db.exec(`DELETE FROM ${q(to)}.${q(t)}`)
     const list = cols.map(q).join(', ')
-    await db.exec(`INSERT INTO ${q(to)}.${q(t)} (${list}) SELECT ${list} FROM ${q(from)}.${q(t)}`)
+    // recycle bin (Activities, Comments, Documents may have one): deleted rows are not copied
+    const live = cols.includes('deletedOn') ? ` WHERE ${liveRowsSql({ recycleBin: true })}` : ''
+    await db.exec(`INSERT INTO ${q(to)}.${q(t)} (${list}) SELECT ${list} FROM ${q(from)}.${q(t)}${live}`)
   }
 }
 

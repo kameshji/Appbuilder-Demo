@@ -250,6 +250,32 @@ describe.skipIf(!PG_URL)('approvals (PostgreSQL)', () => {
     expect(ed.assignments.find((a) => a.userId === ids['mona@example.com'])).toMatchObject({ source: 'escalation', reassignedFrom: ids['gus@example.com'] })
   })
 
+  it('per-stage due dates (P1-E): each stage is due from its own start; escalation re-armed per stage', async () => {
+    now = new Date('2030-06-03T08:00:00Z')
+    await inEnv(async () => ap().savePolicy(await ctx('ada@example.com'), null, { name: 'Staged due', definition: {
+      type: 'sequential', escalation: { action: 'nextStage' },
+      stages: [{ name: 'Quick', approvers: ['gus@example.com'], dueMinutes: 60 }, { name: 'Slow', approvers: ['fay@example.com'], dueMinutes: 3 * 24 * 60 }],
+    } }))
+    const req = await create('raj@example.com', { policy: 'Staged due', title: 'Per-stage due' })
+    const dueOf = async () => new Date((await h.q<any>('SELECT due_on FROM env_default.ab_approval_requests WHERE id = $1', [req.id]))[0].due_on).toISOString()
+    expect(await dueOf()).toBe('2030-06-03T09:00:00.000Z')
+    expect(await pendingOf(req.id)).toEqual(['gus@example.com'])
+    // overdue in stage 1: escalation skips to stage 2, whose own due date counts from now
+    now = new Date('2030-06-03T09:05:00Z')
+    await drain()
+    expect(await pendingOf(req.id)).toEqual(['fay@example.com'])
+    expect(await dueOf()).toBe('2030-06-06T09:05:00.000Z')
+    // not overdue yet a day later
+    now = new Date('2030-06-04T09:05:00Z')
+    await drain()
+    expect(await pendingOf(req.id)).toEqual(['fay@example.com'])
+    expect((await status(req.id)).status).toBe('pending')
+    // the last stage overdue: nextStage on the last stage expires it
+    now = new Date('2030-06-06T09:06:00Z')
+    await drain()
+    expect(await status(req.id)).toEqual({ status: 'expired', outcome: 'Expired' })
+  })
+
   it('LEAK: people not involved see nothing; an approver without access to the record sees only the declared details', async () => {
     const r = await create('raj@example.com', { approvers: ['fay@example.com'], title: 'About the laptops', details: '<p>Please approve <b>quickly</b><script>x</script></p>', fields: { Amount: 20000 }, regarding: { table: ids.table, rowId: ids.order } })
     // Fay cannot read Raj's order: she sees the title, details and fields, never the record
@@ -383,6 +409,33 @@ describe.skipIf(!PG_URL)('approvals (PostgreSQL)', () => {
     await drain()
     const rows = await h.q<any>(`SELECT "Title", "Outcome" FROM env_default.t_decisions`)
     expect(rows).toEqual([{ Title: 'Chairs', Outcome: 'Reject by Mona Manager' }])
+  })
+
+  it('a flow step built in the visual editor: own stages without approvers, a threshold rule and custom answers on the step (P1-E)', async () => {
+    const f = await h.admin.post('/flows', {
+      name: 'Visual approval', enabled: true, settings: { concurrency: 'parallel', timeoutMinutes: 600, retentionDays: 30, onError: 'fail' },
+      trigger: { type: 'manual', inputs: [{ name: 'Amount', type: 'number' }], from: 'any' },
+      steps: [{
+        id: 'ap', name: 'Approve', kind: 'approval', title: '"Visual " & Text(Trigger.Inputs.Amount)', type: 'sequential',
+        stages: [{ name: 'Manager', approvers: ['mona@example.com'], dueMinutes: 120 }],
+        rules: [{ name: 'Big', condition: 'Amount > 1000', approvers: ['dev@example.com'] }],
+        responses: [{ label: 'Approve', kind: 'approve' }, { label: 'Reject', kind: 'reject', requireComment: true }, { label: 'Need more info', kind: 'info' }],
+        fields: { Amount: 'Trigger.Inputs.Amount' },
+      }],
+    })
+    expect(f.status, JSON.stringify(f.data)).toBe(200)
+    const run = await h.admin.post(`/flows/${f.data.flow.id}/run`, { inputs: { Amount: 5000 } })
+    expect(run.status, JSON.stringify(run.data)).toBe(200)
+    await drain()
+    const req = (await h.q<any>(`SELECT id FROM env_default.ab_approval_requests WHERE title = 'Visual 5000'`))[0]
+    expect(req).toBeTruthy()
+    const st = await h.q<any>(`SELECT name, due_minutes FROM env_default.ab_approval_stages WHERE request_id = $1 ORDER BY idx`, [req.id])
+    expect(st).toEqual([{ name: 'Manager', due_minutes: 120 }, { name: 'Big', due_minutes: null }])
+    const d = await detail('mona@example.com', req.id)
+    expect(d.responses.map((x: any) => `${x.label}:${x.kind}${x.requireComment ? '!' : ''}`)).toEqual(['Approve:approve', 'Reject:reject!', 'Need more info:info'])
+    await respond('mona@example.com', req.id, 'Approve')
+    await drain()
+    expect(await pendingOf(req.id)).toEqual(['dev@example.com'])
   })
 
   it('policies travel in solutions (approvers by reference; users by email); pending requests do not', async () => {

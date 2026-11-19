@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ConfirmDialog, Empty, Field, Panel, fmtDate, useToast } from './kit'
 import { DataGrid } from './DataGrid'
+import { RecycleSettingPanel } from './RecycleBin'
 import { ColumnsPanel } from './ColumnsPanel'
 import { TableSecurity } from './TableSecurity'
 import { ConnectionFlags, connectorInfo } from './ConnectionBits'
@@ -173,6 +174,7 @@ export function TableDesigner({ tableId }: { tableId: string }) {
                 <Switch checked={!!table.sharing} disabled={!caps.isMaker || !!table.missingSystem?.includes('id')} onCheckedChange={(v) => { platform.tables.update(table.id, { sharing: v }).then(() => toast(v ? 'Sharing is on' : 'Sharing is off: existing shares stop applying (they come back if you turn it on again)', 'success')).catch(fail) }} aria-label="Record sharing" data-testid="sharing-switch" />
               </label>
             </Panel>
+            <RecycleSettingPanel table={table} />
             {caps.server && caps.isAdmin && hasOwner && !table.readOnly && (
               <Panel className="flex items-center gap-4 p-5" data-testid="assign-owner-panel">
                 <div className="min-w-0 flex-1">
@@ -193,7 +195,7 @@ export function TableDesigner({ tableId }: { tableId: string }) {
                 <div className="text-sm font-semibold">Delete this table</div>
                 <p className="mt-0.5 text-sm text-muted-foreground">{linked
                   ? 'Removes the table from Appbuilder. The table and its rows stay in the database. Apps that use it will stop working.'
-                  : 'Removes the table from Appbuilder. Apps that use it will stop working.'}</p>
+                  : 'Removes the table from Appbuilder. Apps that use it will stop working.'} A deleted table does not go to a recycle bin: only a backup brings it back.</p>
               </div>
               <Button variant="destructive" size="sm" onClick={() => { setDropSource(false); setDel(true) }} data-testid="delete-table-button"><Trash2 /> Delete table</Button>
             </Panel>

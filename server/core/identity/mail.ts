@@ -18,6 +18,7 @@ import { errText, log, uid } from '../util.ts'
 import { recipientsOf, sendSmtp, SmtpError, validAddress, type SmtpSecurity, type SmtpSettings } from './smtp.ts'
 import { renderTemplate, type MailTemplate, type TemplateVars } from './templates.ts'
 import { hostProblem } from '../net-policy.ts'
+import { checkTokenUrl, getAccessToken, oauthDefaults, OAuthTokenError, type OAuthGrant, type OAuthProvider } from './oauth-token.ts'
 
 export const MAIL_JOB = 'mail.send'
 const KEY = 'identity.smtp'
@@ -36,10 +37,27 @@ export interface StoredSmtp {
   installName: string
   /** the address people open Appbuilder at, for links in emails, e.g. https://apps.example.com */
   publicUrl: string
+  /** P1-E: how the relay is signed in to: a password (default) or OAuth 2.0 (AUTH XOAUTH2, the user name is the mailbox) */
+  auth?: 'password' | 'oauth2'
+  oauth2?: StoredOAuth
 }
 
-/** what the Admin console sees (never the password) */
-export type PublicSmtp = Omit<StoredSmtp, 'passwordSealed'> & { hasPassword: boolean }
+export interface StoredOAuth {
+  provider: OAuthProvider
+  grant: OAuthGrant
+  tenant: string
+  tokenUrl: string
+  clientId: string
+  scope: string
+  clientSecretSealed: string | null
+  refreshTokenSealed: string | null
+}
+
+/** what the Admin console sees (never the password, client secret or refresh token) */
+export type PublicSmtp = Omit<StoredSmtp, 'passwordSealed' | 'oauth2'> & {
+  hasPassword: boolean
+  oauth2?: Omit<StoredOAuth, 'clientSecretSealed' | 'refreshTokenSealed'> & { hasClientSecret: boolean; hasRefreshToken: boolean }
+}
 
 export interface MailLogEntry {
   id: string
@@ -111,19 +129,47 @@ export function createMailService(services: CoreServices): MailService {
     }
   }
   const toPublic = (s: StoredSmtp): PublicSmtp => {
-    const { passwordSealed, ...rest } = s
-    return { ...rest, hasPassword: !!passwordSealed }
+    const { passwordSealed, oauth2, ...rest } = s
+    const out: PublicSmtp = { ...rest, auth: s.auth ?? 'password', hasPassword: !!passwordSealed }
+    if (oauth2) {
+      const { clientSecretSealed, refreshTokenSealed, ...o } = oauth2
+      out.oauth2 = { ...o, hasClientSecret: !!clientSecretSealed, hasRefreshToken: !!refreshTokenSealed }
+    }
+    return out
   }
-  function smtpOf(s: StoredSmtp): SmtpSettings {
-    let password: string | undefined
-    if (s.passwordSealed) {
+  const unseal = (v: string | null, what: string): string => {
+    if (!v) return ''
+    try {
+      return services.secrets.decrypt(v)
+    } catch {
+      throw new SmtpError(`The saved ${what} cannot be decrypted (was the secret key replaced?). Enter it again in Admin console > Email.`, 535)
+    }
+  }
+  async function smtpOf(s: StoredSmtp): Promise<SmtpSettings> {
+    const base = { host: s.host, port: s.port, security: s.security, username: s.username || undefined, verifyCertificate: s.verifyCertificate }
+    if (s.auth === 'oauth2' && s.oauth2) {
+      const o = s.oauth2
       try {
-        password = services.secrets.decrypt(s.passwordSealed)
-      } catch {
-        throw new SmtpError('The saved SMTP password cannot be decrypted (was the secret key replaced?). Enter it again in Admin console > Email.')
+        const accessToken = await getAccessToken({
+          provider: o.provider, grant: o.grant, tokenUrl: o.tokenUrl, clientId: o.clientId, scope: o.scope,
+          clientSecret: unseal(o.clientSecretSealed, 'OAuth client secret'), refreshToken: unseal(o.refreshTokenSealed, 'OAuth refresh token') || undefined,
+        }, {
+          // providers that rotate refresh tokens: keep the newest one
+          onRefreshToken: async (t) => {
+            const cur = await stored()
+            if (cur?.oauth2) {
+              cur.oauth2.refreshTokenSealed = services.secrets.encrypt(t)
+              await db().exec(`UPDATE "ab"."settings" SET v = $2 WHERE k = $1`, [KEY, JSON.stringify(cur)])
+            }
+          },
+        })
+        return { ...base, accessToken }
+      } catch (e) {
+        if (e instanceof OAuthTokenError) throw new SmtpError(`OAuth 2.0: ${e.message}`, e.permanent ? 535 : 0)
+        throw e
       }
     }
-    return { host: s.host, port: s.port, security: s.security, username: s.username || undefined, password, verifyCertificate: s.verifyCertificate }
+    return { ...base, password: unseal(s.passwordSealed, 'SMTP password') || undefined }
   }
 
   async function logUpdate(id: string, patch: { status: MailLogEntry['status']; attempts?: number; sentOn?: Date; lastError?: string | null; messageId?: string }) {
@@ -165,7 +211,7 @@ export function createMailService(services: CoreServices): MailService {
         throw new JobError('The queued message cannot be decrypted.', { retry: false })
       }
       try {
-        const r = await sendSmtp(smtpOf(s), {
+        const r = await sendSmtp(await smtpOf(s), {
           from: { address: s.fromAddress, name: m.fromName || s.fromName || s.installName }, to: m.to, cc: m.cc, bcc: m.bcc, replyTo: m.replyTo || s.replyTo || undefined,
           subject: m.subject, text: m.text, html: m.html, headers: m.headers,
           attachments: (m.attachments ?? []).map((a) => ({ fileName: a.fileName, contentType: a.contentType, content: Buffer.from(a.base64, 'base64') })),
@@ -225,12 +271,49 @@ export function createMailService(services: CoreServices): MailService {
         if (typeof b.password !== 'string' || b.password.length > 1024) throw new HttpError(422, 'invalid', 'The password must be text.', 'password')
         passwordSealed = b.password ? services.secrets.encrypt(b.password) : null
       }
+      // P1-E: OAuth 2.0 (XOAUTH2) instead of a password
+      const auth: 'password' | 'oauth2' = b.auth === 'oauth2' ? 'oauth2' : 'password'
+      let oauth2: StoredOAuth | undefined = cur?.oauth2
+      if (auth === 'oauth2') {
+        const o = (b.oauth2 && typeof b.oauth2 === 'object' ? b.oauth2 : {}) as Record<string, unknown>
+        const provider = (['microsoft', 'google', 'custom'].includes(String(o.provider)) ? o.provider : 'microsoft') as OAuthProvider
+        const grant = (o.grant === 'client_credentials' ? 'client_credentials' : 'refresh_token') as OAuthGrant
+        if (provider === 'google' && grant === 'client_credentials') throw new HttpError(422, 'invalid', 'Google Workspace needs a refresh token (client credentials are a Microsoft 365 option).', 'oauth2.grant')
+        const tenant = str(o.tenant).slice(0, 100)
+        if (tenant && !/^[A-Za-z0-9.-]+$/.test(tenant)) throw new HttpError(422, 'invalid', 'The tenant is a domain such as contoso.onmicrosoft.com or a directory id.', 'oauth2.tenant')
+        const d = oauthDefaults(provider, grant, tenant)
+        const tokenUrl = str(o.tokenUrl) || d.tokenUrl
+        try {
+          const u = checkTokenUrl(tokenUrl)
+          const blockedToken = hostProblem(u.hostname.replace(/^\[|\]$/g, ''))
+          if (blockedToken) throw new OAuthTokenError(blockedToken, true)
+        } catch (e) {
+          throw new HttpError(422, 'invalid', (e as Error).message, 'oauth2.tokenUrl')
+        }
+        const scope = (str(o.scope) || d.scope).slice(0, 500)
+        if (!scope) throw new HttpError(422, 'invalid', 'Enter the scope the token endpoint expects.', 'oauth2.scope')
+        const clientId = str(o.clientId).slice(0, 200)
+        if (!clientId) throw new HttpError(422, 'invalid', 'Enter the OAuth client (application) id.', 'oauth2.clientId')
+        const sealOr = (v: unknown, keep: string | null, what: string): string | null => {
+          if (v === undefined || v === null) return keep
+          if (typeof v !== 'string' || v.length > 4096) throw new HttpError(422, 'invalid', `The ${what} must be text.`, 'oauth2')
+          return v ? services.secrets.encrypt(v) : null
+        }
+        const same = cur?.oauth2 && cur.oauth2.clientId === clientId && cur.oauth2.tokenUrl === tokenUrl
+        const clientSecretSealed = sealOr(o.clientSecret, same ? cur!.oauth2!.clientSecretSealed : null, 'client secret')
+        const refreshTokenSealed = sealOr(o.refreshToken, same ? cur!.oauth2!.refreshTokenSealed : null, 'refresh token')
+        if (grant === 'client_credentials' && !clientSecretSealed) throw new HttpError(422, 'invalid', 'Client credentials need the client secret.', 'oauth2.clientSecret')
+        if (grant === 'refresh_token' && !refreshTokenSealed) throw new HttpError(422, 'invalid', 'Enter the refresh token.', 'oauth2.refreshToken')
+        if (!username || !validAddress(username)) throw new HttpError(422, 'invalid', 'With OAuth 2.0 the user name is the mailbox the mail is sent from, for example appbuilder@example.com.', 'username')
+        if (security === 'none' && !/^(localhost|127\.|::1$)/.test(host)) throw new HttpError(422, 'invalid', 'OAuth 2.0 tokens are only sent over STARTTLS or TLS. Choose STARTTLS or TLS.', 'security')
+        oauth2 = { provider, grant, tenant, tokenUrl, clientId, scope, clientSecretSealed, refreshTokenSealed }
+      }
       if (security === 'none' && username && !/^(localhost|127\.|::1$)/.test(host)) {
         throw new HttpError(422, 'invalid', 'A user name and password are only sent over STARTTLS or TLS (or to a relay on this computer). Choose STARTTLS or TLS.', 'security')
       }
       const next: StoredSmtp = {
         host, port, security, username, passwordSealed, verifyCertificate: b.verifyCertificate !== false,
-        fromAddress, fromName, replyTo, installName, publicUrl,
+        fromAddress, fromName, replyTo, installName, publicUrl, auth, ...(oauth2 ? { oauth2 } : {}),
       }
       await db().exec(`INSERT INTO "ab"."settings" (k, v) VALUES ($1, $2) ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v`, [KEY, JSON.stringify(next)])
       return toPublic(next)
@@ -276,7 +359,7 @@ export function createMailService(services: CoreServices): MailService {
       const id = uid('mail')
       await db().exec(`INSERT INTO "ab"."mail_log" (id, created_on, status, attempts, to_address, subject, template) VALUES ($1, $2, 'queued', 1, $3, $4, 'test')`, [id, new Date(), to, r.subject])
       try {
-        const res = await sendSmtp({ ...smtpOf(s), timeoutMs: 15_000 }, { from: { address: s.fromAddress, name: s.fromName || s.installName }, to, replyTo: s.replyTo || undefined, subject: r.subject, text: r.text, html: r.html })
+        const res = await sendSmtp({ ...(await smtpOf(s)), timeoutMs: 15_000 }, { from: { address: s.fromAddress, name: s.fromName || s.installName }, to, replyTo: s.replyTo || undefined, subject: r.subject, text: r.text, html: r.html })
         await logUpdate(id, { status: 'sent', attempts: 1, sentOn: new Date(), lastError: null, messageId: res.messageId })
         return { response: res.response }
       } catch (e) {

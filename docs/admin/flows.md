@@ -38,7 +38,14 @@ Changing the run-as identity or the owner of a flow is confirmed explicitly and 
 
 ## Kill switch
 
-**Pause all flows** on the Flows page (`PUT /api/v1/flows/settings { "paused": true }`, audited `flows.paused`) stops every
+**Admin console > Flows** shows the kill switch with its state (running, or paused since when), the environment's run limit
+and every flow with its state (on, off, suspended with the reason, "paused (kill switch)"), its owner, its last run and its
+failures over 7 days, with a switch per flow (administrators may turn flows off and on also in a locked production
+environment).
+
+![Admin console, Flows](../images/admin-flows.png)
+
+**Pause all flows** (Admin console > Flows, or the Flows page; `PUT /api/v1/flows/settings { "paused": true }`, audited `flows.paused`) stops every
 flow of the environment at its next step: no step runs, no run starts, manual runs are refused. Triggers still record their
 runs (nothing is lost); when you **resume** (`flows.resumed`) everything continues where it stopped. To stop one flow, turn
 it off; to stop one run, cancel it.
@@ -52,11 +59,19 @@ days), trigger payload 256 KB, step output 1 MB; per flow at most 250 steps and 
 runs for at most 1,000 rows of one bulk change. Flows do not trigger themselves (see the maker guide), and nothing starts
 from a change made 8 levels deep.
 
+## Child flows
+
+A flow may call another flow (the step "Run a child flow") only if the person saving it and the flow's owner may run that
+flow by hand, and at run time only if the flow's run-as identity may (owner, administrators, roles granted on it).
+Otherwise the step fails with "may not run". So a maker's flow cannot start a flow that runs as an administrator or a
+service account unless that flow is granted to the maker's role.
+
 ## Failures
 
 The owner hears about the first failure of a flow at once; further failures within a day go into a summary sent each
 morning (07:05 UTC, schedule **Flow failure digest**) to the owner and the environment's administrators. A failing flow is
-never switched off on its own. The **Flow runs** system table (Data > tables) lists runs for reports and record timelines;
+never switched off on its own. With the **health email** on (Admin console > Server logs), install administrators also get
+an alert when flow runs fail and the count in the daily summary ([operations](operations.md#health-email-and-heartbeat)). The **Flow runs** system table (Data > tables) lists runs for reports and record timelines;
 the Admin console's **Jobs** page shows the engine's jobs (`flow.advance`, `flow.resume`, `flow.timeout`,
 `flow.schedule`).
 

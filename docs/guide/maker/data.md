@@ -109,6 +109,65 @@ The grid has filter, **Add row**, **Delete**, **Import CSV** and **Export CSV**.
 
 If your role cannot create rows, Add row and Import CSV are disabled.
 
+## Deleted rows: the recycle bin
+
+A table in the default database can **keep deleted rows** for a number of days. New tables start with **30 days**; tables
+you made before this version keep deleting for good until you turn it on. Set it in the table designer, **Settings >
+Recycle bin**: switch **Keep deleted rows** on and type the number of days (1 to 3,650).
+
+![The recycle bin setting](../../images/recycle-setting.png)
+
+What happens when a row is deleted from a table that keeps deleted rows:
+
+- it disappears **at once** everywhere: apps, galleries, counts, sums, searches, lookups, reports, rollups, exports,
+  scheduled reports, flows and the timeline treat it as gone;
+- what the delete did is remembered as one **batch**: rows deleted with it by a cascade, links that were cleared in other
+  tables (set blank), its comments, tasks, follows, tags and file links, and its shares. Its attachment files stay;
+- a unique value it had (an order number, a code) is free at once: a new row may use it;
+- after the days run out the rows and their attachment files are deleted for good (an hourly job).
+
+**Getting rows back**
+
+- In a running app, a delete shows **"N rows deleted. Kept for N days. Undo"** for ten seconds. **Undo** brings back
+  everything that delete did.
+
+  ![Undo after a delete in an app](../../images/recycle-undo-toast.png)
+
+- In the portal, open the table's **Data** tab and switch to **Deleted**: who deleted each row, when, with which other
+  rows, and how many days are left. **Restore** brings back the row and the rows its delete took along (the order with its
+  lines); **Restore N rows** brings back the whole delete. Administrators can **delete for good** (the bin icon).
+
+  ![The Deleted view](../../images/recycle-deleted-view.png)
+
+- In your own screens: `DeletedRows(Orders)` is the table of deleted rows the signed-in person could delete and can see
+  (administrators: all), newest first, at most 500, with the table's columns plus `DeletedOn`, `DeletedBy`, `DeleteBatch`,
+  `DaysLeft`, `DeletedTable` and `CascadedFrom`. `Restore(Gallery1.Selected)` brings back a row of it;
+  `Restore(ThisItem.DeleteBatch)` the whole delete. For example a gallery with `Items: DeletedRows(Orders)` and a button
+  with `OnSelect: Restore(ThisItem)` is a recycle bin screen. No extra UI component is needed.
+
+**Who may restore**: people who could delete the row and can see it (their roles, row rules and shares as they are now),
+and administrators. Someone else's deleted rows are not listed for a person whose role covers only their own rows.
+
+**When a restore is refused** (nothing changes, the message says why):
+
+- a unique value of the row is used by another row now: change or delete that row first (the message names it);
+- the row points at a parent that is in the recycle bin too: restore that first; or at a parent deleted for good;
+- one row alone whose parent was deleted together with it: restore the whole delete;
+- the delete also removed rows of a table that keeps no deleted rows (those are gone for good): only an administrator
+  can restore the rest.
+
+A restore does not run your validation rules or before-events again (the rows come back as they were). After-events and
+flows can react to it: tick **Restore** under **On** (events running after saving) or **Restored** in a flow's table
+trigger. Existing events and flows do not fire on restores. Rollups count the rows again.
+
+**Turning it off** makes future deletes final; rows already in the bin stay until their days run out. The setting
+travels in solutions. Deleting a whole **table** is different: it does not go to a recycle bin (a backup brings it back).
+Tables in other connections (MySQL, your own PostgreSQL databases, data files, Google Sheets) always delete for good; the
+setting says so for them. Of the system tables, Activities (tasks), Comments and Documents can keep deleted rows too (off
+by default): User mode's Tasks and Comments then work the same way.
+
+In demo mode (no server) the recycle bin works in the browser for the session: reloading the page empties it.
+
 ## Data files
 
 On **Data files** you can add .csv, .xlsx or .json files (up to 25 MB). Appbuilder copies the file into its workspace; your original is never changed. Each file, sheet or array becomes a table. You can Replace (it warns if the data was edited since import), Download, or Remove (optionally dropping the tables). **Move to database** copies a table's rows to the default database under the same table name.
