@@ -52,7 +52,20 @@ export async function createDatabase(name: string): Promise<void> {
 /** drops a test database even while pooled connections are still open (WITH FORCE, PostgreSQL 13+) */
 export async function dropDatabase(name: string): Promise<void> {
   if (!pgServer) return
-  await withPg((c) => c.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`))
+  // A non-superuser role (as in CI) may not terminate a backend it does not own, e.g. an autovacuum worker that is
+  // busy in the database at that moment ("permission denied to terminate process"). Retry briefly; a leftover test
+  // database must not fail a suite whose tests all passed.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await withPg((c) => c.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`))
+      return
+    } catch (err) {
+      const code = (err as { code?: string }).code
+      if (code !== '42501' && code !== '55006') throw err
+      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)))
+    }
+  }
+  console.warn(`test database ${name} could not be dropped (still in use by a backend this role may not terminate)`)
 }
 
 /** one query against a test database, e.g. to inspect "env_default"."ab_audit" */

@@ -40,7 +40,7 @@ async function server(h: Handler): Promise<{ port: number; close(): Promise<void
       h(req, res, b)
     })
   })
-  await new Promise<void>((r) => s.listen(0, '127.0.0.1', r))
+  await new Promise<void>((r) => s.listen(0, r))
   return { port: (s.address() as AddressInfo).port, hits, close: () => new Promise((r) => { s.closeAllConnections(); s.close(() => r()) }) }
 }
 const json = (res: http.ServerResponse, status: number, v: unknown, extra: Record<string, string> = {}) => {
@@ -238,7 +238,7 @@ describe('outbound policy', () => {
     const cert = selfSignedCert()
     if (!cert) return
     const t = https.createServer({ key: cert.key, cert: cert.cert }, (_q, res) => json(res, 200, { tls: true }))
-    await new Promise<void>((r) => t.listen(0, '127.0.0.1', r))
+    await new Promise<void>((r) => t.listen(0, r))
     const port = (t.address() as AddressInfo).port
     try {
       await expect(safeRequest({ method: 'GET', url: `https://127.0.0.1:${port}/` }, policy())).rejects.toThrow(/certificate/)
