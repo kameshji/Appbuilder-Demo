@@ -1,7 +1,7 @@
 import type { AppDef, ControlNode, FxHost, FxRecord, FxValue } from '@/contracts'
 import { Evaluator, ROOT_CTX, enumName, type Env, type NodeCtx, type RuntimeView } from './evaluator'
 import { uid, isRecord } from './util'
-import { changeShare, collabAction, sendNotification, currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableRows, tables } from './data'
+import { changeShare, collabAction, runFlowCall, sendNotification, currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableRows, tables } from './data'
 import { pendingFilesOf } from './attachments'
 import { finishSubmit } from './submit'
 import { chainItems, prepareAction } from './delegation'
@@ -432,6 +432,12 @@ function beginRun(input: RunInput): Run {
       if (input.dryData) return action === 'nextNumber' ? '' : true
       return collabAction(action, args)
     },
+    runFlow(flow, inputs, options) {
+      const runId = `run_${uid().replace(/[^A-Za-z0-9]/g, '').slice(0, 24).padEnd(12, '0')}`
+      if (input.dryData) return runId
+      void runFlowCall({ flow, inputs: toJsonValue(inputs), runId, wait: options.wait, timeoutSeconds: options.timeoutSeconds }, options.wait ? (v) => host.setVar(options.result, fromJsonValue(v)) : undefined)
+      return runId
+    },
   }
 
   return {
@@ -459,3 +465,18 @@ function beginRun(input: RunInput): Run {
 }
 
 class HostFailure extends Error {}
+
+/** formula values -> JSON for the server (dates as ISO text, single-column tables as lists) */
+function toJsonValue(v: FxValue): unknown {
+  if (v instanceof Date) return v.toISOString()
+  if (Array.isArray(v)) return v.every((x) => isRecord(x) && Object.keys(x).filter((k) => k !== '__id').length === 1 && 'Value' in x) ? v.map((x) => toJsonValue((x as FxRecord).Value)) : v.map(toJsonValue)
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).filter(([k]) => k !== '__id').map(([k, x]) => [k, toJsonValue(x)]))
+  return v
+}
+/** JSON from the server -> a formula value (objects are records, lists of scalars tables of Value) */
+function fromJsonValue(j: unknown): FxValue {
+  if (j === null || j === undefined) return null
+  if (Array.isArray(j)) return j.map((x) => (x && typeof x === 'object' && !Array.isArray(x) ? fromJsonValue(x) : { Value: fromJsonValue(x) })) as FxValue
+  if (typeof j === 'object') return Object.fromEntries(Object.entries(j as Record<string, unknown>).map(([k, x]) => [k, fromJsonValue(x)])) as FxValue
+  return j as FxValue
+}

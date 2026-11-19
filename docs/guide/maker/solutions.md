@@ -58,6 +58,15 @@ ownership settings). The upgrade plan lists each rule and event as new, changed 
 system** can only be brought in by an administrator, who must tick a box allowing it (also for a first install); the import
 is recorded in the audit log. Importing as a copy brings such events switched off, for an administrator to review.
 
+### Flows travel too
+
+Add flows to a solution like apps and tables. In the target environment a **new flow arrives turned off** (turn it on after
+checking it; the import request can say `enableFlows`), a changed one becomes a new version and keeps its on/off state, one
+removed from the solution is deleted (its history stays). The plan shows which connection there takes the place of each
+connection the flows use: the one with the same id, else the same name and kind; if there is none, choose one (the import
+request's `connectionMap`) before the import can go ahead. A flow that runs as a service account needs an administrator of
+the target to confirm it. See [flows](flows.md).
+
 ### The data model travels with the tables
 
 Relationships and their delete behaviours, **unique pairs**, and the settings of **reporting tables** come with the tables

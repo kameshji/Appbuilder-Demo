@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { Cable, CheckCircle2, Cloud, Copy, FileUp, HardDrive, Info, KeyRound, Lock, Pencil, Play, Plus, Star, TableProperties, Trash2, TriangleAlert, XCircle } from 'lucide-react'
+import { Cable, CheckCircle2, Cloud, Copy, FileUp, HardDrive, Info, KeyRound, Lock, Pencil, Play, Plus, Settings2, Star, TableProperties, Trash2, TriangleAlert, XCircle } from 'lucide-react'
 import { platform, usePlatform, type ConnectionRef, type ConnectorKind } from '@/platform'
 import type { SourceTableInfo } from '@/platform/http'
 import { cn } from '@/lib/utils'
@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Spinner } from '@/components/ui/spinner'
 import { ConfirmDialog, Empty, Field, Panel, PageHeader, errMsg, useToast } from './kit'
 import { CONNECTOR_INFO, ConnectionFlags, connectorInfo } from './ConnectionBits'
+import { ConnectionDetail } from './ConnectionActions'
 import { PasswordInput } from './PasswordFields'
 import { goPortal, matches, useSearch } from './Shell'
 import { useCaps } from './security'
@@ -49,7 +50,14 @@ const KINDS: { kind: ConnectorKind; text: string }[] = [
   { kind: 'mysql', text: 'A MySQL or MariaDB database.' },
   { kind: 'gsheets', text: 'Tabs of a Google spreadsheet.' },
   { kind: 'files', text: 'CSV, Excel and JSON files on this device.' },
+  { kind: 'http', text: 'A web (REST) API: actions for flows and events.' },
+  { kind: 'email', text: 'Send email from flows and events.' },
 ]
+
+const AUTH_MODES = [
+  { v: 'none', l: 'None' }, { v: 'apiKey', l: 'API key' }, { v: 'basic', l: 'Basic (user and password)' }, { v: 'bearer', l: 'Bearer token' }, { v: 'oauth2cc', l: 'OAuth 2.0 client credentials' },
+]
+const selectCls = 'h-9 w-full rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30'
 
 function CopyEmail({ email }: { email: string }) {
   const { toast } = useToast()
@@ -80,6 +88,9 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
   const [paste, setPaste] = useState('')
   const [keyError, setKeyError] = useState('')
   const [busy, setBusy] = useState(false)
+  // P1-D: HTTP and Email connections (settings; secrets write-only)
+  const [http, setHttp] = useState<Record<string, string>>({})
+  const [hsec, setHsec] = useState<Record<string, string>>({})
   const fileRef = useRef<HTMLInputElement>(null)
   const editing = !!connection
 
@@ -100,6 +111,8 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
     setKeyInfo(connection?.connector === 'gsheets' && s.serviceAccountEmail ? { email: s.serviceAccountEmail } : null)
     setPaste('')
     setKeyError('')
+    setHttp(connection && (connection.connector === 'http' || connection.connector === 'email') ? { ...s } : { authMode: 'none', apiKeyIn: 'header', verifyTls: 'true', allowPrivateNetwork: 'false' })
+    setHsec({})
   }, [open, connection])
 
   const acceptKey = (text: string) => {
@@ -126,13 +139,22 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
     && (kind !== 'postgres' || /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(schema.trim()))
   const sheetId = extractSpreadsheetId(sheet)
   const gsOk = !!sheetId && (!!keyJson || (editing && !!connection?.hasSecret))
-  const valid = !!name.trim() && (sqlKind ? sqlOk : kind === 'gsheets' ? gsOk : false)
+  const httpOk = kind === 'http' && /^https?:\/\/[^/]+/.test(http.baseUrl ?? '')
+  const valid = !!name.trim() && (sqlKind ? sqlOk : kind === 'gsheets' ? gsOk : kind === 'http' ? httpOk : kind === 'email')
+  const hs = (k: string) => (e: { target: { value: string } }) => setHttp((x) => ({ ...x, [k]: e.target.value }))
 
   const run = async () => {
     setBusy(true)
     try {
       let saved: ConnectionRef | null = null
-      if (sqlKind) {
+      if (kind === 'http' || kind === 'email') {
+        const settings: Record<string, string> = {}
+        for (const [k, v] of Object.entries(http)) if (typeof v === 'string' && v.trim() !== '') settings[k] = v.trim()
+        const parts = Object.fromEntries(Object.entries(hsec).filter(([, v]) => v))
+        const secret = kind === 'http' && Object.keys(parts).length ? JSON.stringify(parts) : undefined
+        if (connection) await platform.connections.update(connection.id, { name: name.trim(), settings, ...(secret ? { secret } : {}) })
+        else saved = await platform.connections.create({ name: name.trim(), connector: kind, settings, ...(secret ? { secret } : {}) })
+      } else if (sqlKind) {
         const settings: Record<string, string> = { host: host.trim(), port: String(portNum), database: database.trim(), user: user.trim(), ssl: ssl ? 'true' : 'false' }
         if (kind === 'postgres') settings.schema = schema.trim() || 'public'
         if (connection) await platform.connections.update(connection.id, { name: name.trim(), settings: { ...connection.settings, ...settings }, ...(password ? { secret: password } : {}) })
@@ -164,7 +186,7 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
         </DialogHeader>
         <form className="grid gap-4" autoComplete="off" onSubmit={(e) => { e.preventDefault(); if (valid && !busy) void run() }}>
           {!editing && (
-            <div role="radiogroup" aria-label="Connector" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div role="radiogroup" aria-label="Connector" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               {KINDS.map((k) => {
                 const I = CONNECTOR_INFO[k.kind].icon
                 return (
@@ -218,6 +240,60 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
                     <Switch checked={ssl} onCheckedChange={setSsl} aria-label="Use SSL" data-testid="conn-ssl" />
                   </label>
                 </>
+              )}
+              {kind === 'http' && (
+                <div className="grid gap-3" data-testid="http-settings">
+                  <Field label="Base URL" htmlFor="http-base" hint="Paths of actions are relative to it."><Input id="http-base" value={http.baseUrl ?? ''} onChange={hs('baseUrl')} placeholder="https://api.example.com/v1" data-testid="http-base-url" /></Field>
+                  <Field label="Allowed hosts" htmlFor="http-hosts" hint="Comma-separated host names (or *.example.com) this connection may call, also after redirects. Default: the host of the base URL."><Input id="http-hosts" value={http.allowedHosts ?? ''} onChange={hs('allowedHosts')} data-testid="http-allowed-hosts" /></Field>
+                  <Field label="Authentication" htmlFor="http-auth"><select id="http-auth" className={selectCls} value={http.authMode ?? 'none'} onChange={hs('authMode')} data-testid="http-auth-mode">{AUTH_MODES.map((m) => <option key={m.v} value={m.v}>{m.l}</option>)}</select></Field>
+                  {http.authMode === 'apiKey' && (
+                    <div className="grid grid-cols-[1fr_120px] gap-3">
+                      <Field label="Key name" hint="Header or query parameter name"><Input value={http.apiKeyName ?? ''} onChange={hs('apiKeyName')} placeholder="X-API-Key" data-testid="http-key-name" /></Field>
+                      <Field label="Sent in"><select className={selectCls} value={http.apiKeyIn ?? 'header'} onChange={hs('apiKeyIn')}><option value="header">header</option><option value="query">query</option></select></Field>
+                      <Field label="API key" hint={editing && connection?.hasSecret ? 'Stored. Type to replace every secret of this connection.' : 'Stored encrypted; never shown again.'}><PasswordInput value={hsec.apiKey ?? ''} onChange={(v) => setHsec((x) => ({ ...x, apiKey: v }))} testId="http-api-key" /></Field>
+                    </div>
+                  )}
+                  {http.authMode === 'basic' && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <Field label="User name"><Input value={http.username ?? ''} onChange={hs('username')} /></Field>
+                      <Field label="Password"><PasswordInput value={hsec.password ?? ''} onChange={(v) => setHsec((x) => ({ ...x, password: v }))} /></Field>
+                    </div>
+                  )}
+                  {http.authMode === 'bearer' && <Field label="Token"><PasswordInput value={hsec.token ?? ''} onChange={(v) => setHsec((x) => ({ ...x, token: v }))} /></Field>}
+                  {http.authMode === 'oauth2cc' && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <Field label="Token URL"><Input value={http.tokenUrl ?? ''} onChange={hs('tokenUrl')} placeholder="https://login.example.com/oauth/token" /></Field>
+                      <Field label="Client id"><Input value={http.clientId ?? ''} onChange={hs('clientId')} /></Field>
+                      <Field label="Client secret"><PasswordInput value={hsec.clientSecret ?? ''} onChange={(v) => setHsec((x) => ({ ...x, clientSecret: v }))} /></Field>
+                      <Field label="Scope"><Input value={http.scope ?? ''} onChange={hs('scope')} /></Field>
+                      <p className="col-span-2 text-xs text-muted-foreground">Client credentials only (a server-to-server token, cached until it expires). Signing in as each user (authorization code) is not supported yet.</p>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-3 gap-3">
+                    <Field label="Calls a minute"><Input inputMode="numeric" value={http.perMinute ?? ''} placeholder="60" onChange={hs('perMinute')} /></Field>
+                    <Field label="At once"><Input inputMode="numeric" value={http.maxConcurrent ?? ''} placeholder="4" onChange={hs('maxConcurrent')} /></Field>
+                    <Field label="Time limit (ms)"><Input inputMode="numeric" value={http.timeoutMs ?? ''} placeholder="30000" onChange={hs('timeoutMs')} /></Field>
+                  </div>
+                  <label className="flex items-center justify-between gap-3 text-sm">
+                    <span>Allow private network addresses<span className="block text-xs text-muted-foreground">For APIs on this computer or the company network (localhost, 10.x, 192.168.x). Cloud metadata addresses are always refused.</span></span>
+                    <Switch checked={http.allowPrivateNetwork === 'true'} onCheckedChange={(v) => setHttp((x) => ({ ...x, allowPrivateNetwork: v ? 'true' : 'false' }))} aria-label="Allow private network addresses" data-testid="http-allow-private" />
+                  </label>
+                  <label className="flex items-center justify-between gap-3 text-sm">
+                    <span>Verify TLS certificates<span className="block text-xs text-muted-foreground">Turn off only for an internal service with a self-signed certificate.</span></span>
+                    <Switch checked={http.verifyTls !== 'false'} onCheckedChange={(v) => setHttp((x) => ({ ...x, verifyTls: v ? 'true' : 'false' }))} aria-label="Verify TLS certificates" />
+                  </label>
+                </div>
+              )}
+              {kind === 'email' && (
+                <div className="grid gap-3" data-testid="email-settings">
+                  <p className="text-xs text-muted-foreground">Sends through the install's mail relay (Admin console &gt; Email). Addresses on the suppression list are skipped.</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Sender name"><Input value={http.fromName ?? ''} onChange={hs('fromName')} placeholder="Orders desk" data-testid="email-from-name" /></Field>
+                    <Field label="Reply-to"><Input value={http.replyTo ?? ''} onChange={hs('replyTo')} placeholder="orders@example.com" /></Field>
+                    <Field label="Recipients an hour" hint="At most the environment's limit"><Input inputMode="numeric" value={http.perHour ?? ''} onChange={hs('perHour')} /></Field>
+                    <Field label="Recipients a day"><Input inputMode="numeric" value={http.perDay ?? ''} onChange={hs('perDay')} /></Field>
+                  </div>
+                </div>
               )}
               {kind === 'gsheets' && (
                 <>
@@ -362,6 +438,8 @@ function summary(c: ConnectionRef): string {
   }
   if (c.connector === 'gsheets') return s.spreadsheetId ? `Spreadsheet ${s.spreadsheetId.length > 18 ? s.spreadsheetId.slice(0, 16) + '...' : s.spreadsheetId}` : 'No spreadsheet set'
   if (c.connector === 'files') return 'Copies of your files in the workspace folder'
+  if (c.connector === 'http') return s.baseUrl ? `${s.baseUrl}${s.authMode && s.authMode !== 'none' ? ` · ${s.authMode}` : ''}` : 'No base URL'
+  if (c.connector === 'email') return `Through the install's mail relay${s.fromName ? ` as "${s.fromName}"` : ''}`
   return ''
 }
 
@@ -380,6 +458,7 @@ export function Connections() {
   const [dlg, setDlg] = useState<{ conn: ConnectionRef | null } | null>(null)
   const [del, setDel] = useState<ConnectionRef | null>(null)
   const [browse, setBrowse] = useState<ConnectionRef | null>(null)
+  const [detail, setDetail] = useState<ConnectionRef | null>(null)
   const [results, setResults] = useState<Record<string, { ok: boolean; message: string; busy?: boolean }>>({})
   const demo = mode !== 'server'
   const canEdit = caps.isAdmin && !demo
@@ -465,6 +544,7 @@ export function Connections() {
                         <td className="px-4 py-1.5">
                           <div className="flex flex-wrap justify-end gap-1">
                             {!demo && !isFiles && <Button variant="outline" size="xs" onClick={() => void test(c)} disabled={r?.busy} data-testid={`test-${c.id}`}>{r?.busy ? <Spinner /> : <Play />} Test</Button>}
+                            {!demo && !isFiles && <Button variant="outline" size="xs" onClick={() => setDetail(c)} data-testid={`details-${c.id}`}><Settings2 /> Details</Button>}
                             {canBrowse && <Button variant="outline" size="xs" onClick={() => setBrowse(c)} data-testid={`browse-${c.id}`}><TableProperties /> Browse tables</Button>}
                             {canEdit && c.connector === 'postgres' && !c.isDefault && <Button variant="outline" size="xs" onClick={() => void makeDefault(c)} data-testid={`default-${c.id}`}><Star /> Set as default</Button>}
                             {isFiles && !demo && <Button variant="outline" size="xs" onClick={() => goPortal('datafiles')}><HardDrive /> Data files</Button>}
@@ -493,6 +573,7 @@ export function Connections() {
         )}
         <ConnectionDialog open={!!dlg} onOpenChange={(o) => !o && setDlg(null)} connection={dlg?.conn ?? null} onSaved={(c) => { if (c) void test(c) }} />
         <BrowseDialog connection={browse} onOpenChange={(o) => !o && setBrowse(null)} />
+        <ConnectionDetail connection={detail} onOpenChange={(o) => !o && setDetail(null)} onBrowse={(c) => { setDetail(null); setBrowse(c) }} />
         <ConfirmDialog
           open={!!del}
           onOpenChange={(o) => !o && setDel(null)}

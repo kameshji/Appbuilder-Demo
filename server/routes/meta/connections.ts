@@ -15,7 +15,26 @@ import {
 import { FILES_CONNECTION_ID, audit, ensureFilesConnection, friendly, grantDefaults, resolveConnection, toRef } from './tables-core.ts'
 import { assertOutboundHost, hostProblem } from '../../core/net-policy.ts'
 
-const KINDS: ConnectorKind[] = ['postgres', 'mysql', 'files', 'gsheets']
+const KINDS: ConnectorKind[] = ['postgres', 'mysql', 'files', 'gsheets', 'http', 'email']
+/** kinds that offer actions only (P1 package D, server/core/actions): no tables, tested by their action provider */
+const ACTION_KINDS = new Set<string>(['http', 'email'])
+
+/** P1-D: settings and secret of an action connection, checked by its provider (base URL, allow-list, auth ...) */
+function checkActionConnection(s: Services, kind: ConnectorKind, settings: Record<string, string>, secret: string | undefined): void {
+  if (!ACTION_KINDS.has(kind)) return
+  const p = (s.actions as unknown as { provider?(k: string): { checkSettings(st: Record<string, string>, sec: string | undefined): string[] } | undefined } | undefined)?.provider?.(kind)
+  if (!p) throw invalid(`The "${kind}" connector is not available on this server.`, 'connector')
+  if (kind === 'http' && !settings.allowedHosts && settings.baseUrl) {
+    try { settings.allowedHosts = new URL(settings.baseUrl).hostname.toLowerCase() } catch { /* reported below */ }
+  }
+  const problems = p.checkSettings(settings, secret)
+  if (problems.length) throw invalid(problems.slice(0, 4).join(' '), 'settings')
+}
+/** P1-D: the action service's per-connection state (breaker, DNS pins, OAuth token) is dropped on edits and deletes */
+function forgetActionState(s: Services, id: string): void {
+  const a = s.actions as unknown as { forget?(env: string, id: string): void } | undefined
+  a?.forget?.(currentEnvironment().id, id)
+}
 
 /** schemas a postgres connection may not name: the system store's own (ab, env_*) and PostgreSQL's catalogs */
 const RESERVED_SCHEMA = /^(ab|env_.*|pg_.*|information_schema)$/i
@@ -62,6 +81,15 @@ function checkSecret(kind: ConnectorKind, secret: string): void {
       throw invalid('The service-account key must contain "client_email" and "private_key".', 'secret')
     }
   }
+  if (kind === 'http' && secret) {
+    let v: unknown
+    try {
+      v = JSON.parse(secret)
+    } catch {
+      throw invalid('The secret of an HTTP connection is a JSON object (apiKey, password, token, clientSecret, headers).', 'secret')
+    }
+    if (!isObj(v)) throw invalid('The secret of an HTTP connection is a JSON object (apiKey, password, token, clientSecret, headers).', 'secret')
+  }
   if (secret.length > 20000) throw invalid('The secret is too long.', 'secret')
 }
 
@@ -72,12 +100,21 @@ async function testAndStore(s: Services, id: string): Promise<{ ok: boolean; mes
   let ok = false
   let message: string
   try {
-    // the host's addresses are checked against the outbound policy before anything connects
-    if ((rec.connector === 'postgres' || rec.connector === 'mysql') && rec.id !== DEFAULT_CONNECTION_ID && rec.settings?.host) await assertOutboundHost(String(rec.settings.host), 'Connection')
-    const connector = await s.connections.get(id)
-    const r = await connector.test()
-    ok = r.ok
-    message = r.message
+    if (ACTION_KINDS.has(rec.connector)) {
+      // P1-D: action connections are tested by their provider (the outbound policy applies to every request)
+      const a = s.actions as unknown as { test?(env: string, id: string): Promise<{ ok: boolean; message: string }> } | undefined
+      if (!a?.test) throw new Error(`The "${rec.connector}" connector is not available on this server.`)
+      const r = await a.test(currentEnvironment().id, id)
+      ok = r.ok
+      message = r.message
+    } else {
+      // the host's addresses are checked against the outbound policy before anything connects
+      if ((rec.connector === 'postgres' || rec.connector === 'mysql') && rec.id !== DEFAULT_CONNECTION_ID && rec.settings?.host) await assertOutboundHost(String(rec.settings.host), 'Connection')
+      const connector = await s.connections.get(id)
+      const r = await connector.test()
+      ok = r.ok
+      message = r.message
+    }
   } catch (e) {
     message = e instanceof Error ? e.message : 'The connection could not be tested.'
   }
@@ -146,7 +183,7 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
     const b = bodyObj(ctx)
     const name = reqString(b, 'name', 'A connection needs a name.', 100)
     const kind = b.connector as ConnectorKind
-    if (!KINDS.includes(kind)) throw invalid(`The connector "${String(b.connector)}" is not available yet (use postgres, mysql, gsheets or files).`, 'connector')
+    if (!KINDS.includes(kind)) throw invalid(`The connector "${String(b.connector)}" is not available yet (use postgres, mysql, gsheets, files, http or email).`, 'connector')
     const existing = await s.meta.connections.list()
     if (existing.some((c) => c.name.toLowerCase() === name.toLowerCase())) throw conflict(`A connection named "${name}" already exists.`)
     if (kind === 'files' && existing.some((c) => c.connector === 'files')) throw conflict('The Data files connection already exists.')
@@ -158,6 +195,7 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
     }
     if (kind === 'gsheets' && !secret) throw invalid('Google Sheets needs the service-account key.', 'secret')
     if (secret) checkSecret(kind, secret)
+    checkActionConnection(s, kind, settings, secret)
     const rec: ConnectionRecord = {
       id: s.uid('conn'), name, connector: kind, status: 'not-configured', settings, isDefault: false,
       scope: kind === 'files' ? 'device' : 'server', ...(secret !== undefined ? { secret } : {}), hasSecret: !!secret,
@@ -199,8 +237,10 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
       if (!['connected', 'error', 'not-configured'].includes(String(b.status))) throw invalid('Unknown status.', 'status')
       next.status = b.status as ConnectionRef['status']
     }
+    if (ACTION_KINDS.has(rec.connector) && (b.settings !== undefined || b.secret !== undefined)) checkActionConnection(s, rec.connector, next.settings ?? {}, next.secret)
     await s.meta.connections.upsert(next)
     await s.connections.reset(rec.id)
+    forgetActionState(s, rec.id)
     await audit(s, ctx, 'connection.update', { id: rec.id, name: next.name, settingsChanged: b.settings !== undefined, secretChanged: b.secret !== undefined })
     if (retest) return toRef((await testAndStore(s, rec.id)).record)
     return toRef(next)
@@ -221,6 +261,10 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
       }
     }
     await s.connections.reset(rec.id)
+    // P1-D: custom actions and access grants go with the connection
+    const acts = s.actions as unknown as { custom?: { removeAll(id: string): Promise<void> } } | undefined
+    await acts?.custom?.removeAll(rec.id)
+    forgetActionState(s, rec.id)
     await s.meta.connections.remove(rec.id)
     await audit(s, ctx, 'connection.delete', { id: rec.id, name: rec.name })
     return { ok: true }

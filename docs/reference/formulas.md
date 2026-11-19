@@ -117,7 +117,7 @@ Gross(net: Number): Number = net * (1 + TaxRate);
 
 ## Functions
 
-169 built-in functions. A signature in square brackets means the argument is optional; "..." means more of the same may follow. A function marked as behaviour works only in behaviour properties.
+170 built-in functions. A signature in square brackets means the argument is optional; "..." means more of the same may follow. A function marked as behaviour works only in behaviour properties.
 
 - [Logic and errors](#logic-and-errors) (16)
 - [Text](#text) (23)
@@ -125,7 +125,7 @@ Gross(net: Number): Number = net * (1 + TaxRate);
 - [Date and time](#date-and-time) (20)
 - [Table](#table) (25)
 - [Colour](#colour) (3)
-- [Behaviour](#behaviour) (37)
+- [Behaviour](#behaviour) (38)
 - [JSON and regular expressions](#json-and-regular-expressions) (5)
 - [Context and environment](#context-and-environment) (5)
 - [Core data model](#core-data-model) (7)
@@ -316,6 +316,7 @@ Functions with side effects. They work only in behaviour properties such as OnSe
 | `RemoveIf(collection, condition)` | Removes every row where the condition is true. |
 | `Reset(component)` | Puts an input UI component back to its default value. |
 | `ResetForm(Form)` | Puts every field of a form back to its starting value. |
+| `RunFlow(flow, inputs [, options])` | Starts a run of a flow that people and apps may start (server mode) and returns its run id. inputs is a record of the flow's inputs, like {Order: ThisItem.id}. options: {Wait: true, Timeout: 10, Result: "Answer"} puts the flow's response (its Respond step) in the global variable Answer (default FlowResult) when it arrives. You need the permission to run the flow. |
 | `Select(component)` | Runs the OnSelect of a UI component. |
 | `SendNotification(user, title [, body] [, link])` | Sends an in-app notification (the bell) to a person in this environment: user is an email, a user id or a record such as User(). link is a link inside Appbuilder such as "#u". Unlike Notify, it reaches the other person; it is rate-limited. |
 | `Set(variable, value)` | Sets a global variable. |

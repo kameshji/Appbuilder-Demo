@@ -29,6 +29,7 @@ import { ConfirmDialog, Segmented, downloadText, errMsg, useToast } from './kit'
 import { UserAvatar, settingsReturnRoute, useMe } from './Profile'
 import { useCaps } from './security'
 import { useNotificationSettings } from './Notifications'
+import { NotificationChannels } from './NotificationChannels'
 import { NOTIFICATION_KINDS } from '@/platform/live-protocol'
 import type { NotificationSettings } from '@/platform/live-api'
 import { fetchServerInfo } from './serverApi'
@@ -467,12 +468,12 @@ function NotificationsSection() {
     await put({ desktop: on })
   }
   const dndOn = !!settings.dnd
-  const later = 'Arrives with P1 Automation (flows and approvals).'
+  const later = 'Arrives with P1 Automation (approvals).'
   return (
     <>
-      <Group title="In the app" testId="settings-notifications">
+      {mode !== 'server' && <Group title="In the app" testId="settings-notifications">
         {NOTIFICATION_KINDS.map((k) => {
-          const future = k.kind === 'flow' || k.kind === 'approval'
+          const future = k.kind === 'approval'
           return (
             <Row key={k.kind} title={k.label} description={k.description} soon={future ? later : undefined} testId={`setting-notify-${k.kind}`}>
               <Switch
@@ -485,8 +486,12 @@ function NotificationsSection() {
             </Row>
           )
         })}
-        <Row title="By email" soon="Arrives with P1 Automation (notifications by email through the SMTP relay)." testId="setting-notify-email"><Switch disabled aria-label="Notifications by email" tabIndex={-1} /></Row>
-      </Group>
+      </Group>}
+      {mode === 'server' && (
+        <Group title="Channels: in the app, email, digests" testId="settings-notifications">
+          <div className="px-4 py-3"><NotificationChannels /></div>
+        </Group>
+      )}
       <Group title="Delivery" testId="settings-notify-delivery">
         <Row
           title="Desktop notifications"

@@ -280,9 +280,9 @@ export const SYSTEM_TABLES: SystemTableSpec[] = [
     columns: [col('EventId', 'Event', 'text'), col('TableId', 'Table', 'text'), col('RowId', 'Row', 'text'), col('Phase', 'Phase', 'text'), col('Outcome', 'Outcome', 'text'), col('DurationMs', 'Duration (ms)', 'number'), col('Message', 'Message', 'multiline')],
   },
   {
-    id: SYS.flowRuns, name: 'FlowRuns', displayName: 'Flow runs', group: 'logging', kind: 'placeholder', policy: 'adminOrOwn', source: SYS.flowRuns, primaryColumn: 'Flow', extensible: false,
-    description: 'Runs of flows (filled by Flows in P1; empty until then).',
-    columns: [col('Flow', 'Flow', 'text'), col('TriggerKind', 'Trigger', 'text'), col('Status', 'Status', 'choice', { choices: ['queued', 'running', 'succeeded', 'failed', 'cancelled'] }), col('StartedOn', 'Started', 'datetime'), col('FinishedOn', 'Finished', 'datetime'), col('DurationMs', 'Duration (ms)', 'number'), col('Error', 'Error', 'multiline'), ...regardingCols(false)],
+    id: SYS.flowRuns, name: 'FlowRuns', displayName: 'Flow runs', group: 'logging', kind: 'projection', policy: 'adminOrOwn', source: SYS.flowRuns, primaryColumn: 'Flow', extensible: false,
+    description: 'Runs of flows (administrators: all; others: runs of the flows they own). A view over the flow run history (P1).',
+    columns: [col('Flow', 'Flow', 'text'), col('TriggerKind', 'Trigger', 'text'), col('Status', 'Status', 'choice', { choices: ['queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled', 'timedOut'] }), col('StartedOn', 'Started', 'datetime'), col('FinishedOn', 'Finished', 'datetime'), col('DurationMs', 'Duration (ms)', 'number'), col('Error', 'Error', 'multiline'), ...regardingCols(false)],
   },
 
   /* ---------------------------------------------------------------- reference data (seeded, extensible) */

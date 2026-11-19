@@ -359,7 +359,19 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
       const method = (req.method ?? 'GET').toUpperCase()
       // API keys (package I): a request with Authorization: Bearer carries no cookie authority, so no CSRF header is needed
       const bearer = /^Bearer\s/i.test(String(req.headers.authorization ?? ''))
-      if (method !== 'GET' && method !== 'HEAD' && !bearer && req.headers[CSRF_HEADER.toLowerCase()] !== '1') {
+      const csrfMissing = method !== 'GET' && method !== 'HEAD' && !bearer && req.headers[CSRF_HEADER.toLowerCase()] !== '1'
+      // P1-D: an exempt route (auth 'none', verified by its own token) is matched first; everything else as before
+      const exemptMatch = (): boolean => {
+        if (!csrfMissing) return false
+        try {
+          const segs0 = url.pathname.slice(API_BASE.length).split('/').filter(Boolean).map((s) => decodeURIComponent(s))
+          const m0 = match(method, segs0)
+          return !!m0 && m0 !== 'method' && m0.route.opts.csrfExempt === true && m0.route.opts.auth === 'none'
+        } catch {
+          return false
+        }
+      }
+      if (csrfMissing && !exemptMatch()) {
         throw new HttpError(403, 'denied', `Missing ${CSRF_HEADER} header.`)
       }
       if (!url.pathname.startsWith(API_BASE + '/') && url.pathname !== API_BASE) throw new HttpError(404, 'not-found', 'Unknown API route.')

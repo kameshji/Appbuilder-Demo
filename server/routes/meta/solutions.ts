@@ -2,8 +2,10 @@
  * Solutions: CRUD, components (app, table, role, connection, file), YAML packages.
  * File components embed the file (base64); import creates new instances and offers filesAs 'database' | 'file'.
  */
+import { PACKAGE_CONNECTORS, exportConnectionActions, importConnectionActions } from '../../core/actions/solution-parts.ts'
 import type { ConnectorKind, RoleDef, SolutionComponentKind, SolutionDef, TableDef, TablePrivilege } from '../../../src/platform/contracts.ts'
 import type { ConnectionRecord, Ctx, Router, Services } from '../../core/contracts.ts'
+import { exportFlows } from '../../core/flows/alm.ts'
 import { readDataFile } from '../../connectors/files/index.ts'
 import {
   IDENT, bodyObj, clone, conflict, invalid, isObj, me, notFound, optString, reqString, toIdentifier, toYaml, uniqueIdentifier, uniqueLabel,
@@ -23,8 +25,20 @@ import type { CoreServices } from '../../core/services.ts'
 import { userContextFor } from '../../core/auth.ts'
 import { runInEnvironment } from '../../core/env-context.ts'
 
-const KINDS: SolutionComponentKind[] = ['app', 'table', 'role', 'connection', 'file']
+const KINDS: SolutionComponentKind[] = ['app', 'table', 'role', 'connection', 'file', 'flow']
 const MAX_FILE_BYTES = 25 * 1024 * 1024
+
+/** P1-A: the flow options of an import (connection mapping, which new flows arrive turned on) */
+function flowOpts(b: Record<string, unknown>): { connectionMap?: Record<string, string>; enableFlows?: boolean | string[] } {
+  const out: { connectionMap?: Record<string, string>; enableFlows?: boolean | string[] } = {}
+  if (b.connectionMap !== undefined) {
+    if (!b.connectionMap || typeof b.connectionMap !== 'object' || Array.isArray(b.connectionMap) || Object.values(b.connectionMap).some((v) => typeof v !== 'string')) throw invalid('connectionMap must map source connection ids to connection ids here.', 'connectionMap')
+    out.connectionMap = b.connectionMap as Record<string, string>
+  }
+  if (b.enableFlows === true) out.enableFlows = true
+  else if (Array.isArray(b.enableFlows)) out.enableFlows = b.enableFlows.map(String)
+  return out
+}
 
 async function needSolution(s: Services, id: string): Promise<SolutionDef> {
   const sol = (await s.meta.solutions.list()).find((x) => x.id === id)
@@ -39,6 +53,7 @@ async function componentExists(s: Services, kind: SolutionComponentKind, id: str
     case 'role': return !!(await s.meta.roles.get(id))
     case 'connection': return !!(await s.meta.connections.get(id))
     case 'file': return !!(await s.meta.files.get(id))
+    case 'flow': return !!(await (s as unknown as { flows?: { store: { get(id: string): Promise<unknown> } } }).flows?.store.get(id))
   }
 }
 
@@ -131,7 +146,7 @@ export function registerSolutionRoutes(router: Router, s: Services): void {
     const b = bodyObj(ctx)
     const pkg = readSolutionPkg(b.yaml, s)
     if (!pkg || b.asCopy === true) return copyPlan(s, b.yaml)
-    return (await planSolution(s, me(ctx), pkg)).plan
+    return (await planSolution(s, me(ctx), pkg, flowOpts(b))).plan
   }, { auth: 'maker', maxBodyMB: 40 })
 
   router.add('POST', '/api/v1/solutions/import', async (ctx): Promise<SolutionImportResult> => {
@@ -141,7 +156,7 @@ export function registerSolutionRoutes(router: Router, s: Services): void {
     const pkg = readSolutionPkg(b.yaml, s)
     // an old package (no solution id) or "import as a copy": new instances of everything, as before
     if (!pkg || b.asCopy === true) return s.transaction(() => importSolutionPackage(s, ctx, b.yaml, filesAs))
-    return importStable(s, ctx, pkg, { confirm: b.confirm, filesAs, proceedWithoutBackup: b.proceedWithoutBackup === true })
+    return importStable(s, ctx, pkg, { confirm: b.confirm, filesAs, proceedWithoutBackup: b.proceedWithoutBackup === true, ...flowOpts(b) })
   }, { auth: 'maker', maxBodyMB: 40 })
 
   /**
@@ -165,8 +180,8 @@ export function registerSolutionRoutes(router: Router, s: Services): void {
     if (!there.privileges.isMaker) throw new HttpError(403, 'denied', 'You are not a maker in the target environment.')
     const tctx: Ctx = { ...ctx, user: there, environmentId: target }
     const out = await runInEnvironment(target, async () => {
-      if (b.plan === true) return (await planSolution(s, there, pkg)).plan
-      return importStable(s, tctx, pkg, { confirm: b.confirm, filesAs: b.filesAs === 'file' ? 'file' : 'database', proceedWithoutBackup: b.proceedWithoutBackup === true })
+      if (b.plan === true) return (await planSolution(s, there, pkg, flowOpts(b))).plan
+      return importStable(s, tctx, pkg, { confirm: b.confirm, filesAs: b.filesAs === 'file' ? 'file' : 'database', proceedWithoutBackup: b.proceedWithoutBackup === true, ...flowOpts(b) })
     })
     if (b.plan !== true) {
       await core.install.audit({ userId: rec.id, action: 'solution.deploy', environmentId: target, details: { solution: sol.id, name: sol.name, version: sol.version, from: ctx.environmentId, to: target, includeData: b.includeData === true } }).catch(() => {})
@@ -227,7 +242,7 @@ export async function exportSolutionPackage(s: Services, ctx: Ctx, id: string, i
   const connections = []
   for (const cid of ofKind('connection')) {
     const c = await s.meta.connections.get(cid)
-    if (c && c.connector !== 'files') connections.push({ id: c.id, name: c.name, connector: c.connector, settings: { ...c.settings } })
+    if (c && c.connector !== 'files') connections.push({ id: c.id, name: c.name, connector: c.connector, settings: { ...c.settings }, ...(await exportConnectionActions(s, c)) })
   }
   const fileEntries = []
   for (const f of files) {
@@ -248,6 +263,8 @@ export async function exportSolutionPackage(s: Services, ctx: Ctx, id: string, i
     // the solution's id makes a later import of a newer version an in-place upgrade (alm.ts)
     solution: { id: sol.id, name: sol.name, displayName: sol.displayName, publisher: sol.publisher, version: sol.version, ...(sol.description ? { description: sol.description } : {}) },
     apps, tables, roles, connections, files: fileEntries,
+    // P1-A: flows with their connection references and run permissions
+    flows: await exportFlows(s, ofKind('flow')),
   })
 }
 
@@ -287,8 +304,8 @@ export async function importSolutionPackage(s: Services, ctx: Ctx, text: unknown
     return r as unknown as RoleX
   })
   const connDocs = listOf(doc.connections, 'connections').map((c) => {
-    if (!isObj(c) || typeof c.name !== 'string' || !['postgres', 'mysql', 'gsheets'].includes(String(c.connector))) throw invalid('A connection in the package is malformed.')
-    return c as unknown as { name: string; connector: ConnectorKind; settings?: Record<string, string> }
+    if (!isObj(c) || typeof c.name !== 'string' || !PACKAGE_CONNECTORS.includes(String(c.connector))) throw invalid('A connection in the package is malformed.')
+    return c as unknown as { name: string; connector: ConnectorKind; settings?: Record<string, string>; actions?: unknown[] }
   })
   const warnings: string[] = []
   const isAdmin = u.privileges.isAdmin
@@ -349,6 +366,7 @@ export async function importSolutionPackage(s: Services, ctx: Ctx, text: unknown
         }
         await s.meta.connections.upsert(rec)
         undo.push(async () => { await s.meta.connections.remove(rec.id) })
+        warnings.push(...(await importConnectionActions(s, rec.id, c.actions, ctx.user?.user.id ?? null)))
         newConns.push(rec)
         components.push({ kind: 'connection', id: rec.id })
       }

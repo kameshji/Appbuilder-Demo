@@ -99,11 +99,11 @@ the system (`runAs: system`, administrators only).
 | --- | --- |
 | Condition, validation rule, formula column | none |
 | Before-event | `Set`, `SetField({Col: value})` or `SetField("Col", value)`, `Reject(message [, Column])`, `Trace`, `Concurrent` |
-| After-event | `Set`, `Patch`, `Collect`, `Remove` (on tables of the environment, through the DataService), `NotifyUser(userEmailOrId, message)`, `RunConnector(connection, action [, inputs])` (placeholder: recorded), `EnqueueJob(type [, payload [, delaySeconds]])` (job types marked `eventAllowed`), `Trace`, `Concurrent` |
+| After-event | `Set`, `Patch`, `Collect`, `Remove` (on tables of the environment, through the DataService), `NotifyUser(userEmailOrId, message)`, `RunConnector(connection, action [, inputs])` (P1: runs the action through `services.actions` as the event's identity; the connection must be attached to the event by a maker who holds "use" on it, see [connectors.md](connectors.md#runconnector-in-table-events)), `EnqueueJob(type [, payload [, delaySeconds]])` (job types marked `eventAllowed`), `Trace`, `Concurrent` |
 
 Refused with a clear message at save time: `Navigate`, `Back`, `Notify` (use `NotifyUser`), `Reset`, the form functions,
 `Select`, `SetFocus`, `Launch`, `Copy`, `Download`, `Exit`, `Refresh`, `UpdateContext`, `Clear`, `ClearCollect`, `RemoveIf`,
-`UpdateIf`, and writes in a before-event. `NotifyUser` goes to the in-app notifications (package H) when present.
+`UpdateIf`, and writes in a before-event. `NotifyUser` goes through `services.notifications.notify` (kind `event`), so the recipient's channels apply (in the app, email, digest; [notifications-delivery.md](notifications-delivery.md)).
 
 ## Jobs
 
@@ -146,7 +146,12 @@ await services.kernel.outbox.read(lastId, 500, tableId?)
 ```
 
 Delivered right after the dispatcher's transaction commits (milliseconds after the write, through NOTIFY), in id order per
-environment. Listeners must be fast (queue work). Flows will register their job types and consume the same outbox.
+environment. Listeners must be fast (queue work).
+
+Flows (P1, [flows.md](flows.md)) consume the outbox **inside** the dispatcher's claiming transaction with
+`kernel.addDispatcher(fn)` (after the table events; the runs they create exist exactly when the rows are marked
+dispatched; `fn` must catch its own errors) and add work to every worker round with `kernel.addTickHook(fn)` (the wait
+sweeper).
 
 ## Solutions and environment copies
 
@@ -179,7 +184,6 @@ disabled with a warning. Environment copies copy `ab_table_events`. Tests: `even
 
 ## Not done yet (Phase 1 and later)
 
-Flow designer and definitions; real connector actions (`RunConnector` records the call); email or WhatsApp delivery of
-`NotifyUser`; validation rules, events and
+Flow designer and definitions (P1 packages A and B); WhatsApp delivery of `NotifyUser` (P2); validation rules, events and
 rollups in demo mode (formula columns work there); a schedule editor for custom schedules in the UI (API only); events on
 attachment uploads beyond the cell change; sharing changes in the outbox.

@@ -95,9 +95,16 @@ export function createKernel(deps: KernelDeps) {
     log: deps.log,
     onTick: async (env) => {
       await ensureBuiltins(env)
-      await outbox.dispatch((events) => events_.dispatch(events)).catch((e) => deps.log('warn', `outbox dispatch (${env.id}): ${errText(e)}`))
+      await outbox.dispatch(async (events) => {
+        await events_.dispatch(events)
+        // other consumers of the outbox (flows, P1): inside the same claiming transaction; they must not throw
+        for (const d of dispatchers) await d(events)
+      }).catch((e) => deps.log('warn', `outbox dispatch (${env.id}): ${errText(e)}`))
+      for (const h of tickHooks) await h(env).catch((e) => deps.log('warn', `worker tick hook (${env.id}): ${errText(e)}`))
     },
   }, deps.options)
+  const dispatchers: ((events: import('./outbox.ts').OutboxEvent[]) => Promise<void>)[] = []
+  const tickHooks: ((env: EnvironmentRef) => Promise<void>)[] = []
   const outbox = createOutbox({ db: deps.db, log: deps.log })
   const events_ = createTableEvents({ db: deps.db, meta: deps.meta, data: deps.data, forUser: deps.forUser, jobs, outbox, log: deps.log })
 
@@ -391,6 +398,17 @@ export function createKernel(deps: KernelDeps) {
     events: events_,
     hooks,
     ensureBuiltins,
+    /**
+     * P1 (flows): a consumer of committed outbox rows that runs inside the dispatcher's claiming transaction, after the
+     * table events (jobs it enqueues exist exactly when the rows are marked dispatched). It must catch its own errors.
+     */
+    addDispatcher(fn: (events: import('./outbox.ts').OutboxEvent[]) => Promise<void>): void {
+      dispatchers.push(fn)
+    },
+    /** P1 (flows): work on every worker round per environment (due waits); errors are logged */
+    addTickHook(fn: (env: EnvironmentRef) => Promise<void>): void {
+      tickHooks.push(fn)
+    },
     /** start the worker (and the outbox dispatcher it drives) */
     start(): void {
       if (process.env.APPBUILDER_JOBS === 'off') return

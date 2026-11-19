@@ -872,6 +872,14 @@ export function createBackupService(deps: BackupServiceDeps) {
     await c.query(`UPDATE ${S}."ab_outbox" SET dispatched_on = now() WHERE dispatched_on IS NULL`)
     await c.query(`UPDATE ${S}."ab_jobs" SET state = 'cancelled', finished_on = now(), locked_by = NULL, error = '{"message":"Cancelled: the environment was restored from a backup."}'::jsonb WHERE state IN ('queued', 'running', 'failed')`)
     await c.query(`DELETE FROM ${S}."ab_user_roles" r WHERE NOT EXISTS (SELECT 1 FROM "ab"."users" u WHERE u.id = r.user_id)`)
+    // P1-A flows: runs that were queued, running or waiting cannot go on (their jobs were cancelled above, approvals and
+    // callbacks may have moved on since the backup): they are cancelled with a note; nothing is re-armed
+    const flowRuns = await c.query(`SELECT to_regclass($1) IS NOT NULL AS ok`, [`${S}."ab_flow_runs"`])
+    if (flowRuns.rows[0]?.ok) {
+      await c.query(`UPDATE ${S}."ab_flow_runs" SET state = 'cancelled', finished_on = now(), error = '{"message":"Cancelled: the environment was restored from a backup taken while this run was in progress."}'::jsonb WHERE state IN ('queued', 'running', 'waiting')`)
+      await c.query(`UPDATE ${S}."ab_flow_waits" SET state = 'cancelled', resolved_on = now() WHERE state IN ('waiting', 'early')`)
+      await c.query(`UPDATE ${S}."ab_flow_steps" SET state = 'cancelled', finished_on = now() WHERE state IN ('running', 'waiting')`)
+    }
   }
 
   /** brings a restored schema from the backup's schema version to this server's (same transaction) */

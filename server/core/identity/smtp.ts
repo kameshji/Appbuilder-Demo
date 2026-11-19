@@ -32,13 +32,57 @@ export interface SmtpSettings {
 
 export interface MailAddress { address: string; name?: string }
 
+export interface MailAttachment {
+  fileName: string
+  contentType: string
+  content: Buffer
+}
+
 export interface MailMessage {
   from: MailAddress
-  to: string
+  /** one address, or several (P1: flows, reports) */
+  to: string | string[]
+  /** P1: copies (Cc header) and blind copies (no header; RCPT only) */
+  cc?: string[]
+  bcc?: string[]
   replyTo?: string
   subject: string
   text: string
   html?: string
+  /** P1: files (multipart/mixed) */
+  attachments?: MailAttachment[]
+  /** P1: extra headers, only List-Unsubscribe, List-Unsubscribe-Post and X-* names */
+  headers?: Record<string, string>
+}
+
+/** every recipient of a message (To, Cc, Bcc), lowercase, without duplicates */
+export function recipientsOf(msg: Pick<MailMessage, 'to' | 'cc' | 'bcc'>): string[] {
+  const all = [...(Array.isArray(msg.to) ? msg.to : [msg.to]), ...(msg.cc ?? []), ...(msg.bcc ?? [])]
+  return [...new Set(all.map((a) => a.trim()).filter(Boolean))]
+}
+
+const EXTRA_HEADER = /^(List-Unsubscribe|List-Unsubscribe-Post|X-[A-Za-z0-9-]{1,60})$/
+
+/** a file name for Content-Disposition: no path, quotes or control characters */
+export function safeFileName(name: string): string {
+  const base = name.split(/[\\/]/).pop() ?? 'file'
+  const clean = base.replace(/[\x00-\x1f\x7f"\\]/g, '').trim().slice(0, 150)
+  return clean || 'file'
+}
+
+function attachmentPart(a: MailAttachment, boundary: string): string {
+  const name = safeFileName(a.fileName)
+  const type = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(a.contentType) ? a.contentType : 'application/octet-stream'
+  const ascii = /^[\x20-\x7e]*$/.test(name)
+  const disp = ascii ? `attachment; filename="${name}"` : `attachment; filename*=UTF-8''${encodeURIComponent(name)}`
+  return [
+    `--${boundary}`,
+    `Content-Type: ${type}${ascii ? `; name="${name}"` : ''}`,
+    'Content-Transfer-Encoding: base64',
+    `Content-Disposition: ${disp}`,
+    '',
+    wrap76(a.content.toString('base64')),
+  ].join('\r\n')
 }
 
 export class SmtpError extends Error {
@@ -82,14 +126,17 @@ const b64Body = (s: string): string => wrap76(Buffer.from(s.replace(/\r?\n/g, '\
 
 /** the full RFC 5322 message (CRLF line ends), without SMTP dot-stuffing */
 export function buildMime(msg: MailMessage, o: { date?: Date; messageId?: string; boundary?: string } = {}): { data: string; messageId: string } {
-  if (!validAddress(msg.to)) throw new SmtpError(`"${msg.to}" is not a valid email address.`)
+  const toList = Array.isArray(msg.to) ? msg.to : [msg.to]
+  if (!toList.length) throw new SmtpError('A message needs at least one recipient.')
+  for (const a of [...toList, ...(msg.cc ?? []), ...(msg.bcc ?? [])]) if (!validAddress(a)) throw new SmtpError(`"${a}" is not a valid email address.`)
   if (msg.replyTo && !validAddress(msg.replyTo)) throw new SmtpError(`"${msg.replyTo}" is not a valid reply-to address.`)
   assertHeaderSafe(msg.subject, 'The subject')
   const domain = msg.from.address.split('@')[1] ?? 'localhost'
   const messageId = o.messageId ?? `<${Date.now().toString(36)}.${randomBytes(8).toString('hex')}@${domain}>`
   const headers = [
     `From: ${formatAddress(msg.from)}`,
-    `To: <${msg.to}>`,
+    `To: ${toList.map((a) => `<${a}>`).join(', ')}`,
+    ...(msg.cc?.length ? [`Cc: ${msg.cc.map((a) => `<${a}>`).join(', ')}`] : []),
     ...(msg.replyTo ? [`Reply-To: <${msg.replyTo}>`] : []),
     `Subject: ${encodeHeader(msg.subject)}`,
     `Date: ${(o.date ?? new Date()).toUTCString().replace('GMT', '+0000')}`,
@@ -97,8 +144,22 @@ export function buildMime(msg: MailMessage, o: { date?: Date; messageId?: string
     'MIME-Version: 1.0',
     'Auto-Submitted: auto-generated',
   ]
+  for (const [k, v] of Object.entries(msg.headers ?? {})) {
+    if (!EXTRA_HEADER.test(k)) throw new SmtpError(`The header "${k}" cannot be set.`)
+    assertHeaderSafe(v, `The header ${k}`)
+    headers.push(`${k}: ${v}`)
+  }
+  const files = msg.attachments ?? []
   let body: string
-  if (msg.html) {
+  if (files.length) {
+    const mixed = `=_abm_${randomBytes(12).toString('hex')}`
+    const inner = buildMime({ ...msg, attachments: [], headers: {} }, { ...o, messageId: 'x' })
+    // the inner message's content headers and body become the first part
+    const [innerHead, ...innerBody] = inner.data.split('\r\n\r\n')
+    const contentHeaders = innerHead.split('\r\n').filter((l) => /^Content-(Type|Transfer-Encoding):/i.test(l))
+    headers.push(`Content-Type: multipart/mixed; boundary="${mixed}"`)
+    body = [`--${mixed}`, ...contentHeaders, '', innerBody.join('\r\n\r\n').replace(/\r\n$/, ''), ...files.map((f) => attachmentPart(f, mixed)), `--${mixed}--`, ''].join('\r\n')
+  } else if (msg.html) {
     const boundary = o.boundary ?? `=_ab_${randomBytes(12).toString('hex')}`
     headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`)
     body = [
@@ -287,7 +348,7 @@ export async function sendSmtp(s: SmtpSettings, msg: MailMessage): Promise<{ mes
       }
     }
     await c.cmd(`MAIL FROM:<${msg.from.address}>`, [250])
-    await c.cmd(`RCPT TO:<${msg.to}>`, [250, 251])
+    for (const rcpt of recipientsOf(msg)) await c.cmd(`RCPT TO:<${rcpt}>`, [250, 251])
     await c.cmd('DATA', [354])
     c.write(dotStuff(data) + '\r\n.\r\n')
     const done = await c.read()

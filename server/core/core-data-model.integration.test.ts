@@ -370,7 +370,7 @@ describe.skipIf(!PG_URL)(PG_URL ? 'core data model (PostgreSQL)' : `core data mo
     await h.q(`UPDATE env_default.ab_tables SET def = jsonb_set(def, '{columns}', (SELECT jsonb_agg(CASE WHEN c->>'name' IN ('owner','createdBy') THEN (c - 'lookupTable') || '{"type":"text"}' ELSE c END) FROM jsonb_array_elements(def->'columns') c))`)
     await h.q(`UPDATE ab.environments SET schema_version = 6 WHERE id = 'default'`)
     const sum = await h.app.services.meta.migrate()
-    expect((sum as { environments?: { id: string }[] }).environments?.find((e) => e.id === 'default')).toMatchObject({ from: 6, to: 7, ok: true })
+    expect((sum as { environments?: { id: string }[] }).environments?.find((e) => e.id === 'default')).toMatchObject({ from: 6, to: (await import('./meta-store.ts')).SCHEMA_VERSION, ok: true })
     expect((await h.q(`SELECT count(*)::int AS n FROM env_default.ab_tables WHERE id LIKE 'sys\\_%'`))[0].n).toBe(SYSTEM_TABLES.length)
     expect((await h.q(`SELECT "regardingTable" AS t FROM env_default.sys_attachment_links WHERE "Attachment" = 'att_legacy'`))[0]).toMatchObject({ t: ordersId })
     const owner = (await h.q<{ def: { columns: { name: string; type: string }[] } }>(`SELECT def FROM env_default.ab_tables WHERE id = $1`, [ordersId]))[0].def.columns.find((x) => x.name === 'owner')

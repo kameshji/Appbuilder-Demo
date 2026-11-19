@@ -216,7 +216,21 @@ export interface NotificationSettings {
   dnd: { start: string; end: string } | null
   /** hide my presence (avatars, online dot) from everyone */
   hidePresence: boolean
+  /**
+   * P1: email per kind: 'off', 'immediate' or 'digest'. A kind that is not listed follows the administrator's default
+   * (Admin console > Notifications); a kind the administrator locked ignores this.
+   */
+  email?: Record<string, EmailMode>
+  /** P1: digest timing (default daily at 08:00) */
+  digest?: { frequency: 'hourly' | 'daily'; time: string }
+  /** P1: the user's IANA time zone for digests and quiet hours (default UTC) */
+  timeZone?: string
+  /** P1: do-not-disturb hours hold emails too (default true): they go out when the hours end */
+  quietEmail?: boolean
 }
+
+export type EmailMode = 'off' | 'immediate' | 'digest'
+export const EMAIL_MODES: readonly EmailMode[] = ['off', 'immediate', 'digest']
 
 export const NOTIFICATION_KINDS: readonly { kind: string; label: string; description: string }[] = [
   { kind: 'app', label: 'From apps', description: 'Sent by an app with SendNotification (for example "your request was approved").' },
@@ -224,6 +238,8 @@ export const NOTIFICATION_KINDS: readonly { kind: string; label: string; descrip
   { kind: 'event', label: 'From table events', description: 'Sent by a table event with NotifyUser (for example "a new order over 10,000 arrived").' },
   { kind: 'flow', label: 'From flows', description: 'Sent by automations.' },
   { kind: 'approval', label: 'Approvals', description: 'Approval requests waiting for you.' },
+  { kind: 'mention', label: 'Mentions and comments', description: 'Someone mentioned you or commented on a record you follow.' },
+  { kind: 'task', label: 'Tasks', description: 'A task was assigned to you.' },
 ]
 
 export function defaultNotificationSettings(): NotificationSettings {
@@ -244,7 +260,22 @@ export function parseNotificationSettings(raw: unknown): NotificationSettings {
   let dnd: NotificationSettings['dnd'] = null
   const d = o.dnd as Record<string, unknown> | null | undefined
   if (d && typeof d === 'object' && typeof d.start === 'string' && typeof d.end === 'string' && HHMM.test(d.start) && HHMM.test(d.end)) dnd = { start: d.start, end: d.end }
-  return { kinds, desktop: o.desktop === true, dnd, hidePresence: o.hidePresence === true }
+  const out: NotificationSettings = { kinds, desktop: o.desktop === true, dnd, hidePresence: o.hidePresence === true }
+  // P1: email channel, digest, time zone, quiet hours for email
+  if (o.email && typeof o.email === 'object' && !Array.isArray(o.email)) {
+    const email: Record<string, EmailMode> = {}
+    for (const [k, v] of Object.entries(o.email as Record<string, unknown>)) {
+      if (/^[a-z][a-z0-9_-]{0,31}$/.test(k) && (EMAIL_MODES as readonly unknown[]).includes(v)) email[k] = v as EmailMode
+    }
+    out.email = email
+  }
+  const g = o.digest as Record<string, unknown> | null | undefined
+  if (g && typeof g === 'object' && (g.frequency === 'hourly' || g.frequency === 'daily')) {
+    out.digest = { frequency: g.frequency, time: typeof g.time === 'string' && HHMM.test(g.time) ? g.time : '08:00' }
+  }
+  if (typeof o.timeZone === 'string' && /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+){0,2}$|^UTC$/.test(o.timeZone) && o.timeZone.length <= 64) out.timeZone = o.timeZone
+  if (o.quietEmail === false) out.quietEmail = false
+  return out
 }
 
 /** is local time `now` inside the do-not-disturb window? */

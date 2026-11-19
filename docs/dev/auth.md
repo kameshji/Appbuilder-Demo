@@ -16,8 +16,8 @@ P0 package I. Admin view: [docs/admin/sign-in-and-identity.md](../admin/sign-in-
 | `server/core/identity/passwords.ts` | Password history and maximum age |
 | `server/core/identity/totp.ts` | RFC 4226 HOTP, RFC 6238 TOTP, Base32, otpauth URI (Node `crypto` only) |
 | `server/core/identity/qr.ts` | QR SVG (encoding by `qrcode-generator`, MIT; the SVG is one path, CSP-safe) |
-| `server/core/identity/smtp.ts` | Minimal SMTP client: STARTTLS / TLS / plain, AUTH PLAIN and LOGIN, MIME |
-| `server/core/identity/mail.ts`, `templates.ts` | Relay settings, `mail.send` job type, delivery log, system templates |
+| `server/core/identity/smtp.ts` | Minimal SMTP client: STARTTLS / TLS / plain, AUTH PLAIN and LOGIN, MIME (P1: several recipients, Cc, Bcc, attachments as multipart/mixed, List-Unsubscribe headers) |
+| `server/core/identity/mail.ts`, `templates.ts` | Relay settings, `mail.send` job type, delivery log, system templates (P1: `send()` takes recipient lists, copies, attachments, reply-to, sender name and list headers; messages above 150 KB sealed are kept in `ab.mail_log.sealed_message` instead of the job payload) |
 | `server/core/identity/ddl.ts` | Tables (schema version 7) |
 | `server/core/identity/fake-smtp.ts` | Test helper: a fake SMTP server with an inbox (tests and `scripts/docs-shots/identity.mjs`) |
 | `src/portal/identityApi.ts`, `Identity.tsx`, `AdminIdentity.tsx` | Client calls, shared UI (re-auth dialog, enrolment, sessions), admin pages; `Auth.tsx` (sign-in screens), `Settings.tsx`, `Users.tsx` |

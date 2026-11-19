@@ -419,3 +419,87 @@ docs/dev/release-process.md). Installs need Node.js 22.18+ (bundled). EDB and Wi
 are of the files we downloaded. Releases are unsigned until the vendor generates a key.
 
 **Status.** Accepted, 18 Nov 2026.
+
+## D26. Connector actions: one framework with schemas, per-connection protection and grants; an own outbound HTTP client with pinned addresses; notifications through one entry point with channels; reports computed per recipient (P1 package D, Nov 2026)
+
+**Context.** Phase 1 needs flows and table events to call other systems (REST APIs, email) and to receive calls
+(webhooks), notifications by email, and scheduled reports (exit check 4). Makers configure these, so the platform must not
+become an open proxy, a way around row and column security, or a place where secrets leak.
+
+**Decision.**
+1. **Actions are data**: an action has an id, JSON Schemas for inputs and outputs, `idempotent`, `sideEffect` and a time
+   limit. Built-in actions come from compiled providers (`http`, `email`); custom actions of an HTTP connection are stored
+   rows (`ab_custom_actions`) made by a form or an OpenAPI 3 import, and travel in solutions without secrets. A small JSON
+   Schema subset validator of our own (no `new Function`, patterns checked for nested repetition) instead of ajv.
+2. **`services.actions.run` is the only way out**: schema validation, input and output caps, circuit breaker, rate limit and
+   concurrency cap per connection (in memory, one process: D19), an idempotency store (key -> result for 24 h) for
+   non-idempotent external actions, redaction of every secret value (and its URL-encoded and base64 forms) from outputs and
+   errors, and one activity row per call without inputs, outputs or secrets.
+3. **"Use" and "manage" grants per connection** (roles or people), separate from editing the connection (administrators).
+   Attaching a connection to an event or a flow needs "use" at save time; running does not re-check the runner, so an end
+   user's change can trigger an action they could not call themselves, which is the point of attaching. Deny by default:
+   only administrators use a new connection.
+4. **Own outbound HTTP client** (node:http/https) instead of fetch: every hop is checked against the connection's host
+   allow-list (required, `*` refused) and the address policy; the resolved address is pinned per connection and host for
+   60 s and the socket connects to it through a `lookup` hook, so DNS rebinding between check and connect is impossible;
+   private networks need a per-connection opt-in; https -> http redirects refused; sensitive headers dropped across hosts;
+   response size enforced also after decompression; TLS verification on by default.
+5. **OAuth 2.0 client credentials only**; the authorization-code flow (per-user consent, refresh tokens per user) is
+   deferred: it needs per-user connections and a redirect endpoint.
+6. **Webhooks in**: a 32-byte path token (hash stored) plus a required-by-default HMAC-SHA256 signature over
+   `"<t>.<body>"` with a timestamp tolerance and a replay table; the route reads the body only after the token check;
+   CSRF-exempt by an explicit route flag, never for cookie routes.
+7. **Notifications keep one entry point** (`notify`); a delivery module decides channels per kind (administrator default,
+   optional lock, user choice), holds email in quiet hours, folds overflow and digests into one email, and logs a readable
+   reason for every decision. Unsubscribe links are HMAC-signed (key derived from the secret key), work without signing in,
+   and support RFC 8058 one-click.
+8. **Reports run as each recipient** by default (one query per recipient), so security applies per person; a service
+   account is an administrator's explicit, audited and warned choice.
+
+**Alternatives considered.** fetch with a custom dispatcher (undici is not a declared dependency; redirects and pinning are
+harder to control). Re-checking "use" at run time against the runner (would make attached connections useless for flows
+triggered by end users). Rendering reports once and filtering per recipient (re-implements security outside the engine).
+Inbound mail to detect bounces (no inbound mail in Phase 1).
+
+**Consequences.** Breaker, rate and pin state reset on restart and are not shared between processes. The idempotency store
+cannot make a call that crashed mid-way exactly-once: a key stuck "running" for twice the time limit is taken over (the
+remote may then see the call twice; HTTP actions pass the key as `Idempotency-Key`). Bounces are not detected; the
+suppression list is manual. No raw SQL actions for MySQL/PostgreSQL connections in this phase.
+
+**Status.** Accepted, 19 Nov 2026.
+
+## D27. Flows: one step per job, state in the database, waits as rows; identity per flow; flows in solutions arrive off (P1 package A, Nov 2026)
+
+**Context.** Flows must survive restarts in the middle of a week-long approval, never lose or duplicate a step that changes
+data, keep a restricted user from doing more through a flow than by hand, and travel between environments. Phase 0 gave us
+the outbox (no lost change), the job queue (at least once, heartbeat and reaper) and server-side formulas.
+
+**Decision.**
+1. **The engine is a state machine over rows**, not an in-memory interpreter: `ab_flow_runs`, one `ab_flow_steps` row per
+   step execution (primary key run + step path), `ab_flow_waits` for suspended steps. Each step is its own job
+   (`flow.advance` advances one container by one step, deciding again from the rows); its result and the next job commit
+   together. Internal and default-database data steps are exactly once (same transaction as their effect); external calls
+   are at least once with the idempotency key `<run>:<step path>`, recorded before and after. Waits cost nothing; a sweeper
+   on the worker tick resumes them by an injectable clock (time-travel tests).
+2. **Containers by path** (`/check.then`, `/each#3`) so parallel loop iterations advance independently and a crash repairs
+   itself by re-running the same job; siblings run in order and `runAfter` may only name earlier siblings (no cycles).
+3. **Table triggers inside the outbox dispatcher's transaction** (`kernel.addDispatcher`): one run per change and row by a
+   unique trigger key; the condition is evaluated there on the after-image. Schedules reuse `ab_schedules` (one row per
+   enabled flow). Loop protection by the work context's chain: a flow's own changes do not trigger it by default.
+4. **Identity per flow** (owner, triggering user, service account): every data step goes through the DataService as that
+   identity. Save time checks only what the saver attaches (connections, run-as); data rights are enforced at run time.
+   Service accounts and changes of identity are for administrators, confirmed and audited; a disabled owner suspends the
+   flow (never silently disabled for failures).
+5. **ALM**: flows are solution components; new ones arrive off; connection references are mapped in the plan; service-account
+   flows need an administrator's confirmation; restores cancel in-flight runs instead of re-arming them.
+
+**Alternatives.** An interpreter holding a run in memory and checkpointing (fewer jobs, faster; but a crash replays from the
+last checkpoint and needs its own leases); one job per run (simpler; but a week-long wait would hold a job or need the same
+wait table anyway). Steps as table events (reuse; but no waits, no history per step).
+
+**Consequences.** About 20 runs/s and 120 steps/s of a 6-step flow on one process (a step is a job with its own
+transaction). Per-record ordering is per dispatcher. In-app notifications have no idempotency key, so a notify step is at
+least once. `Flow.Run` is offered as `RunFlow(...)` (no dotted function names in the formula language).
+
+**Status.** Accepted, 19 Nov 2026.
+

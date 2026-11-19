@@ -29,6 +29,7 @@ import { watchSessions } from './live/session-events.ts'
 import { createCollab, registerCollabJobs } from './collab.ts'
 import { setNextNumberProvider } from './event-fx.ts'
 import type { Collab } from './collab.ts'
+import { createFlows, type Flows } from './flows/index.ts'
 
 export type SqlDbFactory = (settings: DatabaseSettings, password: string) => SqlDb
 
@@ -134,6 +135,8 @@ export type CoreServices = Services & {
   kernel: Kernel
   /** core data model at run time: system-table hooks, timeline, number sequences (collab.ts) */
   collab: Collab
+  /** flows (P1 package A): definitions, triggers, the run engine (flows/index.ts) */
+  flows: Flows
   connections: ReturnType<typeof createConnectionManager>
   /** test + connect + migrate the default store; persist=true seals the password into server.json */
   configureDatabase(settings: DatabaseSettings, password: string, opts: { createDatabase?: boolean; persist: boolean }): Promise<void>
@@ -241,6 +244,11 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   })
   registerCollabJobs(kernel, collab)
   setNextNumberProvider((name) => collab.nextNumber(name))
+  // flows (P1 package A): job types, the outbox consumer for table triggers, the wait sweeper
+  const flows = createFlows({
+    db: () => state.db, meta: getMeta, data: () => data, forUser: (u) => security.forUser(u), kernel,
+    notifications: () => services.notifications, actions: () => services.actions, log: (level, msg) => log(level, msg),
+  })
 
   /** every environment's conn_default points at the system database (its tables live in that environment's schema) */
   async function ensureBuiltinConnections(meta: MetaStore, settings: DatabaseSettings, password: string): Promise<void> {
@@ -530,6 +538,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     attachments,
     kernel,
     collab,
+    flows,
     env,
     environment: currentEnvironment,
     environments,

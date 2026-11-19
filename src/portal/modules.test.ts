@@ -14,8 +14,8 @@ describe('module registry', () => {
     }
   })
   it('lists the planned Dev and User mode modules', () => {
-    expect(modulesFor('dev').map((m) => m.key)).toEqual(['datamodel', 'flows', 'approvals', 'dashboards', 'agents', 'sites', 'admin', 'templates'])
-    expect(modulesFor('user').map((m) => m.key)).toEqual(['approvals', 'dashboards', 'tasks', 'mentions', 'notes', 'chat', 'files', 'documents', 'mail'])
+    expect(modulesFor('dev').map((m) => m.key)).toEqual(['datamodel', 'flows', 'approvals', 'dashboards', 'reports', 'agents', 'sites', 'admin', 'templates'])
+    expect(modulesFor('user').map((m) => m.key)).toEqual(['approvals', 'dashboards', 'tasks', 'mentions', 'myreports', 'notes', 'chat', 'files', 'documents', 'mail'])
   })
   it('Tasks and Mentions are live built-in User mode pages (core data model)', () => {
     expect(moduleRoute(moduleByKey('tasks')!)).toEqual({ page: 'u', id: 'tasks' })
@@ -34,7 +34,9 @@ describe('module registry', () => {
     expect(moduleRoute(moduleByKey('backups')!)).toEqual({ page: 'admin', id: 'backups' })
   })
   it('planned modules route to their placeholder; live ones to their route', () => {
-    expect(moduleRoute(moduleByKey('flows')!)).toEqual({ page: 'soon', id: 'flows' })
-    expect(moduleRoute({ ...moduleByKey('flows')!, status: 'live', route: { page: 'apps' } })).toEqual({ page: 'apps' })
+    // Flows is real (P1 package A)
+    expect(moduleRoute(moduleByKey('flows')!)).toEqual({ page: 'flows' })
+    expect(moduleRoute(moduleByKey('dashboards')!)).toEqual({ page: 'soon', id: 'dashboards' })
+    expect(moduleRoute({ ...moduleByKey('dashboards')!, status: 'live', route: { page: 'apps' } })).toEqual({ page: 'apps' })
   })
 })

@@ -313,7 +313,7 @@ export type PlanChange = 'new' | 'changed' | 'unchanged' | 'removed'
 export interface PlanColumnChange { name: string; change: 'added' | 'removed' | 'type' | 'changed'; from?: string; to?: string; destructive?: boolean }
 export interface PlanItem {
   /** event: a table event or validation rule (package G) */
-  kind: 'app' | 'table' | 'role' | 'connection' | 'file' | 'event'
+  kind: 'app' | 'table' | 'role' | 'connection' | 'file' | 'event' | 'flow'
   id: string
   name: string
   change: PlanChange
@@ -341,5 +341,12 @@ export interface SolutionPlan {
    * then always needs an administrator's explicit confirmation (`confirm` = token, also for an install), and is audited
    */
   systemEvents?: string[]
+  /** P1-A: flows of the package that run as a service account and are new or changed here (administrators; confirm) */
+  serviceFlows?: string[]
+  /**
+   * P1-A: connections the package's flows use, and the connection of this environment each one maps to (`to`; null:
+   * choose one). Change it with `connectionMap: { <from>: <connection id> }` on the plan and import requests.
+   */
+  flowConnections?: { from: string; fromName?: string; connector?: string; usedBy: { flowId: string; flowName: string; ref: string }[]; to: string | null; candidates: { id: string; name: string }[] }[]
 }
 export type SolutionImportResult = SolutionDef & { warnings?: string[]; plan?: SolutionPlan; backup?: { taken: boolean; message: string; id?: string; failed?: boolean } }

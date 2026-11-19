@@ -18,6 +18,7 @@
  *  - the attachment store is registered in Attachment links (one row per attachment, by migration and then kept in step
  *    by attachments.ts).
  */
+import { upgradeEnvironmentTo8Flows } from './flows/ddl.ts'
 import type { SqlDb } from './contracts.ts'
 import type { ColumnDef, TableDef } from '../../src/platform/contracts.ts'
 import {
@@ -104,6 +105,13 @@ function viewSql(spec: SystemTableSpec, schema: string, envId: string, has: (t: 
         ${vc('r.event_id')} AS "EventId", ${vc('r.table_id')} AS "TableId", ${vc('r.row_id')} AS "RowId", ${vc('r.timing')} AS "Phase", ${vc('r.status')} AS "Outcome",
         r.duration_ms::bigint AS "DurationMs", r.message AS "Message"
         FROM ${S('ab_event_runs')} r`
+    case SYS.flowRuns:
+      // P1-A: the flow run history (ab_flow_runs); owner = the flow's owner (adminOrOwn), createdBy = who triggered it
+      return `SELECT r.id AS "id", ${ts('r.created_on')} AS "createdOn", ${ts('COALESCE(r.finished_on, r.started_on, r.created_on)')} AS "modifiedOn", r.triggered_by AS "createdBy", r.owner_id AS "owner",
+        ${vc('r.flow_name')} AS "Flow", ${vc('r.trigger_kind')} AS "TriggerKind", ${vc('r.state')} AS "Status", ${ts('r.started_on')} AS "StartedOn", ${ts('r.finished_on')} AS "FinishedOn",
+        (EXTRACT(EPOCH FROM r.finished_on - r.started_on) * 1000)::bigint AS "DurationMs", (r.error->>'message') AS "Error",
+        ${vc('r.regarding_table')} AS "regardingTable", ${vc('r.regarding_id')} AS "regardingId"
+        FROM ${S('ab_flow_runs')} r WHERE r.mode = 'normal'`
   }
   throw new Error(`no view for ${spec.id}`)
 }
@@ -179,7 +187,9 @@ export async function provisionSystemTables(db: SqlDb, schema: string, envId: st
     const def = systemTableDef(spec, now.toISOString(), prev?.def ?? null, name)
     if (spec.kind === 'projection') {
       const kind = await relkind(db, schema, spec.source)
-      if (kind && kind !== 'v') throw new Error(`${schema}.${spec.source} exists and is not a view; rename it before upgrading`)
+      // P1-A: the Flow runs placeholder table of version 7 becomes a view (rows kept under another name if any)
+      if (kind === 'r' && spec.id === SYS.flowRuns) await upgradeEnvironmentTo8Flows(db, schema)
+      else if (kind && kind !== 'v') throw new Error(`${schema}.${spec.source} exists and is not a view; rename it before upgrading`)
       await db.exec(`DROP VIEW IF EXISTS ${S(spec.source)}`)
       await db.exec(`CREATE VIEW ${S(spec.source)} AS ${viewSql(spec, schema, envId, has)}`)
     } else if (!(await exists(db, `${q(schema)}.${q(spec.source)}`))) {

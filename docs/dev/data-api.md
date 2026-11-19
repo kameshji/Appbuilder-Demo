@@ -446,7 +446,9 @@ curl -sS -b $JAR -H "$H" -X DELETE "$BASE/tables/tbl_1a2b3c?dropSource=1"  # als
 | `GET /connections/:id/source-tables` | maker | none | `{ items: SourceTableInfo[] }` |
 | `POST /connections/:id/link` | maker | `{ source, displayName?, name?, readOnly?, ensureIdColumn? }` | `TableDef` |
 
-- `connector` is one of `postgres`, `mysql`, `files`, `gsheets`. The `files` connection is built in and unique. The two built-in
+- `connector` is one of `postgres`, `mysql`, `files`, `gsheets`, `http`, `email` (the last two offer actions, see
+  [Connector actions](#connector-actions); their settings are checked by the provider and their test calls the API or checks
+  the mail relay). An `http` secret is one JSON object (`apiKey`, `password`, `token`, `clientSecret`, `headers`). The `files` connection is built in and unique. The two built-in
   connections are `conn_default` (`postgres`: the system database, tables in the environment schema) and `conn_files` (data files,
   scope `device`).
 - `postgres` settings: `host`, `port` (default `5432`), `database`, `user`, `ssl`, `schema` (default `public`; `ab`, `env_*`, `pg_*`
@@ -471,6 +473,57 @@ curl -sS -b $JAR -H "$H" -X DELETE "$BASE/tables/tbl_1a2b3c?dropSource=1"  # als
 curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"name":"Warehouse","connector":"postgres","settings":{"host":"db.internal","database":"wh","user":"app","schema":"sales"},"secret":"pw"}' $BASE/connections
 curl -sS -b $JAR -H "$H" -X POST $BASE/connections/conn_abc/test
 ```
+
+## Connector actions
+
+P1 package D ([connectors.md](connectors.md#connector-actions)). "use" and "manage" are the connection's grants;
+administrators have both.
+
+| Method and path | Auth | Request | Response |
+| --- | --- | --- | --- |
+| `GET /actions/kinds` | maker | none | `{ items: { kind, label, description, tables, actions: ActionDef[] }[] }` |
+| `GET /actions/connections` | user | none | `{ items: { id, name, connector, status, canManage }[] }` the caller may use |
+| `GET /connections/:id/actions` | use | none | `{ items: ActionDef[] }` (built-in, then custom) |
+| `GET /connections/:id/actions/:action` | use | none | `ActionDef` |
+| `POST /connections/:id/actions/:action/test` | use | `{ inputs, idempotencyKey? }` | `ActionResult` (`{ ok, output }` or `{ ok: false, error: { code, message, retryable, status? } }`, plus `runId`, `durationMs`, `replayed`) |
+| `PUT /connections/:id/custom-actions/:action` | manage | `{ id?, title, description, inputs, outputs?, idempotent?, sideEffect?, timeoutMs?, http: { method, path, params?, query?, headers?, bodyFields?, bodyInput?, bodyTemplate?, expectStatus?, outputPath?, sample? } }` | `ActionDef` (outputs inferred from `sample` when not given) |
+| `DELETE /connections/:id/custom-actions/:action` | manage | none | `{ ok: true }` |
+| `POST /connections/:id/custom-actions/openapi` | manage | `{ text, apply?, replace?, only?: string[] }` (3 MB) | preview `{ title, version, baseUrl, auth, warnings, actions: { id, title, method, path, sideEffect, exists }[], applied, imported? }` |
+| `GET /connections/:id/access` | manage | none | `{ items: { principalKind, principalId, level, grantedBy, grantedOn }[] }` |
+| `PUT /connections/:id/access` | admin | `{ grants: { principalKind: 'role'\|'user', principalId, level: 'use'\|'manage' }[] }` | the new list (audited `connection.access`) |
+| `GET /connections/:id/activity?limit&before` | use | none | `{ items, all }` (all: managers see everyone's calls, others their own) |
+| `GET /connections/:id/state` | use | none | `{ circuit, failures, retryAt, inFlight, maxConcurrent, perMinute, maxTimeoutMs, lastError, secretParts }` |
+| `POST /connections/:id/state/reset` | manage | none | the state (circuit closed) |
+| `GET /admin/mail-suppressions?search&offset&limit`, `POST /admin/mail-suppressions` `{ address, note? }`, `DELETE /admin/mail-suppressions/:address` | install administrator | | `{ items, total }` / `{ ok: true }` |
+
+Error codes of actions are listed in [reference/connector-actions.md](../reference/connector-actions.md).
+
+```bash
+curl -sS -b $JAR -H "$H" -H "$JSON" -d '{"inputs":{"id":"C-1"}}' $BASE/connections/conn_abc/actions/getCustomer/test
+```
+
+### Webhooks
+
+| Method and path | Auth | Request | Response |
+| --- | --- | --- | --- |
+| `GET /flows/:flowId/webhooks` | may change the flow | none | `{ items: WebhookInfo[] }` (token hint only) |
+| `POST /flows/:flowId/webhooks` | may change the flow | `{ name?, requireSignature? (true), toleranceSeconds? (300), maxBodyKB? (256), perMinute? (60), enabled? }` | `{ hook, token, secret, url, note }`: token and secret shown once |
+| `PATCH /webhooks/:id` | may change the flow | same fields | `WebhookInfo` |
+| `POST /webhooks/:id/rotate` | may change the flow | `{ token?: true, secret?: true }` | `{ hook, token?, secret?, url? }` |
+| `DELETE /webhooks/:id` | may change the flow | none | `{ ok: true }` |
+| `POST /hooks/:env/:flowId/:token` | none (token, signature) | JSON, form or text body; `X-Appbuilder-Signature: t=..,v1=..`; optional `X-Appbuilder-Delivery` | 202 `{ accepted: true, id }`; 401, 404, 409, 413, 415, 429, 503 ([webhook security](../admin/webhook-security.md)) |
+
+### Scheduled reports
+
+| Method and path | Auth | Request | Response |
+| --- | --- | --- | --- |
+| `GET /reports` | user | none | `{ items: ReportInfo[] }`: own, received, all for administrators |
+| `POST /reports/preview` | user | `{ def }` | `{ columns, rows (50), total, truncated }` computed as the caller |
+| `POST /reports` | user | `ReportDef` (`name`, `source: { kind: 'table', tableId, plan, builder? } \| { kind: 'formula', formula }`, `schedule: { frequency, time?, weekday?, day?, minute?, cron?, timeZone }`, `recipients: { userIds, teamIds }`, `runAs: 'recipient' \| { serviceAccount }` (administrators), `inlineRows`, `csvRows`, `onEmpty`, `enabled`) | `ReportInfo`; other recipients than oneself need maker; a dry run as the caller must work (422/403) |
+| `PATCH /reports/:id` | owner or admin | same fields | `ReportInfo` |
+| `DELETE /reports/:id` | owner or admin | none | `{ ok: true }` |
+| `POST /reports/:id/run` | recipient, owner, admin | none | `{ jobId }` (owner/admin: everyone; a recipient: their own copy) |
+| `GET /reports/:id/runs` | recipient, owner, admin | none | `{ items }` (recipients see their own line) |
 
 ## Security administration (admin)
 
@@ -658,6 +711,43 @@ Column definitions (`POST/PATCH /tables/:id/columns`) accept `computed: { kind: 
 read by a formula column or a rollup, or a table read by a rollup, cannot be removed (409). Changing only `indexed` on the
 default database queues an `index.sync` job instead of building the index inside the request.
 
+## Flows
+
+P1 package A (`server/core/flows/routes.ts`; design and guarantees in [flows.md](flows.md)). Types in `src/platform/flows.ts`.
+Errors of a definition: `422 invalid` with `problems: ValidationProblem[]` (`{ step, field, message, severity, start?, end? }`).
+
+| Route | Level | Body / answer |
+| --- | --- | --- |
+| `GET /flows` | maker | `{ items: FlowListItem[] (with health, canEdit, canRun), settings }` |
+| `GET /flows/catalog` | user | `{ steps: StepKindDoc[], triggers: TriggerTypeDoc[], limits }` (the designer's palette) |
+| `POST /flows/validate` | maker | `{ id?, name, description?, runAs?, trigger, steps, variables?, settings?, connections? }` -> `{ problems }` (nothing saved) |
+| `POST /flows` | maker, design | the same plus `enabled?`, `ownerId?` (administrators), `confirmRunAs?`, `note?` -> `{ flow: FlowDef, problems }` (warnings). `connections`: `{ <ref>: <connection id> }` or `[{ ref, connectionId }]`; a new or changed reference needs the right to use the connection (403). `runAs: { serviceAccount }` needs an administrator (403); a new service-account flow, a changed runAs or owner answers 409 (`field: confirmRunAs`) until `confirmRunAs: true` |
+| `GET /flows/:id` | maker | `{ flow, canEdit, canRun }` |
+| `PUT /flows/:id` | maker, design | partial document -> a new version `{ flow, problems }`; owner or administrator (403); a flow that runs as a service account: administrators only |
+| `DELETE /flows/:id` | maker, design | cancels active runs, removes the flow (history kept) -> `{ ok, cancelledRuns }` |
+| `POST /flows/:id/enable`, `/disable` | maker | `{ flow }`; enabling validates first (422) and needs an active owner (409); arms or removes the schedule. In a locked environment administrators only |
+| `GET /flows/:id/versions` | maker | `{ items: FlowVersionInfo[], current }` |
+| `GET /flows/:id/versions/:v` | maker | `{ version, doc }` |
+| `POST /flows/:id/versions/:v/restore` | maker, design | `{ confirmRunAs? }` -> `{ flow, problems }` (a new version with the old document) |
+| `GET /flows/:id/permissions`, `PUT` | maker (PUT: owner or admin, design) | `{ roleIds }`: roles that may run the flow by hand |
+| `GET /flows/permissions/all`, `PUT` | admin | `{ roleIds }`: roles that may run every flow |
+| `GET /flows/settings`, `PUT` | maker / admin | `{ paused, pausedBy?, pausedOn?, environmentRunsPerMinute }`; PUT `{ paused?, environmentRunsPerMinute? }` (kill switch), audited |
+| `POST /flows/:id/run` | user (run permission) | `{ inputs?, runId?, wait?, timeoutSeconds? (<= 30), source? }` -> `{ runId, status, response?, error? }`. 403 without permission, 409 when the flow is off, suspended or paused, 422 for a missing or mistyped input. A `runId` of your own (`run_<8-40 letters>`) makes the call idempotent |
+| `POST /flows/run` | user | `{ flow: name or id, ... }` as above (RunFlow() in apps) |
+| `POST /flows/:id/test` | maker, owner or admin | `{ trigger? (sample payload), inputs?, dryRun = true, definition? (unsaved draft), approvalOutcome? }` -> `{ runId, dryRun }`; a test run (mode `test`) |
+| `GET /flows/runs?flowId=&status=a,b&mode=&trigger=&regarding=&after=&before=&limit=` | user | `{ items: FlowRunInfo[], nextBefore }`; administrators all runs, others the runs of their flows and the runs they started |
+| `GET /flows/runs/:runId` | user | `{ run: FlowRunDetail }` (steps with input, output, error, attempt, timings; waits) for the flow's owner and administrators; `{ run, summaryOnly: true }` for the person who started it; 404 otherwise |
+| `POST /flows/runs/:runId/cancel` | maker, owner or admin | `{ ok }`; 409 when it ended |
+| `POST /flows/runs/:runId/resubmit` | maker, owner or admin | `{ from: 'start' \| 'failed' }` -> `{ runId }` |
+| `POST /flows/callback/:env/:run/:key/:token` | none (the token is the authority; no CSRF header) | any body (JSON parsed) -> 202 `{ ok, state: 'resumed' \| 'kept' }`; 404 bad address, 409 used or ended |
+
+Solutions: component kind `flow`; the package carries `flows: [{ id, name, description?, runAs, enabled, definition,
+connections: [{ ref, connectionId, connectionName?, connector? }], runRoles }]`. Plans list flows as items of kind `flow`,
+`serviceFlows` (names; then `confirm` is always needed) and `flowConnections` (the mapping of each source connection to a
+connection here, `to: null` = choose one, a problem). `POST /solutions/import/plan`, `/solutions/import` and
+`/solutions/:id/deploy` take `connectionMap: { <source connection id>: <connection id here> }` and
+`enableFlows: true | [<flow id>]` (new flows arrive turned off otherwise).
+
 ## Notifications (user)
 
 The signed-in user's in-app notifications (install-wide; usable without an environment unless noted). Items:
@@ -670,7 +760,11 @@ The signed-in user's in-app notifications (install-wide; usable without an envir
 | `GET /notifications/unread-count` | `{ unread }` |
 | `POST /notifications/:id/read`, `POST /notifications/read-all` | `{ unread }` |
 | `DELETE /notifications/:id` | `{ unread }`; someone else's or unknown: 404 |
-| `GET /notifications/settings`, `PUT /notifications/settings` | `{ kinds: { [kind]: boolean }, desktop, dnd: { start, end } \| null, hidePresence }` (unknown fields dropped). A kind set to false is not stored for this user at all. |
+| `GET /notifications/settings`, `PUT /notifications/settings` | `{ kinds: { [kind]: boolean }, desktop, dnd: { start, end } \| null, hidePresence, email?: { [kind]: 'off'\|'immediate'\|'digest' }, digest?: { frequency, time }, timeZone?, quietEmail? }` (unknown fields dropped). A kind set to false in `kinds` is not stored in the app for this user; email follows `email` (P1). |
+| `GET /notifications/channels` | Effective channels per kind (with administrator locks and reasons), digest, time zone, whether email works ([notifications-delivery.md](notifications-delivery.md)) |
+| `GET /notifications/deliveries` | The caller's delivery log ("why did I get this"); `GET /admin/notifications/deliveries?userId` for install administrators |
+| `GET/PUT /admin/notifications/policy` | Install administrators: defaults and locks per kind, logo, per-recipient limit |
+| `GET/POST /notifications/unsubscribe?t=` | No sign-in: the signed link of an email mutes a kind (or a report) |
 | `POST /notifications/send` (environment) | `SendNotification` from apps: body `{ to, title, body?, link?, app? }`; `to` = user id or email of someone who may enter the request's environment (others, and unknown people: 404); title at most 200, body 2,000 characters; `link` must start with `#` (422 otherwise). Rate limit per sender: 30 a minute, 300 an hour (429). Stored with kind `app` and the sender's name. |
 
 ```bash

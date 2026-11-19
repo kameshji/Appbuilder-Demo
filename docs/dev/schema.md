@@ -9,7 +9,7 @@ Decision D14 in `/home/claude/appbuilder-demo/docs/decisions.md` records the mov
    (at most `APPBUILDER_MAX_ENVIRONMENTS`, default 5). Each holds the environment's metadata tables (`ab_roles`, `ab_tables`,
    `ab_apps`, `ab_audit`, ...) **and** the data tables of its default connection (`t_orders`, `t_contacts`, ...).
 
-Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 7`),
+Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 8`),
 `/home/claude/appbuilder-demo/server/core/install-store.ts` (the `ab` registry, access and install audit)
 and, for data tables, `/home/claude/appbuilder-demo/server/connectors/postgres/sql.ts` (`createTableSql`, `sqlType`).
 
@@ -121,6 +121,18 @@ an `ab.environment_access` row for `default` (`is_env_admin` = holds an admin ro
 **6 to 7, package K** (environment step `upgradeEnvironmentTo7Model`, independent of the other version 7 steps): checks
 that `ab_relationships`, `ab_model_layouts` and `ab_model_drafts` exist, then records every existing lookup column (not the
 system columns) as a relationship: required lookups `restrict`, optional ones `setBlank` (`docs/dev/data-model.md`).
+
+**7 to 8, package D** (P1; shared number, independent steps): schema `ab` gets `mail_suppressions`,
+`notification_deliveries`, `notification_digest` and the column `mail_log.sealed_message` (all from `INSTALL_DDL`,
+idempotent); the environment step checks that `ab_connection_access`, `ab_custom_actions`, `ab_action_runs`,
+`ab_action_idempotency`, `ab_webhooks`, `ab_webhook_replays`, `ab_report_subscriptions` and `ab_report_runs` exist. No
+data is converted.
+
+**7 to 8, package A** (P1; independent environment step `upgradeEnvironmentTo8Flows`, `server/core/flows/ddl.ts`): checks
+that the flow tables exist (`ab_flows`, `ab_flow_versions`, `ab_flow_runs`, `ab_flow_steps`, `ab_flow_waits`,
+`ab_flow_connections`, `ab_flow_run_grants`, `ab_flow_settings`, `ab_flow_alerts`) and drops the empty placeholder table
+`sys_flow_runs` of version 7 (kept as `sys_flow_runs_placeholder_v7` if it holds rows); `provisionSystemTables` then creates
+`sys_flow_runs` as a view over `ab_flow_runs` (it also converts a leftover placeholder at any later start).
 
 ## Types and conventions
 
@@ -485,10 +497,48 @@ groups, measures and schedule, a date dimension's range and fiscal start) and `T
 unique indexes `uq_<table>_pair_<cols>`, created by `createTableSql` and by the designer). A reporting view's physical
 object is a PostgreSQL `VIEW` named `v_<name>` in the environment schema.
 
+### Connector actions, webhooks, reports (P1 package D, version 8)
+
+Created by `actionsEnvironmentDdl()` (`server/core/actions/ddl.ts`). Not copied with an environment copy except the
+definitions a solution carries (custom actions travel inside the connection entry of a package).
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `ab_connection_access` | `connection_id`, `principal_kind` (`role`, `user`), `principal_id`, `level` (`use`, `manage`), `granted_by`, `granted_on`; PK (connection_id, principal_kind, principal_id) | grants of action connections; administrators need none |
+| `ab_custom_actions` | `id` PK, `connection_id`, `action_id`, `def jsonb` (`ActionDef` + `http` spec), `created_by`, `created_on`, `modified_on` | unique (connection_id, lower(action_id)); removed with the connection |
+| `ab_action_runs` | `id` PK, `at`, `connection_id`, `action_id`, `user_id`, `source` (`flow:<id>`, `event:<id>`, `test`), `correlation_id`, `status` (`ok`, `failed`), `error_code`, `message`, `http_status`, `duration_ms`, `replayed`, `details jsonb` (method, host, path, recipients; never inputs, outputs or secrets) | activity; indexes (connection_id, at DESC), (at); 90 days (`actions.retention`) |
+| `ab_action_idempotency` | `key_hash` PK (SHA-256 of environment, connection, action, key), `connection_id`, `action_id`, `state` (`running`, `done`), `result jsonb` (redacted), `created_on`, `expires_on` (24 h) | |
+| `ab_webhooks` | `id` PK, `flow_id`, `name`, `token_hash` (SHA-256), `token_hint` (4 characters), `secret_sealed` (secret box), `require_signature`, `tolerance_seconds`, `max_body_kb`, `per_minute`, `enabled`, `created_by`, `created_on`, `rotated_on`, `last_used_on`, `calls`, `rejected` | index (flow_id) |
+| `ab_webhook_replays` | `hook_id`, `sig_hash`, `seen_on`; PK (hook_id, sig_hash) | signatures seen; older than a day removed by `actions.retention` |
+| `ab_report_subscriptions` | `id` PK, `name`, `owner_id`, `def jsonb` (`ReportDef`: source, runAs, schedule, recipients, inlineRows, csvRows, onEmpty, optOut), `enabled`, `schedule_id` (its `ab_schedules` row, job `report.run`), `created_on`, `modified_on` | |
+| `ab_report_runs` | `id` PK (`rrun_<job id>`), `report_id`, `started_on`, `finished_on`, `status` (`running`, `succeeded`, `partial`, `failed`), `trigger` (`schedule`, `manual`), `job_id`, `recipients jsonb` (per recipient: status, rows, mail id, reason), `message` | index (report_id, started_on DESC); 400 days |
+
+Install-wide (schema `ab`, `DELIVERY_INSTALL_DDL`):
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `ab.mail_suppressions` | `address` PK (lowercase), `reason` (`manual`, `unsubscribed`, ...), `note`, `added_by`, `added_on` | checked by the Email connector, notification email and reports |
+| `ab.notification_deliveries` | `id` PK, `at`, `user_id`, `notification_id`, `environment_id`, `kind`, `title`, `channel` (`in_app`, `email`), `status` (`delivered`, `skipped`, `queued`, `digest`, `sent`, `failed`), `reason`, `mail_id` | indexes (user_id, at DESC), (at); 90 days |
+| `ab.notification_digest` | `id` PK, `user_id` FK users ON DELETE CASCADE, `kind`, `title`, `body`, `link`, `environment_id`, `created_on`, `reason`, `hold_until` (quiet hours or the hourly limit), `delivery_id` | emails waiting for a digest |
+| `ab.mail_log.sealed_message` | `text NULL` | a queued message above 150 KB sealed (attachments), cleared when sent or failed for good |
+
 **Rule for every package:** a change that adds or alters tables or columns of `ab` or of the environment schemas bumps
 `SCHEMA_VERSION` to the next number and adds an upgrade step (install: phase 1 of `migrate()`; environment:
 `ENVIRONMENT_STEPS`), even when the DDL itself is idempotent. Several packages landing in the same release share one
 number.
+
+### Flows: `ab_flows`, `ab_flow_versions`, `ab_flow_runs`, `ab_flow_steps`, `ab_flow_waits`, `ab_flow_connections`, `ab_flow_run_grants`, `ab_flow_settings`, `ab_flow_alerts` (P1 package A, version 8)
+
+DDL in `server/core/flows/ddl.ts` (`flowsEnvironmentDdl`, appended to `environmentDdl`). Columns and purpose:
+[flows.md](flows.md#tables-per-environment-schema-version-8). Keys and indexes: `ab_flows.id`, unique `lower(name)`;
+`ab_flow_versions (flow_id, version)`; `ab_flow_runs.id`, unique `trigger_key` (where set: one run per trigger event),
+partial indexes on active runs (`state`), on `(concurrency_key, seq)` of active runs, on `deadline_at` of active runs, on
+`(flow_id, created_on DESC)`, `(flow_id, finished_on)`, `parent_run_id`, `regarding_id`; `ab_flow_steps (run_id, step_key)`
+with `(run_id, scope)` and an identity `ord` (execution order); `ab_flow_waits.id`, unique `(run_id, step_key)`, partial
+indexes on `wake_at` and `timeout_at` of waiting rows, `token_hash`, `approval_id`; `ab_flow_connections (flow_id, ref)`;
+`ab_flow_run_grants (flow_id, role_id)`; `ab_flow_settings.k`; `ab_flow_alerts.flow_id`. Timestamps `timestamptz`,
+documents `jsonb`. Environment copies copy `ab_flows`, `ab_flow_versions`, `ab_flow_connections`, `ab_flow_run_grants`
+(flows turned off); restores cancel active runs.
 
 ## Data tables (default connection, PostgreSQL)
 

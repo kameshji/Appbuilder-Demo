@@ -111,6 +111,11 @@ export interface RouteOptions {
   noEnvironment?: boolean
   /** package I: reachable by a session that must set up two-step verification first (otherwise 403 mfa_enrolment_required) */
   allowPendingMfaEnrolment?: boolean
+  /**
+   * P1-D: no CSRF header needed (auth 'none' routes that other systems call and verify themselves: inbound webhooks with
+   * a path token and signature, one-click unsubscribe with a signed token). Never for routes that use the session cookie.
+   */
+  csrfExempt?: boolean
 }
 
 export interface Router {
@@ -627,6 +632,10 @@ export interface Services {
   notifications?: NotificationService
   /** event and job kernel (server/core/kernel.ts; package G). Absent in the metadata test harness. */
   kernel?: KernelServices
+  /** connector actions (server/core/actions/service.ts; P1 package D). Absent in the metadata test harness. */
+  actions?: import('./actions/contracts.ts').ActionsService
+  /** flows (server/core/flows/index.ts; P1 package A): webhook trigger, resumeWait for approvals. Absent in the metadata test harness. */
+  flows?: import('./flows/contracts.ts').FlowsService
   /** small helpers */
   uid(prefix?: string): string
   now(): string

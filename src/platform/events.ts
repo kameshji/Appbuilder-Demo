@@ -40,6 +40,11 @@ export interface TableEventDef {
   field?: string
   /** whose permissions reads and writes use: the user who made the change (default), or the system (administrators only) */
   runAs: 'caller' | 'system'
+  /**
+   * P1: connections (ids) attached by a maker who holds "use" on them; after-events may call their actions with
+   * RunConnector(connection, action [, inputs]) (the connection named by id or name). At most 20.
+   */
+  connections?: string[]
   description?: string
   createdOn: string
   modifiedOn: string

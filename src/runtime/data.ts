@@ -384,3 +384,29 @@ export function recordById(id: string): FxRecord | null | undefined {
   if (users) ensureTablesLoaded([users.name])
   return null
 }
+
+/* ------------------------------------------------------------------ flows (P1) */
+
+/**
+ * RunFlow(flow, inputs, options) from formulas: POST /api/v1/flows/run with a run id chosen here (so the formula gets it
+ * at once and a retry does not start a second run). Failures are reported like SendNotification's; with Wait the
+ * flow's response arrives later through onResponse.
+ */
+export async function runFlowCall(input: { flow: string; inputs: unknown; runId: string; wait: boolean; timeoutSeconds: number }, onResponse?: (value: unknown) => void): Promise<void> {
+  try {
+    if (platformMode() !== 'server') throw new PlatformError('unavailable', 'Flows run on the server; they are not available in demo mode.')
+    const { API_BASE, CSRF_HEADER } = await import('@/platform/http')
+    const { environmentHeaders } = await import('@/platform/environments')
+    const res = await fetch(`${API_BASE}/flows/run`, {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store',
+      headers: { [CSRF_HEADER]: '1', 'Content-Type': 'application/json', ...environmentHeaders() },
+      body: JSON.stringify({ flow: input.flow, inputs: input.inputs, runId: input.runId, source: 'app', ...(input.wait ? { wait: true, timeoutSeconds: input.timeoutSeconds } : {}) }),
+    })
+    const b = await res.json().catch(() => null) as { error?: { message?: string }; response?: unknown; status?: string } | null
+    if (!res.ok) throw new PlatformError('invalid', b?.error?.message ?? `The server answered ${res.status}`)
+    if (input.wait && onResponse) onResponse(b?.response ?? null)
+  } catch (e) {
+    const message = `RunFlow: ${errorMessage(e)}`
+    for (const l of [...shareErrorListeners]) l(message)
+  }
+}

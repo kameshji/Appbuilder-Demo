@@ -23,6 +23,8 @@ import { IDENTITY_INSTALL_DDL, IDENTITY_TABLES, upgradeInstallTo7Identity } from
 import { BACKUP_INSTALL_DDL, BACKUP_TABLES, upgradeInstallTo7Backup } from './backup/ddl.ts'
 import { MODEL_TABLES, createRelationshipStore, modelEnvironmentDdl, upgradeEnvironmentTo7Model } from './model/store.ts'
 import { dropSystemViews, provisionSystemTables } from './system-tables.ts'
+import { FLOW_TABLES, flowsEnvironmentDdl, upgradeEnvironmentTo8Flows } from './flows/ddl.ts'
+import { ACTIONS_TABLES, DELIVERY_INSTALL_DDL, DELIVERY_TABLES, actionsEnvironmentDdl } from './actions/ddl.ts'
 
 /**
  * 1-3: the MySQL system store (no longer supported, never upgraded: there is no migration path from MySQL).
@@ -38,10 +40,16 @@ import { dropSystemViews, provisionSystemTables } from './system-tables.ts'
  *    J: backup catalogue (ab.backups, ab.backup_ops), step upgradeInstallTo7Backup (backup/ddl.ts).
  *    K: data model designer, per environment ab_relationships, ab_model_layouts, ab_model_drafts; environment step
  *    upgradeEnvironmentTo7Model (model/store.ts) records the existing lookups as explicit relationships.
+ * 8: P1 (shared number, independent steps). A: flows (flows/ddl.ts: ab_flows, ab_flow_versions, ab_flow_runs, ab_flow_steps,
+ *    ab_flow_waits, ab_flow_connections, ab_flow_run_grants, ab_flow_settings, ab_flow_alerts; step upgradeEnvironmentTo8Flows turns
+ *    the placeholder sys_flow_runs into a view). D: connector actions, webhooks and scheduled reports per environment
+ *    (actions/ddl.ts: ab_connection_access, ab_custom_actions, ab_action_runs, ab_action_idempotency, ab_webhooks,
+ *    ab_webhook_replays, ab_report_subscriptions, ab_report_runs) and notification delivery in schema ab
+ *    (ab.mail_suppressions, ab.notification_deliveries, ab.notification_digest, ab.mail_log.sealed_message).
  *    N: core data model, per environment system tables sys_* (views over ab.* and real tables), registered in ab_tables
  *    with stable ids; provisionSystemTables (system-tables.ts) runs after the steps and at every start (idempotent).
  */
-export const SCHEMA_VERSION = 7
+export const SCHEMA_VERSION = 8
 
 /** the database was upgraded by a newer server: this one must not touch it (downgrade guard) */
 export class SchemaTooNewError extends Error {
@@ -145,6 +153,8 @@ export const INSTALL_DDL: string[] = [
   ...IDENTITY_INSTALL_DDL,
   // P0-J backup catalogue (idempotent)
   ...BACKUP_INSTALL_DDL,
+  // P1-D notification delivery (email channel, digests, delivery log) and the mail suppression list (idempotent)
+  ...DELIVERY_INSTALL_DDL,
 ]
 
 /** the metadata tables of one environment schema */
@@ -276,16 +286,20 @@ export function environmentDdl(schema: string): string[] {
     ...orgEnvironmentDdl(schema),
     // P0-K data model designer: relationships, diagram layouts, drafts (idempotent)
     ...modelEnvironmentDdl(schema),
+    // P1-D connector actions, webhooks, scheduled reports (idempotent)
+    ...actionsEnvironmentDdl(schema),
+    // P1-A flows: definitions, versions, runs, steps, waits, connection references, run grants (idempotent)
+    ...flowsEnvironmentDdl(schema),
   ]
 }
 
 /** names of the metadata tables inside an environment schema (never reachable through a connector: prefix ab_) */
 export const ENVIRONMENT_TABLES = [
   'ab_roles', 'ab_user_roles', 'ab_role_tables', 'ab_tables', 'ab_apps', 'ab_connections', 'ab_solutions', 'ab_data_files',
-  'ab_attachments', 'ab_counters', 'ab_audit', ...KERNEL_TABLES, 'ab_shares', ...MODEL_TABLES,
+  'ab_attachments', 'ab_counters', 'ab_audit', ...KERNEL_TABLES, 'ab_shares', ...MODEL_TABLES, ...ACTIONS_TABLES, ...FLOW_TABLES,
 ]
 /** names of the tables in schema ab */
-export const INSTALL_TABLES = ['settings', 'users', 'sessions', 'environments', 'environment_access', 'audit', 'licence', 'departments', 'teams', 'team_members', ...NOTIFICATION_TABLES, ...IDENTITY_TABLES, ...BACKUP_TABLES]
+export const INSTALL_TABLES = ['settings', 'users', 'sessions', 'environments', 'environment_access', 'audit', 'licence', 'departments', 'teams', 'team_members', ...NOTIFICATION_TABLES, ...IDENTITY_TABLES, ...BACKUP_TABLES, ...DELIVERY_TABLES]
 
 /**
  * Creates (or completes) the metadata tables of an environment schema and registers it (state ready, schema_version
@@ -337,6 +351,23 @@ export const ENVIRONMENT_STEPS: { to: number; describe: string; run(db: SqlDb, s
     async run() {
       // nothing to do before provisioning; kept so the summary lists the change
     },
+  },
+  {
+    // P1-D (independent of the other version 8 steps): the tables come from environmentDdl; the step checks they exist
+    to: 8,
+    describe: 'connector actions (ab_connection_access, ab_custom_actions, ab_action_runs, ab_action_idempotency), inbound webhooks (ab_webhooks, ab_webhook_replays) and scheduled reports (ab_report_subscriptions, ab_report_runs)',
+    async run(db, schema) {
+      for (const t of ACTIONS_TABLES) {
+        const r = await db.query<Row>('SELECT to_regclass($1) IS NOT NULL AS ok', [`"${schema}"."${t}"`])
+        if (!bool(r[0]?.ok)) throw new Error(`table ${schema}.${t} is missing after the schema update`)
+      }
+    },
+  },
+  {
+    // P1-A (independent of the other version 8 steps): flow tables; the placeholder sys_flow_runs makes way for its view
+    to: 8,
+    describe: 'flows (ab_flows, ab_flow_versions, ab_flow_runs, ab_flow_steps, ab_flow_waits, ab_flow_connections, ab_flow_run_grants, ab_flow_settings, ab_flow_alerts); Flow runs becomes a view',
+    run: upgradeEnvironmentTo8Flows,
   },
 ]
 
@@ -704,6 +735,8 @@ export function createMetaStore(db: SqlDb, secrets: SecretBox, opts: MetaStoreOp
         if (current < 7) { const d = await upgradeInstallTo7Identity(tx); if (current >= 4) steps.push(d) }
         // 7 (package J, independent): the backup catalogue in schema ab
         if (current < 7) { const d = await upgradeInstallTo7Backup(tx); if (current >= 4) steps.push(d) }
+        // 8 (package D, independent of the other version 8 steps): notification delivery and mail suppressions (INSTALL_DDL)
+        if (current >= 4 && current < 8) steps.push('version 8: notification delivery (email channel, digests, delivery log) and the mail suppression list')
         // an operation that was running when the server stopped cannot be resumed: the environment is marked failed
         const stuck = await tx.query<Row>(`UPDATE ${A('environments')} SET state = 'failed', last_error = CASE state WHEN 'creating' THEN 'Creating it was interrupted (the server stopped). Delete it and create it again.' ELSE 'Deleting it was interrupted (the server stopped). Delete it again.' END WHERE state IN ('creating', 'deleting') RETURNING id`)
         for (const r of stuck) steps.push(`environment ${str(r.id)}: interrupted operation, marked failed`)

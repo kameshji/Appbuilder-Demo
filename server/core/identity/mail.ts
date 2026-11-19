@@ -15,7 +15,7 @@ import { HttpError } from '../contracts.ts'
 import { DEFAULT_ENVIRONMENT_ID, runInEnvironment } from '../env-context.ts'
 import { JobError } from '../jobs.ts'
 import { errText, log, uid } from '../util.ts'
-import { sendSmtp, SmtpError, validAddress, type SmtpSecurity, type SmtpSettings } from './smtp.ts'
+import { recipientsOf, sendSmtp, SmtpError, validAddress, type SmtpSecurity, type SmtpSettings } from './smtp.ts'
 import { renderTemplate, type MailTemplate, type TemplateVars } from './templates.ts'
 import { hostProblem } from '../net-policy.ts'
 
@@ -62,13 +62,33 @@ export interface MailService {
   /** validates and stores; password: undefined keeps it, '' clears it */
   saveSettings(input: Record<string, unknown>): Promise<PublicSmtp>
   clearSettings(): Promise<void>
-  send(m: { to: string; subject: string; text: string; html?: string; template: string; userId?: string | null }): Promise<{ id: string }>
+  send(m: OutgoingMail): Promise<{ id: string }>
   sendTemplate(kind: MailTemplate, to: string, vars: TemplateVars, userId?: string | null): Promise<{ id: string }>
   /** synchronous delivery for the test button; throws HttpError 422 with the relay's answer */
   sendTest(to: string): Promise<{ response: string }>
   logPage(o: { offset: number; limit: number; status?: string }): Promise<{ items: MailLogEntry[]; total: number }>
   brand(): Promise<{ installName: string; publicUrl: string }>
 }
+
+/** a message to queue (P1 adds several recipients, copies, attachments, reply-to and list headers) */
+export interface OutgoingMail {
+  to: string | string[]
+  cc?: string[]
+  bcc?: string[]
+  replyTo?: string
+  /** shown as the sender's name (the address stays the relay's sender address) */
+  fromName?: string
+  subject: string
+  text: string
+  html?: string
+  attachments?: { fileName: string; contentType: string; content: Buffer }[]
+  headers?: Record<string, string>
+  template: string
+  userId?: string | null
+}
+
+/** messages above this size (sealed) are kept in ab.mail_log.sealed_message instead of the job payload (256 KB cap) */
+const INLINE_SEALED_MAX = 150 * 1024
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
@@ -114,13 +134,13 @@ export function createMailService(services: CoreServices): MailService {
   }
 
   // the delivery job (registered once, on the kernel shared by every environment; it is enqueued in Default)
-  services.kernel.jobs.register<{ logId: string; sealed: string }>({
+  services.kernel.jobs.register<{ logId: string; sealed: string; stored?: boolean }>({
     type: MAIL_JOB,
     schedule: 'install',
     description: 'Sends one email through the SMTP relay (Admin console > Email). The message is sealed in the payload.',
     parse(raw) {
       if (!isObj(raw) || typeof raw.logId !== 'string' || typeof raw.sealed !== 'string') throw new JobError('malformed mail job', { retry: false })
-      return { logId: raw.logId, sealed: raw.sealed }
+      return { logId: raw.logId, sealed: raw.sealed, stored: raw.stored === true }
     },
     maxAttempts: 6,
     concurrency: 2,
@@ -132,21 +152,32 @@ export function createMailService(services: CoreServices): MailService {
         await logUpdate(p.logId, { status: 'failed', attempts: attempt, lastError: 'Email is not set up any more.' })
         throw new JobError('Email is not set up.', { retry: false })
       }
-      let m: { to: string; subject: string; text: string; html?: string }
+      let m: { to: string | string[]; cc?: string[]; bcc?: string[]; replyTo?: string; fromName?: string; subject: string; text: string; html?: string; attachments?: { fileName: string; contentType: string; base64: string }[]; headers?: Record<string, string> }
       try {
-        m = JSON.parse(services.secrets.decrypt(p.sealed)) as typeof m
+        let sealed = p.sealed
+        if (p.stored) {
+          const r = await db().query<{ sealed_message: string | null }>(`SELECT sealed_message FROM "ab"."mail_log" WHERE id = $1`, [p.logId])
+          sealed = r[0]?.sealed_message ?? ''
+        }
+        m = JSON.parse(services.secrets.decrypt(sealed)) as typeof m
       } catch {
         await logUpdate(p.logId, { status: 'failed', attempts: attempt, lastError: 'The queued message cannot be decrypted.' })
         throw new JobError('The queued message cannot be decrypted.', { retry: false })
       }
       try {
-        const r = await sendSmtp(smtpOf(s), { from: { address: s.fromAddress, name: s.fromName || s.installName }, to: m.to, replyTo: s.replyTo || undefined, subject: m.subject, text: m.text, html: m.html })
+        const r = await sendSmtp(smtpOf(s), {
+          from: { address: s.fromAddress, name: m.fromName || s.fromName || s.installName }, to: m.to, cc: m.cc, bcc: m.bcc, replyTo: m.replyTo || s.replyTo || undefined,
+          subject: m.subject, text: m.text, html: m.html, headers: m.headers,
+          attachments: (m.attachments ?? []).map((a) => ({ fileName: a.fileName, contentType: a.contentType, content: Buffer.from(a.base64, 'base64') })),
+        })
         await logUpdate(p.logId, { status: 'sent', attempts: attempt, sentOn: new Date(), lastError: null, messageId: r.messageId })
+        if (p.stored) await db().exec(`UPDATE "ab"."mail_log" SET sealed_message = NULL WHERE id = $1`, [p.logId]).catch(() => {})
         return { sent: true }
       } catch (e) {
         const permanent = e instanceof SmtpError && e.permanent
         const last = permanent || attempt >= ctx.job.maxAttempts
         await logUpdate(p.logId, { status: last ? 'failed' : 'retrying', attempts: attempt, lastError: errText(e).slice(0, 500) })
+        if (last && p.stored) await db().exec(`UPDATE "ab"."mail_log" SET sealed_message = NULL WHERE id = $1`, [p.logId]).catch(() => {})
         throw new JobError(errText(e).slice(0, 500), { retry: !permanent })
       }
     },
@@ -210,15 +241,25 @@ export function createMailService(services: CoreServices): MailService {
     async send(m) {
       const s = await stored()
       if (!s) throw new HttpError(409, 'conflict', 'Email is not set up. An install administrator sets up the SMTP relay in Admin console > Email.')
-      if (!validAddress(m.to)) throw new HttpError(422, 'invalid', `"${m.to}" is not a valid email address.`, 'to')
+      const all = recipientsOf(m)
+      if (!all.length) throw new HttpError(422, 'invalid', 'A message needs at least one recipient.', 'to')
+      for (const a of all) if (!validAddress(a)) throw new HttpError(422, 'invalid', `"${a}" is not a valid email address.`, 'to')
+      if (m.replyTo && !validAddress(m.replyTo)) throw new HttpError(422, 'invalid', `"${m.replyTo}" is not a valid reply-to address.`, 'replyTo')
       const id = uid('mail')
-      const subject = m.subject.slice(0, 300)
+      const subject = m.subject.replace(/[\r\n]+/g, ' ').slice(0, 300)
+      const shown = all.length > 1 ? `${all[0]} (+${all.length - 1})` : all[0]
+      const msg = {
+        to: m.to, ...(m.cc?.length ? { cc: m.cc } : {}), ...(m.bcc?.length ? { bcc: m.bcc } : {}), ...(m.replyTo ? { replyTo: m.replyTo } : {}), ...(m.fromName ? { fromName: m.fromName.replace(/[\r\n]/g, ' ').slice(0, 100) } : {}),
+        subject, text: m.text, html: m.html, ...(m.headers ? { headers: m.headers } : {}),
+        ...(m.attachments?.length ? { attachments: m.attachments.map((a) => ({ fileName: a.fileName, contentType: a.contentType, base64: a.content.toString('base64') })) } : {}),
+      }
+      const sealed = services.secrets.encrypt(JSON.stringify(msg))
+      const bigMessage = sealed.length > INLINE_SEALED_MAX
       await db().exec(
-        `INSERT INTO "ab"."mail_log" (id, created_on, status, attempts, to_address, subject, template, user_id) VALUES ($1, $2, 'queued', 0, $3, $4, $5, $6)`,
-        [id, new Date(), m.to, subject, m.template, m.userId ?? null],
+        `INSERT INTO "ab"."mail_log" (id, created_on, status, attempts, to_address, subject, template, user_id, sealed_message) VALUES ($1, $2, 'queued', 0, $3, $4, $5, $6, $7)`,
+        [id, new Date(), shown, subject, m.template, m.userId ?? null, bigMessage ? sealed : null],
       )
-      const sealed = services.secrets.encrypt(JSON.stringify({ to: m.to, subject, text: m.text, html: m.html }))
-      const job = await runInEnvironment(DEFAULT_ENVIRONMENT_ID, () => services.kernel.jobs.enqueue(MAIL_JOB, { logId: id, sealed }, { correlationId: `mail:${id}`, priority: 5 }))
+      const job = await runInEnvironment(DEFAULT_ENVIRONMENT_ID, () => services.kernel.jobs.enqueue(MAIL_JOB, bigMessage ? { logId: id, sealed: '', stored: true } : { logId: id, sealed }, { correlationId: `mail:${id}`, priority: 5 }))
       await db().exec(`UPDATE "ab"."mail_log" SET job_id = $2 WHERE id = $1`, [id, job.id])
       return { id }
     },

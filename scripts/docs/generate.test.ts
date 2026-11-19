@@ -15,6 +15,8 @@ import { controls } from '@/controls'
 import { fx } from '@/fx'
 import { buildControlsPage } from './controls'
 import { buildFormulasPage } from './formulas'
+import { buildFlowsPage } from './flows'
+import { buildActionsPage } from './actions'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const WRITE = process.env.DOCS_WRITE === '1' || process.env.npm_lifecycle_event === 'docs:gen'
@@ -77,6 +79,18 @@ describe('generated reference docs', () => {
     const stub = normalise(readFileSync(resolve(root, 'docs/reference/controls.md'), 'utf8'))
     expect(stub).toContain('(ui-components.md)')
     expect(stub.split('\n').length).toBeLessThan(12)
+  })
+
+  it('docs/reference/connector-actions.md matches the built-in connector actions', () => {
+    const { text } = buildActionsPage()
+    expect(text).toContain('`request`')
+    writeOrCheck('docs/reference/connector-actions.md', text)
+  })
+
+  it('docs/reference/flows.md matches the flow catalogue (triggers and step kinds)', () => {
+    const { text } = buildFlowsPage()
+    expect(text).toContain('`kind: "data.create"`')
+    writeOrCheck('docs/reference/flows.md', text)
   })
 
   it('generation is deterministic', () => {

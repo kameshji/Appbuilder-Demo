@@ -57,6 +57,11 @@ function eventInput(raw: unknown): TableEventInput {
   if (o.order !== undefined) out.order = Number(o.order)
   if (o.enabled !== undefined) out.enabled = o.enabled === true
   if (o.runAs !== undefined) out.runAs = o.runAs as TableEventInput['runAs']
+  // P1-D: connections attached for RunConnector (ids)
+  if (o.connections !== undefined) {
+    if (!Array.isArray(o.connections) || o.connections.length > 20 || o.connections.some((c) => typeof c !== 'string' || !c || c.length > 100)) throw new HttpError(422, 'invalid', 'connections must be a list of at most 20 connection ids.', 'connections')
+    out.connections = [...new Set(o.connections as string[])]
+  }
   return out
 }
 
@@ -94,6 +99,14 @@ export function kernelRoutes(router: ApiRouter, s: CoreServices): void {
     // running as the system bypasses row and column security: administrators only, and audited
     if (!isAdmin && (input.runAs === 'system' || (before?.runAs === 'system'))) {
       throw new HttpError(403, 'denied', before?.runAs === 'system' ? 'This event runs as the system; only an administrator can change it.' : 'Only an administrator can make an event run as the system.', 'runAs')
+    }
+    // P1-D: attaching a connection needs "use" on it (removing one does not)
+    if (input.connections?.length) {
+      const had = new Set(before?.connections ?? [])
+      for (const c of input.connections) if (!had.has(c)) {
+        if (!s.actions) throw new HttpError(503, 'unavailable', 'Connector actions are not available on this server.')
+        await s.actions.assertCanUse(ctx.user!, c)
+      }
     }
     const { event } = await s.transaction(() => k().events.save(t, id, input, ctx.user!.user.id))
     await audit(s, ctx, id ? 'event.update' : 'event.create', { event: event.id, name: event.name, kind: event.kind, timing: event.timing, runAs: event.runAs, enabled: event.enabled }, t.id)

@@ -133,6 +133,12 @@ export interface FxHost {
    * `args.record` is the row id; the result is what the function returns (NextNumber: the number text).
    */
   collab?(action: 'addComment' | 'addActivity' | 'follow' | 'unfollow' | 'tag' | 'untag' | 'nextNumber', args: Record<string, FxValue>): FxValue
+  /**
+   * RunFlow(flow, inputs [, {Wait, Timeout, Result}]) (P1 flows, server mode): starts a run of a flow with a manual
+   * trigger and returns its run id at once. With Wait the response of the flow's Respond step is put in the global
+   * variable named by Result (default FlowResult) when it arrives (at most Timeout seconds, at most 30).
+   */
+  runFlow?(flow: string, inputs: FxRecord, options: { wait: boolean; timeoutSeconds: number; result: string }): string
 }
 
 export interface FxFunctionDoc {

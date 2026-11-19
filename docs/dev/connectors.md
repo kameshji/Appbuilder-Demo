@@ -1,6 +1,8 @@
 # Connectors
 
-A **connector** is the server-side adapter that stores and fetches the rows of a table. The platform ships four:
+A **connector** is the server-side adapter that stores and fetches the rows of a table (table connectors, this page's
+first half) or that offers **actions** other parts call (action connectors, P1: [Connector actions](#connector-actions)).
+Four table connectors ship:
 `postgres` (the default database, and external PostgreSQL databases), `mysql` (external MySQL/MariaDB databases), `files` (CSV,
 Excel and JSON data files copied into the workspace) and `gsheets` (Google Sheets through a service account). A planned PHP
 gateway is a *backend* for the whole Data API, not a connector (see `data-api.md`; on hold since D14).
@@ -310,3 +312,165 @@ column (`ensureIdColumn` adds it).
   parity automatic.
 - **Integration** tests run against a real PostgreSQL when `APPBUILDER_TEST_DB` is set and against MySQL/MariaDB when
   `APPBUILDER_TEST_MYSQL` is set (see `testing.md`).
+
+## Connector actions
+
+P1 package D, decision D26. Flows (package A), table after-events (`RunConnector`) and the "Test action" form call
+**actions** of a connection: named operations with JSON Schemas. Two action connectors ship: `http` (generic REST, custom
+actions, OpenAPI import) and `email` (send through the install's relay). Table connectors offer no actions yet (flows use
+data steps; no raw SQL from makers in this phase). Maker view: [connections and actions](../guide/maker/connections-and-actions.md);
+administrator view: [connections](../admin/connections.md); generated list of built-in actions:
+[reference/connector-actions.md](../reference/connector-actions.md).
+
+| File | What |
+| --- | --- |
+| `server/core/actions/contracts.ts` | Shared with package A: `ActionDef`, `ActionResult`, `ActionError`, `ActionRunOptions`, `ActionsService`, `VerifiedWebhookPayload`, `FlowWebhookTarget`, `JsonSchema` |
+| `server/core/actions/service.ts` | `createActionsService`: providers, `run` pipeline, grants, custom action store, activity, breaker, rate limit, idempotency, retention job |
+| `server/core/actions/schema.ts` | JSON Schema subset validator, `checkSchema` for maker schemas, `inferSchema` from a sample |
+| `server/core/actions/outbound.ts` | `safeRequest`: allow-list, address policy, pinned DNS answers, redirects, limits, TLS; `setLookupForTests` |
+| `server/core/actions/template.ts` | `{{input}}` templates for paths (encoded segments), text, headers, JSON bodies |
+| `server/core/actions/http.ts`, `email.ts` | The two providers; `builtin-defs.ts` holds their action definitions (pure data, used by `npm run docs:gen`) |
+| `server/core/actions/openapi.ts` | OpenAPI 3 import (subset listed in its header) |
+| `server/core/actions/webhooks.ts` | Inbound webhooks: management routes, the verified `POST /hooks/:env/:flowId/:token` |
+| `server/core/actions/routes.ts`, `wiring.ts` | HTTP API; wiring from `app.ts` (also the `RunConnector` sink, notification delivery, reports) |
+| `server/core/actions/suppressions.ts`, `solution-parts.ts` | Mail suppression list; custom actions in solution packages |
+| `src/portal/ConnectionActions.tsx`, `actionsApi.ts` | Connection details: Tables / Actions / Access / Activity, the schema form, custom action form, OpenAPI import |
+
+### The contract
+
+```ts
+interface ActionDef { id; title; description; inputs: JsonSchema; outputs: JsonSchema; idempotent: boolean;
+                      sideEffect: 'none' | 'external'; timeoutMs: number; origin?: 'builtin' | 'custom' }
+type ActionResult = { ok: true; output; runId?; durationMs?; replayed? }
+                  | { ok: false; error: { code, message, retryable, status? }; runId?; durationMs? }
+services.actions.kinds()                                  // action-capable kinds + built-in actions
+services.actions.list(kindOrConnectionId)                 // kind: built-in; connection: built-in + custom
+services.actions.describe(connectionId, actionId)
+services.actions.run(env, connectionId, actionId, inputs, identity /* UserContext | null */,
+                     { idempotencyKey?, correlationId?, timeoutMs?, source?, signal? })
+services.actions.canUse(user, id) / canManage(user, id) / assertCanUse(user, id) / state(env, id)
+```
+
+`run` never throws for action problems: it answers `{ ok: false, error }` with a code from the table in the reference
+page (`retryable` tells a flow whether to retry with backoff). It does **not** check the identity's "use" right: callers
+check it when a maker attaches the connection (`assertCanUse` at save time: table events in `kernel-routes.ts`, flows in
+package A). The identity is what the action runs as (which attachments the email action may open; the activity entry).
+
+### The run pipeline (in order)
+
+1. Connection (404 `not_found`), provider, action (built-in first, then custom by id, case-insensitive).
+2. Inputs: at most 1 MB of JSON (15 MB for email, because of attachments), validated against `inputs` with defaults filled
+   (`invalid_input`, never retried, nothing sent).
+3. Circuit breaker per environment and connection: 5 failures in a row that a retry could fix (network, timeout, 5xx,
+   408, 429) open it for 30 s, doubling to 5 minutes; then one trial call (half-open). `circuit_open` is retryable. The
+   state shows on the Actions tab and at `GET /connections/:id/state`; managers resume calls (`POST .../state/reset`).
+4. Rate limit (token bucket, `perMinute`, default 60) and concurrency cap (`maxConcurrent`, default 4; a call waits up to
+   5 s for a slot). Both answer `rate_limited` (retryable).
+5. Idempotency (only `idempotent: false` and `sideEffect: 'external'`, with a key): `ab_action_idempotency` keyed by the
+   SHA-256 of environment, connection, action and key. A finished key returns the stored result with `replayed: true` (24
+   hours); a running one answers `in_progress` unless it is older than twice the time limit plus 10 s (taken over). A
+   retryable failure deletes the key so the retry runs; success and permanent failures are stored. HTTP actions also send
+   the key as `Idempotency-Key`.
+6. The provider runs with a deadline (the smallest of the caller's, the action's and the connection's limit) and an abort
+   signal. Output: at most 1 MB of JSON (`too_large`).
+7. Redaction: every secret value of the connection, plus its URL-encoded and base64 forms (and the basic-auth token), is
+   replaced by `[hidden]` in the output, the error message and the activity details.
+8. Activity: one `ab_action_runs` row (who, source such as `event:<id>`, `flow:<id>` or `test`, status, error code,
+   message, HTTP status, duration, replayed, details such as method, host, path or recipient count). Never inputs, outputs
+   or secrets. Retention 90 days (`actions.retention`, built-in schedule).
+
+### Writing an action connector
+
+1. Implement `ActionProvider` (`service.ts`): `kind`, `label`, `description`, `tables`, `builtin()` (the action
+   definitions, ideally in `builtin-defs.ts` so the reference generator needs no Node modules), `checkSettings(settings,
+   secret)` (create and edit), `test(...)` (the Test button), `invoke(call)`, `secrets(connection)` (every value to redact)
+   and `limits(connection)`.
+2. `invoke` gets `ProviderCall`: validated `inputs`, the decrypted connection, the identity, `signal`, `timeoutMs`, a
+   per-connection `cache` (dropped when settings or secret change: DNS pins, OAuth tokens) and `note(details)` for the
+   activity row. Throw `OutboundError(code, message, retryable, status?)`; anything else becomes `internal`.
+3. Any network access goes through `safeRequest` with the connection's policy (`policyOf` in `http.ts`), never `fetch`.
+4. Register it in `wiring.ts`, add the kind to `ConnectorKind` (`src/platform/contracts.ts`), `KINDS` / `ACTION_KINDS` in
+   `server/routes/meta/connections.ts`, `PACKAGE_CONNECTORS` (`solution-parts.ts`), `CONNECTOR_INFO` and the dialog form
+   in the Connections page, and run `npm run docs:gen`.
+
+### HTTP connector
+
+Settings: `baseUrl`, `allowedHosts` (default: the base URL's host; `*`, schemes, ports and paths refused),
+`authMode` (`none`, `apiKey` with `apiKeyIn` header|query and `apiKeyName`, `basic` with `username`, `bearer`,
+`oauth2cc` with `tokenUrl`, `clientId`, `scope`, `audience`, `clientAuth` body|basic), `defaultHeaders` (JSON),
+`allowPrivateNetwork`, `verifyTls`, `maxRedirects` (3, at most 10), `timeoutMs` (30 s, at most 120 s), `maxResponseKB`
+(5 MB, at most 20 MB), `perMinute`, `maxConcurrent`. Secret (sealed): one JSON object `{ apiKey?, password?, token?,
+clientSecret?, headers?: { name: value } }`; replacing it replaces every part.
+
+OAuth 2.0 **client credentials**: the token is fetched from `tokenUrl` (on the allow-list, no redirects), cached in the
+connection's cache until 30 s before `expires_in`, one fetch at a time; a 401 from the API fetches a new token once and
+repeats the call. **Authorization code with user consent is not supported** (needs per-user connections and a redirect
+endpoint; later phase).
+
+`request` inputs: `method`, `path` (relative to the base URL, `{{name}}` placeholders filled from `pathParams` as encoded
+segments, `..` cannot climb above the base path; or an absolute URL on an allowed host), `query`, `headers` (hop-by-hop,
+`Host`, `Content-Length` refused), `bodyType` (json, text, form), `body`, `expectStatus` (default any 2xx). Output:
+`{ status, headers (no cookies), body (JSON, text, or base64 with bodyEncoding), url (key-like query values hidden) }`.
+
+Custom actions (`HttpActionSpec` in `http.ts`): `method`, `path` template, `params` (inputs sent as query or header, left out
+when missing), fixed `query`/`headers` templates, `bodyFields` (inputs as JSON fields), `bodyInput` (one input is the
+body; OpenAPI), `bodyTemplate`, `expectStatus`, `outputPath` (return part of the answer), `sample` (the output schema is
+inferred from it). `checkCustomAction` validates them (schemas with `checkSchema`, placeholders must be inputs). They
+return the response body (or the `outputPath` part), not the status envelope.
+
+### Outbound policy for actions
+
+`outbound.ts`, tested in `actions.test.ts` against local servers:
+
+| Rule | Test |
+| --- | --- |
+| http/https only; no credentials in URLs | "calls an allowed host and refuses other hosts, schemes and credentials in URLs" |
+| Host allow-list on every hop, redirects re-checked, https -> http refused, at most `maxRedirects` | "redirects: re-checked at every hop" |
+| Link-local, unspecified, multicast, broadcast and metadata names always refused; loopback and private only with `allowPrivateNetwork` (never with `APPBUILDER_OUTBOUND_PRIVATE=deny`) | "refuses private and loopback addresses ..." |
+| A name is refused when ANY address of its answer is refused; the answer is pinned 60 s per connection and host and the socket connects to it (`lookup` hook) | "DNS rebinding: ..." (custom lookup hook) and the integration test "DNS rebinding" |
+| Sensitive headers (Authorization, Cookie, API-key and secret headers) dropped on a redirect to another host | "redirects: ..." |
+| Total deadline across hops; response size from Content-Length, while streaming and after gzip/deflate/br decoding | "timeouts, response size (also unpacked) and TLS verification" |
+| TLS 1.2+, certificate verified unless `verifyTls: false` | same |
+
+### Email connector
+
+`send`: `to` (one or a list), `cc`, `bcc`, `subject`, `text`, `html` (sanitised like rich text; text made from it when
+missing), `replyTo`, `attachments` (at most 10 and 10 MB: `attachmentId` the run-as identity can open, checked like the
+download route, or generated `{ fileName, text | base64, contentType }`). Settings: `fromName`, `replyTo`, `perHour`,
+`perDay`. Sent through the mail service (`identity/mail.ts`, queued job with retries; messages above 150 KB sealed are kept
+in `ab.mail_log.sealed_message` instead of the job payload). Suppressed addresses are dropped (`denied` when none is left);
+when only blind copies are left, each gets its own message. Environment limits count recipients over all Email
+connections: `APPBUILDER_EMAIL_PER_HOUR` (200) and `APPBUILDER_EMAIL_PER_DAY` (1000); a connection may set lower ones.
+`limit` is retryable.
+
+### Grants
+
+`ab_connection_access (connection_id, principal_kind role|user, principal_id, level use|manage)`. Administrators always
+manage. "Use": list and test actions, attach the connection to events and flows, see one's own activity. "Manage": also
+custom actions, OpenAPI import, everybody's activity, resume calls. Only administrators change grants and connection
+settings; nobody reads secrets (`GET /connections/:id/state` lists which secret parts are set, never values).
+
+### RunConnector in table events
+
+`TableEventDef.connections` lists the connection ids attached to an after-event (at most 20; before-events and validation
+rules cannot have any: external calls never run inside a write). Saving an event that adds a connection needs "use" on it
+(`kernel-routes.ts`). At run time the sink in `wiring.ts` finds the connection by id or name, refuses one that is not
+attached (permanent failure in the run log), converts the inputs from formula values to JSON and calls
+`services.actions.run` as the event's identity with the idempotency key `<job id>:c<n>` and source `event:<id>`. A
+retryable error fails the job for a retry; a permanent one is logged.
+
+### Webhooks in
+
+See [webhooks for makers](../guide/maker/webhooks.md) and [webhook security](../admin/webhook-security.md). The route is
+registered with `auth: 'none', raw: true, streamBody: true, csrfExempt: true`: the token is checked before the body is read
+(`ctx.readBody(limit)`), then the signature, replay, content type, and finally `services.flows.triggerWebhook(env,
+flowId, payload)`. `RouteOptions.csrfExempt` only applies to `auth: 'none'` routes (router.ts).
+
+### Tests
+
+`server/core/actions/actions.test.ts` (no database: schema, templates, outbound policy, HTTP provider auth modes and OAuth,
+custom actions, webhook signatures, OpenAPI import of two real public documents in `testdata/`, notification rules,
+digest scheduling, report CSV) and `actions.integration.test.ts` (PostgreSQL: use vs manage, secrets never in answers,
+activity, audit or job payloads, custom actions and OpenAPI import, solutions, idempotency, circuit breaker, rate limit,
+DNS rebinding, the Email connector, RunConnector, the webhook verification matrix, notification delivery and reports).
+Headless run with screenshots: `scripts/docs-shots/actions.mjs`.

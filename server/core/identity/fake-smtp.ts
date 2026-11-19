@@ -20,6 +20,8 @@ export interface ReceivedMail {
   headers: Record<string, string>
   tls: boolean
   authUser: string | null
+  /** P1: decoded attachments */
+  attachments: ReceivedAttachment[]
 }
 
 export interface FakeSmtp {
@@ -60,33 +62,51 @@ function decodeWord(v: string): string {
   return v.replace(/=\?UTF-8\?B\?([^?]*)\?=/gi, (_, b) => Buffer.from(b, 'base64').toString('utf8'))
 }
 
-/** parses the (simple) messages our client builds: headers, then one text part or multipart/alternative */
-export function parseMessage(data: string): { headers: Record<string, string>; text: string; html: string } {
-  const [head, ...rest] = data.split('\r\n\r\n')
+/** an attachment of a received message (decoded) */
+export interface ReceivedAttachment { fileName: string; contentType: string; content: Buffer }
+
+function splitHead(part: string): { headers: Record<string, string>; body: string } {
+  const i = part.indexOf('\r\n\r\n')
+  const head = i >= 0 ? part.slice(0, i) : part
+  const body = i >= 0 ? part.slice(i + 4) : ''
   const headers: Record<string, string> = {}
   for (const line of head.split('\r\n')) {
-    const i = line.indexOf(':')
-    if (i > 0) headers[line.slice(0, i).toLowerCase()] = decodeWord(line.slice(i + 1).trim())
+    const j = line.indexOf(':')
+    if (j > 0) headers[line.slice(0, j).toLowerCase()] = decodeWord(line.slice(j + 1).trim())
   }
-  const body = rest.join('\r\n\r\n')
-  const ct = headers['content-type'] ?? ''
-  const decode = (part: string) => {
-    const [h, ...b] = part.split('\r\n\r\n')
-    const content = b.join('\r\n\r\n')
-    return /base64/i.test(h) ? Buffer.from(content.replace(/\s/g, ''), 'base64').toString('utf8') : content
-  }
+  return { headers, body }
+}
+
+/**
+ * parses the messages our client builds: headers, then one text part, multipart/alternative, or multipart/mixed
+ * (alternative + attachments, P1)
+ */
+export function parseMessage(data: string): { headers: Record<string, string>; text: string; html: string; attachments: ReceivedAttachment[] } {
+  const top = splitHead(data)
   let text = ''
   let html = ''
-  const m = /boundary="([^"]+)"/.exec(ct)
-  if (m) {
-    for (const part of body.split(`--${m[1]}`)) {
-      if (/text\/plain/i.test(part)) text = decode(part.replace(/^\r\n/, ''))
-      else if (/text\/html/i.test(part)) html = decode(part.replace(/^\r\n/, ''))
+  const attachments: ReceivedAttachment[] = []
+  const bytes = (h: Record<string, string>, b: string): Buffer => (/base64/i.test(h['content-transfer-encoding'] ?? '') ? Buffer.from(b.replace(/\s/g, ''), 'base64') : Buffer.from(b, 'utf8'))
+  const visit = (h: Record<string, string>, b: string, depth: number) => {
+    const ct = h['content-type'] ?? 'text/plain'
+    const m = /boundary="([^"]+)"/.exec(ct)
+    if (m && depth < 5) {
+      for (const raw of b.split(`--${m[1]}`).slice(1)) {
+        if (raw.startsWith('--')) break
+        const part = splitHead(raw.replace(/^\r\n/, ''))
+        visit(part.headers, part.body.replace(/\r\n$/, ''), depth + 1)
+      }
+      return
     }
-  } else {
-    text = /base64/i.test(headers['content-transfer-encoding'] ?? '') ? Buffer.from(body.replace(/\s/g, ''), 'base64').toString('utf8') : body
+    const disp = h['content-disposition'] ?? ''
+    if (/attachment/i.test(disp)) {
+      const fn = /filename\*=UTF-8''([^;]+)/i.exec(disp)?.[1]
+      attachments.push({ fileName: fn ? decodeURIComponent(fn) : (/filename="([^"]*)"/i.exec(disp)?.[1] ?? 'file'), contentType: ct.split(';')[0].trim(), content: bytes(h, b) })
+    } else if (/text\/html/i.test(ct)) html = bytes(h, b).toString('utf8')
+    else if (/text\/plain/i.test(ct)) text = bytes(h, b).toString('utf8')
   }
-  return { headers, text, html }
+  visit(top.headers, top.body, 0)
+  return { headers: top.headers, text, html, attachments }
 }
 
 export async function startFakeSmtp(o: FakeSmtpOptions = {}): Promise<FakeSmtp> {
@@ -122,7 +142,7 @@ export async function startFakeSmtp(o: FakeSmtpOptions = {}): Promise<FakeSmtp> 
           }
           const unstuffed = data.replace(/\r\n\.\./g, '\r\n.').replace(/^\.\./, '.')
           const p = parseMessage(unstuffed)
-          inbox.push({ from, to, data: unstuffed, subject: p.headers.subject ?? '', text: p.text, html: p.html, headers: p.headers, tls: isTls, authUser })
+          inbox.push({ from, to, data: unstuffed, subject: p.headers.subject ?? '', text: p.text, html: p.html, headers: p.headers, tls: isTls, authUser, attachments: p.attachments })
           for (const w of waiters.splice(0)) w()
           send('250 2.0.0 Ok: queued')
           from = ''

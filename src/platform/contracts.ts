@@ -407,6 +407,8 @@ export type DataOp = 'create' | 'read' | 'update' | 'delete'
 export type ConnectorKind =
   | 'postgres' | 'mysql' | 'files' | 'gsheets' | 'php-gateway'
   | 'local-csv' | 'rest' | 'sqlserver' | 'supabase' | 'firebase' | 'excel'
+  /** P1: action connectors (no tables): generic HTTP / REST APIs and email through the install's relay */
+  | 'http' | 'email'
 export interface ConnectionRef {
   id: string
   name: string
@@ -448,7 +450,7 @@ export interface AttachmentRef {
   url: string
 }
 
-export type SolutionComponentKind = 'app' | 'table' | 'role' | 'connection' | 'file'
+export type SolutionComponentKind = 'app' | 'table' | 'role' | 'connection' | 'file' | 'flow'
 export interface SolutionDef {
   id: string
   /** identifier-safe */

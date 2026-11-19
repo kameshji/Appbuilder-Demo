@@ -17,11 +17,12 @@ checked against the code for 0.5.0.
 | [Getting started](guide/getting-started.md) | Anyone installing it on a Windows PC (one installer script) | current |
 | [Signing in, two-step verification, forgotten password](guide/signing-in.md) | Everyone using the server | current |
 | [Your settings](guide/settings.md) | Everyone | current |
-| [Maker guide](guide/maker/README.md): [apps](guide/maker/apps.md), [the Studio](guide/maker/studio.md), [formulas](guide/maker/formulas.md), [data](guide/maker/data.md), [data model designer](guide/maker/data-model.md), [core data model](guide/maker/core-data-model.md), [security for makers](guide/maker/security-for-makers.md), [solutions](guide/maker/solutions.md) | People who build apps and tables | current |
-| [Admin guide](admin/README.md): installation (Windows and Linux installers, offline, HTTPS), operations (services, logs, health, diagnostics), users and roles, sign-in and identity, organisation, reference data, environments, connections, backup and restore, disaster recovery, upgrades, audit log, jobs | The person who runs it | current |
+| [Maker guide](guide/maker/README.md): [apps](guide/maker/apps.md), [the Studio](guide/maker/studio.md), [formulas](guide/maker/formulas.md), [data](guide/maker/data.md), [data model designer](guide/maker/data-model.md), [core data model](guide/maker/core-data-model.md), [security for makers](guide/maker/security-for-makers.md), [solutions](guide/maker/solutions.md), [connections and actions](guide/maker/connections-and-actions.md), [webhooks](guide/maker/webhooks.md), [scheduled reports](guide/maker/scheduled-reports.md), [notifications](guide/maker/notifications.md) | People who build apps and tables | current |
+| [Admin guide](admin/README.md): installation (Windows and Linux installers, offline, HTTPS), operations (services, logs, health, diagnostics), users and roles, sign-in and identity, organisation, reference data, environments, connections (and HTTP / Email actions, access, email limits), webhook security, backup and restore, disaster recovery, upgrades, audit log, jobs | The person who runs it | current |
 | [Security model](admin/security-model.md) and [hardening checklist](admin/hardening-checklist.md) | Admins and buyers evaluating it | current |
 | [UI components reference](reference/ui-components.md) | Makers (generated from the code) | current (generated) |
 | [Formula reference](reference/formulas.md) | Makers (generated from the code) | current (generated) |
+| [Connector actions reference](reference/connector-actions.md) | Makers (generated from the code) | current (generated) |
 | [Troubleshooting](guide/troubleshooting.md) | Everyone | current |
 
 ## For developers
@@ -41,7 +42,8 @@ checked against the code for 0.5.0.
 | [Core data model: system tables, the regarding rule, NextNumber](dev/core-data-model.md) | current |
 | [Backups: archive format, engine, restore](dev/backup.md) | current |
 | [Release process: building, signing, the installers and the updater](dev/release-process.md) | current |
-| [Writing a connector](dev/connectors.md) | current |
+| [Writing a connector](dev/connectors.md) (tables and actions: HTTP, Email, webhooks in) | current |
+| [Notification delivery: channels, email, digests, unsubscribe](dev/notifications-delivery.md) | current |
 | [Testing](dev/testing.md) | current |
 | [Decision log](decisions.md) | current |
 | [Changelog](../CHANGELOG.md) | current |

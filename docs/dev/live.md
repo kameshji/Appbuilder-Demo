@@ -163,7 +163,8 @@ CPU 44 % of one core, memory 185 MB before and 198 MB at most.
 - Row changes reach the hub only through the outbox (`bridgeOutbox` in `app.ts`); a new write path that writes outbox rows
   is pushed automatically. A write that bypasses the outbox calls `emitTableChange()`.
 - `services.notifications.notify({ userIds, teamIds }, { kind, title, body?, link?, environmentId?, source, from? })`
-  stores and pushes notifications (package G's NotifyUser uses kind `event`). `teamIds` (team ids or codes) resolve to the
+  stores and pushes notifications (since P1 also by email, as digests, with quiet hours: the delivery module decides the
+  channels per kind and recipient, see [notifications-delivery.md](notifications-delivery.md)) (package G's NotifyUser uses kind `event`). `teamIds` (team ids or codes) resolve to the
   members of teams of that environment or install-wide teams (`app.ts` registers the resolver over `ab.teams` and
   `ab.team_members`); a team notification needs `environmentId`.
 - The chat module gets the connection through `ChatPanel`'s `live` prop or `useChatLive()` (`src/chat/live.ts`).

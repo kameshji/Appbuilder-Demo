@@ -90,6 +90,15 @@ class RateLimiter {
   }
 }
 
+/**
+ * P1-D: channels per kind (notifications-delivery.ts). plan() decides whether the in-app row is stored; deliver() logs
+ * the in-app outcome and sends or queues the email (immediate, digest, held for quiet hours).
+ */
+export interface NotificationDelivery {
+  plan(user: { id: string; email: string; name: string }, kind: string, prefs: NotificationSettings): Promise<{ inApp: boolean; inAppReason: string; email: 'off' | 'immediate' | 'digest'; emailReason: string }>
+  deliver(user: { id: string; email: string; name: string }, item: NotificationItem, plan: { inApp: boolean; inAppReason: string; email: 'off' | 'immediate' | 'digest'; emailReason: string }, prefs: NotificationSettings): Promise<void>
+}
+
 export interface NotificationServiceDeps {
   services: CoreServices
   /** pushes to a user's live sockets (the hub); optional */
@@ -99,11 +108,14 @@ export interface NotificationServiceDeps {
 export function createNotificationService(deps: NotificationServiceDeps): NotificationService & {
   setPush(fn: (userId: string, ev: UserEvent) => void): void
   setSettingsListener(fn: (userId: string, s: NotificationSettings) => void): void
+  /** P1-D: email and other channels (notifications-delivery.ts) */
+  setDelivery(d: NotificationDelivery): void
 } {
   const s = deps.services
   let push = deps.push
   let onSettings: ((userId: string, st: NotificationSettings) => void) | null = null
   let teamResolver: ((env: string, teamIds: string[]) => Promise<string[]>) | null = null
+  let delivery: NotificationDelivery | null = null
 
   // the tables are part of the install schema (notifications-ddl.ts, created by MetaStore.migrate on every start)
   const db = async (): Promise<SqlDb> => {
@@ -148,15 +160,26 @@ export function createNotificationService(deps: NotificationServiceDeps): Notifi
         skipped.push(userId)
         continue
       }
-      // a kind the user switched off is not stored for them at all
+      // a kind the user switched off (in the app) is not stored for them at all; P1-D: email may still go (channels)
       const prefs = await settings(userId)
-      if (prefs.kinds[kind] === false) {
-        skipped.push(userId)
-        continue
-      }
+      const plan = delivery
+        ? await delivery.plan(u, kind, prefs)
+        : { inApp: prefs.kinds[kind] !== false, inAppReason: '', email: 'off' as const, emailReason: '' }
       const item: NotificationItem = {
         id: s.uid('ntf'), kind, title, body, link, environmentId: input.environmentId ?? null, createdOn: now.toISOString(), readOn: null, source,
         ...(input.from?.name ? { from: input.from.name } : {}),
+      }
+      if (delivery) {
+        try {
+          await delivery.deliver(u, item, plan, prefs)
+        } catch (e) {
+          log('warn', `notification delivery failed: ${errText(e)}`)
+        }
+      }
+      if (!plan.inApp) {
+        if (plan.email === 'off') skipped.push(userId)
+        else delivered.push(userId)
+        continue
       }
       await d.exec(
         `INSERT INTO ${A('notifications')} (id, user_id, environment_id, kind, title, body, link, source, sender_id, sender_name, created_on) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
@@ -245,6 +268,9 @@ export function createNotificationService(deps: NotificationServiceDeps): Notifi
     },
     setSettingsListener(fn) {
       onSettings = fn
+    },
+    setDelivery(dl) {
+      delivery = dl
     },
   }
 }

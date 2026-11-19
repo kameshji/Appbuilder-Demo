@@ -297,10 +297,79 @@ PostgreSQL connections.
 | Tab "T" has no id column, so rows cannot be located. | Add an `id` column with unique values. |
 | Tab "T" has no header row, so rows cannot be added. | Put column names in row 1. |
 
+## HTTP and Email connections (actions)
+
+Since P1 a connection can offer **actions** for flows and table events instead of tables: **HTTP (REST API)** calls a web
+service, **Email** sends mail through the install's relay. Administrators create them in **Connections > New
+connection** (makers cannot). Makers then define and test actions on the connection's **Details > Actions** tab
+([maker guide](../guide/maker/connections-and-actions.md)).
+
+![A new HTTP connection](../images/actions-http-connection.png)
+
+HTTP settings: the base URL, the **allowed hosts** (the only hosts the connection may ever call, also after redirects;
+default the base URL's host; `*` is refused, so a connection is never an open proxy), the authentication (none, API key in
+a header or the query, basic, bearer token, OAuth 2.0 client credentials), the limits (calls a minute, calls at once,
+time limit) and two switches:
+
+- **Allow private network addresses**: needed for APIs on this computer or the company network (localhost, 10.x,
+  172.16-31.x, 192.168.x). Off by default, so a public host name that suddenly resolves to an internal address is refused.
+  Cloud metadata addresses (169.254.x) are refused always. `APPBUILDER_OUTBOUND_PRIVATE=deny` refuses private addresses
+  for every connection whatever the switch says.
+- **Verify TLS certificates**: on by default; turn it off only for an internal service with a self-signed certificate.
+
+Secrets (API key, password, token, client secret, secret headers) are encrypted on the server and never shown again,
+never returned by any API, and replaced by `[hidden]` if an API echoes them back. Typing a new secret replaces all secret
+parts of the connection. Signing in as each user (OAuth authorization code) is not supported yet.
+
+### Connection access
+
+Each connection has its own **Access** tab (Details > Access):
+
+| Level | Can |
+| --- | --- |
+| Use | See and test the actions, attach the connection to flows and table events, see their own calls |
+| Manage | Also define custom actions, import OpenAPI documents, see everyone's calls, resume calls after failures |
+| Administrator | Everything, including the connection's settings and the grants |
+
+Nobody has access by default except administrators. Grant "use" to a role or a person. Attaching is checked when a maker
+saves a flow or event; after that the flow or event runs with the connection whoever triggers it (that is what attaching
+means). Every grant change is audited (`connection.access`).
+
+![The Access tab](../images/actions-access.png)
+
+### Activity
+
+**Details > Activity** lists every call: when, which action, who (or which flow or event), the outcome and the duration;
+never inputs, outputs or secrets. Kept 90 days (the "Connector activity retention" schedule in Admin console > Jobs).
+After 5 failures in a row a connection pauses its calls for 30 seconds (up to 5 minutes); the Actions tab shows
+"Circuit open" and managers can resume calls.
+
+![Activity](../images/actions-activity.png)
+
+### Email limits and the suppression list
+
+The Email connector and notification and report emails go through the relay of Admin console > Email. Limits per
+environment, counting recipients over all Email connections: `APPBUILDER_EMAIL_PER_HOUR` (default 200) and
+`APPBUILDER_EMAIL_PER_DAY` (default 1000); a connection may set lower ones. Above them a flow's email fails with a
+retryable "limit" error.
+
+**Admin console > Email** (install administrators) also has the **notification defaults** (per kind: in the app, email
+right away or as a digest, and a lock so users cannot change it; for example approvals always by email), the logo of
+notification emails, the number of immediate emails per person and hour, the **suppression list** (addresses that get no
+email from flows, notifications or reports; password resets and invitations still go out) and every person's delivery log.
+Bounces are **not** detected automatically: Appbuilder does not receive mail, so add addresses that bounce by hand.
+
+### Webhooks
+
+Flows can be started by other systems through a signed web address: see [webhook security](webhook-security.md).
+
 ## Not supported yet
 
 - Changing the system database from the portal (an administrator can call `POST /api/v1/setup/database` from this PC).
 - Other databases (PostgreSQL, SQL Server, Oracle) or other spreadsheet services.
 - OAuth sign-in to Google; only service accounts work.
 - Syncing data files between PCs.
-- Per-connection access control beyond "administrators manage, makers browse, link and test".
+- Per-connection access for table connections beyond "administrators manage, makers browse, link and test" (action
+  connections have Use and Manage grants, above).
+- Actions on database connections (stored procedures or SQL queries written by makers): not in this phase.
+- OAuth 2.0 sign-in per user (authorization code) for HTTP connections; client credentials only.

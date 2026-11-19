@@ -8,6 +8,7 @@
  *     and confirmed by its token; one transaction (schema changes included), with a pre-upgrade backup.snapshot() first.
  * Old packages without a solution id, and `asCopy`, keep the old behaviour: new instances (solutions.ts).
  */
+import { PACKAGE_CONNECTORS, importConnectionActions } from '../../core/actions/solution-parts.ts'
 import { SYSTEM_TABLES } from '../../../src/platform/system-tables.ts'
 import { prepareViewDef, relationshipPlanLines, restorePkgRelationships } from '../../core/model/packages.ts'
 import { createSummary, fillDateDimension, setUniqueTogether } from '../../core/model/engine.ts'
@@ -35,13 +36,14 @@ import { backfill, checkLookupValues, columnValues, dropColumnFromRoles } from '
 import { forgetApp } from './apps.ts'
 import { assertAdminRemains } from './security.ts'
 import { installPkgFiles, readPkgFiles } from './solutions.ts'
+import { afterApplyFlows, applyFlows, planFlows, readPkgFlows, type FlowPlanOps, type PkgFlow } from '../../core/flows/alm.ts'
 import type { PkgFile } from './solutions.ts'
 
 /* ------------------------------------------------------------------ package */
 
 const PKG_SCOPES: AccessScope[] = ['own', 'team', 'manager', 'managerTree', 'department', 'departmentTree', 'all']
 interface PkgRole { id?: string; name: string; description?: string; privileges: TablePrivilege[]; apps: string[] | 'all'; isMaker?: boolean; isAdmin?: boolean }
-interface PkgConn { id?: string; name: string; connector: ConnectorKind; settings: Record<string, string> }
+interface PkgConn { id?: string; name: string; connector: ConnectorKind; settings: Record<string, string>; actions?: unknown[] }
 export interface SolutionPkg {
   head: { id: string; name: string; displayName: string; publisher?: string; version: string; description?: string }
   apps: PkgApp[]
@@ -49,6 +51,8 @@ export interface SolutionPkg {
   roles: PkgRole[]
   connections: PkgConn[]
   files: PkgFile[]
+  /** P1-A flows; undefined: an older package without a flows list (the solution's flows are left alone) */
+  flows?: PkgFlow[]
   /** sha256 of the package content (without exportedOn) */
   hash: string
 }
@@ -89,10 +93,10 @@ export function readSolutionPkg(text: unknown, s: Services): SolutionPkg | null 
     }
   })
   const connections: PkgConn[] = listOf(doc.connections, 'connections').map((c) => {
-    if (!isObj(c) || typeof c.name !== 'string' || !['postgres', 'mysql', 'gsheets'].includes(String(c.connector))) throw invalid('A connection in the package is malformed.')
+    if (!isObj(c) || typeof c.name !== 'string' || !PACKAGE_CONNECTORS.includes(String(c.connector))) throw invalid('A connection in the package is malformed.')
     const settings: Record<string, string> = {}
     for (const [k, v] of Object.entries(isObj(c.settings) ? c.settings : {})) if (typeof v === 'string') settings[k] = v
-    return { ...(typeof c.id === 'string' && ID.test(c.id) ? { id: c.id } : {}), name: c.name, connector: c.connector as ConnectorKind, settings }
+    return { ...(typeof c.id === 'string' && ID.test(c.id) ? { id: c.id } : {}), name: c.name, connector: c.connector as ConnectorKind, settings, ...(Array.isArray(c.actions) ? { actions: c.actions } : {}) }
   })
   return {
     head: {
@@ -103,7 +107,7 @@ export function readSolutionPkg(text: unknown, s: Services): SolutionPkg | null 
       version: typeof head.version === 'string' && VERSION_RE.test(head.version) ? head.version : '1.0.0',
       ...(typeof head.description === 'string' && head.description ? { description: head.description } : {}),
     },
-    apps, tables, roles, connections, files: readPkgFiles(doc.files),
+    apps, tables, roles, connections, files: readPkgFiles(doc.files), flows: readPkgFlows(doc.flows),
     // the content, not the text: two exports of the same solution differ only in exportedOn
     hash: createHash('sha256').update(JSON.stringify({ ...doc, exportedOn: null })).digest('hex'),
   }
@@ -170,6 +174,8 @@ interface Ops {
   eventOps: { tableId: string; upsert: PkgEvent[]; remove: TableEventDef[] }[]
   existingSolution: SolutionDef | null
   canAdmin: boolean
+  /** P1-A: flows to create, upgrade, remove and the connection mapping */
+  flowOps?: FlowPlanOps
 }
 
 export interface PlanResult { plan: SolutionPlan; ops: Ops }
@@ -182,7 +188,9 @@ function mapRole(r: PkgRole, ops: Ops): { privileges: TablePrivilege[]; apps: st
 }
 
 /** computes the plan in the current environment (nothing is changed) */
-export async function planSolution(s: Services, user: UserContext, pkg: SolutionPkg): Promise<PlanResult> {
+export interface FlowImportOptions { connectionMap?: Record<string, string>; enableFlows?: boolean | string[] }
+
+export async function planSolution(s: Services, user: UserContext, pkg: SolutionPkg, flowOpts: FlowImportOptions = {}): Promise<PlanResult> {
   const items: PlanItem[] = []
   const problems: string[] = []
   const warnings: string[] = []
@@ -421,6 +429,14 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
     items.push({ kind: 'file', id: f.oldId, name: f.fileName, change: 'new' })
   }
 
+  // flows (P1-A): definitions, connection references mapped to this environment, service-account run-as
+  const fp = await planFlows(s, user, pkg.flows, old.filter((x) => x.kind === 'flow').map((x) => x.id), flowOpts)
+  items.push(...fp.items)
+  problems.push(...fp.problems)
+  warnings.push(...fp.warnings)
+  if (fp.matched) matched = true
+  ops.flowOps = fp.ops
+
   const planMode: SolutionPlan['mode'] = matched ? 'upgrade' : 'install'
   if (planMode === 'upgrade' && !canAdmin) problems.push('Upgrading a solution in place changes existing apps, tables and roles: only administrators of this environment can do it.')
   const env = s.environments ? await s.environments.get(s.environment().id) : null
@@ -435,10 +451,12 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
       : { available: !!backup?.available(), message: 'Nothing here is changed: everything in the package is new.' },
     token: '',
     ...(systemEvents.length ? { systemEvents } : {}),
+    ...(fp.serviceFlows.length ? { serviceFlows: fp.serviceFlows } : {}),
+    ...(fp.connections.length ? { flowConnections: fp.connections } : {}),
   }
   // ids generated for new components (package entries without one) differ between two plans: not part of the token
   const fingerprint = items.map((i) => ({ ...i, id: i.change === 'new' ? '' : i.id }))
-  plan.token = createHash('sha256').update(JSON.stringify({ env: plan.target.id, pkg: pkg.hash, mode: plan.mode, items: fingerprint, problems })).digest('hex').slice(0, 32)
+  plan.token = createHash('sha256').update(JSON.stringify({ env: plan.target.id, pkg: pkg.hash, mode: plan.mode, items: fingerprint, problems, flows: fp.connections.map((c) => [c.from, c.to]), enable: flowOpts.enableFlows ?? null })).digest('hex').slice(0, 32)
   return { plan, ops }
 }
 
@@ -705,6 +723,8 @@ export async function applySolution(s: Services, ctx: Ctx, pkg: SolutionPkg, res
           const hit = c.id ? ops.connMap.get(c.id) : undefined
           if (hit) {
             components.push({ kind: 'connection', id: hit })
+            // P1-D: the package's custom actions (design, never secrets) are created or replaced
+            await importConnectionActions(s, hit, c.actions, ctx.user?.user.id ?? null)
             continue
           }
           if (!ops.newConns.includes(c)) continue
@@ -716,8 +736,19 @@ export async function applySolution(s: Services, ctx: Ctx, pkg: SolutionPkg, res
           await s.meta.connections.upsert(rec)
           existingConns.push(rec)
           components.push({ kind: 'connection', id })
+          await importConnectionActions(s, id, c.actions, ctx.user?.user.id ?? null)
         }
       }
+
+      // flows (P1-A), after tables and roles: validated against this environment, references and run grants mapped
+      if (ops.flowOps) {
+        const roleMap = new Map<string, string>()
+        for (const n of ops.newRoles) if (n.role.id) roleMap.set(n.role.id, n.id)
+        for (const c of ops.changedRoles) if (c.role.id) roleMap.set(c.role.id, c.existing.id)
+        await applyFlows(s, u, ops.flowOps, pkg.head.id, roleMap)
+      }
+      if (pkg.flows) for (const f of pkg.flows) components.push({ kind: 'flow', id: f.id })
+      else for (const c of ops.existingSolution?.components ?? []) if (c.kind === 'flow') components.push(c)
 
       const sols = await s.meta.solutions.list()
       const prev = ops.existingSolution
@@ -745,6 +776,7 @@ export async function applySolution(s: Services, ctx: Ctx, pkg: SolutionPkg, res
     s.security.invalidate()
     throw e
   }
+  if (ops.flowOps?.remove.length) await afterApplyFlows(s, ops.flowOps.remove, u.user.id).catch(() => {})
   // attachment files are not in the database: removed after the commit
   for (const t of removedTables) {
     if ('internals' in s.data) await removeTableAttachments(s as CoreServices, t.id).catch(() => 0)
@@ -768,12 +800,13 @@ function dedupe(list: SolutionDef['components']): SolutionDef['components'] {
  * The import route for a package with stable ids: plans in the current environment; an upgrade needs `confirm` equal
  * to the plan's token (409 otherwise: the client shows the plan first); problems refuse it (422).
  */
-export async function importStable(s: Services, ctx: Ctx, pkg: SolutionPkg, o: { confirm?: unknown; filesAs: 'database' | 'file'; proceedWithoutBackup?: boolean }): Promise<SolutionImportResult> {
-  const res = await planSolution(s, me(ctx), pkg)
+export async function importStable(s: Services, ctx: Ctx, pkg: SolutionPkg, o: { confirm?: unknown; filesAs: 'database' | 'file'; proceedWithoutBackup?: boolean } & FlowImportOptions): Promise<SolutionImportResult> {
+  const res = await planSolution(s, me(ctx), pkg, { connectionMap: o.connectionMap, enableFlows: o.enableFlows })
   if (res.plan.problems.length) throw invalid(`The solution cannot be imported here: ${res.plan.problems.join(' ')}`)
   // an upgrade, and any import with events that run as the system, needs the administrator's explicit confirmation
-  if ((res.plan.mode === 'upgrade' || res.plan.systemEvents?.length) && o.confirm !== res.plan.token) {
+  if ((res.plan.mode === 'upgrade' || res.plan.systemEvents?.length || res.plan.serviceFlows?.length) && o.confirm !== res.plan.token) {
     if (res.plan.mode !== 'upgrade' && o.confirm === undefined) {
+      if (!res.plan.systemEvents?.length) throw conflict(`"${pkg.head.displayName}" has flows that run as a service account (${res.plan.serviceFlows!.join(', ')}): review the plan and confirm it.`)
       throw conflict(`"${pkg.head.displayName}" has table events that run as the system (${res.plan.systemEvents!.join(', ')}): review the plan and confirm it.`)
     }
     throw conflict(o.confirm === undefined

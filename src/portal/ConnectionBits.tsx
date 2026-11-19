@@ -1,4 +1,4 @@
-import { Cable, Database, FileSpreadsheet, FileText, Flame, Globe, HardDrive, Server, Sheet, Zap, type LucideIcon } from 'lucide-react'
+import { Cable, Database, FileSpreadsheet, FileText, Flame, Globe, HardDrive, Mail, Server, Sheet, Webhook, Zap, type LucideIcon } from 'lucide-react'
 import type { ConnectionRef, ConnectorKind } from '@/platform'
 import { Badge } from '@/components/ui/badge'
 
@@ -14,6 +14,8 @@ export const CONNECTOR_INFO: Record<ConnectorKind, { label: string; icon: Lucide
   supabase: { label: 'Supabase', icon: Zap },
   firebase: { label: 'Firebase', icon: Flame },
   excel: { label: 'Excel file', icon: FileSpreadsheet },
+  http: { label: 'HTTP API', icon: Webhook },
+  email: { label: 'Email', icon: Mail },
 }
 export const connectorInfo = (k: ConnectorKind) => CONNECTOR_INFO[k] ?? { label: String(k), icon: Cable }
 

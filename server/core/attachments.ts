@@ -64,7 +64,7 @@ function withRowLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
 }
 
 /** the attachment's table + row when the user may see it (row readable, column visible, cell references it) */
-async function visibleAttachment(services: CoreServices, user: UserContext, a: AttachmentRecord): Promise<{ table: TableDef; row: RawRow } | null> {
+export async function visibleAttachment(services: CoreServices, user: UserContext, a: AttachmentRecord): Promise<{ table: TableDef; row: RawRow } | null> {
   const table = await services.meta.tables.get(a.tableId)
   if (!table) return null
   if (!attachmentColumn(table, a.column) || user.columnAccess(table, a.column) === 'none') return null

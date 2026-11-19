@@ -26,7 +26,7 @@ and `regarding` (the table has the polymorphic pair). Built-in columns are `lock
 | collaboration | Activities, Comments, Mentions, Follows, Tags, Tag links | Shares (`ab_shares`), Notifications (`ab.notifications`, own rows) | |
 | files | Documents, Document versions, Attachment links | | |
 | communication | | | Channels, Channel members, Messages, Message reactions |
-| logging | | Audit entries, Sign-in log (`ab.signin_log` of package I when it exists, else an empty view), Job runs, Event runs | Flow runs |
+| logging | | Audit entries, Sign-in log (`ab.signin_log` of package I when it exists, else an empty view), Job runs, Event runs, Flow runs (P1: a view over `ab_flow_runs`, see [flows.md](flows.md)) | |
 | reference | Currencies, Units of measure, Countries, States, Calendars, Holidays, Number sequences, Settings | | |
 
 Projections are `CREATE VIEW` in `env_<id>` over `ab.*` and the environment's metadata tables; they select only safe
@@ -160,6 +160,6 @@ by record (`Comments(record)`) or by user (`MyTasks()`), which use the indexes a
 
 ## Not done (later packages)
 
-Chat (Channels / Messages are placeholders), flow runs (placeholder), Documents UI beyond the timeline (folders,
+Chat (Channels / Messages are placeholders), Documents UI beyond the timeline (folders,
 check-out), editing a comment from the timeline, reminders (`ReminderOn` is stored, nothing fires), currency rates
 from outside, a template gallery button for the business model.

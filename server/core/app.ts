@@ -30,6 +30,8 @@ import { createNotificationService, notificationRoutes } from './notifications.t
 import { identityRoutes } from './identity/routes.ts'
 import { diagnosticsRoutes } from './diagnostics/routes.ts'
 import { updateRoutes } from './update/routes.ts'
+import { wireActions } from './actions/wiring.ts'
+import { flowRoutes } from './flows/routes.ts'
 
 export interface AppServer {
   services: CoreServices
@@ -109,6 +111,10 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   updateRoutes(router, services)
   // table events' NotifyUser goes to the in-app notifications when they are available
   services.kernel.events.setNotificationSink(notificationSink(services))
+  // P1-D: connector actions (services.actions), webhooks in, notification delivery by email, scheduled reports
+  wireActions(router, services, notifications)
+  // P1-A: flows (definitions, runs, manual runs, callbacks)
+  flowRoutes(router, services)
   if (opts.boot !== false) {
     await services.boot()
     if (services.ready()) {

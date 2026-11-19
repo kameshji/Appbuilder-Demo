@@ -352,6 +352,18 @@ mail relay live there); set `APPBUILDER_OUTBOUND_PRIVATE=deny` to refuse them to
 address it checked; the database drivers resolve the name again when they connect, so a DNS answer that changes in
 between is not caught for database connections. Connection hosts can only be set by administrators.
 
+**HTTP connections (P1)** are stricter, because flows and events call them with data from users: every request and every
+redirect must go to a host on the connection's allow-list (required; `*` refused), loopback and private addresses need
+the connection's "allow private network addresses" switch, a host name is refused when any address it resolves to is
+refused, and the resolved address is pinned and connected to directly, so DNS rebinding between the check and the
+connection is not possible. Redirects from https to http are refused, sensitive headers are dropped when a redirect
+changes host, responses are size- and time-limited, TLS certificates are verified unless the administrator turns that off
+for the connection. Secrets of a connection never leave the server and are replaced by `[hidden]` if an API echoes them.
+Who may use a connection is a per-connection grant ("use", "manage"); see [connections](connections.md#connection-access).
+Inbound webhooks are verified by a path token and an HMAC signature with replay protection ([webhook
+security](webhook-security.md)). Scheduled reports compute every recipient's data with that recipient's own access unless
+an administrator chooses a service account (audited).
+
 ## Attachments
 
 (`server/core/attachments.ts`, `attachment-store.ts`)
@@ -416,6 +428,10 @@ beyond their role. Web pages the user visits are not trusted.
 | A rule or token that does not resolve opening rows (no department, a deleted team, a removed column) | Fail closed: an unresolved value never matches; a rule that no longer fits the table makes the role grant nothing |
 | An environment administrator reaching install-wide work (backups, mail, install log retention) through schedules | Custom schedules only for job types marked safe; schedules of install-wide jobs need an install administrator |
 | An administrator account used to reach cloud metadata or link-local services | Outbound policy: link-local, metadata, unspecified and multicast targets refused for connections and SMTP |
+| A maker turning an HTTP connection into an open proxy or an SSRF tool (internal addresses, redirects, DNS rebinding) | Required host allow-list on every hop, private networks only by the administrator's switch, pinned DNS answers, https->http refused (P1) |
+| Connection secrets leaking through action outputs, errors, logs or the API | Secrets sealed, never returned; every secret value redacted from outputs and errors; activity rows keep no payloads (P1) |
+| A maker using a connection they were not given, or a user getting report data they cannot read | Per-connection "use" grants checked when attaching; reports run as each recipient (P1) |
+| Forged or replayed webhook calls | Path token (hash stored), HMAC-SHA256 signature with timestamp tolerance, replay table, rate and size limits (P1) |
 | A crafted backup archive (path traversal, links, oversized members) | Only regular files are read, paths checked, members read into memory capped, every file checked against the manifest's SHA-256 |
 | A zip bomb uploaded as a workbook (data file, model import) | The ZIP directory is checked first: at most 256 MB unpacked, 200x compression, 10,000 parts, no ZIP64 |
 | Hostile DBML text freezing the designer | Lines over 4,000 characters skipped, texts over 2 MB refused |

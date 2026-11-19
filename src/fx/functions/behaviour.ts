@@ -210,6 +210,20 @@ export const behaviourFns: FnDef[] = [
     c.host!.sendNotification(who, title, body, link)
     return null
   }, 'behaviour'),
+  def('RunFlow', 'RunFlow(flow, inputs [, options])', 'Starts a run of a flow that people and apps may start (server mode) and returns its run id. inputs is a record of the flow\'s inputs, like {Order: ThisItem.id}. options: {Wait: true, Timeout: 10, Result: "Answer"} puts the flow\'s response (its Respond step) in the global variable Answer (default FlowResult) when it arrives. You need the permission to run the flow.', 2, 3, (c) => {
+    const name = c.text(0).trim()
+    if (!name) return c.fail(0, 'Name the flow to run')
+    const inputs = c.value(1)
+    if (inputs !== null && !isRecord(inputs)) return c.fail(1, 'The inputs must be a record, like {Qty: 2}')
+    const o = c.argc > 2 ? c.value(2) : null
+    if (o !== null && !isRecord(o)) return c.fail(2, 'The options must be a record, like {Wait: true}')
+    const opt = (o ?? {}) as FxRecord
+    const wait = opt.Wait === true
+    const timeout = typeof opt.Timeout === 'number' ? Math.max(1, Math.min(30, opt.Timeout)) : 10
+    const result = typeof opt.Result === 'string' && opt.Result.trim() ? opt.Result.trim() : 'FlowResult'
+    if (!c.host!.runFlow) return c.fail(null, 'Flows run on the server: RunFlow is not available here (demo mode).', true)
+    return c.host!.runFlow(name, (inputs ?? {}) as FxRecord, { wait, timeoutSeconds: timeout, result })
+  }, 'behaviour'),
   def('Navigate', 'Navigate(Screen)', 'Goes to another screen.', 1, 2, (c) => {
     c.host!.navigate(c.nameOf(0))
     return null

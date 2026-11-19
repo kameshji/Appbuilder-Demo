@@ -7,7 +7,7 @@
  * Phases are the build phases of docs/plan/master-plan.md (section 5).
  */
 import {
-  Activity, Archive, AtSign, Bot, CheckSquare, ClipboardCheck, FileText, Folder, Globe, LayoutDashboard, LayoutTemplate, Mail, MessagesSquare, Network,
+  Activity, Archive, AtSign, Bot, CalendarClock, CheckSquare, ClipboardCheck, FileText, Folder, Globe, LayoutDashboard, LayoutTemplate, Mail, MessagesSquare, Network,
   ScrollText, ShieldHalf, StickyNote, Workflow, type LucideIcon,
 } from 'lucide-react'
 import type { Route } from '@/router'
@@ -60,11 +60,11 @@ export const MODULES: readonly ModuleEntry[] = [
     ],
   },
   {
-    key: 'flows', label: 'Flows', icon: Workflow, modes: ['dev'], status: 'soon', phase: 'P1', need: 'maker',
+    key: 'flows', label: 'Flows', icon: Workflow, modes: ['dev'], status: 'live', route: { page: 'flows' }, phase: 'P1', need: 'maker',
     tagline: 'Automate work when data changes, on a schedule or at a button press.',
     details: [
-      'A visual designer with triggers (table event, schedule, button, webhook) and actions (data, condition, loop, delay, approval, notify, connector).',
-      'Every run is recorded with its inputs and errors; flows act with the same security as an app.',
+      'Triggers (a row changes, a schedule, a button in an app, a web request) and steps (data, condition, loop, delay, approval, notify, email, HTTP, connector actions, child flows). Today a JSON editor; the visual designer follows.',
+      'Every run is recorded with its inputs, outputs and errors, live; flows act with the rights of their owner, of the person who starts them, or of a service account an administrator chose.',
     ],
   },
   {
@@ -81,6 +81,14 @@ export const MODULES: readonly ModuleEntry[] = [
     details: [
       'Build dashboards from chart UI components on top of server-side aggregates; share them as pages or chat cards.',
       'An OData feed for people who prefer Excel or Power BI.',
+    ],
+  },
+  {
+    key: 'reports', label: 'Scheduled reports', icon: CalendarClock, modes: ['dev'], status: 'live', route: { page: 'reports' }, phase: 'P1',
+    tagline: 'A table or a total, emailed on a schedule.',
+    details: [
+      'Build the query with a few clicks (columns, filters, sort, totals) or a formula; choose a time and the recipients.',
+      'Each person gets an email with the first rows and a CSV file of what their own access allows.',
     ],
   },
   {
@@ -155,6 +163,11 @@ export const MODULES: readonly ModuleEntry[] = [
     key: 'mentions', label: 'Mentions', icon: AtSign, modes: ['user'], status: 'live', route: { page: 'u', id: 'mentions' }, phase: 'P0',
     tagline: 'Comments where someone mentioned you.',
     details: ['Every @mention of you in a comment, newest first, with a link back to where it was written.'],
+  },
+  {
+    key: 'myreports', label: 'Scheduled reports', icon: CalendarClock, modes: ['user'], status: 'live', route: { page: 'u', id: 'reports' }, phase: 'P1',
+    tagline: 'Reports emailed to you on a schedule.',
+    details: ['See and send the reports you receive, unsubscribe from them, or subscribe yourself to a table you can read.'],
   },
   {
     key: 'notes', label: 'Notes', icon: StickyNote, modes: ['user'], status: 'soon', phase: 'P3',

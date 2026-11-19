@@ -19,7 +19,7 @@ import type { DataService, MetaStore, NotificationService, RawRow, SqlDb, UserCo
 import type { TableDef, UserDef } from '../../src/platform/contracts.ts'
 import type { Condition } from '../../src/platform/http.ts'
 import {
-  REGARDING, SYS, fyStartMonth, formatSequenceNumber, isSystemTableId, mentionedUserIds, richTextToPlain, sanitizeRichText, sequencePeriod,
+  REGARDING, SYS, SYSTEM_TABLES, fyStartMonth, formatSequenceNumber, isSystemTableId, mentionedUserIds, richTextToPlain, sanitizeRichText, sequencePeriod,
 } from '../../src/platform/system-tables.ts'
 import { currentEnvironment } from './env-context.ts'
 import { errText } from './util.ts'
@@ -31,9 +31,16 @@ export const COLLAB_NOTIFY_JOB = 'collab.notify'
 export const COLLAB_SWEEP_JOB = 'collab.orphan-sweep'
 
 /** the regarding tables whose rows go with the record they are about */
-const CASCADE = [SYS.activities, SYS.comments, SYS.mentions, SYS.follows, SYS.tagLinks, SYS.attachmentLinks]
+const CASCADE_ALL = [SYS.activities, SYS.comments, SYS.mentions, SYS.follows, SYS.tagLinks, SYS.attachmentLinks]
 /** the regarding tables whose rows stay (they lose the link) */
-const DETACH = [SYS.documents, SYS.channels, SYS.messages, SYS.flowRuns]
+const DETACH_ALL = [SYS.documents, SYS.channels, SYS.messages, SYS.flowRuns]
+/**
+ * Only real tables are cleaned up: a projection (a view, such as Flow runs over the flow run history since P1) is never a
+ * target of DELETE or UPDATE here; its rows keep the id of the record they were about.
+ */
+const writable = (id: string): boolean => SYSTEM_TABLES.find((t) => t.id === id)?.kind !== 'projection'
+const DETACH = DETACH_ALL.filter(writable)
+const CASCADE = CASCADE_ALL.filter(writable)
 
 export interface CollabDeps {
   db(): SqlDb | null

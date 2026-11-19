@@ -30,6 +30,7 @@ import { fetchAuditPage } from './serverApi'
 import { UsersPanel } from './Users'
 import { DepartmentsSection, OrgChartSection, TeamsSection } from './Organisation'
 import { EmailSection, ServiceAccountsSection, SignInSecuritySection } from './AdminIdentity'
+import { NotificationAdmin } from './AdminNotifications'
 
 export type AdminSection = 'environments' | 'users' | 'security' | 'email' | 'service-accounts' | 'departments' | 'teams' | 'orgchart' | 'licences' | 'audit' | 'jobs' | 'events' | 'backups' | 'logs' | 'usage' | 'updates'
 interface SectionDef { key: AdminSection; label: string; icon: LucideIcon; soon?: boolean }
@@ -84,7 +85,7 @@ export function AdminConsole({ section }: { section?: string }) {
           {current === 'environments' && <EnvironmentsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'users' && <UsersPanel />}
           {current === 'security' && <SignInSecuritySection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
-          {current === 'email' && <EmailSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
+          {current === 'email' && <><EmailSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} /><NotificationAdmin /></>}
           {current === 'service-accounts' && <ServiceAccountsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'departments' && <DepartmentsSection />}
           {current === 'teams' && <TeamsSection />}

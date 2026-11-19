@@ -107,7 +107,7 @@ export interface NotificationSink {
 }
 export interface ConnectorActionSink {
   /** placeholder until action connectors arrive: the default records the call in the run log only */
-  invoke(c: { environmentId: string; connection: string; action: string; input: unknown; runAs: UserContext | null; idempotencyKey: string }): Promise<unknown>
+  invoke(c: { environmentId: string; connection: string; action: string; input: unknown; runAs: UserContext | null; idempotencyKey: string; /** P1-D */ attached?: string[]; eventId?: string; correlationId?: string }): Promise<unknown>
 }
 
 export interface EventsDeps {
@@ -231,6 +231,8 @@ export function normalizeEvent(input: TableEventInput, base: TableEventDef | nul
   if (!Number.isInteger(order) || order < -100000 || order > 100000) throw invalid('order must be a whole number.', 'order')
   const runAs = input.runAs ?? base?.runAs ?? 'caller'
   if (runAs !== 'caller' && runAs !== 'system') throw invalid('runAs must be "caller" or "system".', 'runAs')
+  // P1-D: connections attached for RunConnector (after-events only; external calls never run inside the write)
+  const connections = [...new Set(input.connections ?? base?.connections ?? [])].filter((c) => typeof c === 'string' && c).slice(0, 20)
   const condition = cleanText(input.condition !== undefined ? input.condition : base?.condition, 8000)
   const actions = cleanText(input.actions !== undefined ? input.actions : base?.actions, 16000)
   const message = cleanText(input.message !== undefined ? input.message : base?.message, 500)
@@ -250,6 +252,10 @@ export function normalizeEvent(input: TableEventInput, base: TableEventDef | nul
     for (const p of checkFormula(actions, timing, tables, table)) problems.push({ ...p, field: 'actions' })
   }
   const def: Omit<TableEventDef, 'id' | 'tableId' | 'createdOn' | 'modifiedOn'> = { name, kind, timing, operations, order, enabled: enabled !== false, runAs }
+  if (connections.length) {
+    if (kind !== 'event' || timing !== 'after') throw invalid('Connections can only be attached to events that run after the write (external calls never run inside a save).', 'connections')
+    def.connections = connections
+  }
   if (condition) def.condition = condition
   if (kind === 'event' && actions) def.actions = actions
   if (kind === 'validation') {
@@ -657,7 +663,7 @@ export function createTableEvents(deps: EventsDeps) {
         await notifications.send({ environmentId: currentEnvironment().id, to: n.to, message: n.message, tableId: def.id, rowId: p.rowId, eventId: ev.id, idempotencyKey: `${job.id}:n${i}` })
       }
       for (const [i, c] of o.connectorCalls.entries()) {
-        await connectorActions.invoke({ environmentId: currentEnvironment().id, connection: c.connection, action: c.action, input: c.input, runAs: identity, idempotencyKey: `${job.id}:c${i}` })
+        await connectorActions.invoke({ environmentId: currentEnvironment().id, connection: c.connection, action: c.action, input: c.input, runAs: identity, idempotencyKey: `${job.id}:c${i}`, attached: ev.connections ?? [], eventId: ev.id })
       }
       for (const [i, j] of o.jobs.entries()) {
         const jt = deps.jobs.typeDef(j.type)

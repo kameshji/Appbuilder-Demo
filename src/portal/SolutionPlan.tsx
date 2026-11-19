@@ -5,7 +5,7 @@
  * the administrator reviewed and confirmed the plan.
  */
 import { useEffect, useState } from 'react'
-import { ArrowRight, Boxes, Cable, CircleAlert, FileSpreadsheet, Info, LayoutGrid, Rocket, ShieldCheck, Table2, TriangleAlert, Zap, type LucideIcon } from 'lucide-react'
+import { ArrowRight, Boxes, Cable, CircleAlert, FileSpreadsheet, Info, LayoutGrid, Rocket, ShieldCheck, Table2, TriangleAlert, Workflow, Zap, type LucideIcon } from 'lucide-react'
 import { ENVIRONMENT_TYPE_LABEL, usePlatform, type SolutionDef } from '@/platform'
 import type { PlanItem, SolutionPlan } from '@/platform/http'
 import { cn } from '@/lib/utils'
@@ -18,8 +18,8 @@ import { TypeBadge } from './EnvironmentPicker'
 import { Field, errMsg, useToast } from './kit'
 import { deploy, planDeploy } from './environmentApi'
 
-const KIND_ICON: Record<PlanItem['kind'], LucideIcon> = { app: LayoutGrid, table: Table2, role: ShieldCheck, connection: Cable, file: FileSpreadsheet, event: Zap }
-const KIND_LABEL: Record<PlanItem['kind'], string> = { app: 'App', table: 'Table', role: 'Role', connection: 'Connection', file: 'Data file', event: 'Table event' }
+const KIND_ICON: Record<PlanItem['kind'], LucideIcon> = { app: LayoutGrid, table: Table2, role: ShieldCheck, connection: Cable, file: FileSpreadsheet, event: Zap, flow: Workflow }
+const KIND_LABEL: Record<PlanItem['kind'], string> = { app: 'App', table: 'Table', role: 'Role', connection: 'Connection', file: 'Data file', event: 'Table event', flow: 'Flow' }
 const CHANGE_STYLE: Record<PlanItem['change'], string> = {
   new: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
   changed: 'bg-sky-500/15 text-sky-700 dark:text-sky-300',
@@ -60,6 +60,15 @@ export function PlanView({ plan }: { plan: SolutionPlan }) {
         <div className="flex items-start gap-2 rounded-md border border-rose-500/40 bg-rose-500/10 p-2.5 text-xs text-rose-800 dark:text-rose-200" data-testid="plan-destructive">
           <TriangleAlert className="mt-px size-3.5 shrink-0" />
           <span><b>Data will be lost.</b> Items marked in red drop a table or a column in {plan.target.name}; their values cannot be brought back by this import.</span>
+        </div>
+      )}
+      {plan.flowConnections && plan.flowConnections.length > 0 && (
+        <div className="grid gap-1 rounded-md border border-border p-2.5 text-xs" data-testid="plan-flow-connections">
+          <span className="font-semibold">Connections the flows use here</span>
+          {plan.flowConnections.map((c) => (
+            <span key={c.from}>{c.fromName ?? c.from} ({c.connector ?? 'connection'}) <ArrowRight className="inline size-3" /> {c.to ? (c.candidates.find((x) => x.id === c.to)?.name ?? c.to) : <b className="text-destructive">not chosen</b>} <span className="text-muted-foreground">for {c.usedBy.map((u) => u.flowName).join(', ')}</span></span>
+          ))}
+          <span className="text-muted-foreground">New flows arrive turned off. Another mapping: connectionMap in the import request (docs/guide/maker/solutions.md).</span>
         </div>
       )}
       <div className="max-h-72 overflow-auto rounded-md border border-border" data-testid="plan-items">

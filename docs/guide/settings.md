@@ -9,7 +9,7 @@ which. Entries marked **Soon** are not built yet: each says what will come and i
 | Profile | Your display name and avatar colour, the sign-in email (confirmed by the new address), your password, two-step verification (authenticator app, email codes, recovery codes), active sessions with **Sign out everywhere else**, your sign-in history. See [Signing in](signing-in.md). Passkeys and single sign-on: Soon (P3.5). |
 | Appearance | Light, dark or the system theme, reduce motion, and the mode the portal starts in. Density: Soon. |
 | Language and region | Date and number formats, the first day of the week and your time zone. The interface is in English only. |
-| Notifications | In-app notifications (the bell) per kind, desktop notifications, do not disturb, and hiding your presence (others do not see you online). By email: Soon (P1 Automation). |
+| Notifications | Per kind: in the app (the bell) and by email (right away or in an hourly or daily digest; locked kinds are set by your administrator), desktop notifications, do not disturb (it can hold emails too), your time zone, "why did I get this", and hiding your presence (others do not see you online). See [notifications](maker/notifications.md). |
 | Chat | The chat dock: its side, whether it reopens at start, message notifications. |
 | Studio (makers) | The size of new apps, snapping to the grid and to other UI components while dragging, the grid size, saving. |
 | Data and privacy | What this browser keeps (export your settings, clear local data). Sharing data with AI features: Soon (P4 Agents). |
