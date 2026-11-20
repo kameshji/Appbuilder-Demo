@@ -460,7 +460,7 @@ export interface VerifyResult {
 }
 
 /** extracts one table's COPY block from pg_restore --data-only output */
-class CopyBlock extends Transform {
+export class CopyBlock extends Transform {
   private buf: Buffer = Buffer.alloc(0)
   private state: 'before' | 'in' | 'after' = 'before'
   columns: string[] = []
@@ -469,7 +469,9 @@ class CopyBlock extends Transform {
     let start = 0
     let i = this.buf.indexOf(10)
     while (i >= 0) {
-      const line = this.buf.subarray(start, i)
+      // pg_restore on Windows ends lines with CR LF (text mode); COPY text never holds a raw CR
+      const cr = i > start && this.buf[i - 1] === 0x0d
+      const line = this.buf.subarray(start, cr ? i - 1 : i)
       if (this.state === 'before') {
         const m = /^COPY\s+\S+\s*\(([^)]*)\)\s+FROM\s+stdin;/i.exec(line.toString('utf8'))
         if (m) {
@@ -479,7 +481,7 @@ class CopyBlock extends Transform {
         }
       } else if (this.state === 'in') {
         if (line.length === 2 && line[0] === 0x5c && line[1] === 0x2e) this.state = 'after'
-        else this.push(this.buf.subarray(start, i + 1))
+        else this.push(cr ? Buffer.concat([line, Buffer.from('\n')]) : this.buf.subarray(start, i + 1))
       }
       start = i + 1
       i = this.buf.indexOf(10, start)

@@ -3,11 +3,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
+import net from 'node:net'
 import type { AddressInfo } from 'node:net'
 import { createSecretBox, loadSecretKey } from './secrets.ts'
 import { checkPasswordPolicy, hashPassword, verifyPassword } from './password.ts'
 import { buildUserContext, rowFilterCondition } from './security.ts'
-import { createRouter, originProblem } from './router.ts'
+import { createRouter, lingerClose, originProblem } from './router.ts'
 import { HttpError } from './contracts.ts'
 import type { Services } from './contracts.ts'
 import type { RoleDef, TableDef, UserDef } from '../../src/platform/contracts.ts'
@@ -389,6 +390,55 @@ describe('router guards', () => {
     const denied = await streamUpload('/api/v1/stream-deny', 8 * 1024 * 1024)
     expect(denied.status).toBe(403)
     expect(denied.sentBeforeResponse).toBeLessThan(8 * 1024 * 1024)
+  })
+
+  it('lingerClose: the answer arrives while the client keeps sending; the socket is dropped at the byte cap or the time cap', async () => {
+    const srv = http.createServer((req, res) => {
+      const big = req.url === '/bytes'
+      lingerClose(req, res, big ? { ms: 30_000, bytes: 256 * 1024 } : { ms: 300, bytes: 1 << 30 })
+      res.writeHead(413, { 'Content-Type': 'text/plain', 'Content-Length': '3' }).end('big')
+    })
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r))
+    const port = (srv.address() as AddressInfo).port
+    /** sends the head of a chunked POST, then (keepSending) 64 KB chunks until the server closes the socket */
+    const run = (p: string, keepSending: boolean) => new Promise<{ answer: string; sent: number; ms: number }>((resolve) => {
+      const started = Date.now()
+      const s = net.connect(port, '127.0.0.1')
+      let answer = ''
+      let sent = 0
+      let open = true
+      const chunk = Buffer.concat([Buffer.from('10000\r\n'), Buffer.alloc(0x10000, 1), Buffer.from('\r\n')])
+      const pump = () => {
+        if (!open) return
+        sent += 0x10000
+        s.write(chunk, () => setTimeout(pump, 1))
+      }
+      s.on('connect', () => {
+        s.write(`POST ${p} HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\n`)
+        if (keepSending) pump()
+      })
+      s.on('data', (c) => (answer += c))
+      s.on('error', () => {})
+      s.on('close', () => {
+        open = false
+        resolve({ answer, sent, ms: Date.now() - started })
+      })
+    })
+    try {
+      const bytes = await run('/bytes', true)
+      expect(bytes.answer).toMatch(/^HTTP\/1\.1 413 /)
+      expect(bytes.answer.endsWith('big')).toBe(true)
+      expect(bytes.sent).toBeGreaterThanOrEqual(256 * 1024)
+      expect(bytes.sent).toBeLessThan(8 * 1024 * 1024) // far below what 30 s of sending would be
+      expect(bytes.ms).toBeLessThan(10_000)
+      const idle = await run('/time', false)
+      expect(idle.answer.endsWith('big')).toBe(true)
+      expect(idle.ms).toBeGreaterThanOrEqual(250)
+      expect(idle.ms).toBeLessThan(5000)
+    } finally {
+      srv.closeAllConnections()
+      await new Promise<void>((r) => srv.close(() => r()))
+    }
   })
 
   it('matches params, prefers literals, answers 404/405, 503 for auth routes without a database', async () => {

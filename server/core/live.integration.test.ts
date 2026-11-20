@@ -325,7 +325,15 @@ describe.skipIf(!PG_URL)('realtime hub (PostgreSQL)', () => {
     await B.post(`/data/${table.id}/rows`, { values: { Title: 'missed' } })
     const s2 = (await ready(B)).s
     const ack2 = await s2.sub(`table:${table.id}`, 'default')
-    expect(ack2.seq).toBeGreaterThan(m2.seq)
+    // The hub learns of the missed change from the outbox a moment after the commit. Either the ack is already ahead
+    // (resync), or the change arrives as a message chained to what the client saw: never neither.
+    if (ack2.seq === m2.seq) {
+      const late = await s2.waitMsg((m) => m.t === 'table')
+      expect(late.prev).toBe(m2.seq)
+      expect(late.seq).toBeGreaterThan(m2.seq)
+    } else {
+      expect(ack2.seq).toBeGreaterThan(m2.seq)
+    }
     expect(ack2.epoch).toBe(ack.epoch)
   })
 

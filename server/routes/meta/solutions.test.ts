@@ -51,7 +51,7 @@ describe('solutions', () => {
       name: 'Kit role', apps: [app.id],
       privileges: [{ table: tbl.id, create: true, read: 'all', update: 'own', delete: 'none', columns: { Name: 'read' }, rowFilter: [{ column: 'owner', op: 'eq', value: '@me' }] }, { table: ftable.id, create: false, read: 'all', update: 'none', delete: 'none' }],
     })).body
-    const conn = (await h.call(A, 'POST', '/api/v1/connections', { name: 'Ext', connector: 'mysql', settings: { host: 'h', database: 'd', user: 'u' }, secret: 'topsecret' })).body
+    const conn = (await h.call(A, 'POST', '/api/v1/connections', { name: 'Ext', connector: 'mysql', settings: { host: 'h.example', database: 'd', user: 'u' }, secret: 'topsecret' })).body
     for (const [k, i] of [['table', tbl.id], ['table', child.id], ['app', app.id], ['file', file.id], ['role', role.id], ['connection', conn.id]]) await add(k, i)
     return { sol, tbl, child, app, file, ftable, role, conn }
   }

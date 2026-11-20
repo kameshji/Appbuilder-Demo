@@ -13,6 +13,7 @@ import {
   ArchiveError, TarWriter, encryptedFileSink, isEncryptedFile, listTar, memberBuffer, memberStream, openReader, plainFileSink,
 } from './archive.ts'
 import { RestoreDataParser, parseCopyLine, readCopyLines, renameInSql, renameSchemaRefs, skipRestoreStatement, splitSql } from './dbdump.ts'
+import { CopyBlock } from './engine.ts'
 import { Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { decideRetention, localParts, type RetentionItem } from './retention.ts'
@@ -164,6 +165,39 @@ describe('COPY text and pg_restore SQL', () => {
     await pipeline(Readable.from([Buffer.from(out.slice(0, 100)), Buffer.from(out.slice(100))]), p)
     expect(blocks).toEqual([{ table: 'audit', columns: ['id', 'action', 'details'], lines: 2 }, { table: 'Users', columns: ['id', 'Name'], lines: 1 }])
     expect(stmts).toEqual(["SELECT pg_catalog.setval('ab.audit_id_seq', 2, true)"])
+  })
+
+  it('reads pg_restore output with CR LF line endings (Windows): the same blocks and bytes, a literal \\r in data kept', async () => {
+    const lines = ['--', '\\restrict abc', 'SET statement_timeout = 0;', '', 'COPY ab.audit (id, note) FROM stdin;', '1\tline one\\rline two', '2\t\\N', '\\.', '', '',
+      'COPY ab.t2 (id) FROM stdin;', 'x', '\\.', '', "SELECT pg_catalog.setval('ab.audit_id_seq', 2, true);", '\\unrestrict abc', '']
+    const run = async (text: string, cut: number) => {
+      const got: { table: string; data: string }[] = []
+      const stmts: string[] = []
+      let cur: { table: string; data: string } | null = null
+      const p = new RestoreDataParser({
+        async onCopy(h) { cur = { table: h.table, data: '' }; return new Writable({ write(c: Buffer, _e, cb) { cur!.data += c.toString(); cb() } }) },
+        async onCopyEnd() { got.push(cur!) },
+        async onStatement(s) { stmts.push(s) },
+      })
+      await pipeline(Readable.from([Buffer.from(text.slice(0, cut)), Buffer.from(text.slice(cut))]), p)
+      return { got, stmts }
+    }
+    const lf = await run(lines.join('\n'), 60)
+    expect(lf.got).toEqual([{ table: 'audit', data: '1\tline one\\rline two\n2\t\\N\n' }, { table: 't2', data: 'x\n' }])
+    const crlf = lines.join('\r\n')
+    // every cut position, so a chunk boundary between the CR and the LF is covered
+    for (let cut = 1; cut < crlf.length; cut++) expect(await run(crlf, cut), `cut ${cut}`).toEqual(lf)
+    // one table's block (browse and selective restore)
+    const block = async (text: string, cut: number) => {
+      const b = new CopyBlock()
+      const chunks: Buffer[] = []
+      b.on('data', (c: Buffer) => chunks.push(c))
+      await pipeline(Readable.from([Buffer.from(text.slice(0, cut)), Buffer.from(text.slice(cut))]), b)
+      return { columns: b.columns, data: Buffer.concat(chunks).toString() }
+    }
+    const one = await block(lines.join('\n'), 60)
+    expect(one).toEqual({ columns: ['id', 'note'], data: '1\tline one\\rline two\n2\t\\N\n' })
+    for (let cut = 1; cut < crlf.length; cut++) expect(await block(crlf, cut), `cut ${cut}`).toEqual(one)
   })
 
   it('renames the schema of qualified names, regclass literals, never other text', () => {

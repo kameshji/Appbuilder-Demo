@@ -46,9 +46,9 @@ describe('connections', () => {
 
   it('patches name / settings / secret (keeping the old secret when omitted)', async () => {
     const c = (await h.call(A, 'POST', '/api/v1/connections', mysql)).body
-    const r = await h.call(A, 'PATCH', `/api/v1/connections/${c.id}`, { name: 'Renamed', settings: { host: 'other' } })
+    const r = await h.call(A, 'PATCH', `/api/v1/connections/${c.id}`, { name: 'Renamed', settings: { host: 'other.example' } })
     expect(r.body.name).toBe('Renamed')
-    expect(r.body.settings.host).toBe('other')
+    expect(r.body.settings.host).toBe('other.example')
     expect(r.body.settings.database).toBe('rep')
     expect((await h.meta.connections.get(c.id))!.secret).toBe('hunter2-secret')
     await h.call(A, 'PATCH', `/api/v1/connections/${c.id}`, { secret: 'new-pass' })

@@ -15,6 +15,10 @@ Phase 2 (Reach), wave 1. Schema version 11.
 - The flow email step sent a field the Email action refused.
 - The service worker answered navigations to `/api/` addresses (PDF previews, attachments opened in a tab, the unsubscribe page) with the app shell.
 
+- **Windows: backups made with pg_dump failed their own verification** ("pg_restore output ended inside a COPY block"), which also blocked solution upgrades, deploys and environment deletes that take a backup first. `pg_restore` on Windows ends lines with CR LF; the backup reader now accepts both line endings. Found by the first full test run on Windows.
+- **A request body over the size limit could end in a connection error instead of the "too large" message** (always on a Windows server, occasionally on Linux). After the 413 answer the server now reads and discards the rest of the upload for at most 5 seconds or 64 MB before dropping the connection.
+- Tests: four tests that only passed on Linux (a path built from a URL, the executable bit of an extracted file, single-word host names that Windows resolves slowly) now pass on Windows too.
+
 ### Known gaps in this wave
 - Dashboards: no visual tile query editor, no drag-and-drop layout, no TV mode, no email snapshot, not yet in solutions.
 - Phones: dropdowns, date pickers and dialogs are not phone-style; no card layout for data tables; QR scanning needs a browser with a built-in reader; no cold-start offline.

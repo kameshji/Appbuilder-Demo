@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 /**
  * Headless-browser check of server mode after P0 package D. DEVELOPER TOOL, not part of the product.
  *
@@ -291,7 +292,7 @@ const tableRows = (page, root) => page.$$eval(`${root} tbody tr:not([aria-hidden
 
 /* 6. demo mode (no server): the built page still runs everything in the browser */
 if (process.env.DEMO_HTML !== '0') {
-  const file = process.env.DEMO_HTML || path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../dist/index.html')
+  const file = process.env.DEMO_HTML || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../dist/index.html')
   const ctx = await browser.createBrowserContext()
   const page = await ctx.newPage()
   page.on('pageerror', (e) => console.log('  [page error]', e.message))

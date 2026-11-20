@@ -6,10 +6,11 @@
 import { describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 // @ts-expect-error plain JavaScript module
 import { downloadsFor, readManifest } from './prepare-offline.mjs'
 
-const here = path.dirname(new URL(import.meta.url).pathname)
+const here = path.dirname(fileURLToPath(import.meta.url))
 const PERMISSIVE = new Set(['MIT', 'Apache-2.0', 'PostgreSQL', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC'])
 
 describe('installer manifest', () => {

@@ -340,6 +340,9 @@ export class RestoreDataParser extends Writable {
   }
 
   private async line(l: Buffer): Promise<void> {
+    // pg_restore on Windows writes its output in text mode: every line ends CR LF. COPY text never holds a raw CR
+    // (it is written as the two characters \r), so a CR before the LF is always a line ending.
+    if (l.length && l[l.length - 1] === 0x0d) l = l.subarray(0, l.length - 1)
     if (this.copy) {
       if (l.length === 2 && l[0] === 0x5c && l[1] === 0x2e) {
         const c = this.copy

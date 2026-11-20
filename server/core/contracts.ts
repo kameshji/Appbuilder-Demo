@@ -61,7 +61,7 @@ export interface Ctx {
   /**
    * routes registered with { raw: true, streamBody: true } only: the router does not read the body; the handler
    * calls this (once) after its own checks. Rejects with 413 as soon as more than `limitBytes` arrive (never more
-   * than the route's maxBodyMB) and closes the connection after the error response.
+   * than the route's maxBodyMB) and, after the error response, discards the rest of the upload for a short bounded time, then drops the connection.
    */
   readBody?(limitBytes: number): Promise<Buffer>
   /** present when the route's auth level is not 'none' */

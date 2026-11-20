@@ -23,7 +23,7 @@ cookie only). Filtering, sorting, search, keyset paging, exact counts and aggreg
   request with another content type gets 415 `invalid`; invalid JSON gets 422 `invalid`. Bodies are limited by the route's `maxBodyMB`
   (JSON and raw alike; 413 `invalid` above it): 2 MB for JSON and 25 MB for raw routes unless the route sets more
   (`POST /apps/import` and `POST /tables/from-csv` 25 MB, `POST /solutions/import` 40 MB). A declared `Content-Length` above the
-  limit is refused before the body is read; a body that grows past it is cut off, and after a 413 the server closes the connection.
+  limit is refused before the body is read; a body that grows past it is cut off, and after a 413 the server reads and discards the rest of the upload for at most 5 seconds or 64 MB (never buffering it), then drops the connection, so the client receives the 413 and not a connection reset.
 - **Cookie.** `ab_session`: HttpOnly, `SameSite=Strict`, `Path=/`, `Secure` when the connection is TLS. The value is a random
   token; the server stores only its SHA-256 (`ab_sessions.id_hash`). Lifetime 7 days, sliding (touched at most every 10 minutes).
   No tokens appear in URLs or in `localStorage`.

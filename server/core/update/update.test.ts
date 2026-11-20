@@ -36,7 +36,8 @@ describe('zip', () => {
     expect(back.map((e) => [e.name, e.data.toString(), e.mode])).toEqual([['a/b.txt', 'hello '.repeat(100), 0o644], ['run.sh', '#!/bin/sh\necho hi\n', 0o755], ['empty', '', 0o644]])
     const d = tmp()
     extractZip(z1, d)
-    expect(fs.statSync(path.join(d, 'run.sh')).mode & 0o111).not.toBe(0)
+    // Windows file systems have no executable bit: the mode is checked from the archive above, the file only where it exists
+    if (process.platform !== 'win32') expect(fs.statSync(path.join(d, 'run.sh')).mode & 0o111).not.toBe(0)
   })
 
   it('refuses unsafe names and damaged data', () => {

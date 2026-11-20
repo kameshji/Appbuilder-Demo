@@ -149,7 +149,7 @@ export function attachmentRoutes(router: ApiRouter, services: CoreServices): voi
       throw readable ? new HttpError(403, 'denied', 'You are not allowed to change this row.') : new HttpError(404, 'not-found', 'Row not found.')
     }
     // size: a declared Content-Length above the column limit is refused before reading; a streamed body is cut off
-    // (413, connection closed) as soon as it crosses the limit, so oversized uploads are never buffered
+    // (413, then the rest discarded briefly and the connection dropped) as soon as it crosses the limit, so oversized uploads are never buffered
     const maxMB = col.maxSizeMB && col.maxSizeMB > 0 ? Math.min(col.maxSizeMB, ROUTE_MAX_MB) : DEFAULT_MAX_MB
     const limit = Math.floor(maxMB * 1024 * 1024)
     const tooBig = `The file is larger than ${maxMB} MB.`

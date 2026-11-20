@@ -141,7 +141,7 @@ describe('tables', () => {
     const t = await mk('Moveme', [{ displayName: 'Name', type: 'text' }])
     const def = (await h.meta.tables.get(t.id))!
     const row = await h.services.data.insert(null, def, { Name: 'x' })
-    const conn = (await h.call(A, 'POST', '/api/v1/connections', { name: 'Second', connector: 'mysql', settings: { host: 'h', database: 'd', user: 'u' } })).body
+    const conn = (await h.call(A, 'POST', '/api/v1/connections', { name: 'Second', connector: 'mysql', settings: { host: 'h.example', database: 'd', user: 'u' } })).body
     const moved = await h.call(M, 'POST', `/api/v1/tables/${t.id}/move`, { connectionId: conn.id })
     expect(moved.status, JSON.stringify(moved.body)).toBe(200)
     expect(moved.body).toMatchObject({ id: t.id, name: 'Moveme', connectionId: conn.id })

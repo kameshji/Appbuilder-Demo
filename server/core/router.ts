@@ -129,7 +129,7 @@ const mbText = (bytes: number): string => {
   return Number.isInteger(mb) ? String(mb) : mb >= 1 ? String(Math.round(mb * 10) / 10) : String(Math.round(mb * 100) / 100)
 }
 
-/** the 413 of an oversized body; the router closes the connection after sending it (see sendError) */
+/** the 413 of an oversized body; the router stops reading it into memory and ends the upload (see lingerClose) */
 export function tooLarge(limit: number, message?: string): HttpError {
   const e = new HttpError(413, 'invalid', message ?? `The request body is too large (limit ${mbText(limit)} MB).`)
   ;(e as HttpError & { closeConnection?: boolean }).closeConnection = true
@@ -139,7 +139,8 @@ export function tooLarge(limit: number, message?: string): HttpError {
 /**
  * Reads the body up to `limit` bytes. A declared Content-Length above the limit is refused before reading; a body that
  * grows past the limit is refused as soon as the limit is crossed (nothing more is buffered and the stream is paused;
- * the router answers 413 and closes the connection, so the client cannot keep uploading).
+ * the router answers 413, discards what still arrives for a short bounded time and then drops the connection:
+ * lingerClose).
  */
 export function readBody(req: IncomingMessage, limit: number, message?: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -176,6 +177,43 @@ export function readBody(req: IncomingMessage, limit: number, message?: string):
         reject(e)
       }
     })
+  })
+}
+
+/** how long and how much of a refused upload is read and thrown away after the answer (see lingerClose) */
+export const LINGER_MS = 5000
+export const LINGER_BYTES = 64 * 1024 * 1024
+
+/**
+ * Closes a connection whose request body was refused, after the answer was sent. Dropping the socket at once makes
+ * the operating system reset the connection while the client is still sending (always on Windows, sometimes on
+ * Linux), and the client then sees a network error instead of the answer. So the rest of the upload is read and
+ * thrown away (never buffered) until the client stops, LINGER_MS passed or LINGER_BYTES arrived; then the socket is
+ * dropped. No Connection: close header is sent: Node drops the socket itself as soon as such an answer is written,
+ * which is the reset this avoids. A client that finishes its upload in time keeps a clean, reusable connection.
+ */
+export function lingerClose(req: IncomingMessage, res: ServerResponse, o: { ms?: number; bytes?: number } = {}): void {
+  if (req.complete || req.destroyed) return
+  let seen = 0
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const stop = () => {
+    clearTimeout(timer)
+    req.destroy()
+  }
+  // The discarding starts now, not at 'finish': a request nobody reads is "dumped" by Node when its answer finishes,
+  // and a dumped request emits no data, so the byte cap would never be reached.
+  req.on('data', (c: Buffer) => {
+    seen += c.length
+    if (seen > (o.bytes ?? LINGER_BYTES)) stop()
+  })
+  req.on('end', () => clearTimeout(timer))
+  req.on('close', () => clearTimeout(timer))
+  req.on('error', stop)
+  req.resume()
+  res.on('finish', () => {
+    if (req.complete || req.destroyed) return
+    timer = setTimeout(stop, o.ms ?? LINGER_MS)
+    timer.unref?.()
   })
 }
 
@@ -221,11 +259,11 @@ export function sendError(res: ServerResponse, e: unknown, req?: IncomingMessage
   const h = toHttpError(e)
   const close = !!(h as HttpError & { closeConnection?: boolean }).closeConnection
   if (close && req) {
-    // unread request bytes are not drained: answer, then drop the connection
-    res.on('finish', () => req.destroy())
+    // answer, read and discard the rest of the upload for a short bounded time, then drop the connection
+    lingerClose(req, res)
   }
   const rid = res.getHeader('X-Request-Id')
-  sendJson(res, h.status, { ...(h.extra ?? {}), error: { code: h.code, message: h.message, ...(h.field ? { field: h.field } : {}), ...(typeof rid === 'string' ? { requestId: rid } : {}) } }, close ? { Connection: 'close' } : {})
+  sendJson(res, h.status, { ...(h.extra ?? {}), error: { code: h.code, message: h.message, ...(h.field ? { field: h.field } : {}), ...(typeof rid === 'string' ? { requestId: rid } : {}) } })
 }
 
 export function cookieValue(req: IncomingMessage, name: string): string | null {
@@ -358,8 +396,7 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
     let unreadStream = false
     const closeIfUnread = () => {
       if (!unreadStream || req.complete) return
-      if (!res.headersSent) res.setHeader('Connection', 'close')
-      res.on('finish', () => req.destroy())
+      lingerClose(req, res)
     }
     try {
       const problem = originProblem(req, opts.allowAnyHost, allowedHosts)
