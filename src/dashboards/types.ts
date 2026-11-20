@@ -33,6 +33,17 @@ export interface TileVisual {
   dataLabels?: boolean
 }
 
+/**
+ * Drill-through: clicking a point or a row (or the "Open" button of the tile) opens an app. The values named in `params`
+ * are passed in the address, `#u-<appId>?name=value`, which the app reads with Param("name") (the only start-parameter
+ * mechanism the runtime has). `field` is a group column, "__bucket" (the date grouping) or a measure / calculation id of
+ * the clicked result row. There is no way to open a particular screen of an app from an address, so none is stored.
+ */
+export interface TileDrill {
+  appId: string
+  params?: { name: string; field: string }[]
+}
+
 export interface TileDef {
   id: string
   title: string
@@ -45,6 +56,39 @@ export interface TileDef {
   layout: { x: number; y: number; w: number; h: number }
   /** clicking a category filters the other tiles on the same table by that group column */
   crossFilter?: boolean
+  /** clicking opens an app (wins over crossFilter) */
+  drill?: TileDrill
+}
+
+export const MAX_DRILL_PARAMS = 8
+const APP_ID_RE = /^[A-Za-z0-9_-]{1,80}$/
+const PARAM_RE = /^[A-Za-z_][A-Za-z0-9_]{0,40}$/
+export const isDrillParamName = (s: string): boolean => PARAM_RE.test(s)
+
+/** structural check of a tile's drill-through target; throws with a readable message, returns a cleaned copy */
+export function checkDrill(raw: unknown, tileId: string): TileDrill {
+  const d = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null
+  if (!d) throw new Error(`Tile ${tileId}: the drill-through target must be an object with an appId.`)
+  const appId = typeof d.appId === 'string' ? d.appId : ''
+  if (!APP_ID_RE.test(appId)) throw new Error(`Tile ${tileId}: the drill-through target needs an app (an id of letters, digits, - or _).`)
+  const out: TileDrill = { appId }
+  if (d.params !== undefined) {
+    if (!Array.isArray(d.params)) throw new Error(`Tile ${tileId}: the drill-through parameters must be a list.`)
+    if (d.params.length > MAX_DRILL_PARAMS) throw new Error(`Tile ${tileId}: a drill-through passes at most ${MAX_DRILL_PARAMS} values.`)
+    const names = new Set<string>()
+    const params = d.params.map((p) => {
+      const o = p && typeof p === 'object' ? (p as Record<string, unknown>) : {}
+      const name = typeof o.name === 'string' ? o.name : ''
+      const field = typeof o.field === 'string' ? o.field : ''
+      if (!PARAM_RE.test(name)) throw new Error(`Tile ${tileId}: "${name}" cannot be a parameter name (start with a letter, then letters, digits or _; at most 41).`)
+      if (names.has(name.toLowerCase())) throw new Error(`Tile ${tileId}: the parameter ${name} is listed twice.`)
+      names.add(name.toLowerCase())
+      if (!field || field.length > 64) throw new Error(`Tile ${tileId}: the parameter ${name} needs the value to pass.`)
+      return { name, field }
+    })
+    if (params.length) out.params = params
+  }
+  return out
 }
 
 export interface DashboardFilterDef {
@@ -107,6 +151,7 @@ export function checkDashboardDef(raw: unknown): DashboardDef {
     if (x.visual && typeof x.visual === 'object') out.visual = x.visual as TileVisual
     if (typeof x.text === 'string') out.text = x.text.slice(0, 4000)
     if (x.crossFilter === true) out.crossFilter = true
+    if (x.drill !== undefined && x.drill !== null) out.drill = checkDrill(x.drill, id)
     return out
   })
   if (JSON.stringify(tiles).length > 256 * 1024) throw new Error('The dashboard definition is too large.')

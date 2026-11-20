@@ -8,6 +8,7 @@
 import { useEffect, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { dragDismiss } from './touch-logic'
+import { useBackClose } from './back'
 
 /** drag-down-to-close on a handle area; `ref` goes on the sheet panel, `handlers` on the handle */
 export function useSheetDrag(onClose: () => void) {
@@ -75,6 +76,8 @@ export function BottomSheet({
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
   }, [open, onClose])
+  // Android Back closes the sheet instead of leaving the app (back.ts)
+  useBackClose(open, onClose)
   if (!open || typeof document === 'undefined') return null
   return createPortal(
     <div className="ab-sheet-backdrop" data-testid="bottom-sheet-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>

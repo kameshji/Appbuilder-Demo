@@ -57,8 +57,10 @@ See [Using apps on your phone](../help/phone.md).
 
 ## Offline data on phones: what you should know
 
-Apps a maker marked **Works offline (entry)** keep, on the phone, the screens' last loaded data and the changes made
-without a connection (encrypted with a key the server issues for the user and the phone, held only while the browser
+Apps a maker marked **Works offline (entry)** keep, on the phone, the screens' last loaded data, the rows of the tables
+the maker marked **Available offline** (up to the app's row limit, at most 10,000 per table, only rows the person may
+read), and the changes made without a connection. Any app also keeps unsaved form drafts so an accidental reload does
+not lose typing. All of it is kept (encrypted with a key the server issues for the user and the phone, held only while the browser
 session lasts). The details and the threat model are in the developer documentation (`docs/dev/phone.md`, "Threat
 model"). For you:
 
@@ -68,7 +70,10 @@ model"). For you:
   if needed, reset their password. People can do the wipe for themselves under Settings > Data and privacy.
 - Changes **not yet sent** are lost by a wipe and by signing out (sign-out asks first).
 - An unlocked phone with the browser open is as good as a signed-in PC: keep session lifetimes short for phone users and
-  require two-step verification (Admin console > Sign-in and security).
+  require two-step verification (Admin console > Sign-in and security). With "available offline" tables it also holds
+  those rows (up to 25 MB on the phone in total) readable even with the network off, plus any unsaved form drafts with
+  their photos and signatures. Ask makers to keep offline tables narrow (a filter, a low row limit).
+- Wipe and sign-out delete the kept rows and the drafts with the rest of the offline data.
 - Server rules (permissions, validation rules, table events) apply when the changes arrive; a refused change waits on
   the phone with the reason until the person fixes or discards it.
 - Signing out on a shared phone deletes that person's offline data and the browser's cached copy of the application.

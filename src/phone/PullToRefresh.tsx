@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, type RefObject } from 'react'
 import { Loader2, ArrowDown } from 'lucide-react'
 import { platform } from '@/platform'
 import { useAppStoreApi } from '@/runtime/context'
+import { refreshOfflineTables } from './offline'
 
 const THRESHOLD = 64
 
@@ -28,6 +29,8 @@ export function PullToRefresh({ scroller }: { scroller: RefObject<HTMLDivElement
       // not from inside something that scrolls itself (a gallery, a table, a text area)
       let t = e.target as HTMLElement | null
       while (t && t !== el) {
+        // a signature pad (and anything else marked) takes the finger for itself
+        if (t.hasAttribute?.('data-no-pull')) return
         if (t.scrollHeight > t.clientHeight + 2 && /(auto|scroll)/.test(getComputedStyle(t).overflowY) && t.scrollTop > 0) return
         t = t.parentElement
       }
@@ -55,6 +58,9 @@ export function PullToRefresh({ scroller }: { scroller: RefObject<HTMLDivElement
       setBusy(true)
       try {
         const tables = store.getState().app.dataSources ?? []
+        // tables kept on the device for offline use download again (offline/index.ts)
+        const appId = store.getState().appId
+        if (appId) void refreshOfflineTables(appId)
         await Promise.all(tables.map(async (t) => {
           try {
             platform.tables.invalidateQueries(t)

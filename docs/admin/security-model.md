@@ -112,6 +112,10 @@ The full description is [Sign-in and identity](sign-in-and-identity.md). In shor
 - **API keys** for service accounts: `abk_<prefix>_<secret>` (256-bit secret, SHA-256 at rest), Data API only, cookies
   ignored when a bearer token is present, no CSRF header needed (a bearer token is not sent by browsers on their own),
   optional expiry and IP allow-list, a rate limit per key, last use recorded.
+- **Dashboard view tokens** (TV / kiosk screens, P2): `abv.<environment>.<prefix>.<secret>` (256-bit secret, SHA-256 at rest, shown
+  once), bound to one dashboard and one "view as" account (the creator, or a service account chosen by an administrator, audited);
+  they only read that dashboard and run its own tiles, compiled by the server, with that account's row and column security; revocable at
+  once, optional expiry, rate limits, re-checked on every request ([dashboards](dashboards.md#view-tokens-tv-and-kiosk-screens)).
 - **Sign-in log** (`ab.signin_log`): every sign-in, failed attempt, second step and API key failure, with reason, method,
   address and browser. Users see their own; install administrators everybody's.
 
@@ -420,6 +424,8 @@ beyond their role. Web pages the user visits are not trusted.
 | Learning which emails have accounts | Same answer and timing for "forgot password" and sign-in whether or not the account exists |
 | Reusing a reset, invitation or confirmation link | Single use (atomic), short expiry, hashed at rest, newer links revoke older ones |
 | A leaked API key | Only the Data API, its environment and its roles; expiry, IP allow-list, rate limit, revocation, last use visible |
+| A leaked dashboard view token, or a token used as a query API | One dashboard's own tiles only (plans compiled by the server from the stored definition; plans from the client refused), as its fixed account under that account's security; expiry, revocation, disabled or demoted account stops it, rate limits, last use visible (P2) |
+| Dashboard email snapshots showing a recipient data they cannot read | Computed per recipient with the recipient's own access; recipients who cannot open the dashboard get nothing (P2) |
 | Spreadsheet formulas planted in data and opened from a CSV export | Leading `'` on formula-like text cells |
 | An older server corrupting a database upgraded by a newer one | Downgrade guard: the database is not used at all |
 | Theft of a database dump | Password hashes, hashed session tokens, encrypted connection secrets (key kept elsewhere) |
@@ -469,7 +475,7 @@ beyond their role. Web pages the user visits are not trusted.
   the SMTP relay (Admin console > Email); without it administrators create one-time reset codes.
 - Login, second-step and reset counters are in memory (per server process, cleared by a restart).
 - **No rate limiting other than the sign-in, second-step, reset and invitation throttles, the API key limit, the
-  setup-code limit, SendNotification and the realtime connection limits**: other API calls are not limited; a
+  dashboard view token limits, the setup-code limit, SendNotification and the realtime connection limits**: other API calls are not limited; a
   signed-in user can send as many requests as the PC can handle. The per-email sign-in brake can be triggered by anyone
   who knows an email (see [Sign-in throttle](#sign-in-throttle)).
 - Row filters are checked on writes too: a new row must match the filter of a role that grants Create, and a changed

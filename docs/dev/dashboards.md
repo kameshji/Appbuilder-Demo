@@ -17,10 +17,10 @@ security-trimmed; no separate BI model. Maker guide: [../guide/maker/dashboards.
 | `src/dashboards/types.ts` | `DashboardDef`, `TileDef`, `checkDashboardDef` |
 | `src/dashboards/tile.ts` | tile + rows -> `ChartSpec` |
 | `src/dashboards/viewer.ts` | `buildBatch` (all tiles -> one batch, filters and cross-filter) and `assemble` (answers -> tile rows / errors) |
-| `src/dashboards/manufacturing.ts` | Minimal plant tables, OEE / scrap / FPY / downtime Pareto / MTTR / schedule adherence presets, the "Production overview" template, SAMPLE data |
+| `src/dashboards/manufacturing.ts` | Minimal plant tables, OEE / scrap / FPY / downtime Pareto / MTTR / schedule adherence presets, MTBF (two queries + `mtbfRows`), the "Production overview" template, SAMPLE data |
 | `src/dashboards/editor.ts` | The tile editor's logic: tile operations, the simple condition and calculation builders, defaults per column type, `validateTile`, summaries, `applyTile` |
 | `src/portal/dashboards/` | `api.ts` (server and demo backends), `DashboardsPage.tsx` (list, viewer, layout editor), `TileEditor.tsx` and `ConditionBuilder.tsx` (the tile editor) |
-| `server/core/dashboards/` | `ddl.ts` (schema version 11 step: `ab_dashboards`, `ab_dashboard_settings`), `routes.ts` (CRUD, settings, the batch endpoint and its cache) |
+| `server/core/dashboards/` | `ddl.ts` (schema version 11 step: `ab_dashboards`, `ab_dashboard_settings`; version 12 step: `ab_dashboard_tokens`, `ab_dashboard_snapshots`, `ab_dashboard_snapshot_runs`), `routes.ts` (CRUD, settings, the batch endpoint), `batch.ts` (the batch runner and its cache), `compute.ts` (who may view / edit, settings, a stored dashboard compiled and run on the server for one identity), `tokens.ts` (view tokens), `snapshots.ts` and `render.ts` (scheduled email snapshots, the PDF), `alm.ts` (solutions) |
 
 `src/charts` and `src/dashboards` are shared with the server: relative imports with `.ts` extensions, no React, DOM or packages
 (`src/charts/charts.test.ts` checks the chart folder).
@@ -93,8 +93,106 @@ bypass the outbox (bulk SQL loads).
 
 **Not done:** automatic use of summary tables (the rule would be: same source, plan groups and filters only on the summary's group columns,
 measures sum / count / min / max of summarised columns, and the reader reads every source row; restricted users therefore never qualify);
-the "create summary table" hint; kiosk / TV tokens; scheduled email snapshots; dashboards in solutions; the Dashboard UI component and saved
-visuals; personal pinned tiles and the Home page; pivot tables.
+the "create summary table" hint; the client screens for view tokens and snapshots (the API below is done); the Dashboard UI component and
+saved visuals; personal pinned tiles and the Home page; pivot tables.
+
+## Server-side compute (second wave)
+
+`compute.ts` `computeDashboard(services, who, def, choices, settings)` compiles every tile of a **stored** definition with the viewer's
+own `buildBatch`, runs the plans with `runBatch` as `who` and `assemble`s the tiles. `checkChoices(def, body, settings)` is the only
+input from a request, and it is checked against the definition (422 otherwise): `range` a preset key, `null` (all time) or
+`{ from, to }` (`YYYY-MM-DDTHH:MM`, from before to; default the dashboard's preset, resolved with the server clock in the dashboard time
+zone); `filters` only the dashboard's own filter ids, a value among the filter's `options` when it lists any; `cross`
+(`{ tileId, column, value }`) only from a tile with `crossFilter`, on one of its group columns, a scalar value. Tables, measures and
+conditions always come from the stored definition. View tokens and snapshots use it; the signed-in viewer still sends its own plans to
+`POST /dashboards/query` (they run as the caller, so nothing is widened).
+
+## View tokens (TV / kiosk)
+
+`tokens.ts`. A token is `abv.<environment>.<prefix>.<secret>` (8 + 43 characters, 256 random bits), shown once at creation; the row
+keeps SHA-256 of the whole text (`ab_dashboard_tokens.secret_hash`) and the prefix (unique) to find it. It is bound at creation to one
+dashboard and to a **view-as identity**: the creating user (default), or a service account an administrator picks (`viewAs:
+{ serviceAccount }`; the account must be active, have access to the environment and be able to open the dashboard; audited
+`dashboard.token.run_as_service`). Every request re-checks: token known and hash equal, not revoked, not expired, the view-as account
+exists, is active (a service account still a service account) and may enter the environment, and it can still open the dashboard
+(`canView`: a removed viewer role stops a service-account token: 403). The tiles then run through that identity's row and column
+security (`computeDashboard`), and the cache is that identity's.
+
+| Route | Who | Body -> answer |
+| --- | --- | --- |
+| `GET /dashboards/:id/tokens` | dashboard editors (owner while a maker, administrators) | `{ items: ViewTokenInfo[] }` (never the secret) |
+| `POST /dashboards/:id/tokens` | dashboard editors; `viewAs` service account: administrators | `{ label, expiresOn?: ISO \| null, viewAs?: 'creator' \| { serviceAccount } }` -> `ViewTokenInfo & { token, warnings }` |
+| `DELETE /dashboards/:id/tokens/:tokenId` | dashboard editors | revoke at once -> `{ ok: true }` |
+| `GET /dashboards/kiosk` | `Authorization: Bearer <token>` only | `{ dashboard: { id, name, def, modifiedOn }, settings, token: { id, label, expiresOn, viewAs: 'creator' \| 'service' }, environmentId }` |
+| `POST /dashboards/kiosk/query` | `Authorization: Bearer <token>` only | `{ dashboardId?, range?, filters?, cross? }` -> `{ dashboardId, results: BatchResult[], errors: { [tileId]: message }, range, now, ms }` |
+
+`ViewTokenInfo`: `{ id, dashboardId, label, prefix, viewAs: { kind: 'creator' | 'service', userId, name }, createdBy, createdOn,
+expiresOn, lastUsedOn, revokedOn, status: 'active' | 'revoked' | 'expired' }`. The client feeds `results` and `errors` to
+`assemble(def, { range, calendar: settings, now }, answers, errors)` exactly as the viewer does.
+
+Refusals: a body with `queries`, `plan` or `plans` 422 (a token is not a query API); `dashboardId` of another dashboard 404; any other
+route with the token 401 (the router treats a bearer request as an API key there, and the token is not one); an
+`X-Appbuilder-Environment` header naming another environment 403; unknown, forged, revoked or expired 401 with one message; a disabled
+view-as account 401; at most 120 requests per minute per token (429 with `Retry-After`), at most 30 invalid tokens per address in 5
+minutes (429); at most 20 active tokens per dashboard. Cookies are ignored for bearer requests and no CSRF header is needed (router.ts:
+a browser never sends a bearer token on its own). Tokens are not design changes: a locked production environment still shows token
+dashboards and still lets editors create and revoke tokens. `last_used_on` is written at most once a minute per token. Audited:
+`dashboard.token.create` (label, prefix, view-as, expiry; never the token), `dashboard.token.revoke`, `dashboard.token.run_as_service`.
+Deleting the dashboard deletes its tokens. Tokens never travel in solutions or environment copies.
+
+**Where the token lives on the screen.** Like approval email links (`#u-approvals?link=`), the token belongs in the URL **fragment**
+(for example `<public url>/#u-kiosk?t=<token>`), which browsers never send to the server, so it is not in access logs, proxy logs or
+`Referer` headers; the page reads it and sends it as `Authorization: Bearer`. Never put it in a query string. Residual risks are in
+[../admin/dashboards.md](../admin/dashboards.md#view-tokens-tv-and-kiosk-screens).
+
+## Snapshots (scheduled email)
+
+`snapshots.ts`, `render.ts`. The scheduled reports' machinery and rules (`parseSchedule` / `scheduleCron` from `reports.ts`, an
+`ab_schedules` row per enabled snapshot, job `dashboard.snapshot` with three attempts, at most 200 recipients from users and teams,
+people who are not makers or administrators subscribe only themselves, disabled accounts / suppressed addresses / no access to the
+environment skipped, a retried job does not send twice to a recipient it reached, a signed unsubscribe link with its own key). Each
+recipient: `canView` the dashboard (otherwise skipped, the run log says "cannot open the dashboard"), then `computeDashboard` **as
+that recipient**, then `renderSnapshotPdf`: A4 landscape, the heading, range and "as of" line, the tiles in grid order (tiles that start
+on the same grid row side by side), charts by `tileChartSpec` + `renderChartSvg` through the print engine's SVG path (`chartOps` in
+`server/core/print/layout.ts`), table tiles as print tables (first 50 rows), text tiles as text, a failed tile as its message, "Based on
+the rows you can see" under filtered tiles. The email (HTML and text) gives the range, the page count, the tiles that could not be shown
+and a link to the dashboard; the PDF is attached. The email pipeline has no inline images, so there are none. No service-account
+identity for snapshots.
+
+| Route | Who | Body -> answer |
+| --- | --- | --- |
+| `GET /dashboards/:id/snapshots` | anyone who can open the dashboard | `{ items: SnapshotInfo[] }`: mine, the ones I receive; all of them for the dashboard's editors |
+| `POST /dashboards/:id/snapshots` | anyone who can open the dashboard (others as recipients: makers, administrators) | `{ name?, schedule, recipients?: { userIds, teamIds }, range?: RangePreset, filters?, enabled? }` -> `SnapshotInfo` |
+| `PATCH /dashboards/snapshots/:sid`, `DELETE ...` | the snapshot's owner, administrators | same fields -> `SnapshotInfo` / `{ ok: true }` |
+| `POST /dashboards/snapshots/:sid/run` | owner / administrator: everyone; a recipient: their own copy | -> `{ jobId }` |
+| `GET /dashboards/snapshots/:sid/runs` | as the list (a recipient sees only their own line) | `{ items: [{ id, startedOn, finishedOn, status, trigger, message, recipients: [{ userId, status: 'sent' \| 'skipped' \| 'failed', mailId?, pages?, reason? }] }] }` |
+| `GET` / `POST /dashboards/snapshots/unsubscribe?t=` | the signed link of the email (no sign-in) | a small HTML page |
+
+`schedule` is the reports' shape: `{ frequency: 'hourly', minute }`, `daily` / `weekdays` (`time`), `weekly` (`time`, `weekday`),
+`monthly` (`time`, `day`), `cron`, `manual`, each with `timeZone`. `SnapshotInfo`: `{ id, dashboardId, name, ownerId, enabled, def: {
+name, schedule, recipients, range?, filters?, optOut? }, scheduleText, nextRunAt, lastRun, createdOn, modifiedOn, canEdit }`. Audited:
+`dashboard.snapshot.create`, `.update`, `.delete`, `.run`; unsubscribes in the install log (`dashboard.snapshot.unsubscribe`).
+Deleting the dashboard deletes its snapshots, their schedules and runs.
+
+## Solutions and environment copies
+
+`alm.ts`, wired into `server/routes/meta/solutions.ts` and `alm.ts` like print templates. Component kind `dashboard` (not yet in
+`SolutionComponentKind` / `PlanItem['kind']` of `src/platform`: the server casts). The package carries `dashboards: [{ id, name, def,
+roles: [{ id, name }] }]`. The plan: new / changed / unchanged / removed (compared with sorted keys); warnings for tables a tile reads that
+are neither here nor in the package, and for viewer roles that resolve neither by id (here, or a role of the package the administrator's
+import creates) nor by name (those are left out); a non-maker importing dashboards is a problem. Apply runs inside the import's
+transaction after roles (role ids mapped like flow run grants), as an upsert by id; an upgrade keeps the owner, the view tokens and the
+snapshots here; a removed dashboard is deleted with its tokens and snapshots. Imports "as a copy" (and old packages without a solution
+id) do not carry dashboards. Environment copies copy `ab_dashboards` and `ab_dashboard_settings` (never tokens, snapshots or runs).
+
+## MTBF
+
+`mtbf(operatingMinutes, failures)` = operating time / number of failures (blank without failures). Operating time = sum of
+`ProductionLog.RunMin` with `LoggedOn` in the range; failures = `Downtime` rows with `Reason` "Breakdown" (`StartedOn` in the range;
+changeovers, planned maintenance and waiting are not failures). A tile reads one table, so MTBF is two queries (`mtbfQueries(names,
+{ byMachine })`) combined by `mtbfRows` (per machine: machines are matched case-insensitively; a machine that ran without a breakdown has
+MTBF blank). It is not a template tile: the measure builder has no measure across two tables, and the template and its exit check stay
+as they are.
 
 ## Viewer
 
@@ -179,5 +277,17 @@ cross-filter applied; undo inside the editor.
 | `src/dashboards/editor.test.ts` | tile editor logic: round trips (template tiles, unknown fields), condition and calculation builders (exact or left alone), every operation, defaults, validation messages, summaries, `applyTile`, a tile built only by editor operations run through `buildBatch` / `assemble` and the reference executor |
 | `scripts/exit-check/p2-tile-editor.mjs` | headless: demo mode (edit and apply template tiles unchanged, add a tile by clicking, preview, a blocking problem in words, Save, reload, dark theme, 820 px) and, with `BASE`, the same against a server |
 | `server/core/dashboards/dashboards.integration.test.ts` | the batch as administrator / own-rows user / row-rule user / no access, hidden columns, cache per user and its invalidation, CRUD and roles, settings |
+| `server/core/dashboards/dashboards-wave2.test.ts` | `checkChoices` refusals, the token format, the snapshot PDF of the template (blocks, deterministic bytes) |
+| `server/core/dashboards/dashboards-wave2.integration.test.ts` | view tokens (secret once, hash only, view-as row security, every refusal, revoke, expiry, disabled identities, lost viewer role, locked environment, rate limits, audit), snapshots with the fake SMTP server (per recipient, skipped with reasons, PDF, unsubscribe, cleanup), solutions (plan, deploy, upgrade, locked production, removal, a failing import leaving nothing), environment copy, schema 11 -> 12 |
+| `src/dashboards/mtbf.test.ts` | MTBF against hand computation, total and per machine, through the reference executor |
 | `scripts/exit-check/p2-dashboard.mjs` | exit check 3 at 1,000,000 rows (API and browser), cross-filter, keyboard, data table, phone width |
 | `scripts/docs-shots/dashboards.mjs` | template, layout editing by clicking and persistence, range and filter, demo mode |
+
+## Layout, viewer roles, settings screen and drill-through (client)
+
+- **Layout.** The grid is 12 columns, 80 px rows, 12 px gap, stored in `tile.layout {x,y,w,h}`. `src/dashboards/grid.ts` is pure (no DOM): `layoutModeFor(width)` gives phone under 640, tablet under 1024, otherwise grid, from the width of the grid area (not the window); `place()` lets the moved tile win and pushes the others down; `compact()` closes gaps; `stepItem()` pushes without compacting; `deriveColumns()` builds the 6-column tablet layout (never stored). The page uses pointer events with `setPointerCapture`; arrow keys on the grip move, Shift+arrows resize.
+- **Drill-through.** `TileDef.drill?: { appId, params?: { name, field }[] }` (at most 8), validated strictly by `checkDashboardDef`. `src/dashboards/drill.ts` builds `#u-<appId>?name=value`; the app reads values with `Param("name")`. There is no address for a screen. A tile uses drill or cross-filter, not both.
+- **Viewer roles.** Saved with `PATCH /dashboards/:id`; the server refuses unknown role ids, so the client cleans them (`src/dashboards/access.ts`).
+- **Settings screen.** `GET/PUT /dashboards/settings`. The server drops invalid values silently, so `src/dashboards/settings.ts` validates first. A shift past midnight is stored as end < start. Demo mode keeps settings in `localStorage`.
+- **Tests.** `src/dashboards/grid.test.ts`, `screens.test.ts`; browser: `scripts/exit-check/p2-dashboard-layout.mjs` (demo mode).
+- **Not done.** Screens for view tokens, the kiosk page and email snapshots (the API exists, above); pinning tiles to Home (needs a per-user server setting); choosing a screen for drill-through.

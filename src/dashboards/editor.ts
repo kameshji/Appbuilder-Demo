@@ -20,8 +20,9 @@ import type { NumberFormat } from '../charts/format.ts'
 import type { SeriesSpec } from '../charts/geometry.ts'
 import type { CalcExpr, ComputedSpec, MeasureSpec, QuerySpec } from './measures.ts'
 import { calcRefs, compileQuery } from './measures.ts'
-import type { DashboardDef, TileDef, TileKind, TileVisual } from './types.ts'
-import { MAX_TILES, TILE_KINDS, checkDashboardDef } from './types.ts'
+import type { DashboardDef, TileDef, TileDrill, TileKind, TileVisual } from './types.ts'
+import { MAX_TILES, TILE_KINDS, checkDashboardDef, isDrillParamName } from './types.ts'
+import { drillFields } from './drill.ts'
 import { localNow, zonedInstant } from './dates.ts'
 
 /* ------------------------------------------------------------------ columns */
@@ -112,6 +113,28 @@ function tidy<T extends object>(o: T): T {
   return out as T
 }
 
+/**
+ * after the query changed: drill-through parameters that pass a column or measure the tile no longer produces are dropped
+ * (an app left with no parameters still opens). `rename` maps a renamed measure to its new name first.
+ */
+function fixDrill(tile: TileDef, rename?: { from: string; to: string }): TileDef {
+  const d = tile.drill
+  if (!d?.params?.length) return tile
+  const have = new Set(drillFields(tile).map((f) => f.field))
+  const params = d.params.map((p) => (rename && p.field === rename.from ? { ...p, field: rename.to } : p)).filter((p) => have.has(p.field))
+  if (params.length === d.params.length && params.every((p, i) => p === d.params![i])) return tile
+  const n: TileDrill = { ...d, params }
+  if (!params.length) delete n.params
+  return { ...tile, drill: n }
+}
+
+/** the drill-through target (an app and the values to pass); undefined removes it. Other fields are kept as they are. */
+export function setDrill(tile: TileDef, drill: TileDrill | undefined): TileDef {
+  const n = { ...tile }
+  if (drill) n.drill = drill; else delete n.drill
+  return n
+}
+
 /** the next free place on the grid: below every tile */
 export function nextLayout(def: DashboardDef, w = 4, h = 3): TileDef['layout'] {
   const y = def.tiles.reduce((m, t) => Math.max(m, t.layout.y + t.layout.h), 0)
@@ -147,7 +170,7 @@ export function setTable(tile: TileDef, table: string, cols: EditorColumn[]): Ti
     out.visual = v
     if (!Object.keys(v).length) delete out.visual
   }
-  return out
+  return fixDrill(out)
 }
 
 /** change the kind; a KPI gets a measure to show (and the comparison or target as its base when the query has one) */
@@ -256,7 +279,7 @@ export function renameValue(tile: TileDef, from: string, to: string): TileDef {
       rules: v.rules?.map((r) => ({ ...r, measure: renameKey(r.measure, from, to) })),
     }))
   }
-  return t
+  return fixDrill(t, { from, to })
 }
 
 /** remove a measure or computed measure, and the series, sort, running total, KPI and rules that showed it */
@@ -279,7 +302,7 @@ export function removeValue(tile: TileDef, id: string): TileDef {
       return n
     })
   }
-  return t
+  return fixDrill(t)
 }
 
 /** which measures a removal would break: computed measures that read it */
@@ -511,13 +534,13 @@ export function setGroupBy(tile: TileDef, groupBy: string[]): TileDef {
   let t = withQuery(tile, (q) => { const n: QuerySpec = { ...q, groupBy }; if (!groupBy.length) delete n.groupBy; return fixSortAndTop(n) })
   const ok = (k: string | undefined) => k === undefined || k === '__bucket' || groupBy.includes(k)
   if (t.visual && (!ok(t.visual.category) || !ok(t.visual.row))) t = withVisual(t, (v) => { const n = { ...v }; if (!ok(n.category)) delete n.category; if (!ok(n.row)) delete n.row; return n })
-  return t
+  return fixDrill(t)
 }
 
 export function setBucket(tile: TileDef, bucket: QuerySpec['bucket'] | undefined): TileDef {
   let t = withQuery(tile, (q) => fixSortAndTop(tidy({ ...q, bucket })))
   if (!bucket && t.visual && (t.visual.category === '__bucket' || t.visual.row === '__bucket')) t = withVisual(t, (v) => { const n = { ...v }; if (n.category === '__bucket') delete n.category; if (n.row === '__bucket') delete n.row; return n })
-  return t
+  return fixDrill(t)
 }
 
 /** a sort on a group or bucket that is gone is removed */
@@ -661,7 +684,7 @@ export interface Issue { level: 'error' | 'warning'; message: string }
  * problems of a tile in plain English. Errors block saving; warnings do not (the tile still works, perhaps not as
  * meant). `columnsOf` gives the columns of a table, or null when it does not exist or the maker cannot see it.
  */
-export function validateTile(tile: TileDef, columnsOf: (table: string) => EditorColumn[] | null): Issue[] {
+export function validateTile(tile: TileDef, columnsOf: (table: string) => EditorColumn[] | null, appExists?: (appId: string) => boolean): Issue[] {
   const out: Issue[] = []
   const err = (message: string) => out.push({ level: 'error', message })
   const warn = (message: string) => out.push({ level: 'warning', message })
@@ -733,6 +756,20 @@ export function validateTile(tile: TileDef, columnsOf: (table: string) => Editor
   if ((tile.kind === 'pie' || tile.kind === 'donut' || tile.kind === 'funnel' || tile.kind === 'pareto' || tile.kind === 'bar' || tile.kind === 'line' || tile.kind === 'area' || tile.kind === 'combo') && !(q.groupBy ?? []).length && !q.bucket)
     warn('Choose a group column or a date grouping: without one the chart has a single point.')
   if (tile.kind === 'heatmap' && ((q.groupBy ?? []).length + (q.bucket ? 1 : 0)) < 2) warn('A heat map needs two groupings (a group column and a date grouping, or two group columns).')
+  if (tile.drill) {
+    const d = tile.drill
+    if (!d.appId) err('Drill-through: choose the app to open.')
+    else if (appExists && !appExists(d.appId)) warn(`Drill-through: the app ${d.appId} does not exist or you cannot run it.`)
+    const have = new Set(drillFields(tile).map((f) => f.field))
+    const names = new Set<string>()
+    for (const p of d.params ?? []) {
+      if (!isDrillParamName(p.name)) err(`Drill-through: "${p.name}" cannot be a parameter name (start with a letter, then letters, digits or _; at most 41).`)
+      else if (names.has(p.name.toLowerCase())) err(`Drill-through: the parameter ${p.name} is listed twice.`)
+      names.add(p.name.toLowerCase())
+      if (!have.has(p.field)) err(`Drill-through: ${p.name} passes ${p.field}, which this tile does not produce.`)
+    }
+    if (tile.crossFilter) warn('Clicking opens the app; the "filters the other tiles" setting is not used while a drill-through is set.')
+  }
   return out
 }
 

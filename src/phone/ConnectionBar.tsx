@@ -14,9 +14,10 @@ import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 import { probe, useConnectivity } from './connectivity'
-import { outboxActions, useOffline } from './offline'
+import { dismissTableNotice, outboxActions, useOffline } from './offline'
 import type { ItemView } from './offline/outbox'
 import { applyUpdate, usePwa } from './pwa'
+import { progressText } from './offline/tables'
 
 export function ConnectionBar() {
   const status = useConnectivity((s) => s.status)
@@ -25,9 +26,13 @@ export function ConnectionBar() {
   const notice = useOffline((s) => s.notice)
   const lastError = useOffline((s) => s.lastError)
   const updateReady = usePwa((s) => s.updateReady)
+  const tables = useOffline((s) => s.tables)
+  const tableNotice = useOffline((s) => s.tableNotice)
   const [open, setOpen] = useState(false)
   const [shownNotice, setShownNotice] = useState<number | null>(null)
   const [trying, setTrying] = useState(false)
+  // "available offline" tables being downloaded (offline/index.ts syncTables)
+  const loading = Object.values(tables).filter((t) => t.state === 'loading')
 
   useEffect(() => {
     if (!notice) return
@@ -39,7 +44,7 @@ export function ConnectionBar() {
   const problems = items.filter((i) => i.status === 'conflict' || i.status === 'rejected').length
   const offline = status === 'offline'
   const showOutbox = items.length > 0
-  if (!offline && !showOutbox && !updateReady && shownNotice === null && !(active && lastError)) return null
+  if (!offline && !showOutbox && !updateReady && shownNotice === null && !(active && lastError) && !loading.length && !(active && tableNotice)) return null
 
   return (
     <>
@@ -58,6 +63,22 @@ export function ConnectionBar() {
           <div data-testid="update-banner" className="flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-xs">
             New version available
             <Button size="xs" onClick={applyUpdate} data-testid="update-reload"><RefreshCw /> Reload</Button>
+          </div>
+        )}
+        {loading.map((t) => (
+          <div key={t.table} data-testid="offline-table-progress" className="flex w-full max-w-md items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 shrink-0 animate-spin" />
+            <span className="min-w-0 flex-1 truncate">{progressText(t.table, t.loaded, t.total)}</span>
+            {t.total ? <progress className="h-1.5 w-16 shrink-0" max={t.total} value={Math.min(t.loaded, t.total)} aria-label={`${t.table} download`} /> : null}
+          </div>
+        ))}
+        {active && tableNotice && !loading.length && (
+          <div data-testid="offline-table-notice" className="flex w-full max-w-md items-start gap-2 rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-900 dark:text-amber-100">
+            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+            <span className="min-w-0 flex-1">{tableNotice}</span>
+            <button type="button" className="-m-1 grid size-8 shrink-0 place-items-center rounded hover:bg-amber-500/20" aria-label="Dismiss" onClick={dismissTableNotice} data-testid="offline-table-notice-dismiss">
+              <X className="size-3.5" />
+            </button>
           </div>
         )}
         {(offline || showOutbox) && (
@@ -94,6 +115,16 @@ export function ConnectionBar() {
             {lastError && <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-200">{lastError}</p>}
             {items.length === 0 && <p className="py-6 text-center text-sm text-muted-foreground">Nothing is waiting.</p>}
             {items.map((it) => <OutboxRow key={it.id} item={it} />)}
+            {Object.values(tables).length > 0 && (
+              <div className="space-y-1 pt-2 text-xs" data-testid="offline-tables-list">
+                <div className="font-medium">Kept on this device for offline use</div>
+                {Object.values(tables).map((t) => (
+                  <div key={t.table} className="text-muted-foreground">
+                    {t.table}: {t.state === 'ready' ? `${(t.kept ?? 0).toLocaleString('en-US')} rows${t.at ? `, ${new Date(t.at).toLocaleTimeString()}` : ''}` : t.state === 'loading' ? 'downloading…' : t.message ?? t.state}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <div className="flex gap-2 px-4 pb-2">
             <Button className="h-11 flex-1" disabled={offline || items.length === 0} onClick={() => void outboxActions.sendNow()} data-testid="outbox-send-now"><Send /> Send now</Button>

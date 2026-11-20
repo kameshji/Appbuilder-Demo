@@ -65,4 +65,27 @@ Device / OS / browser: ______________________ Tester: __________ Date: _________
 | D1 | Install a new version on the server; reopen the app | "New version available — Reload"; Reload shows the new version | [ ] | [ ] |
 | D2 | Changes waiting during the update | still waiting after Reload; sent when online | [ ] | [ ] |
 
-Result: ____ of 32 passed. Failures and notes:
+## E. Signatures, tables kept on the phone, drafts, Back
+
+Extra test data: a table Visits (Part text, Note text, Signature image); in the app a Signature pad, a button with
+`Patch(Visits, Defaults(Visits), {Part: "Pad", Signature: SignaturePad1.FileToken})` and a Form on Visits with
+**Signature fields** `"Signature"`; a table Parts with about 3,000 rows marked **Available offline** with a row limit of
+1,000; a Dropdown or Combo box over Parts; a Dialog that opens from a button.
+
+| # | Step | Expected | Android | iPhone |
+| --- | --- | --- | --- | --- |
+| E1 | Sign on the pad with a finger, slowly and fast | smooth line, follows the finger, the page does not scroll or refresh | [ ] | [ ] |
+| E2 | Sign with a stylus (if available); tap once without drawing | stylus works; a single tap does not count as signed | [ ] | [ ] |
+| E3 | Save with the button; open the row's picture on a PC | a clear PNG signature on white, not stretched | [ ] | [ ] |
+| E4 | Form: sign, go offline, Save, reconnect | 2 waiting, then the row with its signature arrives once | [ ] | [ ] |
+| E5 | Print the visit with a template that has an image block on Signature | the signature prints | [ ] | [ ] |
+| E6 | Open the app online | "Getting Parts ready for offline use" progress, then "Only 1,000 of ... rows" | [ ] | [ ] |
+| E7 | Go offline; search Parts in the dropdown / combo box | matches from the kept rows appear; nothing from beyond the limit | [ ] | [ ] |
+| E8 | Sign in as a user with a row filter on Parts; open the app; go offline | only that user's rows are offline | [ ] | [ ] |
+| E9 | Type into a form, then reload the page (pull the browser's reload) | "Draft restored" with the values; Discard empties it | [ ] | [ ] |
+| E10 | Type into a form, switch to other apps until the phone discards the tab, come back | the draft is restored | [ ] | [ ] |
+| E11 | Open a dropdown sheet; use the Back gesture | the sheet closes, the app stays | [ ] | [ ] |
+| E12 | Open the Dialog; use the Back gesture; then Back once more | the dialog closes; the next Back leaves the page as usual (no dead Back) | [ ] | [ ] |
+| E13 | Sign out, sign in again | no draft and no kept rows remain from before | [ ] | [ ] |
+
+Result: ____ of 45 passed. Failures and notes:

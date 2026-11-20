@@ -9,7 +9,7 @@
  * still in flight; `rows` = confirmed with the ops replayed on top. Success folds the server's answer into
  * `confirmed`, failure just drops the op, so a rollback can never clobber a later write.
  */
-import { backoffMs, isIdempotentRead, isNetworkError, offlineHook, readKey } from './offline-hook'
+import { answerFromSnapshot, backoffMs, isIdempotentRead, isNetworkError, offlineHook, readKey, type Snapshot } from './offline-hook'
 import { remoteCollab } from './remote-collab.ts'
 import { remoteRecycle, type RecycleBatch } from './recycle-api.ts'
 import type { AppDef, FxRecord, FxValue } from '@/contracts'
@@ -354,7 +354,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     return o
   }
   /** P2-A offline entry: answers over tables of offline apps are kept on the device; offline, the last one answers */
-  async function cachedRead<T>(path: string, table: string, body: unknown, run: () => Promise<T>): Promise<T> {
+  async function cachedRead<T>(path: string, table: string, body: unknown, run: () => Promise<T>, fromSnapshot?: (snap: Snapshot) => T | undefined): Promise<T> {
     const h = offlineHook()
     if (!h) return run()
     const key = readKey(path, body)
@@ -366,12 +366,22 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       if (isNetworkError(e)) {
         const hit = await h.cachedAnswer(key, table)
         if (hit !== undefined) return hit as T
+        // a table kept on the device for offline use ("available offline"): answer from its rows (offline-hook.ts)
+        if (fromSnapshot && h.snapshot) {
+          const snap = await h.snapshot(table)
+          const ans = snap ? fromSnapshot(snap) : undefined
+          if (ans !== undefined) return ans
+        }
       }
       throw e
     }
   }
+  const snapshotAnswer = (plan: QueryPlan) => (snap: Snapshot): QueryV2Response | undefined => {
+    const e = findEntry(plan.table)
+    return e ? answerFromSnapshot(plan, snap, e.def) : undefined
+  }
   const queries = new QueryCache({
-    post: (plan, signal) => cachedRead('/query', plan.table, { plan }, () => call<QueryV2Response>('POST', '/query', { json: { plan }, signal })),
+    post: (plan, signal) => cachedRead('/query', plan.table, { plan }, () => call<QueryV2Response>('POST', '/query', { json: { plan }, signal }), snapshotAnswer(plan)),
     toRows: (plan, rows) => {
       const e = findEntry(plan.table)
       return rowsFromWire(plan, rows, e ? typesOf(e.def) : {})
@@ -504,7 +514,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       try {
         for (let attempt = 0; ; attempt++) {
           const epoch = e.epoch
-          const res = await cachedRead(`/data/${name}/query`, name, { top: DEFAULT_ROW_CAP }, () => call<QueryResponse>('POST', `/data/${enc(name)}/query`, { json: { top: DEFAULT_ROW_CAP } }))
+          const res = await cachedRead(`/data/${name}/query`, name, { top: DEFAULT_ROW_CAP }, () => call<QueryResponse>('POST', `/data/${enc(name)}/query`, { json: { top: DEFAULT_ROW_CAP } }), (snap): QueryResponse => ({ rows: snap.rows.slice(0, DEFAULT_ROW_CAP), truncated: snap.partial || snap.rows.length > DEFAULT_ROW_CAP }))
           if (!isCurrent(e)) return
           if (e.epoch !== epoch && attempt < 2) continue // a write finished while we were reading: read again
           e.confirmed = res.rows.map((r) => rowFromJson(e.def, r))

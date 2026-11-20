@@ -7,14 +7,60 @@ Developer details: [../dev/dashboards.md](../dev/dashboards.md). Makers: [../gui
 `PUT /api/v1/dashboards/settings` (administrators; audited `dashboard.settings`) sets the environment's defaults for every dashboard:
 `locale` (default `en-IN`: 12,34,567 and lakh / crore in short numbers), `currency` (`INR`), `timeZone` (`Asia/Kolkata`; date ranges and
 date-and-time buckets use it), `fiscalYearStart` (4 = April), `weekStart` (1 Monday, 7 Sunday) and `shifts` (name, start, end; a shift may
-end after midnight). There is no settings screen yet.
+end after midnight). Dashboards > Settings shows the time zone, fiscal year start, week start, shifts, locale and currency to everyone; administrators can change them (`PUT /api/v1/dashboards/settings`).
 
 ## Security
 
-Dashboards never bypass security: every tile is one Query v2 plan run as the viewer (row scope, row rules, shares and hidden columns,
+Dashboards never bypass security: every tile is one Query v2 plan run as the viewer (for a view token: the token's account; for an email
+snapshot: each recipient) (row scope, row rules, shares and hidden columns,
 inside the SQL statement). Who may open a dashboard (owner, makers, administrators, listed roles) decides only whether the page opens, not
 what data it shows. Results are cached 20 seconds per user and dropped when the table changes; a share added or removed on a single row
 may take up to 20 seconds to show on a dashboard.
+
+## View tokens (TV and kiosk screens)
+
+A view token lets a screen without a signed-in person show one dashboard. The owner of the dashboard (while a maker) or an administrator
+creates it (`POST /api/v1/dashboards/<id>/tokens`, with a label and an optional expiry), copies it once (it is never shown again: only
+a SHA-256 hash is stored) and opens the screen's address with the token in the part after `#`. Revoking it (`DELETE
+.../tokens/<token id>`) stops it at the screen's next refresh. Created, revoked and service-account tokens are in the audit log
+(`dashboard.token.create`, `dashboard.token.revoke`, `dashboard.token.run_as_service`); the list shows when each token was last used.
+
+**Whose data the screen shows.** Every token shows the dashboard **as one account**, fixed when it is made: the person who creates it,
+or a service account an administrator chooses. Each tile runs with that account's own row and column security, checked on every
+request. A token made by an administrator therefore shows every row: for a screen in a shared place (a shop floor, a reception), make a
+service account with a narrow role, add that role to the dashboard's viewer roles, and choose it as the token's account. The token stops
+working when it is revoked or expires, when that account is disabled or loses access to the environment, and when the account can no
+longer open the dashboard (for example, its role is removed from the viewer roles). A token can do two things only: read its dashboard's
+definition and run that dashboard's own tiles (with a date range, the dashboard's filter values and a cross-filter); it is not a key to
+the rest of the API. At most 120 requests a minute per token and 20 active tokens per dashboard; 30 wrong tokens from one address in
+5 minutes block that address for a while. A locked production environment keeps showing token dashboards.
+
+**What remains a risk.**
+
+- Whoever has the token sees what its account sees, from anywhere the server is reachable, until it is revoked or expires: treat it like
+  a password, prefer an expiry, revoke tokens of screens that are gone.
+- The token is in the screen browser's address (history, bookmarks, a photographed or shared screen address). The part after `#` is
+  never sent to the server, so it is not in server or proxy logs, but anyone with access to that browser can read it.
+- Restoring an environment backup in place brings back the tokens as they were at backup time, including ones revoked since: revoke
+  them again after such a restore.
+- The rate limit, the failure counter and "last used" are kept in the server process (cleared by a restart).
+- What a viewer sees on the screen follows the account's access at the moment of the request; results are cached 20 seconds like any
+  dashboard.
+
+## Solutions and environment copies
+
+Dashboards travel in solutions (component kind `dashboard`): the definition and the viewer roles (matched by role id, then by name; a
+role that is in neither place is left out and the plan says so; so is a table the tiles read that is not there). In a locked production
+environment dashboards change only by importing or deploying a solution. An environment copy takes the dashboards and the dashboard
+settings, never view tokens or email snapshots: make new tokens for screens that should show the copy.
+
+## Email snapshots
+
+`POST /api/v1/dashboards/<id>/snapshots` schedules a dashboard by email (the scheduled reports' schedules and recipient rules). Each
+recipient's copy is computed **with that recipient's own access** and attached as a PDF; a recipient who cannot open the dashboard
+gets nothing and the run history (`GET .../snapshots/<id>/runs`) says why. People who are not makers or administrators can only
+subscribe themselves; every email has an unsubscribe link. Email must be set up (Admin console > Email); without a public address the
+email has no link to the dashboard and no unsubscribe link.
 
 ## Performance
 

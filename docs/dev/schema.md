@@ -9,7 +9,7 @@ Decision D14 in `/home/claude/appbuilder-demo/docs/decisions.md` records the mov
    (at most `APPBUILDER_MAX_ENVIRONMENTS`, default 5). Each holds the environment's metadata tables (`ab_roles`, `ab_tables`,
    `ab_apps`, `ab_audit`, ...) **and** the data tables of its default connection (`t_orders`, `t_contacts`, ...).
 
-Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 10`),
+Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 12`),
 `/home/claude/appbuilder-demo/server/core/install-store.ts` (the `ab` registry, access and install audit)
 and, for data tables, `/home/claude/appbuilder-demo/server/connectors/postgres/sql.ts` (`createTableSql`, `sqlType`).
 
@@ -142,7 +142,14 @@ rebuilds the partial indexes of that table). A server of version 9 refuses a ver
 **10 to 11, print templates** (P2 package B; independent environment step `upgradeEnvironmentTo11Print`,
 `server/core/print/ddl.ts`): `ab_print_templates`, `ab_print_template_versions`, `ab_print_runs`, `ab_print_files` and
 `ab_print_settings` come from `environmentDdl`; the step checks they exist. Nothing existing changes. See
-[pdf.md](pdf.md#schema-version-11-independent-step).
+[pdf.md](pdf.md#schema-version-11-independent-step). Dashboards (P2 package C, independent step `upgradeEnvironmentTo11Dashboards`,
+`server/core/dashboards/ddl.ts`): `ab_dashboards`, `ab_dashboard_settings`.
+
+**11 to 12, dashboard view tokens and snapshots** (P2 package C second wave; independent environment step
+`upgradeEnvironmentTo12Dashboards`, `server/core/dashboards/ddl.ts`): `ab_dashboard_tokens`, `ab_dashboard_snapshots` and
+`ab_dashboard_snapshot_runs` come from `environmentDdl`; the step checks they exist, so a server of version 11 refuses the schema
+(downgrade guard). Nothing existing changes. `server/core/dashboards/dashboards-wave2.integration.test.ts` drops the three tables, sets
+the environment back to 11 and migrates it (`{ from: 11, to: 12 }`, dashboards kept).
 
 ## Types and conventions
 
@@ -447,6 +454,18 @@ created on first use). Losing the key makes stored secrets unreadable; there is 
 | `ab_print_runs` | `id`, `template_id`, `version`, `kind` (`single`, `preview`, `bulk`), `status`, `user_id`, `run_as`, `record_ids`, `pages`, `bytes`, `ms`, `warnings`, `error`, `progress`, `file_token`, `source`, `started_on`, `finished_on` | The generation log (90 days) |
 | `ab_print_files` | `token`, `storage_key`, `file_name`, `mime`, `size_bytes`, `sha256`, `pages`, `state` (`pending`, `ready`, `failed`), `run_id`, `created_by`, `created_on`, `expires_on` | Generated files (24 hours); bytes in the attachment store |
 | `ab_print_settings` | `k`, `v` jsonb | `settings`: letterhead, grouping, date format, currency, time zone, limits |
+
+### Dashboards (P2 package C, versions 11 and 12)
+
+DDL in `server/core/dashboards/ddl.ts` (`dashboardsEnvironmentDdl`). Purpose and rules: [dashboards.md](dashboards.md).
+
+| Table | Key columns | Notes |
+| --- | --- | --- |
+| `ab_dashboards` (11) | `id`, `name`, `owner_id`, `roles` jsonb (viewer role ids), `def` jsonb, `created_on`, `modified_on` | Travels in solutions (kind `dashboard`); copied by environment copies |
+| `ab_dashboard_settings` (11) | `k`, `v` jsonb | `defaults`: locale, currency, time zone, fiscal year start, week start, shifts; copied by environment copies |
+| `ab_dashboard_tokens` (12) | `id` (`dvt_...`), `dashboard_id` (index), `label`, `prefix` (unique `ab_ux_dashboard_tokens_prefix`), `secret_hash` (SHA-256 hex of the whole token), `view_as` (user id), `view_as_kind` (`creator`, `service`), `created_by`, `created_on`, `expires_on`, `last_used_on`, `revoked_on`, `revoked_by` | View tokens; the token itself is never stored. Never copied, never in solutions |
+| `ab_dashboard_snapshots` (12) | `id` (`dss_...`), `dashboard_id` (index), `name`, `owner_id`, `def` jsonb (schedule, recipients, range, filters, optOut), `enabled`, `schedule_id` (its `ab_schedules` row, job `dashboard.snapshot`), `created_on`, `modified_on` | Scheduled email snapshots; not copied |
+| `ab_dashboard_snapshot_runs` (12) | `id` (`dsr_<job id>`), `snapshot_id`, `started_on` (index with `snapshot_id`), `finished_on`, `status` (`running`, `succeeded`, `partial`, `failed`), `trigger`, `job_id`, `recipients` jsonb (per recipient: status, mail id, pages, reason), `message` | Run log; not copied |
 
 ### `ab_counters`
 

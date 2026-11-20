@@ -10,11 +10,15 @@ Open **Dashboards** in the menu and pick a dashboard. You see the dashboards sha
 - **Filters.** A filter at the top (for example Shift) applies to every tile that has that column.
 - **Click to filter.** On tiles that allow it (for example Output by machine), click a row or a bar: the other tiles show only that
   machine. Click the chip at the top to remove the filter.
+- **Open an app.** Some tiles open an app when you click a point or a row (the app may start with that value already chosen), or have
+  an **Open** button in their title bar. If you may not use that app, a message says so.
 - **Details.** Point at a bar or a point to see its value. With the keyboard: Tab to a chart, then the arrow keys move between points.
 - **As a table.** The table button of a tile shows its numbers as a table. The download button saves a PNG or SVG picture or a CSV file.
 - **Up to date.** Tiles refresh by themselves when the data changes, and on the dashboard's refresh interval; the time of the last update
   is at the top right.
-- **On a phone** the tiles are shown one below the other.
+- **On a tablet** the tiles are shown in six columns, on a **phone** one below the other.
+- **Settings.** **Settings** on the dashboard list shows the time zone, fiscal year, week start, shifts, locale and currency that the
+  date ranges and numbers follow. Only administrators can change them.
 
 If a tile shows a message instead of a chart (for example "You do not have access to the column ..."), the other tiles still work: ask the
 person who made the dashboard.

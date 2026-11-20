@@ -19,7 +19,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 import type { DateBucketUnit, MeasureFn } from '@/platform/query'
-import type { DashboardDef, TileDef, TileKind } from '@/dashboards/types'
+import type { DashboardDef, TileDef, TileDrill, TileKind } from '@/dashboards/types'
 import type { CalendarSettings, RangePreset } from '@/dashboards/dates'
 import { localNow, rangeLabel, resolvePreset } from '@/dashboards/dates'
 import { assemble, buildBatch } from '@/dashboards/viewer'
@@ -32,9 +32,12 @@ import {
   describeNumExpr, describeTile, editorColumns, previewDef, effectiveSeries, formatChoiceOf, formatOfChoice, groupableColumns, newTile, numericColumns,
   removeValue, renameValue, resetSeries, seriesFormat, setBucket, setCompare, setComputedExpr, setDateColumn, setFilter, setGroupBy, setKind,
   setMeasureColumn, setMeasureFilter, setMeasureFn, setSeriesFormat, setSort, setTable, setTarget, setTop, setValueLabel, setVisual,
-  simpleCalcOf, toggleRunning, toggleSeries, usersOf, validateTile, valueIds,
+  setDrill, simpleCalcOf, toggleRunning, toggleSeries, usersOf, validateTile, valueIds,
 } from '@/dashboards/editor'
+import { defaultDrillParams, describeDrill, drillFields, paramNameOf } from '@/dashboards/drill'
+import type { AppMeta } from '@/platform'
 import { errMsg } from '../kit'
+import { canRun } from '../workspace'
 import { dashboardsApi } from './api'
 import { ConditionBuilder, sel } from './ConditionBuilder'
 
@@ -65,7 +68,9 @@ export function TileEditor({ def, tile: initial, range, calendar, onApply, onClo
   const q = tile.query
   const table = q?.table ?? ''
   const cols = useMemo(() => (table ? columnsOf(table) : null) ?? [], [table, columnsOf])
-  const issues = useMemo(() => validateTile(tile, columnsOf), [tile, columnsOf])
+  const apps = usePlatform((s) => s.apps)
+  const runnable = useMemo(() => apps.filter((a) => canRun(a.id)).sort((a, b) => a.name.localeCompare(b.name)), [apps])
+  const issues = useMemo(() => validateTile(tile, columnsOf, (id) => runnable.some((a) => a.id === id)), [tile, columnsOf, runnable])
   const errors = [...blocking(issues).map((i) => i.message), ...Object.values(fieldErrors)]
   const warnings = issues.filter((i) => i.level === 'warning').map((i) => i.message)
   const up = (f: (t: TileDef) => TileDef) => { setApplyError(null); setTile((t) => f(t)) }
@@ -319,6 +324,7 @@ export function TileEditor({ def, tile: initial, range, calendar, onApply, onClo
             </>}
 
             {!isText && hasTable && q && <VisualEditor tile={tile} q={q} up={up} labelOfCol={labelOfCol} valueLabel={valueLabel} />}
+            {!isText && hasTable && q && <DrillEditor tile={tile} apps={runnable} up={up} />}
             {!isText && !hasTable && q?.table && <p className="p-4 text-sm text-muted-foreground">The table {q.table} does not exist or you cannot see it. Choose another table.</p>}
           </div>
         </div>
@@ -629,8 +635,8 @@ function VisualEditor({ tile, q, up, labelOfCol, valueLabel }: { tile: TileDef; 
       <div className="flex flex-wrap gap-4">
         {kind !== 'table' && kind !== 'kpi' && <Check checked={!!v.dataLabels} onChange={(on) => up((t) => setVisual(t, { dataLabels: on || undefined }))} testId="tile-editor-data-labels">Show values on the chart</Check>}
         {(q.groupBy ?? []).length > 0 && (
-          <Check checked={!!tile.crossFilter} onChange={(on) => up((t) => { const n = { ...t }; if (on) n.crossFilter = true; else delete n.crossFilter; return n })} testId="tile-editor-crossfilter">
-            Clicking a {labelOfCol(q.groupBy![0]!)} filters the other tiles on this table
+          <Check checked={!!tile.crossFilter} disabled={!!tile.drill} onChange={(on) => up((t) => { const n = { ...t }; if (on) n.crossFilter = true; else delete n.crossFilter; return n })} testId="tile-editor-crossfilter">
+            Clicking a {labelOfCol(q.groupBy![0]!)} filters the other tiles on this table{tile.drill ? ' (not while the tile opens an app)' : ''}
           </Check>
         )}
       </div>
@@ -638,3 +644,61 @@ function VisualEditor({ tile, q, up, labelOfCol, valueLabel }: { tile: TileDef; 
   )
 }
 
+
+/** drill-through: clicking a point or a row opens an app, passing values of the clicked row as parameters (Param("name") in the app) */
+function DrillEditor({ tile, apps, up }: { tile: TileDef; apps: AppMeta[]; up(f: (t: TileDef) => TileDef): void }) {
+  const d = tile.drill
+  const fields = drillFields(tile)
+  const labelOf = (f: string) => fields.find((x) => x.field === f)?.label ?? f
+  const app = d ? apps.find((a) => a.id === d.appId) : undefined
+  const params = d?.params ?? []
+  const setParams = (next: { name: string; field: string }[]) => up((t) => {
+    const n: TileDrill = { ...t.drill! }
+    if (next.length) n.params = next; else delete n.params
+    return setDrill(t, n)
+  })
+  return (
+    <Section title="When someone clicks" hint="A click on a point of a chart or a row of a table can open an app. A tile without points (a KPI, a gauge) gets an Open button instead.">
+      <Check checked={!!d} testId="tile-editor-drill" onChange={(on) => up((t) => {
+        if (!on) return setDrill(t, undefined)
+        const n = setDrill(t, { appId: apps[0]?.id ?? '', params: defaultDrillParams(t) })
+        delete n.crossFilter
+        if (!n.drill!.params?.length) delete n.drill!.params
+        return n
+      })}>Clicking opens an app</Check>
+      {d && (
+        <div className="grid gap-3 pl-6">
+          <Labeled label="App">
+            <select className={cn(sel, 'w-fit max-w-full')} value={d.appId} data-testid="tile-editor-drill-app" onChange={(e) => up((t) => setDrill(t, { ...t.drill!, appId: e.target.value }))}>
+              {!app && <option value={d.appId}>{d.appId ? `${d.appId} (not found or not allowed)` : 'Choose an app…'}</option>}
+              {apps.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </Labeled>
+          <div className="grid gap-1.5" data-testid="tile-editor-drill-params">
+            <span className="text-xs font-medium text-muted-foreground">Values passed to the app</span>
+            {params.length === 0 && <p className="text-xs text-muted-foreground">None: the app opens as it is.</p>}
+            {params.map((p, i) => (
+              <div key={i} className="flex flex-wrap items-center gap-2" data-testid={`tile-editor-drill-param-${i}`}>
+                <select className={cn(sel, 'max-w-[14rem]')} value={p.field} aria-label="Value" data-testid={`tile-editor-drill-field-${i}`}
+                  onChange={(e) => setParams(params.map((x, j) => (j === i ? { name: x.name === paramNameOf(x.field) ? paramNameOf(e.target.value) : x.name, field: e.target.value } : x)))}>
+                  {!fields.some((f) => f.field === p.field) && <option value={p.field}>{p.field} (not produced by the tile)</option>}
+                  {fields.map((f) => <option key={f.field} value={f.field}>{f.label}</option>)}
+                </select>
+                <span className="text-xs text-muted-foreground">as the parameter</span>
+                <Input className="h-8 w-36 font-mono text-xs" value={p.name} aria-label="Parameter name" data-testid={`tile-editor-drill-name-${i}`}
+                  onChange={(e) => setParams(params.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} />
+                <button type="button" className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={`Do not pass ${labelOf(p.field)}`} onClick={() => setParams(params.filter((_, j) => j !== i))}><Trash2 className="size-3.5" /></button>
+              </div>
+            ))}
+            <div><Button type="button" size="sm" variant="outline" disabled={params.length >= 8 || !fields.length} data-testid="tile-editor-drill-add"
+              onClick={() => { const used = new Set(params.map((x) => x.field)); const f = fields.find((x) => !used.has(x.field)) ?? fields[0]!; setParams([...params, { name: paramNameOf(f.field), field: f.field }]) }}><Plus /> Pass another value</Button></div>
+          </div>
+          <p className="text-xs text-muted-foreground" data-testid="tile-editor-drill-summary">
+            {describeDrill(d, app?.name ?? (d.appId || 'the app'), labelOf)} The app starts with those values only when it is opened from here; inside the app, read each with Param("name") (for example in a screen's start formula).
+            Opening a particular screen from an address is not possible.
+          </p>
+        </div>
+      )}
+    </Section>
+  )
+}

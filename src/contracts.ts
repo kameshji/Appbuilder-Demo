@@ -49,12 +49,24 @@ export interface AppDef {
    * P2-A "Works offline (entry)": on phones, creates, updates and photo uploads made without a connection wait in an
    * encrypted outbox on the device and are sent when it returns; screens visited keep their last data (docs/dev/phone.md).
    * Absent or false: the app needs a connection (as before).
+   * `tables` (additive, optional): data-source tables kept on the device for offline lookups, dropdowns and lists,
+   * downloaded as the signed-in user when the app opens online (docs/dev/phone.md "Tables kept on the device").
    */
-  offline?: { entry?: boolean }
+  offline?: { entry?: boolean; tables?: OfflineTableDef[] }
   /** App-level formulas: OnStart */
   appProps: Record<string, Formula>
   /** nodes with type 'Screen' */
   screens: ControlNode[]
+}
+
+/**
+ * One table of `AppDef.offline.tables` (P2 phone, additive). `filter`: an optional formula condition over the table's
+ * columns that the server can run (`Status <> "Closed"`); `maxRows`: the row cap (default 2,000, at most 10,000).
+ */
+export interface OfflineTableDef {
+  table: string
+  filter?: string
+  maxRows?: number
 }
 
 /* ------------------------------------------------------------------ Fx values */

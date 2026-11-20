@@ -283,6 +283,18 @@ export function createAppStore(opts: { run?: boolean } = {}) {
 
     /** the server's verdict on a submitted form (and its file uploads) arrived */
     const finishDeferred = (d: DeferredSubmit) => {
+      if (d.uploadOnly) {
+        // Patch with file tokens: the files follow the row; only a failure is said (a refused row was reported already)
+        void d.work().catch((e: unknown) => {
+          if (!(e instanceof SubmitError && e.stage === 'upload')) return
+          const message = `${d.name}: ${errorMessage(e)}`
+          get().notify(message, 'error')
+          const entry = [{ id: uid(), at: Date.now(), kind: 'error' as const, message, source: d.label }]
+          get().log(entry)
+          logListeners.forEach((fn) => fn(entry))
+        })
+        return
+      }
       void d.work().then(
         (stored) => {
           const cur = get().runtime.outputs[d.key]

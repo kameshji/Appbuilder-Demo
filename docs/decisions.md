@@ -664,3 +664,15 @@ table rebuilds its indexes (1,000,000 rows: 17 s); deleted rows take space until
 **Decision.** After a 413 the router discards the rest of the upload for at most 5 s or 64 MB and sends no `Connection: close` (Node destroys the socket itself when that header is sent, which resets the connection before the client reads the answer). The backup readers drop a CR before the LF. Both were found by the first full test run on Windows.
 
 **Consequences.** A refused upload holds its connection for up to 5 s. Details: `docs/dev/data-api.md`.
+
+## D38. Dashboard view tokens run as a fixed, explicitly chosen account; the server compiles their queries (P2 wave 1 gaps, Nov 2026)
+
+**Decision.** A kiosk token is bound at creation to one dashboard and one "view as" account: the creator, or a service account an administrator chooses (audited). Every request re-checks the token, the account's status and access, and that the account can still open the dashboard. The server compiles the tiles from the stored definition and runs them with that account's row and column security; the request may only choose a validated range, the dashboard's own filter values and an allowed cross-filter. Rejected: tokens with their own permissions (silent widening) and client plans checked against compiled ones (one bug from a general query API). The token travels in the URL fragment and an `Authorization: Bearer` header, is stored as a SHA-256 hash, and never travels in solutions or copies.
+
+**Consequences.** Whoever holds a token sees what the account sees; an in-place restore brings back tokens revoked after the backup. Details: `docs/dev/dashboards.md`.
+
+## D39. Offline tables reuse the read path; drafts live in the sealed store (P2 wave 1 gaps, Nov 2026)
+
+**Decision.** Rows of tables marked "available offline" are downloaded with the normal Query v2 endpoint as the signed-in user (security exactly as online, no server change) and answered offline by the reference executor. They are capped (2,000 by default, 10,000 at most) inside the existing 25 MB encrypted budget, which was not raised: phones evict storage and a larger cache exposes more on a stolen unlocked phone. Form drafts use the same per-user sealed store, never localStorage, and an Edit draft keeps its original version so a changed record goes through the existing conflict panel.
+
+**Consequences.** Cold-start offline and a QR fallback decoder stay out, pending owner decisions. Details: `docs/dev/phone.md`.

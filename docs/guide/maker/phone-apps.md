@@ -23,7 +23,8 @@ without a connection, and testing on a phone.
   on desktop only; the 12/24-hour setting is the phone's). **Number inputs** show a digits-only keypad when Min and Max
   are whole numbers and Min is 0 or more, otherwise a keypad with a decimal point, plus a +/- button when negatives
   are allowed.
-- **Dialogs and side sheets** open as bottom sheets on a phone; drag the handle down or tap outside to close.
+- **Dialogs and side sheets** open as bottom sheets on a phone; drag the handle down, tap outside or use the phone's
+  Back gesture to close (Back runs the dialog's OnClose; lists that open as bottom sheets close the same way).
 - On a form, the **Save** and **Cancel** buttons stay on screen above the keyboard while the form is longer than what
   you can see.
 - Pull down at the top of a running app to reload its data.
@@ -52,6 +53,19 @@ computers with a camera. Photos are turned the right way up and made smaller (at
 they are uploaded, so they arrive fast on plant Wi-Fi; the photo's location data is not uploaded. A column with
 **multiple** allows several photos.
 
+## Signatures
+
+- **In a form**: set the form's **Signature fields** (Advanced tab) to the image column, for example `"Signature"`. The
+  field becomes a pad to sign with a finger, a stylus or the mouse, with **Clear**. The signature is saved as a PNG picture
+  into that column when the form is saved, like a photo (without a connection it waits on the phone and is sent after
+  its row). An existing signature shows as a picture with **Sign again**.
+- **On its own**: insert a **Signature pad**. `HasSignature` is true once someone has signed (a stray tap does not count),
+  `OnSign` runs after each stroke, `Image` shows it in an Image UI component, and a button saves it:
+  `Patch(Visits, ThisItem, {Signature: SignaturePad1.FileToken}); Reset(SignaturePad1)`.
+- **Printing**: in a print template, an image block with source "attachment" on the signature column prints it.
+- The pad is a 3:1 signature line inside the UI component; the picture is at most 1200 x 400 px, white background.
+- While signing the screen does not scroll, so place the pad where people do not need to scroll past it.
+
 ## Device() and Location()
 
 - `Device().Kind` is "Phone", "Tablet" or "Desktop"; also `Platform`, `Touch`, `Online`, `Standalone` (opened from the
@@ -68,7 +82,18 @@ Turn on **App settings > Works offline (entry)** for apps people use where Wi-Fi
   (encrypted) and the screen shows "You're offline" and "N waiting to send". When the connection returns, the changes are
   sent in the order they were made, exactly once.
 - **Screens** show the last data the phone loaded while it was connected. A search or filter the phone never ran shows
-  "Could not reach the server" instead of data.
+  "Could not reach the server" instead of data, unless its table is available offline (below).
+- **Available offline**: under Works offline (entry), tick the tables people need to look things up in without a
+  connection (parts, customers, locations). When the app opens with a connection, their rows are downloaded to the phone
+  (encrypted) as the signed-in person, so they get only the rows they may see. Offline, dropdowns, combo box searches,
+  lookups and simple lists over those tables use these rows. Set a **row limit** (2,000 if blank, at most 10,000) and
+  an optional **filter** the server can run, such as `Status <> "Closed"` or `owner = User().Id`. If the limit cuts the
+  table, the phone says so ("Only 2,000 of 5,130 rows of Parts are kept ..."); offline, searches then find only those
+  rows. Pulling down to refresh downloads them again. Keep these tables small: whatever is on the phone can be read by
+  anyone holding the unlocked phone with the app open.
+- **Forms keep a draft**: if the page reloads by accident or the phone closes the browser tab in the background, an
+  unsaved form comes back with "Draft restored" and a **Discard** button (this works in every app, not only offline ones).
+  If the record was changed by someone else meanwhile, the note says so and saving asks whether to keep yours.
 - **Not without a connection**: deleting, approvals, running flows, connector actions. They fail with a message.
 - **Server rules win**: a change the server refuses (a validation rule, a required column, a permission) waits on the
   phone with the reason; the person fixes and resends it or discards it. If someone else changed the same row meanwhile,

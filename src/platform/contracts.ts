@@ -467,7 +467,7 @@ export interface AttachmentRef {
   url: string
 }
 
-export type SolutionComponentKind = 'app' | 'table' | 'role' | 'connection' | 'file' | 'flow' | 'approvalPolicy' | 'printTemplate'
+export type SolutionComponentKind = 'app' | 'table' | 'role' | 'connection' | 'file' | 'flow' | 'approvalPolicy' | 'printTemplate' | 'dashboard'
 export interface SolutionDef {
   id: string
   /** identifier-safe */

@@ -11,6 +11,10 @@
  *   Scrap rate   = scrap count / total count
  *   First-pass yield = units good first time / units started (good quantity here excludes reworked units)
  *   MTTR         = total repair (breakdown) minutes / number of breakdowns   (UpKeep)
+ *   MTBF         = operating time / number of failures                       (UpKeep, "MTBF"; IEC 60050-192 "mean operating time between failures")
+ *                  operating time = sum of ProductionLog.RunMin (minutes the machine actually ran, LoggedOn in the range);
+ *                  failures = Downtime rows with Reason "Breakdown" (StartedOn in the range); planned stops, changeovers
+ *                  and waiting are not failures. Two tables: see mtbfQueries / mtbfRows (not a template tile).
  *   Schedule adherence = work orders done by their due date / work orders due (common definition)
  *
  * Ratios are computed from SUMS over the selected rows (never averages of per-row ratios). Ideal cycle time varies by
@@ -79,6 +83,52 @@ export const PRESETS: Preset[] = [
   { key: 'mttr', label: 'MTTR', description: 'Breakdown minutes / number of breakdowns.', query: { table: DOWNTIME, measures: [{ id: 'Breakdowns', fn: 'count', filter: { col: 'Reason', op: 'eq', value: 'breakdown' } }, { id: 'BreakdownMin', fn: 'sum', col: 'Minutes' }], filter: { col: 'Reason', op: 'eq', value: 'breakdown' }, computed: [{ id: 'MTTR', label: 'MTTR (minutes)', expr: { fn: 'div', args: [{ m: 'BreakdownMin' }, { m: 'Breakdowns' }] } }], dateColumn: { col: 'StartedOn', kind: 'datetime' } } },
   { key: 'scheduleAdherence', label: 'Schedule adherence', description: 'Work orders done by their due date / work orders due.', query: { table: WORK_ORDERS, measures: [{ id: 'Due', fn: 'count' }, { id: 'OnTime', fn: 'count', filter: { and: [{ col: 'Status', op: 'eq', value: 'done' }, { col: 'CompletedOn', op: 'cmpCol', cmp: 'le', other: 'DueDate' }] } }], computed: [{ id: 'Adherence', label: 'Schedule adherence', expr: { fn: 'div', args: [{ m: 'OnTime' }, { m: 'Due' }] } }], filter: { not: { col: 'Status', op: 'eq', value: 'cancelled' } }, dateColumn: { col: 'DueDate', kind: 'date' } } },
 ]
+
+/* ------------------------------------------------------------------ MTBF */
+
+/** MTBF in minutes: operating minutes / failures; blank when either is blank or there was no failure (as MTTR: x / 0 is blank) */
+export function mtbf(operatingMinutes: number | null | undefined, failures: number | null | undefined): number | null {
+  if (typeof operatingMinutes !== 'number' || typeof failures !== 'number' || !Number.isFinite(operatingMinutes) || !Number.isFinite(failures) || failures <= 0) return null
+  return operatingMinutes / failures
+}
+
+/**
+ * The two queries of MTBF (a tile reads one table, MTBF needs two): operating minutes from the production log and the
+ * number of breakdowns from the downtime log, over the same date range; per machine when `byMachine`.
+ */
+export function mtbfQueries(names: { log: string; downtime: string } = { log: PRODUCTION_LOG, downtime: DOWNTIME }, o: { byMachine?: boolean } = {}): { operating: QuerySpec; failures: QuerySpec } {
+  const groupBy = o.byMachine ? ['Machine'] : undefined
+  return {
+    operating: { table: names.log, ...(groupBy ? { groupBy } : {}), measures: [{ id: 'OperatingMin', label: 'Operating minutes', fn: 'sum', col: 'RunMin' }], dateColumn: logDate },
+    failures: { table: names.downtime, ...(groupBy ? { groupBy } : {}), measures: [{ id: 'Failures', label: 'Breakdowns', fn: 'count' }], filter: { col: 'Reason', op: 'eq', value: 'breakdown' }, dateColumn: { col: 'StartedOn', kind: 'datetime' } },
+  }
+}
+
+export interface MtbfRow { Machine?: unknown; OperatingMin: number | null; Failures: number; MTBF: number | null }
+
+/**
+ * Combines the finished rows of mtbfQueries: one row (no key) or one per machine (key 'Machine', matched case-insensitively
+ * as the database groups text). A machine that ran without a breakdown has MTBF blank (no failure to measure between);
+ * one with breakdowns but no logged run time has operating minutes blank.
+ */
+export function mtbfRows(operating: Record<string, unknown>[], failures: Record<string, unknown>[], key?: 'Machine'): MtbfRow[] {
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : v === null || v === undefined || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null)
+  if (!key) {
+    const op = num(operating[0]?.OperatingMin)
+    const f = num(failures[0]?.Failures) ?? 0
+    return [{ OperatingMin: op, Failures: f, MTBF: mtbf(op, f) }]
+  }
+  const norm = (v: unknown) => (typeof v === 'string' ? v.toLowerCase() : JSON.stringify(v ?? null))
+  const out = new Map<string, MtbfRow>()
+  for (const r of operating) out.set(norm(r[key]), { Machine: r[key], OperatingMin: num(r.OperatingMin), Failures: 0, MTBF: null })
+  for (const r of failures) {
+    const k = norm(r[key])
+    const cur = out.get(k) ?? { Machine: r[key], OperatingMin: null, Failures: 0, MTBF: null }
+    cur.Failures += num(r.Failures) ?? 0
+    out.set(k, cur)
+  }
+  return [...out.values()].map((r) => ({ ...r, MTBF: mtbf(r.OperatingMin, r.Failures) }))
+}
 
 const pct = { style: 'percent' as const, decimals: 1 }
 const OEE_BANDS = [{ from: 0, to: 0.6, status: 'bad' as const }, { from: 0.6, to: 0.85, status: 'warn' as const }, { from: 0.85, to: 1, status: 'good' as const }]

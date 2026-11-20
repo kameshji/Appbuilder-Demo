@@ -6,6 +6,8 @@
  */
 import { useEffect, useSyncExternalStore } from 'react'
 import { platform, type AttachmentRef } from '@/platform'
+import type { FxValue } from '@/contracts'
+import type { ColumnDef } from '@/platform/contracts'
 
 /* ------------------------------------------------------------------ ids in cells */
 
@@ -184,6 +186,34 @@ export function pendingFilesOf(v: unknown): Array<{ column: string; files: File[
     if (files.length) out.push({ column, files })
   }
   return out
+}
+
+/**
+ * Patch with file tokens (`{Signature: SignaturePad1.FileToken}`, `{Photo: FileUpload1.FileToken}`): values of image /
+ * file columns that are tokens of this registry are taken out of the row write and uploaded after it (the Form's way).
+ * A single-file column that already has a file is cleared in the write (`updating`), so the upload replaces it.
+ * `missing`: a token-shaped value whose files are gone (an old token after a reload).
+ */
+export function splitFileTokens(changes: Record<string, FxValue>, columns: ColumnDef[], updating: boolean): { rest: Record<string, FxValue>; files: Array<{ column: string; files: File[] }>; missing?: string } {
+  const byName = new Map(columns.map((c) => [c.name.toLowerCase(), c]))
+  const rest: Record<string, FxValue> = {}
+  const files: Array<{ column: string; files: File[] }> = []
+  let missing: string | undefined
+  for (const [k, v] of Object.entries(changes)) {
+    const col = byName.get(k.toLowerCase())
+    if (col && (col.type === 'image' || col.type === 'file') && typeof v === 'string' && /^files_[a-z0-9]+_[a-z0-9]+$/.test(v)) {
+      const list = filesForToken(v)
+      if (!list.length) {
+        missing ??= col.displayName || col.name
+        continue
+      }
+      files.push({ column: col.name, files: col.multiple ? list : list.slice(0, 1) })
+      if (updating && !col.multiple) rest[col.name] = null
+      continue
+    }
+    rest[k] = v
+  }
+  return { rest, files, ...(missing ? { missing } : {}) }
 }
 
 /* ------------------------------------------------------------------ client-side checks for pickers */

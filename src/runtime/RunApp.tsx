@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Bug, ChevronDown, ChevronUp, CircleAlert, Loader2, Lock, MonitorPlay, Power, RotateCcw, ScrollText, X } from 'lucide-react'
 import { platform, usePlatform } from '@/platform'
 import { go } from '@/router'
@@ -14,6 +14,11 @@ import { errorMessage } from './data'
 import { AppLiveBar } from './presence'
 import { UndoDelete } from './UndoDelete'
 import { registerOfflineApp } from '@/phone/offline'
+import { compileOfflineTable, normalizeOfflineTables } from '@/phone/offline/tables'
+import type { ControlNode, FxScope, OfflineTableDef } from '@/contracts'
+import { currentUserRecord } from './data'
+import { schemaFor } from './delegation'
+import { DraftScope, type DraftScopeValue } from '@/phone/drafts'
 import { setAppManifest } from '@/phone/pwa'
 
 /**
@@ -53,12 +58,36 @@ function Player({ appId, embedded, onBack }: { appId: string; embedded: boolean;
   // P2-A "Works offline (entry)": the app's tables use the offline outbox and read cache while it is open
   const offlineEntry = useAppStore((s) => loadState === 'ready' && s.appId === appId && !!s.app.offline?.entry)
   const sources = useAppStore((s) => s.app.dataSources)
-  useEffect(() => (offlineEntry ? registerOfflineApp(appId, sources ?? []) : undefined), [offlineEntry, appId, sources])
+  // "available offline" tables: compiled once per definition (the filter runs on the server, as the signed-in user)
+  const offlineTables = useAppStore((s) => s.app.offline?.tables)
+  const tablesKey = JSON.stringify(normalizeOfflineTables(offlineTables, sources))
+  const schemaReady = usePlatform((s) => s.tables.length)
+  useEffect(() => {
+    if (!offlineEntry) return
+    const list = JSON.parse(tablesKey) as OfflineTableDef[]
+    const user = currentUserRecord()
+    const scope: FxScope = { resolve: (n) => (n === 'User()' ? (user ?? undefined) : undefined) }
+    const specs = list.map((t) => compileOfflineTable(t, schemaFor([]), scope))
+    return registerOfflineApp(appId, sources ?? [], specs)
+  }, [offlineEntry, appId, sources, tablesKey, schemaReady])
   useEffect(() => {
     if (!embedded) setAppManifest(appId)
   }, [embedded, appId])
   const [denied, setDenied] = useState(false)
   const channel = useRef<Channel | null>(null)
+  // Form drafts across reloads (src/phone/drafts.ts): keyed by app and screen; server mode only
+  const screens = useAppStore((s) => s.app.screens)
+  const serverMode = usePlatform((s) => s.mode === 'server')
+  const draftScope = useMemo<DraftScopeValue | null>(() => {
+    if (!serverMode) return null
+    const of = new Map<string, string>()
+    const walk = (n: ControlNode, screen: string) => {
+      of.set(n.id, screen)
+      for (const c of n.children ?? []) walk(c, screen)
+    }
+    for (const s of screens) walk(s, s.id)
+    return { appId, screenOf: (id) => of.get(id) }
+  }, [serverMode, screens, appId])
 
   useEffect(() => {
     store.getState().setRunSurface(true)
@@ -157,7 +186,9 @@ function Player({ appId, embedded, onBack }: { appId: string; embedded: boolean;
           </Button>
         </Center>
       ) : (
-        <RunSurface testId="run-screen" padding={embedded ? 12 : 0} />
+        <DraftScope.Provider value={draftScope}>
+          <RunSurface testId="run-screen" padding={embedded ? 12 : 0} />
+        </DraftScope.Provider>
       )}
       <DataLoading />
       <AppLiveBar appId={appId} store={store} />

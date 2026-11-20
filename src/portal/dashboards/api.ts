@@ -47,6 +47,13 @@ function demoAll(): DashboardInfo[] {
 function demoSave(list: DashboardInfo[]): void {
   try { localStorage.setItem(DEMO_KEY, JSON.stringify(list)) } catch { throw new PlatformError('storage', 'The browser storage is full.') }
 }
+const DEMO_SETTINGS_KEY = 'appbuilder-dashboard-settings'
+function demoSettings(): DashboardSettings {
+  try {
+    const o = JSON.parse(localStorage.getItem(DEMO_SETTINGS_KEY) ?? 'null') as Partial<DashboardSettings> | null
+    return o && typeof o === 'object' ? { ...DEFAULT_SETTINGS, ...o } : DEFAULT_SETTINGS
+  } catch { return DEFAULT_SETTINGS }
+}
 const isServer = () => platform.getState().mode === 'server'
 const me = () => platform.getState().session?.user.id ?? platform.getState().currentUserId ?? 'me'
 
@@ -89,7 +96,13 @@ export const dashboardsApi = {
   },
   async settings(): Promise<DashboardSettings> {
     if (isServer()) return (await call<{ settings: DashboardSettings }>('GET', '/dashboards/settings')).settings
-    return DEFAULT_SETTINGS
+    return demoSettings()
+  },
+  /** administrators only on the server (403 otherwise); demo mode keeps the values in browser storage */
+  async saveSettings(s: DashboardSettings): Promise<DashboardSettings> {
+    if (isServer()) return (await call<{ settings: DashboardSettings }>('PUT', '/dashboards/settings', { settings: s })).settings
+    try { localStorage.setItem(DEMO_SETTINGS_KEY, JSON.stringify(s)) } catch { throw new PlatformError('storage', 'The browser storage is full.') }
+    return s
   },
   /** every plan of a refresh in one round trip (server) or through the local executor (demo) */
   async query(queries: { id: string; plan: QueryPlan }[]): Promise<TileResult[]> {

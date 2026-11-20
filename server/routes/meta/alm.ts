@@ -41,6 +41,7 @@ import { installPkgFiles, readPkgFiles } from './solutions.ts'
 import { afterApplyFlows, applyFlows, planFlows, readPkgFlows, type FlowPlanOps, type PkgFlow } from '../../core/flows/alm.ts'
 import { applyApprovalPolicies, planApprovalPolicies, readPkgApprovalPolicies, type ApprovalPolicyOps, type PkgApprovalPolicy } from '../../core/approvals/alm.ts'
 import { applyPrintTemplates, planPrintTemplates, readPkgPrintTemplates, type PrintTemplateOps, type PkgPrintTemplate } from '../../core/print/alm.ts'
+import { DASHBOARD_KIND, applyDashboards, planDashboards, readPkgDashboards, type DashboardOps, type PkgDashboard } from '../../core/dashboards/alm.ts'
 import type { PkgFile } from './solutions.ts'
 
 /* ------------------------------------------------------------------ package */
@@ -61,6 +62,8 @@ export interface SolutionPkg {
   approvalPolicies?: PkgApprovalPolicy[]
   /** P2-B */
   printTemplates?: PkgPrintTemplate[]
+  /** P2-C; undefined: an older package (the solution's dashboards are left alone) */
+  dashboards?: PkgDashboard[]
   /** sha256 of the package content (without exportedOn) */
   hash: string
 }
@@ -115,7 +118,7 @@ export function readSolutionPkg(text: unknown, s: Services): SolutionPkg | null 
       version: typeof head.version === 'string' && VERSION_RE.test(head.version) ? head.version : '1.0.0',
       ...(typeof head.description === 'string' && head.description ? { description: head.description } : {}),
     },
-    apps, tables, roles, connections, files: readPkgFiles(doc.files), flows: readPkgFlows(doc.flows), approvalPolicies: readPkgApprovalPolicies(doc.approvalPolicies), printTemplates: readPkgPrintTemplates(doc.printTemplates),
+    apps, tables, roles, connections, files: readPkgFiles(doc.files), flows: readPkgFlows(doc.flows), approvalPolicies: readPkgApprovalPolicies(doc.approvalPolicies), printTemplates: readPkgPrintTemplates(doc.printTemplates), dashboards: readPkgDashboards(doc.dashboards),
     // the content, not the text: two exports of the same solution differ only in exportedOn
     hash: createHash('sha256').update(JSON.stringify({ ...doc, exportedOn: null })).digest('hex'),
   }
@@ -187,6 +190,7 @@ interface Ops {
   /** P1-C: approval policies to create, change, remove */
   approvalOps?: ApprovalPolicyOps
   printOps?: PrintTemplateOps
+  dashboardOps?: DashboardOps
 }
 
 export interface PlanResult { plan: SolutionPlan; ops: Ops }
@@ -461,6 +465,13 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
   warnings.push(...pp.warnings)
   if (pp.matched) matched = true
   ops.printOps = pp.ops
+  // dashboards (P2-C): viewer roles by id, then name; tables of the tiles checked against this environment and the package
+  const dp = await planDashboards(s, user, pkg.dashboards, old.filter((x) => (x.kind as string) === DASHBOARD_KIND).map((x) => x.id), pkg.roles, pkg.tables.flatMap((t) => [t.def.id, t.def.name].filter(Boolean)))
+  items.push(...dp.items)
+  problems.push(...dp.problems)
+  warnings.push(...dp.warnings)
+  if (dp.matched) matched = true
+  ops.dashboardOps = dp.ops
 
   const planMode: SolutionPlan['mode'] = matched ? 'upgrade' : 'install'
   if (planMode === 'upgrade' && !canAdmin) problems.push('Upgrading a solution in place changes existing apps, tables and roles: only administrators of this environment can do it.')
@@ -785,6 +796,15 @@ export async function applySolution(s: Services, ctx: Ctx, pkg: SolutionPkg, res
       if (ops.printOps) await applyPrintTemplates(s, u.user.id, ops.printOps, pkg.head.id)
       if (pkg.printTemplates) for (const p of pkg.printTemplates) components.push({ kind: 'printTemplate', id: p.id })
       else for (const c of ops.existingSolution?.components ?? []) if (c.kind === 'printTemplate') components.push(c)
+      // dashboards (P2-C), after roles: viewer roles the import created or matched are mapped
+      if (ops.dashboardOps) {
+        const roleMap = new Map<string, string>()
+        for (const n of ops.newRoles) if (n.role.id) roleMap.set(n.role.id, n.id)
+        for (const c of ops.changedRoles) if (c.role.id) roleMap.set(c.role.id, c.existing.id)
+        await applyDashboards(s, u.user.id, ops.dashboardOps, roleMap)
+      }
+      if (pkg.dashboards) for (const p of pkg.dashboards) components.push({ kind: DASHBOARD_KIND as SolutionDef['components'][number]['kind'], id: p.id })
+      else for (const c of ops.existingSolution?.components ?? []) if ((c.kind as string) === DASHBOARD_KIND) components.push(c)
 
       const sols = await s.meta.solutions.list()
       const prev = ops.existingSolution

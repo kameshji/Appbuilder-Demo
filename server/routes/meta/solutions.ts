@@ -8,6 +8,7 @@ import type { ConnectionRecord, Ctx, Router, Services } from '../../core/contrac
 import { exportFlows } from '../../core/flows/alm.ts'
 import { exportApprovalPolicies } from '../../core/approvals/alm.ts'
 import { exportPrintTemplates } from '../../core/print/alm.ts'
+import { DASHBOARD_KIND, dashboardExists, exportDashboards } from '../../core/dashboards/alm.ts'
 import { readDataFile } from '../../connectors/files/index.ts'
 import {
   IDENT, bodyObj, clone, conflict, invalid, isObj, me, notFound, optString, reqString, toIdentifier, toYaml, uniqueIdentifier, uniqueLabel,
@@ -27,7 +28,8 @@ import type { CoreServices } from '../../core/services.ts'
 import { userContextFor } from '../../core/auth.ts'
 import { runInEnvironment } from '../../core/env-context.ts'
 
-const KINDS: SolutionComponentKind[] = ['app', 'table', 'role', 'connection', 'file', 'flow', 'approvalPolicy', 'printTemplate']
+// P2-C: 'dashboard' is not in SolutionComponentKind (src/platform) yet, hence the cast
+const KINDS: SolutionComponentKind[] = ['app', 'table', 'role', 'connection', 'file', 'flow', 'approvalPolicy', 'printTemplate', DASHBOARD_KIND as SolutionComponentKind]
 const MAX_FILE_BYTES = 25 * 1024 * 1024
 
 /** P1-A: the flow options of an import (connection mapping, which new flows arrive turned on) */
@@ -64,6 +66,8 @@ async function componentExists(s: Services, kind: SolutionComponentKind, id: str
     case 'approvalPolicy': return !!(await (s as unknown as { approvals?: { policy(id: string): Promise<{ id: string } | null> } }).approvals?.policy(id))?.id
     case 'printTemplate': return !!(await (s as unknown as { print?: { raw(id: string): Promise<{ id: unknown } | null> } }).print?.raw(id))
   }
+  if ((kind as string) === DASHBOARD_KIND) return dashboardExists(s, id)
+  return false
 }
 
 function fieldsOf(b: Record<string, unknown>): Partial<SolutionDef> {
@@ -278,6 +282,8 @@ export async function exportSolutionPackage(s: Services, ctx: Ctx, id: string, i
     approvalPolicies: await exportApprovalPolicies(s, ofKind('approvalPolicy')),
     // P2-B: print templates (published document, Word file; never the generation log)
     printTemplates: await exportPrintTemplates(s, ofKind('printTemplate')),
+    // P2-C: dashboards (definition, viewer roles by id and name; never view tokens or snapshots)
+    dashboards: await exportDashboards(s, ofKind(DASHBOARD_KIND as SolutionComponentKind)),
   })
 }
 

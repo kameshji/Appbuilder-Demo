@@ -401,13 +401,13 @@ Used by: `Heading.Align`, `Label.Align`, `LinkButton.Align`, `RichText.Align`.
 
 ### AlignItems
 
-Used by: 92 properties on 84 UI components (for example `Accordion.AlignSelf`, `ActivityList.AlignSelf`, `Alert.AlignSelf`).
+Used by: 93 properties on 85 UI components (for example `Accordion.AlignSelf`, `ActivityList.AlignSelf`, `Alert.AlignSelf`).
 
 5 members: `Auto`, `Start`, `Center`, `End`, `Stretch`.
 
 ### Anchor
 
-Used by: 166 properties on 83 UI components (for example `Accordion.AnchorH`, `Accordion.AnchorV`, `ActivityList.AnchorH`).
+Used by: 168 properties on 84 UI components (for example `Accordion.AnchorH`, `Accordion.AnchorV`, `ActivityList.AnchorH`).
 
 5 members: `Start`, `End`, `Stretch`, `Center`, `Scale`.
 
@@ -445,7 +445,7 @@ Used by: 8 properties on 8 UI components (for example `Column.Fill`, `Container.
 
 Whether a UI component accepts input (Edit), only shows its value (View) or is greyed out (Disabled).
 
-Used by: 30 properties on 30 UI components (for example `BarcodeScanner.DisplayMode`, `Button.DisplayMode`, `Checkbox.DisplayMode`).
+Used by: 31 properties on 31 UI components (for example `BarcodeScanner.DisplayMode`, `Button.DisplayMode`, `Checkbox.DisplayMode`).
 
 3 members: `Edit`, `View`, `Disabled`.
 

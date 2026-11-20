@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { ClipboardList } from 'lucide-react'
 import type { ControlRenderProps, ControlType, FxRecord, FxValue } from '@/contracts'
 import { platform, usePlatform } from '@/platform'
@@ -20,6 +20,8 @@ import { useDevice } from '@/phone/env'
 import { StickyBar } from '@/phone/sheet-bar'
 import { useBoxWidth } from '@/phone/touch-hooks'
 import { AttachmentField } from './AttachmentField'
+import { SignatureField } from './SignatureField'
+import { DraftScope, draftKeyOf, draftNote, draftRecordKey, formDrafts, restoreDecision } from '@/phone/drafts'
 import {
   type FieldVal,
   type FormModeName,
@@ -207,7 +209,9 @@ function displayValue(col: ColumnDef, v: FieldVal | undefined, lookups: LookupOp
 
 /* ------------------------------------------------------------------ the form */
 
-function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: ControlRenderProps) {
+const isoOf = (v: unknown): string | null => (v instanceof Date ? v.toISOString() : typeof v === 'string' && v ? v : null)
+
+function FormRender({ node, props, mode, outputs, setOutput, fire, focusToken }: ControlRenderProps) {
   const design = mode === 'design'
   const version = useWorkspaceVersion()
   const root = useRef<HTMLDivElement>(null)
@@ -245,6 +249,9 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
     [table, fieldsProp, formMode, colAccess],
   )
   const colsKey = cols.map((c) => `${c.name}:${c.type}`).join(',')
+  // image / file columns that are signed instead of uploaded (SignatureField, src/phone/SignatureCanvas.tsx)
+  const sigText = toText(props.SignatureFields)
+  const sigSet = useMemo(() => new Set(sigText.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)), [sigText])
 
   const item: FxRecord | null = isRecord(props.Item) ? props.Item : null
   const iKey = itemKey(item)
@@ -293,8 +300,11 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
   const [pending, setPending] = useState<Record<string, File[]>>({})
   /** the file cells as last loaded / saved: Updates only carries a file column that differs from it */
   const [fileBase, setFileBase] = useState<Record<string, string>>(() => fileCells(cols, values))
+  /** "Draft restored ..." (src/phone/drafts.ts); null when nothing was restored */
+  const [draftText, setDraftText] = useState<string | null>(null)
   if (loaded !== loadKey) {
     const v = initialValues(cols, formMode, item)
+    setDraftText(null)
     setLoaded(loadKey)
     setContentKey(iKey)
     setBase(item ? (item.modifiedOn ?? null) : null)
@@ -331,6 +341,7 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
     setPending({})
     setFileBase(fileCells(cols, nextValues))
     setBaseline(serializeValues(nextValues))
+    setDraftText(null)
   }
 
   /* ---- validation + outputs ---- */
@@ -405,6 +416,102 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
     setContentKey(iKey)
     setConflict(null)
     setOutput('Error', '')
+  }
+
+  /* ---- drafts across reloads (src/phone/drafts.ts): sealed in the user's offline store, never localStorage ---- */
+  const dscope = useContext(DraftScope)
+  const dKey = dscope && !design && table && formMode !== 'View' ? draftKeyOf(dscope.appId, dscope.screenOf(node.id) ?? '', node.name, table.name, draftRecordKey(formMode, followsId ? itemId : '')) : ''
+  const live = useRef({ values, baseline, pSig, base, pending })
+  live.current = { values, baseline, pSig, base, pending }
+  // restore once per load (a reload, a discarded tab): only into a form nobody has typed in yet
+  useEffect(() => {
+    if (!dKey) return
+    let alive = true
+    void formDrafts.load(dKey).then((got) => {
+      if (!alive || !got) return
+      const cur = live.current
+      const decision = restoreDecision({ draft: got.draft, mode: formMode, currentBase: cur.base, untouched: serializeValues(cur.values) === cur.baseline && cur.pSig === '' })
+      if (decision === 'ignore') return
+      const next: FormValues = { ...cur.values }
+      for (const c of cols) if (Object.prototype.hasOwnProperty.call(got.draft.values, c.name)) next[c.name] = got.draft.values[c.name] as FieldVal
+      const files: Record<string, File[]> = {}
+      for (const f of got.files) (files[f.column] ??= []).push(f.file)
+      setValues(next)
+      setPending(files)
+      // Edit: the save goes with the version the draft started from; a newer server row answers 409 (conflict panel)
+      if (formMode === 'Edit' && followsId) setBase(got.draft.base)
+      setDraftText(draftNote(got.draft.savedAt, decision === 'restore-changed', got.draft.filesDropped))
+    })
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dKey, loaded])
+  // keep it while unsaved (debounced; at once when the page is hidden: a phone may discard a background tab)
+  const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const draftWrite = useRef<(() => void) | null>(null)
+  const draftKept = useRef('')
+  useEffect(() => {
+    if (!dKey) return
+    if (draftTimer.current) clearTimeout(draftTimer.current)
+    draftTimer.current = null
+    draftWrite.current = null
+    // the form moved to another record: the edits of the old one were dropped (as always), so is their draft
+    if (draftKept.current && draftKept.current !== dKey) {
+      void formDrafts.remove(draftKept.current)
+      draftKept.current = ''
+    }
+    if (!unsaved) {
+      if (draftKept.current === dKey) {
+        draftKept.current = ''
+        void formDrafts.remove(dKey)
+      }
+      return
+    }
+    const write = () => {
+      draftTimer.current = null
+      draftWrite.current = null
+      const cur = live.current
+      const files = Object.entries(cur.pending).flatMap(([column, list]) => list.map((file) => ({ column, file })))
+      draftKept.current = dKey
+      void formDrafts.save(dKey, { values: cur.values, base: isoOf(cur.base), mode: formMode, table: table?.name ?? dsName, savedAt: Date.now() }, files)
+    }
+    draftWrite.current = write
+    draftTimer.current = setTimeout(write, 600)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dKey, unsaved, serializeValues(values), pSig, String(isoOf(base))])
+  useEffect(() => {
+    if (!dKey) return
+    const hide = () => {
+      if (document.visibilityState === 'hidden' && draftWrite.current) {
+        if (draftTimer.current) clearTimeout(draftTimer.current)
+        draftWrite.current()
+      }
+    }
+    const leave = () => draftWrite.current?.()
+    document.addEventListener('visibilitychange', hide)
+    window.addEventListener('pagehide', leave)
+    return () => {
+      document.removeEventListener('visibilitychange', hide)
+      window.removeEventListener('pagehide', leave)
+    }
+  }, [dKey])
+  // leaving the form inside the app (another screen, the app tab closed) is not an accident: no draft is left behind
+  useEffect(
+    () => () => {
+      if (draftTimer.current) clearTimeout(draftTimer.current)
+      draftWrite.current = null
+      if (draftKept.current) void formDrafts.remove(draftKept.current)
+    },
+    [],
+  )
+  const discardDraft = () => {
+    if (dKey) void formDrafts.remove(dKey)
+    draftKept.current = ''
+    setDraftText(null)
+    setOutput('Error', '')
+    setContentKey(iKey)
+    setReloadToken((n) => n + 1)
   }
 
   const updates = useMemo(() => {
@@ -520,6 +627,16 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
                     displayValue(c, values[c.name], lookups[c.name] ?? []) || <span className="text-muted-foreground">-</span>
                   )}
                 </div>
+              ) : isFileType(c.type) && sigSet.has(c.name.toLowerCase()) ? (
+                <SignatureField
+                  col={c}
+                  id={id}
+                  existing={typeof values[c.name] === 'string' ? (values[c.name] as string) : ''}
+                  pending={pending[c.name] ?? []}
+                  invalid={Boolean(showMsg)}
+                  onPendingChange={(files) => editable && setPending((p) => ({ ...p, [c.name]: files }))}
+                  onTouch={() => editable && setTouched((t) => (t[c.name] ? t : { ...t, [c.name]: true }))}
+                />
               ) : isFileType(c.type) ? (
                 <AttachmentField
                   col={c}
@@ -562,6 +679,12 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
             <span className="min-w-0 flex-1"><b>This record was changed by {conflict.by ?? 'someone else'}</b> while you were editing it. Reload to see their version (your edits are dropped), or keep yours (saving then replaces theirs).</span>
             <Button type="button" size="sm" variant="outline" className="h-7" onClick={reloadTheirs} data-testid="form-conflict-reload">Reload</Button>
             <Button type="button" size="sm" className="h-7" onClick={keepMine} data-testid="form-conflict-keep">Keep mine</Button>
+          </div>
+        )}
+        {draftText && !design && (
+          <div role="status" data-testid="form-draft-note" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-sky-500/40 bg-sky-500/10 px-4 py-2 text-xs text-sky-900 dark:text-sky-100">
+            <span className="min-w-0 flex-1">{draftText}</span>
+            <Button type="button" size="sm" variant="outline" className={touch ? 'h-10' : 'h-7'} onClick={discardDraft} data-testid="form-draft-discard">Discard</Button>
           </div>
         )}
         <div className="min-h-0 flex-1 overflow-y-auto p-4">{body}</div>
@@ -623,6 +746,7 @@ export const Form: ControlType = {
     },
     { name: 'Fields', kind: 'text', group: 'Content', default: '=""' },
     { name: 'Columns', kind: 'number', group: 'Layout', default: '=2' },
+    { name: 'SignatureFields', label: 'Signature fields', kind: 'text', group: 'Content', default: '=""', simple: false },
     { name: 'ShowButtons', label: 'Show buttons', kind: 'boolean', group: 'Content', default: '=true' },
     { name: 'SubmitText', label: 'Save button text', kind: 'text', group: 'Content', default: '="Save"', simple: false },
     { name: 'CancelText', label: 'Cancel button text', kind: 'text', group: 'Content', default: '="Cancel"', simple: false },

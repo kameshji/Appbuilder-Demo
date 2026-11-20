@@ -57,6 +57,7 @@ export const TOUCH_MATRIX: Record<string, TouchEntry> = {
   Timer: W('Not tapped by users.', false),
   BarcodeScanner: F('New: 48 px button, full-screen scanner with 48 px buttons.'),
   ScanInput: F('New: 48 px field and camera button; keyboard-wedge scanners.'),
+  SignaturePad: F('New: pointer events (finger, stylus, mouse), touch-action none on the pad so the page does not scroll and pull to refresh does not start while signing; 44 px Clear button. Too big for the touch audit (its own pad is the target). Drawing by touch checked in Chrome emulation only.'),
   Row: D('Layout.'),
   Column: D('Layout.'),
   Grid: D('Layout.'),

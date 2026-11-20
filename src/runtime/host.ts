@@ -2,8 +2,8 @@ import type { AppDef, ControlNode, FxHost, FxRecord, FxValue } from '@/contracts
 import { Evaluator, ROOT_CTX, enumName, type Env, type NodeCtx, type RuntimeView } from './evaluator'
 import { uid, isRecord } from './util'
 import { printCall, generateFileCall, newFileToken } from '@/print/runtime'
-import { changeShare, collabAction, requestApprovalCall, restoreCall, runFlowCall, sendNotification, currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableRows, tables } from './data'
-import { pendingFilesOf } from './attachments'
+import { changeShare, collabAction, requestApprovalCall, restoreCall, runFlowCall, sendNotification, currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableColumns, tableRows, tables } from './data'
+import { pendingFilesOf, splitFileTokens } from './attachments'
 import { finishSubmit } from './submit'
 import { chainItems, prepareAction } from './delegation'
 
@@ -42,6 +42,11 @@ export interface DeferredSubmit {
   label: string
   /** resolves with the stored row; rejects with a SubmitError */
   work: () => Promise<FxRecord>
+  /**
+   * Patch with file tokens (SignaturePad1.FileToken, FileUpload1.FileToken in an image / file column): only the
+   * uploads after the row; no form outputs to write, a failure is a toast and an error entry
+   */
+  uploadOnly?: boolean
 }
 
 export interface RunResult {
@@ -341,7 +346,19 @@ function beginRun(input: RunInput): Run {
     patch(coll, base, changes) {
       if (isTableTarget(coll)) {
         const id = rowId(base)
-        return tableWrite(() => (id ? tables.update(coll, id, changes) : tables.insert(coll, { ...base, ...changes })), { ...base, ...changes })
+        // file tokens (a signature pad's or a file upload's FileToken) in image / file columns: write the row, then upload
+        const split = splitFileTokens(changes, tableColumns(coll), !!id)
+        if (split.missing) fail(`Patch: the file for ${split.missing} is no longer available. Choose it (or sign) again.`)
+        const stored = tableWrite(() => (id ? tables.update(coll, id, split.rest) : tables.insert(coll, { ...base, ...split.rest })), { ...base, ...changes })
+        const sid = rowId(stored)
+        if (split.files.length && sid && !input.dryData) {
+          const files = split.files
+          res.deferred.push({ key: '', nodeId: node?.id ?? '', ctx, name: 'Patch', label, uploadOnly: true, work: async () => {
+            await finishSubmit(submitDeps, { table: coll, rowId: sid, files })
+            return currentRow(coll, sid) ?? stored
+          } })
+        }
+        return stored
       }
       const list = (view.collections[coll] ?? []).slice()
       const id = typeof base.__id === 'string' ? base.__id : null

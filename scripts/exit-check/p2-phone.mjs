@@ -144,6 +144,7 @@ async function setNetwork(kind) {
 }
 async function rows() { return q(`SELECT * FROM env_default.${PHYS}`) }
 let PHYS = ''
+let PROD_ID = ''
 
 /* ------------------------------------------------------------------ the checks */
 
@@ -157,6 +158,7 @@ async function setupData() {
     ],
   }), 'create Production')
   PHYS = t.source
+  PROD_ID = t.id
   const created = must(await api('POST', '/apps', { name: 'Production log', width: 360, height: 800 }), 'create app')
   const def = must(await api('GET', `/apps/${created.id}`), 'get app').definition
   def.dataSources = ['Production']
@@ -474,7 +476,7 @@ async function touchAudit() {
   const created = must(await api('POST', '/apps', { name: 'Touch audit', width: 412, height: 915 }), 'audit app')
   const def = must(await api('GET', `/apps/${created.id}`), 'get audit app').definition
   const { TOUCH_MATRIX } = await import(pathToFileURL(path.join(root, 'src/phone/touch.ts')).href)
-  const types = Object.entries(TOUCH_MATRIX).filter(([t, e]) => e.interactive && !['Screen', 'Gallery', 'Form', 'Dialog', 'Sheet', 'Chart', 'Visual', 'Timer', 'Video', 'Audio', 'ScrollArea', 'FileUpload', 'Calendar', 'ApprovalsPanel', 'NavMenu', 'TopBar', 'Steps', 'List', 'DataTable', 'Accordion', 'RadioGroup', 'EmptyState', 'TagList'].includes(t)).map(([t]) => t)
+  const types = Object.entries(TOUCH_MATRIX).filter(([t, e]) => e.interactive && !['Screen', 'Gallery', 'Form', 'Dialog', 'Sheet', 'Chart', 'Visual', 'Timer', 'Video', 'Audio', 'ScrollArea', 'FileUpload', 'Calendar', 'ApprovalsPanel', 'NavMenu', 'TopBar', 'Steps', 'List', 'DataTable', 'Accordion', 'RadioGroup', 'EmptyState', 'TagList', 'SignaturePad'].includes(t)).map(([t]) => t)
   let y = 8
   def.screens[0].children = types.map((t, i) => {
     const node = { id: `n_a${i}`, name: `A_${t}`, type: t, props: { X: '=24', Y: `=${y}` }, children: [] }
@@ -769,9 +771,12 @@ async function desktopUnchanged(pickersId, tableId, dialogId) {
   await sleep(600)
   const info = await page.evaluate(() => ({ touch: document.documentElement.classList.contains('touch'), date: !!document.querySelector('[data-testid="control-DP"] input[type=date]'), num: document.querySelector('[data-testid="control-NI"] input')?.getAttribute('inputmode'), sign: !!document.querySelector('[data-testid="number-sign"]') }))
   check(!info.touch && !info.date && info.num === 'decimal' && !info.sign, 'desktop: no touch class, DatePicker is the calendar popover, NumberInput has no sign button', JSON.stringify(info))
+  const histBefore = await page.evaluate(() => history.length)
   await page.click(ctl('DD') + ' [role=combobox]')
   await sleep(300)
   check(!!(await page.$('[role=listbox]')) && !(await page.$(T('bottom-sheet'))), 'desktop: Dropdown still opens the popover list (no bottom sheet)', '')
+  const histOpen = await page.evaluate(() => ({ n: history.length, layer: history.state?.__abLayer ?? null }))
+  check(histOpen.n === histBefore && histOpen.layer === null, 'desktop: an open popover pushes no history entry (the Back handling is for phone sheets only)', `${histBefore} -> ${JSON.stringify(histOpen)}`)
   await page.keyboard.press('Escape')
   await page.click(ctl('CB') + ' [role=combobox]')
   await sleep(300)
@@ -788,6 +793,314 @@ async function desktopUnchanged(pickersId, tableId, dialogId) {
   const pl = await page.$eval('[role=dialog][data-overlay-placement]', (e) => e.getAttribute('data-overlay-placement'))
   check(pl === 'dialog', 'desktop: Dialog stays a centred dialog', pl)
   await phone(360, 800)
+}
+
+/* ------------------------------------------------------------------ F. offline tables, drafts, signatures, outbox conflict / rejection, Back */
+
+let VISITS = ''
+let PARTS = ''
+let PARTS_OPEN = 0
+async function waitOutboxEmpty(timeout = 45000) {
+  await page.waitForFunction(() => !document.querySelector('[data-testid="outbox-count"]'), { timeout })
+}
+/** go offline the way the earlier checks do: tap Save only after the "You're offline" strip appeared (the pinned save bar moves up then) */
+async function offlineAndSettled() {
+  await setNetwork('offline')
+  await page.waitForFunction(() => /offline/i.test(document.querySelector('[data-testid="connection-bar"]')?.textContent ?? ''), { timeout: 15000 })
+  await sleep(400)
+}
+async function typeInto(sel, v) {
+  await page.$eval(sel, (e) => e.scrollIntoView({ block: 'center' }))
+  await page.focus(sel)
+  await page.$eval(sel, (e) => e.select?.())
+  await page.keyboard.press('Backspace')
+  if (v !== '') await page.keyboard.type(v)
+}
+/**
+ * open the outbox panel. The status strip is in the page flow and other lines in it come and go on their own (the
+ * "available offline" cap notice of another open app tab arrives when its download finishes after the page loaded): a
+ * tap computed before such a shift lands beside the button. Like a person, tap again when the panel did not open.
+ */
+async function openOutboxPanel() {
+  for (let i = 0; i < 3; i++) {
+    // the app's error toast for the refused write ("changed by ...", the rule's message) sits over the strip for a few
+    // seconds: tap once nothing covers the button
+    await page.waitForFunction(() => { const b = document.querySelector('[data-testid="outbox-button"]'); if (!b) return false; const r = b.getBoundingClientRect(); const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return el === b || b.contains(el) }, { timeout: 20000 })
+    await tap(T('outbox-button'))
+    if (await page.waitForSelector(T('outbox-panel'), { visible: true, timeout: 3000 }).then(() => true, () => false)) return
+    log('outbox panel did not open: ' + JSON.stringify(await page.evaluate(() => { const b = document.querySelector('[data-testid="outbox-button"]'); const r = b.getBoundingClientRect(); const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { body: getComputedStyle(document.body).pointerEvents, hit: el === b || b.contains(el), el: el?.outerHTML.slice(0, 120), r: [r.left, r.top, r.width, r.height], vh: innerHeight, panel: !!document.querySelector('[data-testid="outbox-panel"]'), dialogs: document.querySelectorAll('[role=dialog]').length } })))
+  }
+  await waitFor(T('outbox-panel'))
+}
+/** the Save button of the form on screen: it may sit in the pinned save bar (portaled to body), and other app tabs stay mounted */
+async function tapVisibleSave() {
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="form-save"]')].some((b) => { const r = b.getBoundingClientRect(); return r.width > 0 && r.bottom > 0 && r.top < innerHeight && b.checkVisibility?.() !== false }), { timeout: 20000 })
+  const h = await page.evaluateHandle(() => [...document.querySelectorAll('[data-testid="form-save"]')].find((b) => { const r = b.getBoundingClientRect(); return r.width > 0 && r.bottom > 0 && r.top < innerHeight && b.checkVisibility?.() !== false }))
+  await h.asElement().tap()
+}
+/** a finger signature: a wavy line across the canvas */
+async function sign(sel) {
+  await page.$eval(sel, (e) => e.scrollIntoView({ block: 'center' }))
+  await sleep(150)
+  const r = await rectOf(sel)
+  const y0 = r.t + r.h / 2
+  await page.touchscreen.touchStart(r.l + 20, y0)
+  for (let i = 1; i <= 14; i++) await page.touchscreen.touchMove(r.l + 20 + (i * (r.w - 40)) / 14, y0 + (i % 2 ? -r.h / 5 : r.h / 5))
+  await page.touchscreen.touchEnd()
+  await sleep(400)
+}
+function pngSize(buf) {
+  if (!buf || buf.length < 24 || buf.readUInt32BE(0) !== 0x89504e47) return null
+  return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) }
+}
+
+async function setupSectionF() {
+  const parts = must(await api('POST', '/tables', { displayName: 'Parts', name: 'Parts', columns: [{ displayName: 'Name', name: 'Name', type: 'text' }, { displayName: 'Status', name: 'Status', type: 'text' }] }), 'create Parts')
+  PARTS = parts.source
+  const me = must(await api('GET', '/status'), 'status').session.user.id
+  // 2,600 parts (every fifth Closed), in natural order Part 0001 ... Part 2600: more than a browser holds whole
+  await q(`INSERT INTO env_default.${parts.source} ("id","createdOn","modifiedOn","createdBy","owner","Name","Status")
+    SELECT 'part-' || lpad(g::text, 4, '0'), timestamp '2026-01-01' + g * interval '1 second', timestamp '2026-01-01' + g * interval '1 second', $1, $1,
+      'Part ' || lpad(g::text, 4, '0'), CASE WHEN g % 5 = 0 THEN 'Closed' ELSE 'Open' END FROM generate_series(1, 2600) g`, [me])
+  PARTS_OPEN = (await q(`SELECT count(*)::int AS n FROM env_default.${parts.source} WHERE "Status" <> 'Closed'`))[0].n
+  const visits = must(await api('POST', '/tables', { displayName: 'Visits', name: 'Visits', columns: [{ displayName: 'Part', name: 'Part', type: 'text' }, { displayName: 'Note', name: 'Note', type: 'text' }, { displayName: 'Signature', name: 'Signature', type: 'image' }] }), 'create Visits')
+  VISITS = visits.source
+  const created = must(await api('POST', '/apps', { name: 'Field visit', width: 360, height: 820 }), 'create Field visit')
+  const def = must(await api('GET', `/apps/${created.id}`), 'get Field visit').definition
+  def.dataSources = ['Parts', 'Visits']
+  def.offline = { entry: true, tables: [{ table: 'Parts', filter: 'Status <> "Closed"', maxRows: 1500 }] }
+  const n = (id, name, type, props) => ({ id, name, type, props, children: [] })
+  def.screens[0].children = [
+    n('f_q', 'Q', 'TextInput', { X: '=16', Y: '=8', Width: '=328', Height: '=40', AnchorH: '=Anchor.Stretch' }),
+    n('f_found', 'LblFound', 'Label', { X: '=16', Y: '=52', Width: '=328', Height: '=20', Text: '="F:" & CountRows(Filter(Parts, StartsWith(Name, Q.Value)))' }),
+    n('f_first', 'LblFirst', 'Label', { X: '=16', Y: '=74', Width: '=328', Height: '=20', Text: '="1st:" & First(Filter(Parts, StartsWith(Name, Q.Value))).Name' }),
+    n('f_pad', 'Pad1', 'SignaturePad', { X: '=16', Y: '=100', Width: '=328', Height: '=160' }),
+    n('f_btn', 'BtnSign', 'Button', { X: '=16', Y: '=266', Width: '=160', Height: '=44', Text: '="Save signature"', OnSelect: '=Patch(Visits, Defaults(Visits), {Part: "Standalone", Note: "pad", Signature: Pad1.FileToken}); Reset(Pad1)' }),
+    n('f_sig', 'LblSig', 'Label', { X: '=184', Y: '=278', Width: '=160', Height: '=20', Text: '="SIG:" & Pad1.HasSignature' }),
+    n('f_form', 'VisitForm', 'Form', { X: '=16', Y: '=316', Width: '=328', Height: '=480', DataSource: '="Visits"', Mode: '=FormMode.New', Fields: '="Part,Note,Signature"', SignatureFields: '="Signature"', Columns: '=1' }),
+  ]
+  must(await api('PUT', `/apps/${created.id}`, { definition: def }), 'save Field visit')
+  // the rows the conflict checks edit (made by section B in a full run)
+  for (const [line, qty] of [['Line 3', 120], ['Line 4', 7]]) if (!(await rows()).some((r) => r.Line === line)) must(await api('POST', '/data/Production/rows', { values: { Line: line, Qty: qty } }), 'seed ' + line)
+  const ed = must(await api('POST', '/apps', { name: 'Production edit', width: 360, height: 800 }), 'create Production edit')
+  const edef = must(await api('GET', `/apps/${ed.id}`), 'get Production edit').definition
+  edef.dataSources = ['Production']
+  edef.offline = { entry: true }
+  edef.screens[0].children = [
+    n('e_pick', 'Pick', 'TextInput', { X: '=16', Y: '=8', Width: '=328', Height: '=40', Default: '="Line 3"' }),
+    n('e_lbl', 'LblQty', 'Label', { X: '=16', Y: '=52', Width: '=328', Height: '=20', Text: '="Q:" & LookUp(Production, Line = Pick.Value).Qty' }),
+    n('e_form', 'EditForm', 'Form', { X: '=16', Y: '=80', Width: '=328', Height: '=360', DataSource: '="Production"', Mode: '=FormMode.Edit', Item: '=LookUp(Production, Line = Pick.Value)', Fields: '="Line,Qty"', Columns: '=1' }),
+  ]
+  must(await api('PUT', `/apps/${ed.id}`, { definition: edef }), 'save Production edit')
+  const bd = must(await api('POST', '/apps', { name: 'Back dialog', width: 360, height: 800 }), 'create Back dialog')
+  const bdef = must(await api('GET', `/apps/${bd.id}`), 'get Back dialog').definition
+  bdef.screens[0].children = [
+    n('b_lbl', 'LblShut', 'Label', { X: '=16', Y: '=8', Width: '=328', Height: '=20', Text: '="SHUT:" & varShut' }),
+    { id: 'b_dlg', name: 'BackDlg', type: 'Dialog', props: { Open: '=Not(varShut)', Title: '="Back test"', Width: '=480', Height: '=300', OnClose: '=Set(varShut, true)' }, children: [] },
+  ]
+  bdef.appProps = { ...(bdef.appProps ?? {}), OnStart: '=Set(varShut, false)' }
+  must(await api('PUT', `/apps/${bd.id}`, { definition: bdef }), 'save Back dialog')
+  return { fieldVisit: created.id, edit: ed.id, backDialog: bd.id }
+}
+
+async function offlineTables(appId) {
+  await page.goto(`${BASE}/?app=${appId}`, { waitUntil: 'networkidle2' })
+  await waitFor(`${T(`tab-pane-${appId}`)} [data-run-surface]`)
+  const st = await page.waitForFunction(() => { const t = window.__abOffline?.state().tables?.Parts; return t && t.state !== 'loading' ? t : null }, { timeout: 30000 }).then((h) => h.jsonValue())
+  check(st.state === 'ready' && st.kept === 1500 && st.total === PARTS_OPEN, 'available offline: Parts is downloaded as the signed-in user up to its row cap (filter Status <> "Closed" ran on the server)', JSON.stringify(st))
+  const notice = await page.$eval(T('offline-table-notice'), (e) => e.textContent).catch(() => '')
+  check(/Only 1,500 of 2,080 rows of Parts are kept on this device/.test(notice), 'a plain message says the row cap cut the data', notice.slice(0, 140))
+  await shot('20-offline-table-cap.png')
+  const sealed = await page.evaluate(async () => {
+    const dbs = (await indexedDB.databases()).filter((d) => d.name?.startsWith('appbuilder-offline-'))
+    const db = await new Promise((r, j) => { const o = indexedDB.open(dbs[0].name); o.onsuccess = () => r(o.result); o.onerror = () => j(o.error) })
+    const all = await new Promise((r) => { const t = db.transaction('cache', 'readonly').objectStore('cache'); const k = t.getAllKeys(); const v = t.getAll(); v.onsuccess = () => r(k.result.map((key, i) => [String(key), v.result[i]])) })
+    db.close()
+    const snap = all.find(([k]) => k.startsWith('snap:'))
+    if (!snap) return { found: false }
+    const bytes = new Uint8Array(snap[1].data)
+    const text = new TextDecoder('latin1').decode(bytes)
+    return { found: true, size: bytes.length, iv: snap[1].iv?.length, plain: /Part 0\d\d\d|Open/.test(text) }
+  })
+  const budget = await page.evaluate(() => window.__abOffline.state().cacheBytes)
+  check(sealed.found && sealed.iv === 12 && !sealed.plain && budget >= sealed.size && budget <= 25 * 1024 * 1024, 'the kept rows are sealed (AES-GCM, no readable row text) in the same encrypted store and count against the 25 MB budget', JSON.stringify({ ...sealed, budget }))
+  await page.$eval(T('offline-table-notice-dismiss'), (e) => e.click())
+  // offline: plans this device never ran are answered from the kept rows
+  await offlineAndSettled()
+  await typeInto(`${ctl('Q')} input`, 'Part 01')
+  await page.waitForFunction(() => /F:80/.test(document.querySelector('[data-testid="control-LblFound"]')?.textContent ?? ''), { timeout: 15000 }).catch(() => {})
+  const f1 = await text('LblFound')
+  const first = await text('LblFirst')
+  check(/^F:80$/.test(f1) && /^1st:Part 0101$/.test(first), 'offline: a new search over Parts is answered from the kept rows (count and first match)', `${f1} ${first}`)
+  await typeInto(`${ctl('Q')} input`, 'Part 19')
+  // (while typing, earlier prefixes show their own counts: wait for the last one)
+  await page.waitForFunction(() => document.querySelector('[data-testid="control-LblFound"]')?.textContent === 'F:0', { timeout: 15000 }).catch(() => {})
+  const f2 = await text('LblFound')
+  const server19 = (await q(`SELECT count(*)::int AS n FROM env_default.${PARTS} WHERE "Name" LIKE 'Part 19%' AND "Status" <> 'Closed'`))[0].n
+  check(f2 === 'F:0' && server19 === 80, 'offline: rows beyond the cap are not on the device (Part 19xx: 0 offline; the server has them)', `${f2}, server ${server19}`)
+  await setNetwork('online')
+  await typeInto(`${ctl('Q')} input`, '')
+}
+
+async function draftsAcrossReload(appId) {
+  const sel = (c) => `${ctl('VisitForm')} [id$="-${c}"]`
+  await typeInto(sel('Part'), 'P-7')
+  await typeInto(sel('Note'), 'Draft note 1')
+  await sleep(1200)
+  // an accidental reload (or the phone discarding the tab)
+  await page.reload({ waitUntil: 'networkidle2' })
+  await waitFor(`${T(`tab-pane-${appId}`)} [data-run-surface]`)
+  await waitFor(T('form-draft-note'), 15000)
+  const vals = await page.evaluate(() => ({ part: document.querySelector('[data-testid="control-VisitForm"] [id$="-Part"]')?.value, note: document.querySelector('[data-testid="control-VisitForm"] [id$="-Note"]')?.value, text: document.querySelector('[data-testid="form-draft-note"]')?.textContent }))
+  check(vals.part === 'P-7' && vals.note === 'Draft note 1' && /Draft restored/.test(vals.text), 'Form draft: after a reload the unsaved New form is restored with a "Draft restored" note', JSON.stringify(vals))
+  await shot('21-draft-restored.png')
+  const where = await page.evaluate(async () => {
+    const ls = JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage })
+    const dbs = (await indexedDB.databases()).filter((d) => d.name?.startsWith('appbuilder-offline-'))
+    const db = await new Promise((r) => { const o = indexedDB.open(dbs[0].name); o.onsuccess = () => r(o.result) })
+    const all = await new Promise((r) => { const t = db.transaction('meta', 'readonly').objectStore('meta'); const k = t.getAllKeys(); const v = t.getAll(); v.onsuccess = () => r(k.result.map((key, i) => [String(key), v.result[i]])) })
+    db.close()
+    const d = all.find(([k]) => k.startsWith('draft:'))
+    const plain = d ? new TextDecoder('latin1').decode(new Uint8Array(d[1].body.data)).includes('Draft note') : true
+    return { inStorage: ls.includes('Draft note'), draft: !!d, plain }
+  })
+  check(!where.inStorage && where.draft && !where.plain, 'the draft is sealed in the per-user encrypted store (not in localStorage or sessionStorage)', JSON.stringify(where))
+  await tap(T('form-draft-discard'))
+  await sleep(500)
+  const after = await page.evaluate(() => ({ note: !!document.querySelector('[data-testid="form-draft-note"]'), v: document.querySelector('[data-testid="control-VisitForm"] [id$="-Note"]')?.value }))
+  await page.reload({ waitUntil: 'networkidle2' })
+  await waitFor(`${T(`tab-pane-${appId}`)} [data-run-surface]`)
+  await sleep(1500)
+  const again = await page.evaluate(() => !!document.querySelector('[data-testid="form-draft-note"]'))
+  check(!after.note && after.v === '' && !again, 'Discard drops the draft: the fields are empty and the next reload restores nothing', JSON.stringify({ ...after, again }))
+}
+
+async function signatures(appId) {
+  // the stand-alone pad: no page scroll while signing, HasSignature, then Patch with its FileToken
+  const scroller = `${T(`tab-pane-${appId}`)} [data-run-surface]`
+  await page.$eval(ctl('Pad1'), (e) => e.scrollIntoView({ block: 'center' }))
+  const top0 = await page.$eval(scroller, (e) => e.scrollTop)
+  await sign(`${ctl('Pad1')} ${T('signature-canvas')}`)
+  const top1 = await page.$eval(scroller, (e) => e.scrollTop)
+  check(/SIG:true/.test(await text('LblSig')) && top0 === top1 && !(await page.$(T('pull-to-refresh'))), 'Signature pad: a finger signature sets HasSignature; the page did not scroll and pull to refresh did not start', `${await text('LblSig')}, scrollTop ${top0} -> ${top1}`)
+  await shot('22-signature-pad.png')
+  const before = (await q(`SELECT count(*)::int AS n FROM env_default.${VISITS}`))[0].n
+  await tap(ctl('BtnSign') + ' button')
+  for (let i = 0; i < 40; i++) { const r = await q(`SELECT * FROM env_default.${VISITS} WHERE "Part" = 'Standalone'`); if (r.length && r[0].Signature) break; await sleep(250) }
+  const sv = await q(`SELECT * FROM env_default.${VISITS} WHERE "Part" = 'Standalone'`)
+  const file = sv[0]?.Signature ? must(await api('GET', `/attachments/${sv[0].Signature}`), 'download signature') : null
+  const ps = pngSize(file)
+  check(sv.length === 1 && ps && ps.w <= 1200 && ps.h <= 400 && ps.w >= 300 && Math.abs(ps.w / ps.h - 3) < 0.05, 'Patch(Visits, ..., {Signature: Pad1.FileToken}) stores the row, then the signature as a PNG at a bounded size (3:1)', `${sv.length} row(s), ${ps ? `${ps.w}x${ps.h}` : 'no PNG'}, ${file?.length ?? 0} bytes, rows before ${before}`)
+  check(/SIG:false/.test(await text('LblSig')), 'Reset(Pad1) clears the pad (HasSignature false)', await text('LblSig'))
+  // in a Form: SignatureFields makes the image column a pad; offline the PNG waits in the outbox after its row
+  const sel = (c) => `${ctl('VisitForm')} [id$="-${c}"]`
+  await typeInto(sel('Part'), 'P-9')
+  await typeInto(sel('Note'), 'signed offline')
+  await sign(T('signature-canvas-Signature'))
+  const pending = await page.$eval(T('signature-field-Signature'), (e) => /uploads on save/.test(e.textContent)).catch(() => false)
+  await offlineAndSettled()
+  await tap(`${ctl('VisitForm')} ${T('form-save')}`)
+  await page.waitForFunction(() => document.querySelector('[data-testid="outbox-count"]')?.textContent === '2', { timeout: 15000 })
+  check(pending && (await q(`SELECT count(*)::int AS n FROM env_default.${VISITS} WHERE "Part" = 'P-9'`))[0].n === 0, 'Form signature field: offline the row and its signature wait as 2 items (nothing on the server yet)', '')
+  await setNetwork('online')
+  await waitOutboxEmpty()
+  let fr = []
+  for (let i = 0; i < 40; i++) { fr = await q(`SELECT * FROM env_default.${VISITS} WHERE "Part" = 'P-9'`); if (fr.length && fr[0].Signature) break; await sleep(250) }
+  const ff = fr[0]?.Signature ? must(await api('GET', `/attachments/${fr[0].Signature}`), 'download form signature') : null
+  const fps = pngSize(ff)
+  check(fr.length === 1 && fr[0].Note === 'signed offline' && fps && fps.w <= 1200, 'back online: the row is sent once and the signature PNG is linked to it (ready for an image block in a print template)', `${fr.length} row(s), ${fps ? `${fps.w}x${fps.h}` : 'none'}`)
+}
+
+async function outboxConflict(appId) {
+  await page.goto(`${BASE}/?app=${appId}`, { waitUntil: 'networkidle2' })
+  await waitFor(`${T(`tab-pane-${appId}`)} [data-run-surface]`)
+  const qty = `${ctl('EditForm')} [id$="-Qty"]`
+  for (const [line, mine, theirs, choice] of [['Line 3', '111', 500, 'keep'], ['Line 4', '222', 700, 'server']]) {
+    await typeInto(`${ctl('Pick')} input`, line)
+    await page.waitForFunction((s, l) => document.querySelector(s.replace(/-Qty"\]$/, '-Line"]'))?.value === l, { timeout: 15000 }, qty, line)
+    const row = (await rows()).find((r) => r.Line === line)
+    await offlineAndSettled()
+    await typeInto(qty, mine)
+    await tap(`${ctl('EditForm')} ${T('form-save')}`)
+    await page.waitForFunction(() => document.querySelector('[data-testid="outbox-count"]')?.textContent === '1', { timeout: 15000 })
+    // meanwhile someone changes the same row on the server
+    must(await api('PATCH', `/data/Production/rows/${encodeURIComponent(row.id)}`, { changes: { Qty: theirs } }), 'server-side change')
+    await setNetwork('online')
+    await page.waitForFunction(() => document.querySelector('[data-testid="outbox-button"]')?.textContent?.includes('needs you'), { timeout: 45000 })
+    await openOutboxPanel()
+    const st = await page.$$eval(T('outbox-item'), (els) => els.map((e) => e.getAttribute('data-status')))
+    check(st.length === 1 && st[0] === 'conflict', `offline update of ${line} that the server changed meanwhile: the outbox shows "Changed on the server"`, st.join(','))
+    if (choice === 'keep') {
+      await shot('23-outbox-conflict.png')
+      await tap(T('outbox-keep-mine'))
+    } else await tap(T('outbox-use-server'))
+    await page.keyboard.press('Escape')
+    await waitOutboxEmpty()
+    let now = null
+    for (let i = 0; i < 20; i++) { now = (await rows()).find((r) => r.Line === line); if (Number(now.Qty) === (choice === 'keep' ? Number(mine) : theirs)) break; await sleep(250) }
+    check(Number(now.Qty) === (choice === 'keep' ? Number(mine) : theirs), choice === 'keep' ? '"Keep mine" sends the change again against the new version: the server has mine' : '"Use the server\'s" drops the change: the server keeps its value', `Qty ${now.Qty}`)
+  }
+}
+
+async function outboxRejection(appId) {
+  must(await api('POST', `/tables/${PROD_ID}/events`, { name: 'Qty limit', kind: 'validation', timing: 'before', operations: ['create'], order: 1, enabled: true, condition: 'Qty < 1000', message: 'Qty must be under 1000', field: 'Qty', runAs: 'caller' }), 'create validation rule')
+  await page.goto(`${BASE}/?app=${appId}`, { waitUntil: 'networkidle2' })
+  await waitFor(`${T(`tab-pane-${appId}`)} [data-run-surface]`)
+  await sleep(800)
+  for (const [line, choice] of [['Big one', 'fix'], ['Big two', 'discard']]) {
+    await fillForm(line, 5000)
+    await offlineAndSettled()
+    await tapVisibleSave()
+    await page.waitForFunction(() => document.querySelector('[data-testid="outbox-count"]')?.textContent === '1', { timeout: 15000 })
+    await setNetwork('online')
+    await page.waitForFunction(() => document.querySelector('[data-testid="outbox-button"]')?.textContent?.includes('needs you'), { timeout: 45000 })
+    await openOutboxPanel()
+    const item = await page.$eval(T('outbox-item'), (e) => ({ status: e.getAttribute('data-status'), error: e.querySelector('[data-testid="outbox-error"]')?.textContent ?? '' }))
+    check(item.status === 'rejected' && /Qty must be under 1000/.test(item.error) && !(await rows()).some((r) => r.Line === line), `offline create refused by a validation rule (${line}): "rejected" with the server's message, nothing stored`, JSON.stringify(item))
+    if (choice === 'fix') {
+      await shot('24-outbox-rejected.png')
+      await tap(T('outbox-fix'))
+      await typeInto(T('outbox-fix-Qty'), '50')
+      await tap(T('outbox-fix-send'))
+      await page.keyboard.press('Escape')
+      await waitOutboxEmpty()
+      let got = []
+      for (let i = 0; i < 20; i++) { got = (await rows()).filter((r) => r.Line === line); if (got.length) break; await sleep(250) }
+      check(got.length === 1 && Number(got[0].Qty) === 50, '"Fix and resend" with a valid value succeeds: the row is stored once with the fixed value', JSON.stringify(got.map((r) => ({ Line: r.Line, Qty: r.Qty }))))
+    } else {
+      await tap(T('outbox-discard'))
+      await page.keyboard.press('Escape')
+      await waitOutboxEmpty()
+      await sleep(800)
+      check(!(await rows()).some((r) => r.Line === line), '"Discard" drops the refused change: nothing is stored and the outbox is empty', '')
+    }
+  }
+}
+
+async function backGesture(pickersId, dialogId) {
+  await openApp(pickersId)
+  const before = await page.evaluate(() => ({ hash: location.hash, layer: history.state?.__abLayer ?? null }))
+  await tap(ctl('DD') + ' [role=combobox]')
+  await waitFor(T('bottom-sheet'))
+  await sleep(300)
+  const open = await page.evaluate(() => history.state?.__abLayer ?? null)
+  await page.evaluate(() => history.back())
+  await sleep(500)
+  const after = await page.evaluate(() => ({ sheet: !!document.querySelector('[data-testid="bottom-sheet"]'), hash: location.hash, app: !!document.querySelector('[data-run-surface]'), layer: history.state?.__abLayer ?? null }))
+  check(open === 1 && !after.sheet && after.hash === before.hash && after.app && after.layer === null, 'Android Back (history.back()) closes an open bottom sheet and stays in the app', JSON.stringify({ open, ...after }))
+  await tap(ctl('DD') + ' [role=combobox]')
+  await waitFor(T('bottom-sheet'))
+  await sleep(300)
+  await tap(T('picker-row'))
+  await sleep(500)
+  const closed = await page.evaluate(() => ({ sheet: !!document.querySelector('[data-testid="bottom-sheet"]'), layer: history.state?.__abLayer ?? null, hash: location.hash }))
+  check(!closed.sheet && closed.layer === null && closed.hash === before.hash, 'a sheet closed normally (a row tapped) takes its history entry back off: no stray entries', JSON.stringify(closed))
+  await openApp(dialogId)
+  check(!!(await page.$('[role=dialog][data-overlay-placement="bottom-sheet"]')), 'the Back test Dialog is a bottom sheet at phone width', '')
+  await page.evaluate(() => history.back())
+  await sleep(600)
+  const d = await page.evaluate(() => ({ open: !!document.querySelector('[role=dialog][data-overlay-placement]'), hash: location.hash, shut: document.querySelector('[data-testid="control-LblShut"]')?.textContent }))
+  check(!d.open && /SHUT:true/.test(d.shut ?? '') && d.hash === `#u-${dialogId}`, 'Android Back on a phone-width Dialog runs its OnClose (closed) instead of leaving the app', JSON.stringify(d))
 }
 
 /* ------------------------------------------------------------------ main */
@@ -816,12 +1129,28 @@ try {
   page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warn') consoleLines.push(`${m.type()}: ${m.text()}`.slice(0, 300)) })
   page.on('pageerror', (e) => consoleLines.push(`pageerror: ${e.message}`.slice(0, 300)))
   await phone(360, 800)
+  const sectionF = async (pickersId) => {
+    log('F. offline tables, form drafts, signatures, outbox conflict and rejection, Android Back')
+    const f = await setupSectionF()
+    await offlineTables(f.fieldVisit)
+    await draftsAcrossReload(f.fieldVisit)
+    await signatures(f.fieldVisit)
+    await outboxConflict(f.edit)
+    await outboxRejection(appId)
+    await backGesture(pickersId, f.backDialog)
+  }
   if (ONLY_TOUCH) {
     log('E. touch controls only')
     await signIn()
     const ids = await touchControls()
     await stickyBar(appId)
     await desktopUnchanged(ids.pickers, ids.table, ids.dialog)
+  } else if (E.EXIT_ONLY_F) {
+    await signIn()
+    await page.goto(`${BASE}/#u`, { waitUntil: 'networkidle2' })
+    await page.waitForFunction(() => !!navigator.serviceWorker.controller, { timeout: 20000 }).catch(() => {})
+    const pk = await makeApp('Back pickers', [node('DD', 'Dropdown', { X: '=16', Y: '=8', Width: '=328', Height: '=40', Items: '=["Alpha","Bravo","Charlie","Delta"]' })])
+    await sectionF(pk)
   } else {
   log('A. sign-in at 360 px, the PWA')
   await signIn()
@@ -851,6 +1180,7 @@ try {
   await stickyBar(appId)
   await desktopUnchanged(ids.pickers, ids.table, ids.dialog)
   await phone(360, 800)
+  await sectionF(ids.pickers)
   await signOutClears()
   await wipe()
   }

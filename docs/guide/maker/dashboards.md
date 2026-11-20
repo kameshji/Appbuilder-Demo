@@ -18,9 +18,20 @@ Performance / Quality by shift, Good quantity by day against the previous period
 
 ## Change the layout
 
-Open the dashboard and choose **Edit**. Each tile gets buttons to make it narrower, wider, taller or shorter, to move it, and to remove it;
-the title becomes editable. **Save** keeps the change for everyone who sees the dashboard; **Cancel** drops it. The grid has 12 columns of
-80-pixel rows on a computer and becomes a single column on a phone.
+Open the dashboard and choose **Edit**. The title becomes editable and every tile gets controls:
+
+- **Drag** the grip at the left of the tile's title to move it. Drag the **corner handle** at the bottom right to resize it. The tile
+  snaps to whole cells (the grid has 12 columns of 80-pixel rows); the tiles it lands on are pushed down and the others rise to close
+  gaps, shown while you drag. Let go to keep it; press **Escape** to drop it. Mouse, touch and pen work.
+- **Buttons and keys** do the same without dragging: narrower, wider, taller, shorter, move left, right, up and down, and remove.
+  With the keyboard, Tab to the grip and press the arrow keys to move the tile one cell, or Shift and the arrow keys to resize it.
+  The buttons push tiles out of the way but never pull the tiles below up.
+- **Save** keeps the change for everyone who sees the dashboard; **Cancel** drops it.
+
+Dragging needs a window at least 1,024 pixels wide for the dashboard area. Narrower than that, only the buttons and keys work and a note
+says so. Only the 12-column layout is saved. A **tablet** (640 to 1,023 pixels) shows it in 6 columns: positions and widths are halved,
+no tile is narrower than 2 of the 6 columns, a tile that no longer fits beside the others moves below them, and the tiles keep their
+reading order. A **phone** (under 640 pixels) shows one column in reading order. Nothing is stored for the narrower layouts.
 
 ## Add or change a tile
 
@@ -46,6 +57,8 @@ chosen from lists and boxes:
   category when there are several groupings, the tile's number format, stacking, upright or lying bars, minimum / maximum / target line
   for gauges, the KPI's number, what it is compared with and whether higher is better, values on the chart, and whether clicking a
   group value filters the other tiles on the same table.
+- **When someone clicks**: **Clicking opens an app** (see "Open an app from a tile" below). A tile either filters the other tiles or
+  opens an app, not both.
 
 The preview on the right (on top on a tablet) shows the tile as the dashboard will, over the dashboard's current date range and with
 your own access; the dashboard's filter lists are not applied to it. Problems are listed in words at the bottom; red ones must be fixed
@@ -57,9 +70,34 @@ columns, a condition with "one of" or nested groups, or a calculation with sever
 they are when you change other things. You can replace them with a simple version from the editor.
 
 Not possible in the editor yet: colours of series, the right-hand axis of combination charts, gauge colour bands, KPI colour rules and
-sparklines, colour rules of table tiles, the dashboard's filter lists, refresh interval and viewer roles. These remain part of the stored
-definition (`POST/PATCH /api/v1/dashboards`, see the developer page). Who may view: the owner, makers, administrators and the roles
-listed on the dashboard.
+sparklines, colour rules of table tiles, and the dashboard's filter lists and refresh interval. These remain part of the stored
+definition (`POST/PATCH /api/v1/dashboards`, see the developer page).
+
+## Open an app from a tile
+
+In the tile editor, under **When someone clicks**, tick **Clicking opens an app** and choose the app (only apps you may run are listed).
+Clicking a point of a chart or a row of a table then opens that app in a tab. A tile without points to click (a KPI, a gauge) shows an
+**Open** button in its title bar instead; table rows can also be reached with the keyboard (Tab, then Enter).
+
+You can pass values of the clicked row to the app: group columns, the date grouping, measures and calculations. Each value goes to
+the app under a parameter name you choose (by default the first group column, named after it). The app starts at the address
+`#u-<app id>?Machine=Press+1`, and **inside the app** the value is read with the formula `Param("Machine")`, for example in a screen's
+start formula or as the filter of a list. This is the only way the app runtime takes start values, so the app has to read them: an
+app that never calls `Param` simply opens as it is. Blank values are not passed. If the app is already open in a tab and values are
+passed, the tab is closed and opened again, because an app reads its parameters when it starts (unsaved input in that app is lost).
+
+**Not possible:** choosing a particular screen of the app. The runtime has no address for a screen; the app opens on its first screen
+(an app can jump to a screen itself from a start formula that reads a parameter). People without access to the app see "You do not
+have access to <app>" when they click. Parameters passed this way are visible in the browser's address bar.
+
+## Who can see a dashboard
+
+The owner, makers and administrators can always open a dashboard. The owner and administrators can also let other **roles** open it:
+choose **Who can see this dashboard** (top bar; in Edit mode a line under the top bar says it in words and has a **Change** link), tick the roles
+and **Save**. The window says it in plain words, for example "The owner, makers and administrators, and people with the roles
+Supervisor and Operator, can see this dashboard." Roles of makers and administrators are shown ticked and cannot be unticked.
+Opening a dashboard is not the same as seeing data: every tile still counts only the rows and columns the viewer's own access allows.
+There is no "everyone" option: list each role.
 
 ## The minimal plant tables
 
@@ -107,6 +145,17 @@ settings (administrators): time zone (default Asia/Kolkata), first month of the 
 2026 to 31 March 2027), first day of the week (Monday) and the shift pattern (A 06:00-14:00, B 14:00-22:00, C 22:00-06:00). A comparison
 with the previous period covers only the elapsed part of a running period: this month so far against last month up to the same day and
 hour.
+
+**Dashboards > Settings** (top right of the dashboard list) shows these values to everyone and lets **administrators** change them:
+time zone, the month the fiscal year starts in, the first day of the week, locale (how numbers are written, such as `en-IN` for
+12,34,567 or `en-US` for 1,234,567), currency (a three-letter code such as INR or USD) and up to six shifts, each with a name, a start
+and an end time. A shift that runs past midnight (22:00 to 06:00) needs **Ends the next day** ticked. Problems are explained under the
+field (for example "A ends before it starts. Tick "Ends the next day" if it runs past midnight, or correct the times."), and nothing is
+sent until they are fixed. Overlapping shifts are only a warning: "This shift" then picks the first in the list. The settings apply to every
+dashboard of the environment. In demo mode they are kept in the browser.
+
+**Not available:** pinning a tile to the Home page or a personal "My dashboard". It needs a per-user setting stored on the server, and
+this version keeps personal settings only in the browser.
 
 ## The Visual UI component (apps)
 

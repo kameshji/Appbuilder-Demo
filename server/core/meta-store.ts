@@ -8,7 +8,7 @@
  * Metadata documents are jsonb, timestamps timestamptz, flags boolean, ids text.
  */
 import { PRINT_TABLES, printEnvironmentDdl, upgradeEnvironmentTo11Print } from './print/ddl.ts'
-import { dashboardsEnvironmentDdl, upgradeEnvironmentTo11Dashboards } from './dashboards/ddl.ts'
+import { dashboardsEnvironmentDdl, upgradeEnvironmentTo11Dashboards, upgradeEnvironmentTo12Dashboards } from './dashboards/ddl.ts'
 import type {
   AttachmentRecord, ConnectionRecord, EnvironmentRecord, EnvironmentRef, MetaStore, MigrationSummary, SecretBox, SqlDb, UserRecord,
 } from './contracts.ts'
@@ -59,8 +59,10 @@ import { RECYCLE_TABLES, recycleEnvironmentDdl, upgradeEnvironmentTo10Recycle } 
  * 11: P2 package B (independent step): print templates per environment (print/ddl.ts: ab_print_templates,
  *    ab_print_template_versions, ab_print_runs, ab_print_files, ab_print_settings). P2 package C (independent step):
  *    dashboards per environment (dashboards/ddl.ts: ab_dashboards, ab_dashboard_settings).
+ * 12: P2-C second wave (independent step): dashboard view tokens and scheduled snapshots per environment
+ *    (dashboards/ddl.ts: ab_dashboard_tokens, ab_dashboard_snapshots, ab_dashboard_snapshot_runs).
  */
-export const SCHEMA_VERSION = 11
+export const SCHEMA_VERSION = 12
 
 /** the database was upgraded by a newer server: this one must not touch it (downgrade guard) */
 export class SchemaTooNewError extends Error {
@@ -411,6 +413,12 @@ export const ENVIRONMENT_STEPS: { to: number; describe: string; run(db: SqlDb, s
     to: 11,
     describe: 'dashboards (ab_dashboards, ab_dashboard_settings)',
     run: upgradeEnvironmentTo11Dashboards,
+  },
+  {
+    // P2-C second wave (independent step): view tokens and scheduled snapshots; the tables come from environmentDdl
+    to: 12,
+    describe: 'dashboard view tokens and scheduled snapshots (ab_dashboard_tokens, ab_dashboard_snapshots, ab_dashboard_snapshot_runs)',
+    run: upgradeEnvironmentTo12Dashboards,
   },
 ]
 

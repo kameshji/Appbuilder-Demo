@@ -9,6 +9,7 @@ import { useDevice } from '@/phone/env'
 import { SheetHandle, useSheetDrag } from '@/phone/sheet'
 import { overlayPlacement } from '@/phone/touch-logic'
 import { usePaneVisible } from '@/phone/touch-hooks'
+import { useBackClose } from '@/phone/back'
 
 /* ------------------------------------------------------------------ Tabs */
 
@@ -157,6 +158,8 @@ function OverlayRender({ kind, ...p }: ControlRenderProps & { kind: 'Dialog' | '
   const drag = useSheetDrag(close)
   const anchor = useRef<HTMLSpanElement>(null)
   const paneVisible = usePaneVisible(anchor)
+  // phone width on touch: the Android Back gesture runs OnClose instead of leaving the app (src/phone/back.ts)
+  useBackClose(asSheet && open && paneVisible, close)
 
   const body = (
     <>

@@ -137,7 +137,7 @@ try {
   await demo.waitForFunction(() => !document.querySelector('[data-testid="tile-editor"]'))
   // the Scrap rate KPI with its calculation (and the OEE gauge with row calculations) also round-trip
   for (const id of ['scrap', 'oee', 'machines']) {
-    await demo.click(`[data-testid="tile-${id}-configure"]`)
+    await clickDom(demo, `[data-testid="tile-${id}-configure"]`) // a toast can cover the bottom-right of the window
     await demo.waitForSelector('[data-testid="tile-editor"]')
     await clickDom(demo, '[data-testid="tile-editor-apply"]')
     await demo.waitForFunction(() => !document.querySelector('[data-testid="tile-editor"]'))

@@ -54,6 +54,7 @@ export const DESCRIPTIONS: Record<string, string> = {
   Timer: 'A timer that runs for a set time and raises events when it starts and ends.',
   BarcodeScanner: 'A button that opens the camera to scan a barcode or QR code; the code is in Value and OnScan runs.',
   ScanInput: 'A text field for codes: a hardware (keyboard) scanner fills it and runs OnScan; the camera button scans with the camera.',
+  SignaturePad: 'A pad to sign on with a finger, a stylus or the mouse; the signature is a PNG in Image and FileToken, for an image column.',
   // Display
   Label: 'Shows a piece of text.',
   Image: 'Shows a picture.',
@@ -110,6 +111,8 @@ export const NOTES: Record<string, string[]> = {
     'In New mode it inserts a row; in Edit mode it updates the row in `Item` (an `Item` that is blank means insert). `Updates` holds the values of the fields shown.',
     '`NewForm`, `EditForm` and `ViewForm` change the form\'s `Mode` output, which takes over from the `Mode` property once it has been set. `ResetForm` puts the fields back to their starting values.',
     '`SubmitForm` checks `Valid` first. When it is false, the inline messages appear, `Error` is set and `OnFailure` runs; nothing is written.',
+    '`SignatureFields` lists image (or file) columns that are signed instead of uploaded, for example `"Signature"`: the field is a signature pad and the PNG is uploaded after the row is saved, like a photo.',
+    'In a running app (server mode) an unsaved New or Edit form is kept as a draft on the device (encrypted, for the signed-in user) and restored after an accidental reload, with a "Draft restored" note and a Discard button. Saving, Discard, signing out and a device wipe delete it.',
   ],
   DataTable: [
     '`Columns` entries are a field name or `field:Header`. With `Columns` blank the table hides fields that start with `__` and the `id` field but still shows system columns such as `createdOn` and `owner`. Set `Columns` in generated apps.',
@@ -118,6 +121,7 @@ export const NOTES: Record<string, string[]> = {
   Gallery: ['`Layout` is text: `"Vertical"`, `"Horizontal"` or `"Grid"` (it is not the `Layout` enum). Vertical rows are as wide as the gallery and `TemplateHeight` tall; horizontal rows are `TemplateWidth` x `TemplateHeight`; a grid uses `Columns`.'],
   BarcodeScanner: ['QR codes and Data Matrix need a browser with a built-in barcode reader (Chrome on Android). Elsewhere the scanner reads EAN-13/8, Code 128, Code 39 and ITF itself. `Continuous` keeps the camera open for stock counts: OnScan runs for each code (the same code again after 2 seconds). The camera needs HTTPS (see the administrator guide on phones on a LAN).'],
   ScanInput: ['A burst of keys ending with Enter, faster than a person types, counts as a scan: Value becomes the code and OnScan runs. Typing by hand runs OnChange (and OnScan when you press Enter).'],
+  SignaturePad: ['Save it into an image (or file) column with `Patch(Visits, ThisItem, {Signature: SignaturePad1.FileToken})`: the row is written first, then the PNG is uploaded into the column (without a connection, in an app that works offline, both wait on the device and are sent in that order). Show it with an Image UI component (`Image = SignaturePad1.Image`) and print it with an image block of source "attachment" on that column. `HasSignature` is true once there is enough ink (a stray tap does not count); `OnSign` runs after each stroke; `Reset(SignaturePad1)` clears it. In a Form, list the image column in the Form\'s `SignatureFields` instead. The pad is 3:1 (a signature line) inside the UI component; the PNG is at most 1200 x 400 px on white.'],
   Timer: ['The timer never runs while you design; it runs in preview and in the running app. `Start` is edge-triggered (it acts when it becomes true); `AutoStart` starts it when the screen appears.'],
   Dialog: ['Close button, a click on the backdrop (when `CloseOnBackdrop` is true) and the Escape key run `OnClose`. Your `OnClose` formula should set the variable that `Open` reads to false.'],
   Sheet: ['Close button, a click on the backdrop (when `CloseOnBackdrop` is true) and the Escape key run `OnClose`. Your `OnClose` formula should set the variable that `Open` reads to false. `Side` chooses the edge: left and right sheets are `Width` wide and full height; top and bottom sheets are `Height` tall and full width.'],

@@ -38,7 +38,7 @@ Every UI component except a screen has these 10 properties. They are not repeate
 ## UI components by category
 
 - [Layout](#layout): [Screen](#screen), [Container](#container), [Row](#row), [Column](#column), [Grid](#grid), [Card](#card), [Scroll area](#scroll-area), [Divider](#divider), [Spacer](#spacer), [Dialog](#dialog), [Sheet](#sheet), [Accordion](#accordion)
-- [Input](#input): [Button](#button), [Text input](#text-input), [Checkbox](#checkbox), [Toggle](#toggle), [Dropdown](#dropdown), [Text area](#text-area), [Number input](#number-input), [Password input](#password-input), [Search box](#search-box), [Radio group](#radio-group), [Combo box](#combo-box), [Person picker](#person-picker), [Tag input](#tag-input), [Date picker](#date-picker), [Date range picker](#date-range-picker), [Time picker](#time-picker), [Slider](#slider), [Range slider](#range-slider), [Rating](#rating), [Toggle group](#toggle-group), [Segmented control](#segmented-control), [Icon button](#icon-button), [Link button](#link-button), [Split button](#split-button), [Menu button](#menu-button), [File upload](#file-upload), [Color picker](#color-picker), [Stepper](#stepper), [PIN input](#pin-input), [Timer](#timer), [Barcode scanner](#barcode-scanner), [Scan input](#scan-input), [Print button](#print-button)
+- [Input](#input): [Button](#button), [Text input](#text-input), [Checkbox](#checkbox), [Toggle](#toggle), [Dropdown](#dropdown), [Text area](#text-area), [Number input](#number-input), [Password input](#password-input), [Search box](#search-box), [Radio group](#radio-group), [Combo box](#combo-box), [Person picker](#person-picker), [Tag input](#tag-input), [Date picker](#date-picker), [Date range picker](#date-range-picker), [Time picker](#time-picker), [Slider](#slider), [Range slider](#range-slider), [Rating](#rating), [Toggle group](#toggle-group), [Segmented control](#segmented-control), [Icon button](#icon-button), [Link button](#link-button), [Split button](#split-button), [Menu button](#menu-button), [File upload](#file-upload), [Color picker](#color-picker), [Stepper](#stepper), [PIN input](#pin-input), [Timer](#timer), [Barcode scanner](#barcode-scanner), [Scan input](#scan-input), [Signature pad](#signature-pad), [Print button](#print-button)
 - [Display](#display): [Label](#label), [Image](#image), [Rectangle](#rectangle), [Heading](#heading), [Rich text](#rich-text), [Badge](#badge), [Avatar](#avatar), [Avatar group](#avatar-group), [Icon](#icon), [Shape](#shape), [Tag list](#tag-list), [Stat card](#stat-card), [Timeline](#timeline)
 - [Data](#data): [Gallery](#gallery), [Form](#form), [Data table](#data-table), [List](#list), [Calendar](#calendar), [Record timeline](#record-timeline), [Activity list](#activity-list), [Approvals panel](#approvals-panel)
 - [Navigation](#navigation): [Tabs](#tabs), [Breadcrumb](#breadcrumb), [Pagination](#pagination), [Nav menu](#nav-menu), [Top bar](#top-bar), [Steps](#steps)
@@ -1092,6 +1092,35 @@ Type: `ScanInput` · default size 280 x 48 · main property: `OnScan` · also ha
 
 - A burst of keys ending with Enter, faster than a person types, counts as a scan: Value becomes the code and OnScan runs. Typing by hand runs OnChange (and OnScan when you press Enter).
 
+### Signature pad
+
+A pad to sign on with a finger, a stylus or the mouse; the signature is a PNG in Image and FileToken, for an image column.
+
+Type: `SignaturePad` · default size 360 x 168 · main property: `OnSign` · also has `DisplayMode`
+
+| Property | Shown as | Kind | Group | Default | Level |
+| --- | --- | --- | --- | --- | --- |
+| `Placeholder` |  | text | Content | `="Sign here"` | Simple |
+| `ShowClear` | Clear button | boolean | Content | `=true` | Simple |
+| `ClearText` | Clear button text | text | Content | `="Clear"` | Advanced |
+| `FileName` | File name | text | Data | `="signature"` | Advanced |
+| `OnSign` |  | action | Behaviour | `=false` | Simple |
+| `PenColor` | Pen colour | color | Style | `=Blank()` | Simple |
+| `PenWidth` | Pen width | number | Style | `=2.5` | Simple |
+
+**Outputs**
+
+| Output | Initial value |
+| --- | --- |
+| `Image` | `""` |
+| `FileToken` | `""` |
+| `HasSignature` | `false` |
+| `IsEmpty` | `true` |
+
+**Events:** `OnSign`.
+
+- Save it into an image (or file) column with `Patch(Visits, ThisItem, {Signature: SignaturePad1.FileToken})`: the row is written first, then the PNG is uploaded into the column (without a connection, in an app that works offline, both wait on the device and are sent in that order). Show it with an Image UI component (`Image = SignaturePad1.Image`) and print it with an image block of source "attachment" on that column. `HasSignature` is true once there is enough ink (a stray tap does not count); `OnSign` runs after each stroke; `Reset(SignaturePad1)` clears it. In a Form, list the image column in the Form's `SignatureFields` instead. The pad is 3:1 (a signature line) inside the UI component; the PNG is at most 1200 x 400 px on white.
+
 ### Print button
 
 Prints a record with a print template: the PDF is made on the server and opens in a new tab (downloaded on a phone).
@@ -1371,6 +1400,7 @@ Type: `Form` · default size 720 x 420 · main property: `DataSource`
 | `Mode` |  | enum | Content | `=FormMode.Edit` | Simple | any [FormMode](formulas.md#formmode) member |
 | `Fields` |  | text | Content | `=""` | Simple |  |
 | `Columns` |  | number | Layout | `=2` | Simple |  |
+| `SignatureFields` | Signature fields | text | Content | `=""` | Advanced |  |
 | `ShowButtons` | Show buttons | boolean | Content | `=true` | Simple |  |
 | `SubmitText` | Save button text | text | Content | `="Save"` | Advanced |  |
 | `CancelText` | Cancel button text | text | Content | `="Cancel"` | Advanced |  |
@@ -1395,6 +1425,8 @@ Type: `Form` · default size 720 x 420 · main property: `DataSource`
 - In New mode it inserts a row; in Edit mode it updates the row in `Item` (an `Item` that is blank means insert). `Updates` holds the values of the fields shown.
 - `NewForm`, `EditForm` and `ViewForm` change the form's `Mode` output, which takes over from the `Mode` property once it has been set. `ResetForm` puts the fields back to their starting values.
 - `SubmitForm` checks `Valid` first. When it is false, the inline messages appear, `Error` is set and `OnFailure` runs; nothing is written.
+- `SignatureFields` lists image (or file) columns that are signed instead of uploaded, for example `"Signature"`: the field is a signature pad and the PNG is uploaded after the row is saved, like a photo.
+- In a running app (server mode) an unsaved New or Edit form is kept as a draft on the device (encrypted, for the signed-in user) and restored after an accidental reload, with a "Draft restored" note and a Discard button. Saving, Discard, signing out and a device wipe delete it.
 
 ### Data table
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { AppDef } from '@/contracts'
+import type { AppDef, OfflineTableDef } from '@/contracts'
+import { DEFAULT_OFFLINE_ROWS, MAX_OFFLINE_ROWS, clampRows, normalizeOfflineTables } from '@/phone/offline/tables'
 import { useStore } from '@/runtime/store'
 import { useUi } from '@/runtime/ui'
 import { parseFormulas } from '@/runtime/evaluator'
@@ -51,7 +52,20 @@ function SettingsBody({ app }: { app: AppDef }) {
   const [formulas, setFormulas] = useState(app.appProps.Formulas ?? '')
   const [onStart, setOnStart] = useState((app.appProps.OnStart ?? '=false').replace(/^=/, ''))
   const [offline, setOffline] = useState(!!app.offline?.entry)
+  // "available offline" tables of an offline-entry app (docs/dev/phone.md "Tables kept on the device")
+  const [offTables, setOffTables] = useState<OfflineTableDef[]>(() => app.offline?.tables ?? [])
   useEffect(() => setName(app.name), [app.name])
+  const sources = app.dataSources ?? []
+  const offOf = (t: string) => offTables.find((x) => x.table.toLowerCase() === t.toLowerCase())
+  const setOff = (t: string, patch: Partial<OfflineTableDef> | null) =>
+    setOffTables((list) => {
+      const rest = list.filter((x) => x.table.toLowerCase() !== t.toLowerCase())
+      if (patch === null) return rest
+      const prev = list.find((x) => x.table.toLowerCase() === t.toLowerCase()) ?? { table: t }
+      return [...rest, { ...prev, ...patch }]
+    })
+  const nextOffline = { entry: offline, ...(offline && offTables.length ? { tables: normalizeOfflineTables(offTables, sources) } : {}) }
+  const offlineChanged = JSON.stringify(nextOffline) !== JSON.stringify({ entry: !!app.offline?.entry, ...(app.offline?.tables?.length ? { tables: app.offline.tables } : {}) })
 
   const cw = size.w
   const ch = size.h
@@ -68,7 +82,7 @@ function SettingsBody({ app }: { app: AppDef }) {
       height: Math.round(ch),
       scaleMode: scale,
       theme: { mode, primary: primary || undefined, radius: Number.isFinite(Number(radius)) ? Number(radius) : undefined },
-      ...(offline !== !!app.offline?.entry ? { offline: { entry: offline } } : {}),
+      ...(offlineChanged ? { offline: nextOffline } : {}),
     })
     if (formulas !== (app.appProps.Formulas ?? '')) st.setAppProp('Formulas', formulas)
     const os = '=' + onStart
@@ -135,6 +149,51 @@ function SettingsBody({ app }: { app: AppDef }) {
             </span>
           </span>
         </label>
+        {offline && (
+          <div className="space-y-1.5 pl-6" data-testid="settings-offline-tables">
+            <span className="block text-xs font-medium">Available offline</span>
+            <span className="block text-[11px] text-muted-foreground">
+              Tables whose rows are kept on the phone (encrypted) for lookups, dropdowns and lists without a connection. They download when the
+              app opens online, as the signed-in user (their permissions apply), up to the row limit ({DEFAULT_OFFLINE_ROWS.toLocaleString('en-US')} if
+              blank, at most {MAX_OFFLINE_ROWS.toLocaleString('en-US')}). The filter is a condition the server can run, for example{' '}
+              <code className="font-mono">Status &lt;&gt; "Closed"</code>.
+            </span>
+            {sources.length === 0 && <span className="block text-[11px] text-muted-foreground">The app has no data sources yet.</span>}
+            {sources.map((t) => {
+              const cur = offOf(t)
+              return (
+                <div key={t} className="grid grid-cols-[auto_1fr_5.5rem] items-center gap-2">
+                  <label className="flex items-center gap-1.5 text-xs">
+                    <input type="checkbox" className="size-4" checked={!!cur} onChange={(e) => setOff(t, e.target.checked ? {} : null)} data-testid={`settings-offline-table-${t}`} />
+                    <span className="truncate">{t}</span>
+                  </label>
+                  <Input
+                    value={cur?.filter ?? ''}
+                    disabled={!cur}
+                    placeholder="Filter (optional)"
+                    className="h-7 font-mono text-xs"
+                    spellCheck={false}
+                    onChange={(e) => setOff(t, { filter: e.target.value })}
+                    data-testid={`settings-offline-filter-${t}`}
+                  />
+                  <Input
+                    value={cur?.maxRows ?? ''}
+                    disabled={!cur}
+                    placeholder={String(DEFAULT_OFFLINE_ROWS)}
+                    inputMode="numeric"
+                    className="h-7 text-xs tabular-nums"
+                    onChange={(e) => {
+                      const n = Number(e.target.value)
+                      setOff(t, { maxRows: e.target.value.trim() === '' || !Number.isFinite(n) ? undefined : clampRows(n) })
+                    }}
+                    aria-label={`${t} row limit`}
+                    data-testid={`settings-offline-max-${t}`}
+                  />
+                </div>
+              )
+            })}
+          </div>
+        )}
         <label className="block space-y-1">
           <span className="text-xs font-medium">App.OnStart</span>
           <Input value={onStart} onChange={(e) => setOnStart(e.target.value)} className="h-8 font-mono text-xs" spellCheck={false} />
