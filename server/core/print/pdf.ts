@@ -67,35 +67,64 @@ export async function pdfBuffer(inp: PdfInput): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
+function paint(doc: PDFKit.PDFDocument, fill: string | undefined, stroke: string | undefined, lw: number, fillOpacity: number | undefined, strokeOpacity: number | undefined): void {
+  if (fill) doc.fillColor(fill)
+  if (stroke) doc.strokeColor(stroke).lineWidth(lw)
+  if (fillOpacity !== undefined) doc.fillOpacity(fillOpacity)
+  if (strokeOpacity !== undefined) doc.strokeOpacity(strokeOpacity)
+}
+
+function finish(doc: PDFKit.PDFDocument, fill: string | undefined, stroke: string | undefined): void {
+  if (fill && stroke) doc.fillAndStroke()
+  else if (fill) doc.fill()
+  else doc.stroke()
+}
+
 function drawPage(doc: PDFKit.PDFDocument, p: Page, images: Map<string, Buffer>): void {
   let clipDepth = 0
   for (const o of p.ops) {
     switch (o.t) {
-      case 'text':
+      case 'text': {
+        // marked content (ActualText) encloses the save/restore of a rotated or translucent run, so both nest properly
         if (o.actual !== undefined) (doc as unknown as { markContent(t: string, o: unknown): void }).markContent('Span', { actual: o.actual })
+        const own = !!o.rotate || o.opacity !== undefined
+        if (own) doc.save()
+        if (o.rotate) doc.rotate(o.rotate, { origin: [o.x, o.y] })
         doc.font(o.face).fontSize(o.size).fillColor(o.color)
+        if (o.opacity !== undefined) doc.fillOpacity(o.opacity)
         doc.text(o.text, o.x, o.y, { lineBreak: false, baseline: 'alphabetic', ...(o.synthItalic ? { oblique: 12 } : {}) } as PDFKit.Mixins.TextOptions)
+        if (own) doc.restore()
         if (o.endActual) (doc as unknown as { endMarkedContent(): void }).endMarkedContent()
         break
-      case 'rect':
-        if (o.fill && o.stroke) doc.rect(o.x, o.y, o.w, o.h).lineWidth(o.lw ?? 0.5).fillAndStroke(o.fill, o.stroke)
-        else if (o.fill) doc.rect(o.x, o.y, o.w, o.h).fill(o.fill)
-        else if (o.stroke) doc.rect(o.x, o.y, o.w, o.h).lineWidth(o.lw ?? 0.5).stroke(o.stroke)
+      }
+      // shapes: the graphics state (colours, width, dashes, caps, opacity) is set before the path is built, then painted
+      case 'rect': {
+        if (!o.fill && !o.stroke) break
+        doc.save()
+        paint(doc, o.fill, o.stroke, o.lw ?? 0.5, o.fillOpacity, o.strokeOpacity)
+        if (o.r) doc.roundedRect(o.x, o.y, o.w, o.h, o.r)
+        else doc.rect(o.x, o.y, o.w, o.h)
+        finish(doc, o.fill, o.stroke)
+        doc.restore()
         break
+      }
       case 'line':
         doc.save()
-        doc.moveTo(o.x1, o.y1).lineTo(o.x2, o.y2).lineWidth(o.lw)
-        if (o.dash) doc.dash(o.dash[0], { space: o.dash[1] ?? o.dash[0] })
-        doc.stroke(o.color)
+        if (o.dash) doc.dash(o.dash.length > 1 ? o.dash : [o.dash[0], o.dash[0]])
+        paint(doc, undefined, o.color, o.lw, undefined, o.opacity)
+        doc.moveTo(o.x1, o.y1).lineTo(o.x2, o.y2)
+        doc.stroke()
         doc.restore()
         break
       case 'path':
+        if (!o.fill && !o.stroke) break
         doc.save()
         doc.translate(o.x, o.y)
+        if (o.cap) doc.lineCap('round').lineJoin('round')
+        if (o.dash) doc.dash(o.dash.length > 1 ? o.dash : [o.dash[0], o.dash[0]])
+        paint(doc, o.fill, o.stroke, o.lw ?? 1, o.fillOpacity, o.strokeOpacity)
         doc.path(o.d)
-        if (o.fill && o.stroke) doc.lineWidth(o.lw ?? 1).fillAndStroke(o.fill, o.stroke)
-        else if (o.fill) doc.fill(o.fill)
-        else if (o.stroke) doc.lineWidth(o.lw ?? 1).stroke(o.stroke)
+        finish(doc, o.fill, o.stroke)
         doc.restore()
         break
       case 'image': {

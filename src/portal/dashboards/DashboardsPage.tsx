@@ -28,6 +28,7 @@ import { ConfirmDialog, Empty, PageHeader, errMsg, useToast } from '../kit'
 import { useCaps } from '../security'
 import { dashboardsApi, DEFAULT_SETTINGS } from './api'
 import type { DashboardSettings } from './api'
+import { TileEditor } from './TileEditor'
 
 const sel = 'h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30'
 const ROW_PX = 80
@@ -140,6 +141,8 @@ function DashboardView({ info, settings, onSaved }: { info: DashboardInfo; setti
   const [loading, setLoading] = useState(true)
   const [stamp, setStamp] = useState<{ at: Date; ms: number } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  /** the tile query editor: a tile to edit, or null for a new one */
+  const [editor, setEditor] = useState<{ tile: TileDef | null } | null>(null)
   const { toast, fail } = useToast()
   const seq = useRef(0)
   const calendar = useMemo(() => ({ timeZone: settings.timeZone, fiscalYearStart: settings.fiscalYearStart, weekStart: settings.weekStart, shifts: settings.shifts }), [settings])
@@ -225,6 +228,7 @@ function DashboardView({ info, settings, onSaved }: { info: DashboardInfo; setti
           <Button variant="outline" size="sm" onClick={() => void refresh()} aria-label="Refresh" data-testid="dashboard-refresh"><RefreshCw /></Button>
           {info.canEdit && !editing && <Button variant="outline" size="sm" onClick={() => setEditing(true)} data-testid="dashboard-edit"><Pencil /> Edit</Button>}
           {editing && <>
+            <Button variant="outline" size="sm" onClick={() => setEditor({ tile: null })} data-testid="dashboard-add-tile"><Plus /> Add tile</Button>
             <Button variant="outline" size="sm" onClick={() => { setDef(info.def); setEditing(false) }}>Cancel</Button>
             <Button variant="destructive" size="sm" onClick={() => setConfirmDelete(true)} data-testid="dashboard-delete"><Trash2 /> Delete</Button>
             <Button size="sm" onClick={save} data-testid="dashboard-save"><Save /> Save</Button>
@@ -238,6 +242,7 @@ function DashboardView({ info, settings, onSaved }: { info: DashboardInfo; setti
               <Tile key={t.id} tile={t} data={data[t.id]} calendar={calendar} defaults={defaults} editing={editing}
                 selected={cross && cross.tileId !== t.id ? null : cross?.tileId === t.id ? (cross.value === null ? '(blank)' : String(cross.value)) : null}
                 onEdit={(f) => editTile(t.id, f)}
+                onConfigure={() => setEditor({ tile: t })}
                 onPick={(row) => {
                   if (!t.crossFilter || !t.query || editing) return
                   const col = t.query.groupBy?.[0]
@@ -249,6 +254,8 @@ function DashboardView({ info, settings, onSaved }: { info: DashboardInfo; setti
           </Grid>
         )}
       </div>
+      {editor && <TileEditor def={def} tile={editor.tile} range={range} calendar={calendar} onClose={() => setEditor(null)} onApply={(d) => { setDef(d); setEditor(null) }}
+        renderTile={(t, d) => <Tile tile={t} data={d} calendar={calendar} defaults={defaults} editing={false} selected={null} onEdit={() => {}} onPick={() => {}} />} />}
       <ConfirmDialog open={confirmDelete} onOpenChange={setConfirmDelete} title="Delete this dashboard?" description="The tiles and layout go; the data in the tables stays." confirmLabel="Delete" destructive onConfirm={remove} />
     </div>
   )
@@ -279,9 +286,9 @@ function Grid({ def, children }: { def: DashboardDef; children(t: TileDef): Reac
 
 /* ------------------------------------------------------------------ a tile */
 
-function Tile({ tile, data, calendar, defaults, editing, selected, onEdit, onPick }: {
+function Tile({ tile, data, calendar, defaults, editing, selected, onEdit, onPick, onConfigure }: {
   tile: TileDef; data?: TileData; calendar: CalendarSettings; defaults: { locale: string; currency: string; timeZone: string }
-  editing: boolean; selected: string | null; onEdit(f: (t: TileDef) => TileDef | null): void; onPick(row: Record<string, unknown>): void
+  editing: boolean; selected: string | null; onEdit(f: (t: TileDef) => TileDef | null): void; onPick(row: Record<string, unknown>): void; onConfigure?(): void
 }) {
   const [tableView, setTableView] = useState(false)
   const scene = useRef<{ scene: Scene; spec: ChartSpec } | null>(null)
@@ -306,6 +313,7 @@ function Tile({ tile, data, calendar, defaults, editing, selected, onEdit, onPic
           <ExportMenu title={tile.title} get={() => scene.current} rows={rows} />
         </>}
         {editing && <div className="flex items-center" role="group" aria-label={`Layout of ${tile.title}`}>
+          {onConfigure && <IconBtn label="Edit tile" onClick={onConfigure} icon={Pencil} testId={`tile-${tile.id}-configure`} />}
           <IconBtn label="Narrower" onClick={() => move(0, 0, -1, 0)} icon={Minus} testId={`tile-${tile.id}-narrower`} />
           <span className="px-1 text-[10.5px] tabular-nums text-muted-foreground">{L.w}x{L.h}</span>
           <IconBtn label="Wider" onClick={() => move(0, 0, 1, 0)} icon={Plus} testId={`tile-${tile.id}-wider`} />

@@ -47,7 +47,7 @@ html.ios :is(input:not([type=checkbox]):not([type=radio]):not([type=range]):not(
   right: min(0px, calc((100% - 44px) / 2));
 }
 /* small targets inside UI components (slider thumbs, star ratings, close buttons, steppers) */
-:is(html.touch, html.touch-preview) [data-run-surface] :is([role=slider], [data-touch-target]) { position: relative; }
+:is(html.touch, html.touch-preview) [data-run-surface] :is([role=slider], [data-touch-target]:not(.absolute, .fixed)) { position: relative; }
 :is(html.touch, html.touch-preview) [data-run-surface] :is([role=slider], [data-touch-target])::after {
   content: '';
   position: absolute;
@@ -63,11 +63,33 @@ html.ios :is(input:not([type=checkbox]):not([type=radio]):not([type=range]):not(
 /* no hover-only affordances on touch: things that appear on hover are always visible */
 :is(html.touch, html.touch-preview) [data-hover-reveal] { opacity: 1 !important; }
 
-/* ---------------------------------------------------------------- bottom sheets (src/phone/BottomSheet.tsx) */
+/* ---------------------------------------------------------------- bottom sheets (src/phone/sheet.tsx) */
 
 .ab-sheet-enter { animation: ab-sheet-up 180ms ease-out; }
 @keyframes ab-sheet-up { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
 .ab-sheet-pad-bottom { padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)); }
+/* the sheet sits above the on-screen keyboard (--kb) and is never taller than what is visible (--vvh): both are set by
+   src/phone/env.ts; Chrome on Android resizes the layout for the keyboard (--kb is then 0), iOS does not */
+.ab-sheet-backdrop { position: fixed; inset: 0; z-index: 300; background: rgb(0 0 0 / 0.5); overscroll-behavior: contain; }
+.ab-sheet {
+  position: fixed; left: 0; right: 0; bottom: var(--kb, 0px); z-index: 301;
+  display: flex; flex-direction: column; box-sizing: border-box;
+  max-height: calc(var(--vvh, 100dvh) - 16px);
+  border-radius: 16px 16px 0 0; border: 1px solid var(--border); border-bottom: 0;
+  background: var(--popover, var(--background)); color: var(--popover-foreground, var(--foreground));
+  box-shadow: 0 -8px 30px rgb(0 0 0 / 0.25);
+}
+.ab-sheet-grab { flex: none; display: flex; justify-content: center; align-items: center; height: 28px; touch-action: none; cursor: grab; }
+.ab-sheet-grab > span { width: 40px; height: 5px; border-radius: 3px; background: var(--muted-foreground); opacity: 0.45; }
+.ab-sheet-title { flex: none; padding: 0 16px 8px; font-weight: 600; }
+.ab-sheet-body { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+.ab-sheet-footer { flex: none; padding: 8px 12px 0; border-top: 1px solid var(--border); }
+.ab-sheet [data-slot=command-input-wrapper] { height: 48px; padding-inline: 16px; }
+.ab-sheet [data-slot=command-input] { height: 48px; font-size: 16px; }
+.ab-sheet [data-slot=command-group] { padding: 4px 8px; }
+/* Dialog / Sheet UI components at phone width: a bottom sheet drawn in place (see tabs-overlays.tsx) */
+.ab-overlay-sheet { position: absolute; left: 0; right: 0; bottom: var(--kb, 0px); box-sizing: border-box; display: flex; flex-direction: column;
+  max-height: calc(var(--vvh, 100dvh) - 16px); border-radius: 16px 16px 0 0; }
 
 /* ---------------------------------------------------------------- swipe actions (Gallery SwipeActions) */
 [data-swipe-row] { touch-action: pan-y; }

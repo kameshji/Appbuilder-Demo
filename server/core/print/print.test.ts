@@ -19,7 +19,7 @@ import { segments, shape, textWidth } from './text.ts'
 import { code128Values, code128Modules, qrMatrix } from './barcode.ts'
 import { layoutDocument, paras, PAGE_COUNT, PAGE_NUMBER, type Op, type Page, type RBlock, type RTableRow } from './layout.ts'
 import { pdfBuffer } from './pdf.ts'
-import { printChartSvg } from './chart.ts'
+import { chartFromBlock } from './chart.ts'
 import { imageInfo } from './images.ts'
 import { hasRaster, pdfText, hasPoppler, rasterise, samplePng } from './print-testkit.ts'
 
@@ -250,7 +250,8 @@ describe('layout', () => {
 describe('PDF output', () => {
   const doc: RBlock[] = [
     { k: 'heading', text: 'Determinism हिन्दी', level: 1, align: 'left' },
-    { k: 'chart', spec: { type: 'pie', categories: ['A', 'B'], series: [{ name: 'x', values: [3, 1] }] }, height: 40 },
+    { k: 'chart', chart: chartFromBlock({ chartType: 'pie', values: [{ name: 'x', value: 'x' }] }, { rows: [{ label: 'A', values: [3] }, { label: 'B', values: [1] }], single: [], asText: String, now: new Date(0), grouping: 'indian', currency: 'INR', timeZone: 'Asia/Kolkata' }), height: 40 },
+    { k: 'chart', chart: chartFromBlock({ chartType: 'area', values: [{ name: 'उत्पादन', value: 'x' }, { name: 'Plan', value: 'y', dashed: true }] }, { title: 'Output', rows: [{ label: 'सोम', values: [3, 4] }, { label: 'मंगल', values: [5, 4] }, { label: 'बुध', values: [2, 4] }], single: [], asText: String, now: new Date(0), grouping: 'indian', currency: 'INR', timeZone: 'Asia/Kolkata' }), height: 45 },
     { k: 'image', images: [{ key: 'img', width: 320, height: 220 }], align: 'center', perRow: 1, width: 60 },
   ]
   const make = () => pdfBuffer({ pageW: A4.pageW, pageH: A4.pageH, pages: layoutDocument({ ...A4, style, body: doc, header: () => [], footer: () => [], images: new Map([['img', { width: 320, height: 220 }]]), maxPages: 10 }), images: new Map([['img', samplePng(320, 220, [200, 80, 40])]]), meta: { title: 'T', author: 'Ada', createdOn: new Date('2026-11-19T00:00:00Z') } })
@@ -272,10 +273,11 @@ describe('PDF output', () => {
     expect(t).toContain('Determinism')
     expect(imageInfo(samplePng(10, 7, [0, 0, 0]))).toEqual({ type: 'png', width: 10, height: 7 })
   })
-  it('renders a chart as SVG for previews', () => {
-    const svg = printChartSvg({ type: 'bar', categories: ['a', 'b'], series: [{ name: 's', values: [1, 2] }] })
-    expect(svg).toMatch(/^<svg[^>]+viewBox="0 0 400 220"/)
-    expect((svg.match(/<rect/g) ?? []).length).toBe(2)
+  it('draws charts as vectors with translucency and the bundled fonts (no image for the chart)', async () => {
+    const s = (await make()).toString('latin1')
+    expect((s.match(/\/Subtype \/Image/g) ?? []).length).toBe(1) // the photo only
+    expect(s).toMatch(/\/Type \/ExtGState/)
+    expect(s).toMatch(/\/BaseFont \/[A-Z]{6}\+NotoSansDevanagari/)
   })
   it('performance: a 50-page table report in a few seconds', async () => {
     const t0 = Date.now()

@@ -1,13 +1,15 @@
 /**
  * Print / GeneratePdf / GenerateDocx of formulas (P2-B; the host in src/runtime/host.ts calls these). Print fetches the
- * PDF made by GET /print/templates/:id/pdf and shows it in a new tab (the browser's PDF viewer prints it); on a phone the
- * file is downloaded instead (mobile browsers then offer to open or share it). GeneratePdf posts with a token chosen by the
+ * PDF made by GET /print/templates/:id/pdf and shows it in a new tab (the browser's PDF viewer prints it); on a phone a
+ * bar offers Share (Web Share with the file, in a new tap: share.ts) and Download, or the file is downloaded when the
+ * browser cannot share files. GeneratePdf posts with a token chosen by the
  * host (after pending writes, waiting at most 1.5 s for them), so a Patch of the token finds the file: the server holds
  * a write of a token that is still being made (at most 90 s).
  */
 import { platform } from '@/platform'
 import { errorMessage, notifyAsyncError, platformMode } from '@/runtime/data'
 import { newFileToken, printApi } from './api'
+import { canShareFile, downloadUrl, offerShare, type ShareNavigator } from './share'
 
 export { newFileToken }
 
@@ -28,20 +30,19 @@ export async function printCall(template: string, recordId: string | null): Prom
       throw new Error(b?.error?.message ?? `The server answered ${res.status}`)
     }
     const name = /filename\*=UTF-8''([^;]+)/.exec(res.headers.get('Content-Disposition') ?? '')?.[1]
-    const url = URL.createObjectURL(await res.blob())
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
     setTimeout(() => URL.revokeObjectURL(url), 10 * 60_000)
     if (w) {
       try { w.opener = null } catch { /* already detached */ }
       w.location.href = url
       return
     }
-    // a phone: download (the browser then offers to open or share it)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = name ? decodeURIComponent(name) : `${template}.pdf`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
+    // a phone: Print's tap is used up by now, so sharing waits for a new tap on "Share"; without file sharing, download
+    const fileName = name ? decodeURIComponent(name) : `${template}.pdf`
+    const file = new File([blob], fileName, { type: blob.type || 'application/pdf' })
+    if (canShareFile(navigator as unknown as ShareNavigator, file)) offerShare(file, url)
+    else downloadUrl(url, fileName)
   } catch (e) {
     w?.close()
     notifyAsyncError(`Print: ${errorMessage(e)}`)

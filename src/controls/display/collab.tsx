@@ -25,6 +25,8 @@ import { toBool, toNum, toText } from '../util'
 import { AvatarCircle } from './basics'
 import { GenerateDocumentButton } from '@/print/GenerateDocument'
 import { recordIdOf, usePeopleNames } from './people'
+import { useDevice } from '@/phone/env'
+import { BottomSheet } from '@/phone/sheet'
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -62,7 +64,7 @@ export function composeBody(text: string, mentions: Map<string, string>): string
 
 /* ------------------------------------------------------------------ person picker (also used inside the timeline) */
 
-function PersonList({ onPick, load, placeholder }: { onPick(p: PersonOption): void; load(q: string): Promise<PersonOption[]>; placeholder?: string }) {
+function PersonList({ onPick, load, placeholder, touch = false }: { onPick(p: PersonOption): void; load(q: string): Promise<PersonOption[]>; placeholder?: string; touch?: boolean }) {
   const [q, setQ] = useState('')
   const [items, setItems] = useState<PersonOption[] | null>(null)
   useEffect(() => {
@@ -76,13 +78,13 @@ function PersonList({ onPick, load, placeholder }: { onPick(p: PersonOption): vo
     }
   }, [q, load])
   return (
-    <Command shouldFilter={false}>
+    <Command shouldFilter={false} className={touch ? 'min-h-0 flex-1 rounded-none bg-transparent' : undefined}>
       <CommandInput placeholder={placeholder ?? 'Search people'} value={q} onValueChange={setQ} />
-      <CommandList>
+      <CommandList className={touch ? 'max-h-none min-h-0 flex-1 overscroll-contain' : undefined}>
         {items === null ? <div className="p-3 text-sm text-muted-foreground">Loading…</div> : <CommandEmpty>No one found.</CommandEmpty>}
         <CommandGroup>
           {(items ?? []).map((p) => (
-            <CommandItem key={p.id} value={p.id} onSelect={() => onPick(p)} data-testid={`person-${p.id}`}>
+            <CommandItem key={p.id} value={p.id} onSelect={() => onPick(p)} data-testid={`person-${p.id}`} className={touch ? 'min-h-11 gap-3 py-2.5 text-base' : undefined}>
               <AvatarCircle src="" name={p.name} size="22px" />
               <span className="truncate">{p.name}</span>
               <span className="ml-auto truncate text-xs text-muted-foreground">{p.email}</span>
@@ -96,6 +98,7 @@ function PersonList({ onPick, load, placeholder }: { onPick(p: PersonOption): vo
 
 function PersonPickerRender({ props, mode, outputs, setOutput, fire }: ControlRenderProps) {
   const names = usePeopleNames()
+  const touch = useDevice().touch
   const [open, setOpen] = useState(false)
   const defaultId = recordIdOf(props.Default)
   const [value, setValue] = useState<string>(defaultId)
@@ -113,11 +116,32 @@ function PersonPickerRender({ props, mode, outputs, setOutput, fire }: ControlRe
       {value ? <AvatarCircle src="" name={name} size="22px" /> : <UserRound className="size-4 text-muted-foreground" />}
       <span className={cn('truncate', !value && 'text-muted-foreground')}>{value ? name : toText(props.Placeholder) || 'Choose a person'}</span>
       {value && mode === 'run' && (
-        <X className="ml-auto size-3.5 shrink-0 text-muted-foreground" onClick={(e) => { e.stopPropagation(); setValue(''); fire('OnChange') }} />
+        <span role="button" aria-label="Clear person" data-touch-target="" className="ml-auto grid size-6 shrink-0 place-items-center text-muted-foreground" onClick={(e) => { e.stopPropagation(); setValue(''); fire('OnChange') }}>
+          <X className="size-3.5" />
+        </span>
       )}
     </button>
   )
   if (mode !== 'run') return trigger
+  // touch devices: a bottom sheet with a search field and 44 px rows (src/phone/sheet.tsx)
+  if (touch) {
+    return (
+      <>
+        <button type="button" className="flex size-full items-center gap-2 rounded-md border bg-background px-2 text-left text-sm" onClick={() => setOpen(true)} data-testid="person-picker">
+          {value ? <AvatarCircle src="" name={name} size="22px" /> : <UserRound className="size-4 text-muted-foreground" />}
+          <span className={cn('truncate', !value && 'text-muted-foreground')}>{value ? name : toText(props.Placeholder) || 'Choose a person'}</span>
+          {value && (
+            <span role="button" aria-label="Clear person" data-touch-target="" className="ml-auto grid size-6 shrink-0 place-items-center text-muted-foreground" onClick={(e) => { e.stopPropagation(); setValue(''); fire('OnChange') }}>
+              <X className="size-3.5" />
+            </span>
+          )}
+        </button>
+        <BottomSheet open={open} onClose={() => setOpen(false)} label={toText(props.Placeholder) || 'Choose a person'}>
+          <PersonList touch load={load} onPick={(p) => { setValue(p.id); setOpen(false); setTimeout(() => fire('OnChange'), 0) }} />
+        </BottomSheet>
+      </>
+    )
+  }
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>

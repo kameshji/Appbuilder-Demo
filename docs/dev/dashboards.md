@@ -18,7 +18,8 @@ security-trimmed; no separate BI model. Maker guide: [../guide/maker/dashboards.
 | `src/dashboards/tile.ts` | tile + rows -> `ChartSpec` |
 | `src/dashboards/viewer.ts` | `buildBatch` (all tiles -> one batch, filters and cross-filter) and `assemble` (answers -> tile rows / errors) |
 | `src/dashboards/manufacturing.ts` | Minimal plant tables, OEE / scrap / FPY / downtime Pareto / MTTR / schedule adherence presets, the "Production overview" template, SAMPLE data |
-| `src/portal/dashboards/` | `api.ts` (server and demo backends), `DashboardsPage.tsx` (list, viewer, layout editor) |
+| `src/dashboards/editor.ts` | The tile editor's logic: tile operations, the simple condition and calculation builders, defaults per column type, `validateTile`, summaries, `applyTile` |
+| `src/portal/dashboards/` | `api.ts` (server and demo backends), `DashboardsPage.tsx` (list, viewer, layout editor), `TileEditor.tsx` and `ConditionBuilder.tsx` (the tile editor) |
 | `server/core/dashboards/` | `ddl.ts` (schema version 11 step: `ab_dashboards`, `ab_dashboard_settings`), `routes.ts` (CRUD, settings, the batch endpoint and its cache) |
 
 `src/charts` and `src/dashboards` are shared with the server: relative imports with `.ts` extensions, no React, DOM or packages
@@ -102,10 +103,70 @@ table has the column; a cross-filter from a tile with `crossFilter` applies to t
 /dashboards/query`, `assemble` -> tiles. Refresh on: range / filter / cross-filter change, the auto-refresh interval (visible tab only),
 and a live `table:<id>` message for any table of the dashboard (debounced 400 ms). The previous rows stay on screen until the new ones
 arrive (no flicker); a request superseded by a newer one is ignored. The grid is 12 columns of 80 px rows and one column (in layout order)
-below 640 px of width. Edit mode (owner / administrator): title, width / height / position steps and remove per tile, Save.
+below 640 px of width. Edit mode (owner / administrator): title, width / height / position steps and remove per tile, **Add tile**
+and **Edit tile** (the tile editor below), Save.
 
 Demo mode: definitions in `localStorage` (`appbuilder-dashboards`), every plan through `platform.tables.query` (reference executor over the
 rows the demo user may read); the template creates the two SAMPLE tables in the browser.
+
+## Tile editor
+
+`TileEditor.tsx` is a sheet opened from edit mode by **Add tile** (toolbar) and **Edit tile** (pencil on each tile). Everything is chosen
+by clicking; nothing is typed as JSON. `DashboardsPage.tsx` only mounts it: one state (`editor`), the two buttons, and a `renderTile`
+callback that draws the preview with the viewer's own `Tile`.
+
+**State.** The editor's state is the draft `TileDef` itself. Every operation in `src/dashboards/editor.ts` takes a tile and returns a new
+one, spreading the objects it changes and copying the rest, so fields without a screen survive editing: a measure's row calculation
+(`expr`), nested conditions, series colours / axes / dash, colour bands, KPI rules and sparkline, table rules, and fields added by later
+versions. A test runs a tile carrying unknown fields at every level through every operation and `applyTile`, and every template tile
+through no-op edits, and checks nothing changed. Only two parts have a separate form model, and both are used only when they round-trip
+exactly:
+
+- conditions (the tile filter; a count's condition): `simpleFilterOf(condition, columns, timeZone)` gives rows of column / operator /
+  value joined by all or any, or `null`. It returns rows only when `conditionOfSimple(rows)` gives back the identical condition, so "one
+  of", column comparisons, calculations, lookup paths, `not` of anything but "is blank", nested groups and date-times with seconds are
+  never rewritten: `ConditionBuilder.tsx` shows them in words (`describeCondition`) and keeps them until the maker chooses "Replace it
+  with a simple condition". Values are typed per column kind (dates `{ $date }`, date-times in the dashboard time zone -> `{ $datetime }`
+  instants, yes / no -> booleans); a value that does not fit is an error under the row and blocks Apply;
+- computed measures: `simpleCalcOf(expr)` gives "operand [operator operand]" (operands: a measure or a number) or `null`; nested
+  expressions (the OEE preset) are shown in words and kept.
+
+**Operations.** `setTable` (a different table resets group columns, bucket, date column, filter and column measures; keeps plain
+counts; picks the first date column as the range column), `setKind` (a KPI gets the last value and the comparison or target as its
+base), `addMeasure` / `defaultMeasure` (sum of a number column, count of different values of other columns, count of rows), `setMeasureFn`
+(keeps or picks a fitting column, drops a count's condition when it is no longer a count), `setMeasureColumn` (replaces a row
+calculation), `setMeasureFilter`, `setValueLabel` (a series with the old label follows), `renameValue` (updates computed expressions,
+sort, running totals, series keys including `__cmp` / `__run`, category, KPI, table rules; refuses invalid or taken names),
+`removeValue` (also its series, sort, running total, KPI, rules; the UI disables it while a calculation reads the measure),
+`addComputed` / `setComputedExpr`, `setGroupBy` / `setBucket` (reset a category, heat-map row or sort that pointed at a removed
+grouping), `setDateColumn`, `setFilter`, `setSort`, `setTop`, `setCompare` (off removes `__cmp` series and the KPI's comparison base),
+`toggleRunning`, `setTarget`, `toggleSeries` / `resetSeries` / `setSeriesFormat` (the first change writes the default series list into
+`visual.series`; new measures are appended to a stored list), `setVisual`.
+
+**Validation.** `validateTile(tile, columnsOf)` returns errors (block Apply) and warnings in plain English: no table / unknown table,
+no measure, a column missing from the table, sum / average / minimum / maximum of a non-number column, grouping or counting a column of
+kind `other`, a date grouping on a non-date column or by hour on a date column, a range column whose kind does not match, columns missing
+from a condition, top N outside 1-10000, a comparison without a range column, running totals of unknown measures, target table / value
+/ key / date column problems, plus `compileQuery`'s own rules (measure names, duplicates, references, sort keys, "Others"). Warnings:
+no title, series or category the query does not produce, KPI base without comparison / target, a chart without grouping, a heat map
+with fewer than two groupings.
+
+**Preview.** 400 ms after a change, when there is no error: `previewDef(def, tile)` (the dashboard with only this tile), `buildBatch`
+with the dashboard's selected range, the viewer's `now` and calendar, no dashboard filter or cross-filter, then `dashboardsApi.query`
+(server: `POST /dashboards/query` as the maker; demo: `platform.tables.query`) and `assemble`. Errors (compile messages, 403 / 404 / 422
+/ 503 answers) are the viewer's tile messages. A newer change supersedes an older request.
+
+**Apply.** `applyTile(def, tile, original)` replaces the tile with its id (or appends, at most 40 tiles), runs `checkDashboardDef` on
+the result (throws its message, shown in the footer) and keeps the editor's tile objects with the checked layout. A tile switched to
+"text" from another kind loses its query; a text tile that already had one keeps it. Apply changes the dashboard draft; the dashboard's
+Save stores it (same as layout edits). Closing the sheet (Cancel, X, Escape) discards; clicks outside do not close it.
+
+**Not supported by the editor (the definition still can, through the API):** creating or editing a measure's row calculation
+(`NumExprV2`); conditions beyond one level of all / any over column / operator / value (no "one of", no column-to-column, no lookup
+paths, no calculations); computed measures beyond one operator; series colours, combo series kind and right axis, dashed style other
+than the default for comparison and target, line curve, gauge colour bands, KPI status rules and sparkline, table conditional formatting;
+the dashboard's filters, description, refresh interval and viewer roles; a preview with the dashboard's filter dropdowns or
+cross-filter applied; undo inside the editor.
 
 ## Tests
 
@@ -115,6 +176,8 @@ rows the demo user may read); the template creates the two SAMPLE tables in the 
 | `server/connectors/postgres/query-v2-aggregates.integration.test.ts` | 285-plan parity reference vs PostgreSQL in four time zones; one-pass statement check |
 | `src/charts/charts.test.ts` | formatting (Indian grouping, lakh / crore, fiscal labels), scales, every chart kind in its box, legend / selection, KPI rules, renderChartSvg |
 | `src/dashboards/dashboards.test.ts` | presets, shifts past midnight, comparisons (to date), the measure builder end to end, OEE against hand computation, template, viewer batch |
+| `src/dashboards/editor.test.ts` | tile editor logic: round trips (template tiles, unknown fields), condition and calculation builders (exact or left alone), every operation, defaults, validation messages, summaries, `applyTile`, a tile built only by editor operations run through `buildBatch` / `assemble` and the reference executor |
+| `scripts/exit-check/p2-tile-editor.mjs` | headless: demo mode (edit and apply template tiles unchanged, add a tile by clicking, preview, a blocking problem in words, Save, reload, dark theme, 820 px) and, with `BASE`, the same against a server |
 | `server/core/dashboards/dashboards.integration.test.ts` | the batch as administrator / own-rows user / row-rule user / no access, hidden columns, cache per user and its invalidation, CRUD and roles, settings |
 | `scripts/exit-check/p2-dashboard.mjs` | exit check 3 at 1,000,000 rows (API and browser), cross-filter, keyboard, data table, phone width |
 | `scripts/docs-shots/dashboards.mjs` | template, layout editing by clicking and persistence, range and filter, demo mode |

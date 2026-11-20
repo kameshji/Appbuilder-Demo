@@ -5,7 +5,9 @@ request) is made as a PDF on the server and opens in a new browser tab, where yo
 
 - **On a computer** the PDF opens in a new tab. If nothing opens, your browser blocked the tab: allow pop-ups for
   Appbuilder (the icon at the right of the address bar).
-- **On a phone** the PDF is downloaded; open it from the download notice to view, print or share it.
+- **On a phone**, once the PDF is ready a bar at the bottom offers **Share** (send it to WhatsApp, email or any app
+  on the phone) and **Download**. Phones whose browser cannot share files download the PDF straight away; open it from
+  the download notice to view, print or share it.
 
 ## What the document shows
 
@@ -14,8 +16,8 @@ record; if you cannot open the record at all, you get "The record was not found,
 
 ## Documents stored with a record
 
-In a record's timeline, **Document** makes the PDF and keeps it in the record's documents, so others who can read the
-record find it there later.
+In a record's timeline, **Document** lists the print templates of the record's table; pick one and the PDF is made and
+kept in the record's documents, so others who can read the record find it there later.
 
 ## Documents by email
 

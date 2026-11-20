@@ -72,7 +72,7 @@ Formulas may also read other tables delegably (`LookUp(Machines, Code = Machine)
 | Repeated section | Blocks once per row (`ThisItem`), optionally a page each |
 | Approval history | Who decided what and when on the record's approvals |
 | Image | The letterhead logo, an uploaded image, or photos from an image column (several in a grid, with captions) |
-| Chart | Bar, line, pie or gauge (OEE) |
+| Chart | Bar, line, pie or gauge (OEE), drawn exactly like dashboard charts (same colours, axes, legend and number formats), as sharp vectors |
 | Barcode / QR code | Code 128 or QR from a formula, scannable on paper |
 | Columns | 2 to 4 columns side by side |
 | Signature lines | Up to 4 labelled lines, with a date line |
@@ -95,10 +95,12 @@ Other scripts (Chinese, Arabic ...) are not supported yet.
 
 ## Using a template
 
-- **In an app**: `Print("Inspection report", Gallery1.Selected)` opens the PDF in a new tab (on a phone it downloads);
+- **In an app**: `Print("Inspection report", Gallery1.Selected)` opens the PDF in a new tab (on a phone a bar offers
+  **Share** and **Download** once the file is ready, or it downloads where the browser cannot share files);
   the **Print button** UI component does the same with its Template and Record properties.
   `Patch(Inspections, ThisItem, {Report: GeneratePdf("Inspection report", ThisItem)})` stores the PDF in a file column.
-- **From a record**: the record timeline's **Document** button stores the PDF in the record's Documents.
+- **From a record**: the record timeline's **Document** button lists the published templates of the record's table
+  and stores the chosen one's PDF in the record's Documents (only templates with a record source can be stored this way).
 - **In a flow**: the step **Generate a document** (output: the file, a file column of the record, or Documents); attach
   it to an email step with `Table({fileToken: Steps.GenerateDocument.Output.FileToken})`.
 - **Scheduled reports**: tick **Attach a PDF** (an automatic layout of the report's rows, or a template with a query).

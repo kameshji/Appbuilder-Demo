@@ -1,9 +1,14 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, ChevronsUpDown } from 'lucide-react'
 import type { ControlRenderProps, ControlType } from '@/contracts'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { displayModeProp, recordText, toDisplayMode, toRecords, toText } from './util'
 import { queryMeta } from './virtual'
+import { cn } from '@/lib/utils'
+import { useDevice } from '@/phone/env'
+import { PickerSheet } from '@/phone/sheet-picker'
+import { filterOptions } from '@/phone/touch-logic'
+import { triggerClass } from './inputs/shared'
 import { ComboBoxRender } from './inputs/ComboBox'
 
 function DropdownRender(p: ControlRenderProps) {
@@ -21,6 +26,10 @@ function PlainDropdown({ props, mode, outputs, setOutput, fire }: ControlRenderP
   const def = toText(props.Default)
   const selectedText = outputs.SelectedText == null ? '' : toText(outputs.SelectedText)
   const placeholder = toText(props.Placeholder)
+  // touch devices: the list opens as a bottom sheet with a search field (src/phone/sheet-picker.tsx)
+  const touch = useDevice().touch
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
 
   // Default sync: apply Default when it changes, or when nothing is selected yet.
   useEffect(() => {
@@ -43,6 +52,40 @@ function PlainDropdown({ props, mode, outputs, setOutput, fire }: ControlRenderP
         </span>
         <ChevronDown className="size-4 shrink-0 opacity-50" />
       </div>
+    )
+  }
+
+  if (touch) {
+    const close = () => { setOpen(false); setSearch('') }
+    return (
+      <>
+        <button
+          type="button"
+          role="combobox"
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          disabled={dm !== 'Edit'}
+          onClick={() => setOpen(true)}
+          className={cn(triggerClass, 'h-full', selIndex < 0 && 'text-muted-foreground')}
+        >
+          <span className="min-w-0 truncate text-left">{selIndex < 0 ? placeholder : texts[selIndex]}</span>
+          <ChevronDown className="size-4 shrink-0 opacity-50" />
+        </button>
+        <PickerSheet
+          open={open && dm === 'Edit'}
+          onClose={close}
+          label={placeholder || 'Select an item'}
+          rows={filterOptions(texts, search).map((i) => ({ index: i, text: texts[i], selected: i === selIndex }))}
+          search={search}
+          onSearch={setSearch}
+          onPick={(i) => {
+            setOutput('Selected', items[i])
+            setOutput('SelectedText', texts[i])
+            fire('OnChange')
+            close()
+          }}
+        />
+      </>
     )
   }
 

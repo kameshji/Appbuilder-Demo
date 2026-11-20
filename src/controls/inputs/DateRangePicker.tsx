@@ -8,6 +8,9 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { displayModeProp, toBool, toDisplayMode, toNum, toText } from '../util'
 import { Shell, dateKey, formatDate, startOfDay, toDate, triggerClass, useDefaultApply, useFocusToken } from './shared'
+import { useDevice } from '@/phone/env'
+import { applyNativeRange, dateToNative, nativeToDate } from '@/phone/touch-logic'
+import { NativeField } from './NativeDate'
 
 function DateRangePickerRender({ props, mode, outputs, setOutput, fire, focusToken }: ControlRenderProps) {
   const design = mode === 'design'
@@ -25,6 +28,7 @@ function DateRangePickerRender({ props, mode, outputs, setOutput, fire, focusTok
   const start = blank ? (userBlank ? null : defStart) : toDate(outputs.StartDate)
   const end = blank ? (userBlank ? null : defEnd) : toDate(outputs.EndDate)
   const [open, setOpen] = useState(false)
+  const touch = useDevice().touch
   const root = useRef<HTMLDivElement>(null)
   useFocusToken(root, focusToken, design)
   const editable = !design && dm === 'Edit'
@@ -41,6 +45,24 @@ function DateRangePickerRender({ props, mode, outputs, setOutput, fire, focusTok
     fire('OnChange')
   }
 
+  // touch devices: two native date fields (start and end), the phone's own date picker
+  if (touch && !design && dm !== 'View') {
+    const clearable = toBool(props.Clearable, true)
+    const from = (which: 'start' | 'end') => (s: string) => {
+      const d = nativeToDate(s, min, max)
+      if (d === undefined) return
+      const next = applyNativeRange(which, d, { start, end })
+      write(next.start, next.end)
+    }
+    return (
+      <Shell design={design} rootRef={root}>
+        <div className="grid size-full grid-cols-2 gap-1.5">
+          <NativeField kind="date" label="Start date" placeholder="Start" value={dateToNative(start)} min={min ? dateToNative(min) : undefined} max={max ? dateToNative(max) : undefined} disabled={dm === 'Disabled'} clearable={clearable} fontSize={toNum(props.Size, 14)} onValue={from('start')} />
+          <NativeField kind="date" label="End date" placeholder="End" value={dateToNative(end)} min={dateToNative(start) || (min ? dateToNative(min) : undefined)} max={max ? dateToNative(max) : undefined} disabled={dm === 'Disabled'} clearable={clearable} fontSize={toNum(props.Size, 14)} onValue={from('end')} />
+        </div>
+      </Shell>
+    )
+  }
   return (
     <Shell design={design} rootRef={root}>
       <Popover open={open && editable} onOpenChange={(o) => editable && setOpen(o)}>

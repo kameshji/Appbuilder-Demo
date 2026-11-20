@@ -5,6 +5,8 @@ import { Input } from '@/components/ui/input'
 import { displayModeProp, toDisplayMode, toNum, toText } from '../util'
 import { Shell, useDefaultApply, useFocusToken } from './shared'
 import { clampNum, fmtNum, numOrNull, snap } from './numeric'
+import { useDevice } from '@/phone/env'
+import { allowsNegative, normalizeNumberText, numberInputMode, toggleSign } from '@/phone/touch-logic'
 
 function NumberInputRender({ props, mode, outputs, setOutput, fire, focusToken }: ControlRenderProps) {
   const design = mode === 'design'
@@ -19,6 +21,23 @@ function NumberInputRender({ props, mode, outputs, setOutput, fire, focusToken }
   const root = useRef<HTMLDivElement>(null)
   useFocusToken(root, focusToken, design)
   const editable = !design && dm === 'Edit'
+  const touch = useDevice().touch
+  // touch devices: digits-only pad for a bounded whole-number range, else the decimal pad; iOS pads have no minus key,
+  // so a field that may be negative gets a sign button
+  const signButton = touch && editable && allowsNegative(min)
+
+  // typed text (a decimal comma from the phone keyboard counts as the point): store it and, when it is a number, commit it
+  const typed = (raw: string) => {
+    const t = normalizeNumberText(raw)
+    if (t === null) return
+    setDraft(t)
+    if (t === '' || t === '-' || t === '.' || t === '-.') {
+      if (t === '') commit(null)
+      return
+    }
+    const n = Number(t)
+    if (Number.isFinite(n)) commit(n)
+  }
 
   const commit = (n: number | null) => {
     sync.markBlank(n == null)
@@ -27,27 +46,37 @@ function NumberInputRender({ props, mode, outputs, setOutput, fire, focusToken }
   }
 
   return (
-    <Shell design={design} rootRef={root}>
+    <Shell design={design} rootRef={root} className="relative">
+      {signButton && (
+        <button
+          type="button"
+          aria-label="Change sign"
+          data-testid="number-sign"
+          data-touch-target=""
+          className="absolute inset-y-0 left-1 z-10 my-auto flex size-8 items-center justify-center rounded text-base font-medium text-muted-foreground"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            const cur = draft ?? fmtNum(stored)
+            typed(toggleSign(cur))
+          }}
+        >
+          ±
+        </button>
+      )}
       <Input
         type="text"
-        inputMode="decimal"
+        inputMode={touch ? numberInputMode(min, max, step) : 'decimal'}
+        enterKeyHint="done"
+        autoComplete="off"
         value={draft ?? fmtNum(stored)}
         placeholder={toText(props.Placeholder)}
         readOnly={design || dm === 'View'}
         disabled={dm === 'Disabled'}
-        className="h-full w-full"
+        className={signButton ? 'h-full w-full pl-9' : 'h-full w-full'}
         style={{ fontSize: toNum(props.Size, 14), textAlign: 'right' }}
         onChange={(e) => {
           if (!editable) return
-          const t = e.target.value
-          if (!/^-?\d*\.?\d*$/.test(t)) return
-          setDraft(t)
-          if (t === '' || t === '-' || t === '.' || t === '-.') {
-            if (t === '') commit(null)
-            return
-          }
-          const n = Number(t)
-          if (Number.isFinite(n)) commit(n)
+          typed(e.target.value)
         }}
         onKeyDown={(e) => {
           if (!editable) return

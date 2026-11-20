@@ -16,15 +16,21 @@
 import { MM, parseRichText, type Align, type RichParagraph, type RichRun, type TableStyle } from '../../../src/platform/print.ts'
 import { lineMetrics, segments, segmentWidth, splitGraphemes, textWidth, type FaceId, type TextStyle } from './text.ts'
 import { code128Modules, qrMatrix } from './barcode.ts'
-import { chartShapes, type ChartSpec } from './chart.ts'
+import type { PrintChart } from './chart.ts'
+import { renderChartSvg } from '../../../src/charts/svg.ts'
+import { svgToOps } from './svgops.ts'
 
 /* ------------------------------------------------------------------ drawing operations */
 
+/**
+ * Optional fields used by charts (svgops.ts): `rotate` (degrees, clockwise, about the text's own x/baseline),
+ * `opacity` / `fillOpacity` / `strokeOpacity` (0..1), `r` (rounded corners), `cap: 'round'` (round caps and joins).
+ */
 export type Op =
-  | { t: 'text'; x: number; y: number; text: string; face: FaceId; size: number; color: string; synthItalic?: boolean; actual?: string; endActual?: boolean }
-  | { t: 'rect'; x: number; y: number; w: number; h: number; fill?: string; stroke?: string; lw?: number }
-  | { t: 'line'; x1: number; y1: number; x2: number; y2: number; color: string; lw: number; dash?: number[] }
-  | { t: 'path'; d: string; x: number; y: number; fill?: string; stroke?: string; lw?: number }
+  | { t: 'text'; x: number; y: number; text: string; face: FaceId; size: number; color: string; synthItalic?: boolean; actual?: string; endActual?: boolean; rotate?: number; opacity?: number }
+  | { t: 'rect'; x: number; y: number; w: number; h: number; fill?: string; stroke?: string; lw?: number; r?: number; fillOpacity?: number; strokeOpacity?: number }
+  | { t: 'line'; x1: number; y1: number; x2: number; y2: number; color: string; lw: number; dash?: number[]; opacity?: number }
+  | { t: 'path'; d: string; x: number; y: number; fill?: string; stroke?: string; lw?: number; dash?: number[]; cap?: 'round'; fillOpacity?: number; strokeOpacity?: number }
   | { t: 'image'; x: number; y: number; w: number; h: number; key: string }
   | { t: 'clip'; x: number; y: number; w: number; h: number }
   | { t: 'unclip' }
@@ -47,7 +53,7 @@ export type RBlock =
   | (RBase & { k: 'line'; thickness: number; color: string; dashed: boolean })
   | (RBase & { k: 'pageBreak' })
   | (RBase & { k: 'barcode'; symbology: 'code128' | 'qr'; text: string; width?: number; height?: number; showText: boolean; align: 'left' | 'center' | 'right' })
-  | (RBase & { k: 'chart'; spec: ChartSpec; height: number })
+  | (RBase & { k: 'chart'; chart: PrintChart; height: number })
   | (RBase & { k: 'signature'; labels: string[]; showDate: boolean })
   /** a problem shown in the document instead of the block (e.g. a barcode that cannot encode its text) */
   | (RBase & { k: 'notice'; text: string })
@@ -508,23 +514,25 @@ function barcodeBox(b: Extract<RBlock, { k: 'barcode' }>, c: Ctx): Box {
   return { h: total, ops }
 }
 
+/** CSS px -> pt: dashboard charts are designed in px (11 px labels, 13 px titles); on paper 1 px = 0.75 pt */
+export const CHART_PT_PER_PX = 0.75
+
+/**
+ * A chart: package C's renderChartSvg (the dashboards' geometry and look, light theme, no background) at the box's size
+ * in px, converted to vector operations (svgops.ts) with the bundled fonts. Clipped to its box.
+ */
+export function chartOps(chart: PrintChart, w: number, h: number): Op[] {
+  const W = Math.max(40, Math.round(w / CHART_PT_PER_PX))
+  const s = w / W
+  const H = Math.max(30, Math.floor(h / s))
+  const svg = renderChartSvg({ ...chart.spec, width: W, height: H }, chart.rows, { theme: 'light', background: false, font: 'Noto Sans, Noto Sans Devanagari, sans-serif' })
+  const { ops } = svgToOps(svg, { width: w, text: textLine })
+  return [{ t: 'clip', x: 0, y: 0, w, h }, ...ops, { t: 'unclip' }]
+}
+
 function chartBox(b: Extract<RBlock, { k: 'chart' }>, c: Ctx): Box {
   const h = Math.min(mm(b.height, 60), c.frame * 0.9)
-  const w = c.width
-  const ops: Op[] = []
-  const measure = (t: string, size: number, bold?: boolean) => textWidth(t, { size, bold })
-  for (const s of chartShapes(b.spec, w, h, measure)) {
-    if (s.t === 'rect') ops.push({ t: 'rect', x: s.x, y: s.y, w: s.w, h: s.h, ...(s.fill ? { fill: s.fill } : {}), ...(s.stroke ? { stroke: s.stroke, lw: s.lw ?? 1 } : {}) })
-    else if (s.t === 'line') ops.push({ t: 'line', x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, color: s.color, lw: s.lw, ...(s.dash ? { dash: s.dash } : {}) })
-    else if (s.t === 'path') ops.push({ t: 'path', d: s.d, x: 0, y: 0, ...(s.fill ? { fill: s.fill } : {}), ...(s.stroke ? { stroke: s.stroke, lw: s.lw ?? 1 } : {}) })
-    else {
-      const st: TextStyle = { size: s.size, bold: s.bold }
-      const tw = textWidth(s.text, st)
-      const x = s.anchor === 'middle' ? s.x - tw / 2 : s.anchor === 'end' ? s.x - tw : s.x
-      ops.push(...textLine(s.text, x, s.y, st, s.color))
-    }
-  }
-  return { h, ops }
+  return { h, ops: chartOps(b.chart, c.width, h) }
 }
 
 function signatureBox(b: Extract<RBlock, { k: 'signature' }>, c: Ctx): Box {

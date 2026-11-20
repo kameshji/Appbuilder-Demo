@@ -13,7 +13,8 @@ surfaces and the limits. Makers: [guide/maker/print-templates.md](../guide/maker
 | `server/core/print/text.ts` | Fonts (bundled Noto Sans, Noto Sans Devanagari), script runs, measurement with fontkit's shaping |
 | `server/core/print/layout.ts` | The layout engine: resolved blocks -> boxes -> pages of drawing operations |
 | `server/core/print/pdf.ts` | Pages -> PDF with pdfkit (subset embedded fonts, vectors, images, ActualText for Devanagari lines) |
-| `server/core/print/barcode.ts`, `chart.ts`, `images.ts` | Code 128 encoder and QR (qrcode-generator); bar/line/pie/gauge charts as vector shapes (+ `printChartSvg`); PNG/JPEG sniffing |
+| `server/core/print/barcode.ts`, `images.ts` | Code 128 encoder and QR (qrcode-generator); PNG/JPEG sniffing |
+| `server/core/print/chart.ts`, `svgops.ts` | Chart blocks -> the dashboards' `ChartSpec` and rows; package C's SVG (`renderChartSvg`) -> drawing operations (see "Charts") |
 | `server/core/print/bind.ts` | Data binding: the source read as the generating identity, every formula evaluated, blocks resolved, warnings |
 | `server/core/print/docx.ts` | Word output with the free core of docxtemplater |
 | `server/core/print/service.ts`, `routes.ts`, `ddl.ts`, `alm.ts`, `builtins.ts` | Templates, versions, settings, generation, the log, generated files, bulk jobs, the API, schema 11 tables, solutions, built-in templates |
@@ -77,7 +78,26 @@ Pagination places boxes on pages:
 
 Header and footer are laid out per page after the body (page numbers are placeholders ``/`` replaced per
 page), their heights measured once per page kind (the first page may carry the letterhead). The output is pages of
-operations: text (x, baseline, face, size, colour), rect, line, path (SVG path data), image, clip.
+operations: text (x, baseline, face, size, colour; optional rotation and opacity), rect (optional rounded corners),
+line, path (SVG path data; optional dashes, round caps), image, clip; shapes take optional fill and stroke opacity.
+
+**Charts** are the dashboards' charts: there is no chart renderer in the print engine. `chart.ts` maps the stored chart
+block onto package C's `ChartSpec` and rows (the block keeps its shape: `chartType`, `rows`, `label`, `values`, `min`,
+`max`, `bands` as fractions, `unit`, `title`, `height`; the table in `chart.ts` says how `label` and `values` are read per
+kind; legacy gauge bands become bad / warn / good bands; `unit` becomes the number format's suffix; single values
+(gauge, bullet, KPI) are rounded to one decimal unless `decimals` is set, as before; the grouping setting picks the locale en-IN or en-US; an open timeline period ends
+at the generation time, so output stays deterministic). The layout calls `renderChartSvg` (`src/charts/svg.ts`, light
+theme, no background) at the box's size in CSS px (1 px = 0.75 pt, so 11 px labels print at 8.25 pt) and `svgops.ts`
+converts the SVG into operations, clipped to the box. The converter accepts exactly the SVG that function writes:
+`svg`, `title`/`desc` (not drawn), `g` with translate / uniform scale, `rect` (rx), `path` (all path commands; lengths
+scaled, arc flags kept), `circle` (as two arcs), `line`, `text` (anchors, `dominant-baseline` central/hanging from the
+face metrics, weight >= 600 bold, `rotate(a cx cy)`), fill / stroke / stroke-width / dashes / caps / opacity, colours
+`#hex` and `rgb()/rgba()`. Anything else (an element, attribute, transform, colour or entity) throws `SvgSubsetError`;
+`svgops.test.ts` renders every kind, so a change in `svg.ts` fails the tests instead of vanishing from PDFs. Text is not
+drawn with the SVG's font: each string goes through the engine's `textLine` (script runs, fontkit shaping, Devanagari
+ActualText) and anchors use those widths. The KPI's arrows (▲ ▼ ■) are in neither bundled font, so they are drawn as
+small vector shapes. Charts stay vectors (no image in the PDF). Rendered pages of all 15 kinds and the built-in daily
+OEE summary were checked by eye (PyMuPDF rasterisation on Windows; poppler was not available there).
 
 **Writing** (`pdf.ts`): pdfkit with `autoFirstPage: false`; the six faces are registered from the bundled files and
 embedded as subset CIDFontType2 fonts with ToUnicode maps; text is placed at its baseline (`baseline: 'alphabetic'`);
@@ -137,12 +157,18 @@ identity must be the token's creator).
 ## Surfaces
 
 - **Apps**: `Print(template [, record])` opens `GET /print/templates/:id/pdf` in a new tab (inside the click, so pop-up
-  blockers allow it); on phones (coarse pointer, narrow screen) it downloads instead (the browser offers to open or share
-  it; the Web Share API is not used because it needs the original click and the file arrives later). `GeneratePdf`,
-  `GenerateDocx` return a token (above). The **Print button** UI component (Template, Record, Text) calls Print.
-- **Record timeline**: "Document" lists the published templates of the record's table; the PDF is stored in Documents
-  regarding the record (`POST /print/templates/:id/documents`, optional number sequence prefix), its file becoming
-  version 1.
+  blockers allow it). On phones (coarse pointer, narrow screen) there is no tab: the Web Share API needs a fresh user
+  activation and Print's tap is spent by the time the file arrives, so when `navigator.canShare({files})` accepts the PDF
+  a bar (`src/print/share.ts`, plain DOM) offers **Share** (`navigator.share({files, title})` inside that new tap; a
+  cancelled share sheet keeps the bar, another failure downloads) and **Download**; otherwise the file is downloaded as
+  before. `GeneratePdf`, `GenerateDocx` return a token (above). The **Print button** UI component (Template, Record,
+  Text) calls Print.
+- **Record timeline**: "Document" lists the published templates of the record's table (the timeline's Table property,
+  or, when it is blank, the table the timeline API reports for the record: without that every template was offered,
+  found in a headless browser check); the PDF is stored in Documents regarding the record (`POST
+  /print/templates/:id/documents`, optional number sequence prefix), its file becoming version 1. Query-source templates
+  of the table are listed but refused by the server ("Only templates with a record source ..."): the template list does
+  not carry the source kind.
 - **Flows**: step `document.generate` (template, record, output `file` / `record` (a file column) / `documents`); the
   token is derived from the run and step, so a retry overwrites the same file. Output `{FileToken, FileName, Pages,
   Warnings, AttachmentId?, DocumentId?}`. Email attachments: `Table({fileToken: Steps.Pdf.Output.FileToken})`.
@@ -182,7 +208,11 @@ Word templates 10 MB. A document over the page limit fails with a clear message.
 symbologies decoded from a rasterised PDF with zxing-cpp when `APPBUILDER_TEST_PYTHON` has it), layout (wrapping,
 pagination, header repeat, row integrity, groups and totals, widows/orphans, keepTogether, page breaks, slicing, page
 limit), golden text positions (`testdata/golden-layout.json`, tolerance 0.5 pt; `UPDATE_GOLDEN=1` rewrites it),
-determinism and PDF structure, the 50-page budget. `print.integration.test.ts` (PostgreSQL, fake SMTP): the six
+determinism and PDF structure, the 50-page budget. `svgops.test.ts` (no database): every chart kind drawn inside its
+box with nothing dropped, SVG outside the subset rejected, anchors / baselines / rotation / shapes, Devanagari labels,
+deterministic operations and PDF bytes, golden text positions of a bar chart (`testdata/golden-chart.json`), the block
+mapping (built-ins' bar and gauge). `src/print/share.test.ts`: when Share is offered and what a share does.
+`print.integration.test.ts` (PostgreSQL, fake SMTP): the six
 built-ins, photos, security trimming and warnings, the service identity, tokens and claims, Documents with numbers, the
 flow step and the emailed PDF, scheduled report PDFs, bulk zip and merge, Word templates, drafts/versions/visibility,
 solutions round trip into another environment, locked environments, the large report. PNG renders for review:
@@ -194,7 +224,11 @@ solutions round trip into another environment, locked environments, the large re
   and Devanagari; no right-to-left text.
 - No PDF/A, no digital signatures, no form fields, no tagged-PDF structure tree (only ActualText spans).
 - The designer's canvas is an approximation (page breaks estimated); the server PDF is the real preview.
-- Charts are a small own renderer (bar, line, pie, gauge) drawn straight as PDF vectors. Package C's `renderChartSvg`
-  (`src/charts/svg.ts`, 15 kinds, the dashboards' look) returns SVG; using it needs an SVG-to-PDF step (groups, transforms,
-  text anchors) that was not built in this package: duplication to remove later (charts in PDFs then match dashboards).
+- Chart kinds: the engine draws all 15 kinds of `renderChartSvg`, but the template model (`src/platform/print.ts`:
+  the `chartType` union, `docProblems`, the block catalogue) and the designer still offer bar, line, pie and gauge only,
+  so the other kinds (area, combo, donut, scatter, heatmap, bullet, KPI, funnel, Pareto, histogram, timeline) cannot be
+  saved yet; the optional fields `stack`, `orientation`, `dataLabels`, `legend`, `decimals`, `higherIsBetter` and per
+  value `kind` / `axis` / `dashed` are read by the engine but not declared in the model either.
+- Chart text widths: `renderChartSvg` fits titles and labels with its own width estimate; the PDF measures them with
+  Noto Sans, so a label fitted to the edge may be slightly wider than planned (the chart is clipped to its box).
 - Word templates: no images, HTML, charts or table-building (docxtemplater paid modules), no PDF conversion.

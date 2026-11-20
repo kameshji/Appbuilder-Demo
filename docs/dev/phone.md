@@ -55,17 +55,44 @@ wide (the narrowest common phone) or 390/412.
 - Tab lists scroll sideways on touch; `[data-hover-reveal]` content is always visible.
 - **Pull to refresh** (`PullToRefresh.tsx`) on the fluid surface reloads the app's data sources; the browser's own
   pull-to-refresh is off (it would reload the page and lose typed values).
+- **Bottom sheets** (`sheet.tsx`, `sheet-picker.tsx`): on touch devices Dropdown, ComboBox and PersonPicker open a bottom sheet
+  (search field, 44 px rows, a Done button for multiple selection; server-backed ComboBoxes load more near the end).
+  The sheet is portal'd to `document.body` (the RenderNode screen wrapper has `transform`, which would make `position:
+  fixed` relative to the screen), sits at `bottom: var(--kb)` with `max-height` from `--vvh`, and closes by Escape, a tap
+  on the backdrop or a drag down on the handle (`dragDismiss`). Portals of open-but-hidden app tabs are not shown
+  (`usePaneVisible`). Desktop keeps the Radix popovers.
+- **Native pickers** (`controls/inputs/NativeDate.tsx`): DatePicker, DateRangePicker, TimePicker and the Form's date fields
+  use `<input type=date|time>` on touch. The value contract is unchanged (SelectedDate at local midnight, Value
+  "HH:MM"; `nativeToDate`/`nativeToTime` in `touch-logic.ts`); Min/Max are applied. The field shows the device's format,
+  so `Format` and `Use24Hour` are ignored there. A clear button stays (iOS pickers cannot clear).
+- **NumberInput**: `inputmode="numeric"` only for a bounded whole-number range with Min >= 0, otherwise `decimal`; a +/-
+  button where negatives are allowed (iOS pads have no minus key); a decimal comma is stored as a point. Form number
+  fields take the comma too but have no sign button.
+- **Dialog and Sheet** are bottom sheets at phone width (< 600 px) on touch devices (`overlayPlacement`): drag handle, 44 px
+  close button, `ab-overlay-sheet`. A top Sheet stays a top sheet. The content is the design-width layout, full width.
+- **DataTable cards**: on touch below 600 px (run mode) rows are cards: the title is the first text column, up to 5 more
+  columns follow as label: value lines; the new additive property `CardColumns` ("Phone card columns", e.g.
+  `Name, Status, Amount`) picks and orders the columns (1st title, 2nd subtitle, rest lines). A "Sort by" select replaces
+  the headers; cards load in steps of 100 and a server query loads more near the end. Virtualization is off in card mode.
+- **Form sticky save bar** (`sheet-bar.tsx`): when the form's own bottom is below the visible viewport (keyboard, or a form
+  taller than the screen) but a useful part is visible (`barPinned`), the Save/Cancel bar is pinned at `bottom: var(--kb)`,
+  above the shell's connection bar, with a placeholder keeping the layout. Choice and lookup fields of the Form still use
+  the Radix select; `revealFocused` (env.ts) does not know about the pinned bar.
+- Alert's dismiss button has a 44 px touch area. **Visual**: invisible 44 px hit circles around points, a tap shows the
+  tooltip and a tap elsewhere hides it, 44 px legend rows. **Chart** (recharts) already showed its tooltip on a tap: no
+  change. **PrintButton** has a busy state so a second tap cannot download the PDF twice; the download on iOS Safari is
+  not verified.
 - **Touch matrix**: `src/phone/touch.ts`, one entry per UI component (see the summary below). `src/phone/phone.test.ts`
   fails when a UI component of the registry has no entry, and when an interactive one smaller than 44 px neither gets
-  the touch area nor is marked as a limitation. New UI components must add an entry.
+  the touch area nor is marked as a limitation. The decision rules above are pure functions in `touch-logic.ts`. New UI components must add an entry.
 
 ### Touch matrix summary (83 UI components plus the Screen)
 
 | Status | Count | Meaning |
 | --- | --- | --- |
-| works | 45 | usable by touch as it was (display-only UI components count here) |
-| fixed | 25 | changed in P2-A (touch areas, nearest-target taps, tabs scroll, photo capture, the new scan components) |
-| limitation | 14 | known gaps, listed in `touch.ts`: Dropdown, ComboBox and PersonPicker open desktop popovers (no bottom sheet with search), DatePicker/DateRangePicker/TimePicker do not use the native pickers, NumberInput keeps its own buttons and keyboard, Dialog and Sheet are not bottom sheets on phones, DataTable has no card layout, Alert's dismiss button is small, Chart and Visual (package C) and PrintButton (package B) were not reviewed |
+| works | 46 | usable by touch as it was (display-only UI components count here; Chart was reviewed and needed no change) |
+| fixed | 38 | changed for touch: P2-A (touch areas, nearest-target taps, tabs scroll, photo capture, scan components) and the touch-limitation package (bottom-sheet pickers, native date/time, NumberInput, Dialog/Sheet, DataTable cards, Form save bar, Alert, Visual, PrintButton) |
+| limitation | 0 | none left as a matrix status; the remaining gaps are inside the notes (native pickers ignore Format/Use24Hour, no Android back-button handling for sheets, Form choice/lookup fields use the Radix select, nothing tested on a real phone) |
 
 The exit script measures the real touch areas of 35 interactive UI components at their default size in Chrome's phone
 emulation (all pass; 28 of them need the extended area).
@@ -220,18 +247,26 @@ and geolocation are allowed for the page itself and (with `X-Frame-Options: SAME
 | --- | --- | --- |
 | Outbox: order, idempotency (lost answer), crash/restart, locked store, conflict (keep mine / use server), rejection (fix and resend), 5xx/401 pause, shared replay, encryption at rest | `src/phone/offline/outbox.test.ts` | the outbox rules |
 | 1D decoder against generated barcode images (scaled, noisy, blurred, reversed), checksum/quiet-zone rejection | `src/phone/scan/decode1d.test.ts` | the fallback decoder |
-| Layout rule, device classification, keyboard inset, connectivity transitions, read retries, wedge, debounce, EXIF/orientation/size maths, nearest target, install platform, start route, Device()/Location(), Form New-mode starting values, the touch matrix over the registry | `src/phone/phone.test.ts` | pure logic |
+| Layout rule, device classification, keyboard inset, connectivity transitions, read retries, wedge, debounce, EXIF/orientation/size maths, nearest target, install platform, start route, Device()/Location(), Form New-mode starting values, the touch matrix over the registry, `touch-logic.ts` (option filter, native date/time conversion and range, NumberInput keypad and comma, card plan and `CardColumns`, overlay placement, sheet drag, save-bar pinning, chart touch sizes) | `src/phone/phone.test.ts` | pure logic |
 | Icons (PNG decoded), colours, manifest, service worker source, CSP unchanged, offline key derivation, idempotency key validation | `server/core/pwa.test.ts` | server side |
 | End to end in Chrome's phone emulation | `scripts/exit-check/p2-phone.mjs` | the exit check (below) |
 
-The exit script (44 checks): sign-in at 360 px, manifests and icons, service worker registered and caching no data,
+The exit script (94 checks; section E, 50 checks, covers the touch controls below; run only that part with `EXIT_ONLY_TOUCH=1`): sign-in at 360 px, manifests and icons, service worker registered and caching no data,
 opening the app from its start address, fluid layout, Device(), a camera scan of a Code 128 barcode from Chrome's fake
 camera (a generated Y4M video; our decoder, because headless Chrome on Linux has no BarcodeDetector), keyboard wedge,
 the 44 px touch area by a real touch tap, an offline save with a photo (2 items waiting, visible), sent exactly once when
 back online with the photo resized to 1600 px, a reload while offline (cold start page, then sent once), slow 3G,
-server idempotency, the service worker update flow, the shell at 360 and 412 px, the touch audit, sign-out clearing
-everything, the device wipe.
+server idempotency, the service worker update flow, the shell at 360 and 412 px, the touch audit, then in emulation: the
+Dropdown/ComboBox bottom sheets (44 px rows, search, lifted by `--kb`, Done, tap-outside and drag close), the native
+date / range / time fields and their value contract, NumberInput keypad / sign / comma, Alert dismiss 44 px, Dialog and
+Sheet as bottom sheets, DataTable cards (CardColumns, selection, sort), Chart and Visual taps, the pinned Form save bar at
+360 x 520 with and without `--kb`, desktop unchanged (popovers, table, centred dialog); sign-out clearing everything,
+the device wipe.
 
 **Not proven here** (manual, `docs/dev/phone-test-script.md`): real Android and iOS devices, iOS Safari at all, the
-native camera of `capture`, QR codes and the BarcodeDetector path, real torch, real keyboard behaviour, real Wi-Fi
+native camera of `capture`, every touch control above on a real phone (the native pickers, the sheets with a real on-screen keyboard, iOS `visualViewport` behaviour), QR codes and the BarcodeDetector path, real torch, real keyboard behaviour, real Wi-Fi
 dropouts and packet loss, installing to the home screen, the LAN HTTPS certificate on phones.
+
+## Studio preview and Check on phone
+
+`src/studio/Preview.tsx` (`DeviceFrame`) lays a phone or tablet app out with `usesFluidLayout` / `fluidSurface` for the frame's screen size and turns on `setTouchPreview` while shown. It does not use `RunSurface`, which measures its area with `getBoundingClientRect` (scaled by ancestor transforms). Size and scale maths: `src/studio/phoneFrame.ts` (unit-tested). `src/studio/CheckOnPhone.tsx` shows a QR code of the app's phone start address, reusing `QrSvg` and `appPhoneUrl`. Neither has been clicked through in a browser yet.

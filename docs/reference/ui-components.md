@@ -1402,18 +1402,19 @@ Shows a table of rows as a grid with optional search, sorting and paging.
 
 Type: `DataTable` · default size 640 x 360 · main property: `Items`
 
-| Property | Kind | Group | Default | Level | Values |
-| --- | --- | --- | --- | --- | --- |
-| `Items` | table | Data | `=[]` | Simple |  |
-| `Columns` | text | Data | `=""` | Simple |  |
-| `SelectionMode` | enum | Behaviour | `=SelectionMode.Single` | Simple | any [SelectionMode](formulas.md#selectionmode) member |
-| `Searchable` | boolean | Behaviour | `=false` | Simple |  |
-| `Sortable` | boolean | Behaviour | `=true` | Simple |  |
-| `PageSize` | number | Layout | `=0` | Simple |  |
-| `Striped` | boolean | Style | `=false` | Simple |  |
-| `Dense` | boolean | Style | `=false` | Simple |  |
-| `EmptyText` | text | Content | `="No data"` | Simple |  |
-| `OnSelect` | action | Behaviour | `=false` | Simple |  |
+| Property | Shown as | Kind | Group | Default | Level | Values |
+| --- | --- | --- | --- | --- | --- | --- |
+| `Items` |  | table | Data | `=[]` | Simple |  |
+| `Columns` |  | text | Data | `=""` | Simple |  |
+| `SelectionMode` |  | enum | Behaviour | `=SelectionMode.Single` | Simple | any [SelectionMode](formulas.md#selectionmode) member |
+| `Searchable` |  | boolean | Behaviour | `=false` | Simple |  |
+| `Sortable` |  | boolean | Behaviour | `=true` | Simple |  |
+| `PageSize` |  | number | Layout | `=0` | Simple |  |
+| `Striped` |  | boolean | Style | `=false` | Simple |  |
+| `Dense` |  | boolean | Style | `=false` | Simple |  |
+| `CardColumns` | Phone card columns | text | Layout | `=""` | Advanced |  |
+| `EmptyText` |  | text | Content | `="No data"` | Simple |  |
+| `OnSelect` |  | action | Behaviour | `=false` | Simple |  |
 
 **Outputs**
 

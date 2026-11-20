@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils'
 import { CATEGORIES } from './categories'
 import { ChatButton } from '@/chat/ChatDock'
 import { StudioPeople } from './live'
+import { CheckOnPhone } from './CheckOnPhone'
 import { NotificationBell } from '@/portal/Notifications'
 
 function SaveIndicator() {
@@ -142,6 +143,7 @@ export function CommandBar() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        <CheckOnPhone />
         <div className="flex items-center">
           <Button size="sm" data-testid="preview-button" className="h-8 gap-1.5 rounded-r-none px-3.5" onClick={() => useStore.getState().startPreview()}>
             <Play className="fill-current" /> Preview

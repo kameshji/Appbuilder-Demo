@@ -6,6 +6,9 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { displayModeProp, toBool, toDisplayMode, toNum, toText } from '../util'
 import { Shell, triggerClass, useDefaultApply, useFocusToken } from './shared'
+import { useDevice } from '@/phone/env'
+import { nativeToTime, timeToNative } from '@/phone/touch-logic'
+import { NativeField } from './NativeDate'
 
 export interface Hm { h: number; m: number }
 
@@ -71,6 +74,7 @@ function TimePickerRender({ props, mode, outputs, setOutput, fire, focusToken }:
   const sync = useDefaultApply(timeValue(def), toText(outputs.Value) === '', () => write(def))
   const cur = toText(outputs.Value) === '' ? (sync.isUserBlank() ? null : def) : parseTime(outputs.Value)
   const [open, setOpen] = useState(false)
+  const touch = useDevice().touch
   const root = useRef<HTMLDivElement>(null)
   useFocusToken(root, focusToken, design)
   const editable = !design && dm === 'Edit'
@@ -89,6 +93,27 @@ function TimePickerRender({ props, mode, outputs, setOutput, fire, focusToken }:
   const pm = cur ? cur.h >= 12 : false
   const hourActive = cur ? (use24 ? cur.h : cur.h % 12) : null
 
+  // touch devices: the phone's own time picker (the 12 / 24 hour clock follows the phone, not Use24Hour)
+  if (touch && !design && dm !== 'View') {
+    return (
+      <Shell design={design} rootRef={root}>
+        <NativeField
+          kind="time"
+          label={toText(props.Placeholder) || 'Time'}
+          value={timeToNative(cur)}
+          step={step * 60}
+          placeholder={toText(props.Placeholder)}
+          disabled={dm === 'Disabled'}
+          clearable={toBool(props.Clearable, true)}
+          fontSize={toNum(props.Size, 14)}
+          onValue={(s) => {
+            const t = nativeToTime(s)
+            if (t !== undefined) commit(t)
+          }}
+        />
+      </Shell>
+    )
+  }
   return (
     <Shell design={design} rootRef={root}>
       <Popover open={open && editable} onOpenChange={(o) => editable && setOpen(o)}>

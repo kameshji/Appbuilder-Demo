@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { toBool, toColor, toNum, toText } from '../util'
 import { DynIcon, SUCCESS_COLOR, WARNING_COLOR, lc } from './helpers'
+import { useDevice } from '@/phone/env'
 
 /* ------------------------------------------------------------------ Progress */
 
@@ -191,6 +192,7 @@ const ALERT_ICON = { info: Info, success: CircleCheck, warning: TriangleAlert, e
 
 function AlertRender({ props, mode, outputs, setOutput, fire }: ControlRenderProps) {
   const run = mode === 'run'
+  const touch = useDevice().touch
   const dismissed = run && outputs.Dismissed === true
   const kind = alertKind(toText(props.Variant))
   const accent = ALERT_ACCENT[kind]
@@ -220,7 +222,8 @@ function AlertRender({ props, mode, outputs, setOutput, fire }: ControlRenderPro
           type="button"
           aria-label="Dismiss"
           onClick={run ? () => { setOutput('Dismissed', true); fire('OnDismiss') } : undefined}
-          className="-mr-1 -mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10"
+          data-testid="alert-dismiss"
+          className={cn('inline-flex shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10', touch ? '-my-3 -mr-3 size-11' : '-mr-1 -mt-0.5 size-6')}
         >
           <X className="size-3.5" />
         </button>

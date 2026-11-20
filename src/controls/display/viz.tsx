@@ -15,6 +15,8 @@ import { resolveCss } from '@/charts/palette'
 import { renderChartSvg } from '@/charts/svg'
 import { toBool, toNum, toRecords, toText } from '../util'
 import { lc } from './helpers'
+import { useDevice } from '@/phone/env'
+import { legendHeight, pointHitRadius } from '@/phone/touch-logic'
 
 /* ------------------------------------------------------------------ size */
 
@@ -36,7 +38,7 @@ export function useBoxSize<T extends HTMLElement>(): [React.RefObject<T | null>,
 
 /* ------------------------------------------------------------------ marks */
 
-function MarkEl({ m, focused, onHover, onPick }: { m: Mark; focused: boolean; onHover(d: Datum | null, x: number, y: number): void; onPick(d: Datum): void }) {
+function MarkEl({ m, focused, touch, onHover, onPick }: { m: Mark; focused: boolean; touch?: boolean; onHover(d: Datum | null, x: number, y: number): void; onPick(d: Datum): void }) {
   const c = resolveCss
   const d = 'datum' in m ? m.datum : undefined
   const handlers = d ? {
@@ -50,7 +52,17 @@ function MarkEl({ m, focused, onHover, onPick }: { m: Mark; focused: boolean; on
   switch (m.t) {
     case 'rect': return <rect x={m.x} y={m.y} width={Math.max(0, m.w)} height={Math.max(0, m.h)} rx={m.rx} fill={c(m.fill)} opacity={m.opacity} stroke={m.stroke ? c(m.stroke) : undefined} {...ring} {...handlers} />
     case 'path': return <path d={m.d} fill={m.fill ? c(m.fill) : 'none'} stroke={m.stroke ? c(m.stroke) : undefined} strokeWidth={m.width} strokeDasharray={m.dash} strokeLinecap={m.cap} strokeLinejoin={m.cap ? 'round' : undefined} opacity={m.opacity} {...ring} {...handlers} />
-    case 'circle': return <circle cx={m.cx} cy={m.cy} r={focused ? Math.max(m.r, 5) : d ? Math.max(m.r, 0.01) : m.r} fill={c(m.fill)} stroke={m.stroke ? c(m.stroke) : undefined} strokeWidth={m.width} opacity={m.opacity} {...ring} {...handlers} />
+    case 'circle':
+      // touch devices: points are small (r 3-4); an invisible 44 px circle around each one is what a finger hits
+      if (touch && d) {
+        return (
+          <g {...handlers}>
+            <circle cx={m.cx} cy={m.cy} r={pointHitRadius(m.r, true)} fill="transparent" data-touch-hit="" />
+            <circle cx={m.cx} cy={m.cy} r={focused ? Math.max(m.r, 5) : Math.max(m.r, 0.01)} fill={c(m.fill)} stroke={m.stroke ? c(m.stroke) : undefined} strokeWidth={m.width} opacity={m.opacity} {...ring} pointerEvents="none" />
+          </g>
+        )
+      }
+      return <circle cx={m.cx} cy={m.cy} r={focused ? Math.max(m.r, 5) : d ? Math.max(m.r, 0.01) : m.r} fill={c(m.fill)} stroke={m.stroke ? c(m.stroke) : undefined} strokeWidth={m.width} opacity={m.opacity} {...ring} {...handlers} />
     case 'line': return <line x1={m.x1} y1={m.y1} x2={m.x2} y2={m.y2} stroke={c(m.stroke)} strokeWidth={m.width} strokeDasharray={m.dash} opacity={m.opacity} />
     case 'text': return <text x={m.x} y={m.y} fontSize={m.size} fill={c(m.fill)} textAnchor={m.anchor} dominantBaseline={m.baseline === 'middle' ? 'central' : m.baseline} fontWeight={m.weight} style={{ pointerEvents: 'none', fontVariantNumeric: 'tabular-nums' }}>{m.text}</text>
   }
@@ -114,6 +126,7 @@ export interface VizViewProps {
 
 export function VizView({ spec, rows, interactive = true, onPick, tableView, legend = true, className, testId, onScene }: VizViewProps) {
   const [ref, size] = useBoxSize<HTMLDivElement>()
+  const touch = useDevice().touch
   const [hidden, setHidden] = useState<string[]>([])
   const [tip, setTip] = useState<{ d: Datum; x: number; y: number } | null>(null)
   const [focus, setFocus] = useState(-1)
@@ -121,11 +134,22 @@ export function VizView({ spec, rows, interactive = true, onPick, tableView, leg
   // the legend is measured once without size, then the plot gets the rest of the height
   const probe = useMemo(() => chartScene({ ...spec, width: 200, height: 100, hidden }, rows), [spec, rows, hidden])
   const showLegend = legend && probe.legend.length > 1 && spec.kind !== 'kpi'
-  const legendH = showLegend ? 26 : 0
+  const legendH = showLegend ? legendHeight(touch) : 0
   const full: ChartSpec = { ...spec, width: Math.max(40, size.width), height: Math.max(30, size.height - legendH), hidden }
   const scene = useMemo(() => chartScene(full, rows), [JSON.stringify(spec), rows, size.width, size.height, legendH, hidden.join('|')]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { onScene?.(scene, full) }, [scene]) // eslint-disable-line react-hooks/exhaustive-deps
   const pts = scene.points
+  // touch devices: a tap shows the tooltip (and picks); a tap anywhere else hides it again
+  useEffect(() => {
+    if (!touch || !tip) return
+    const off = (e: Event) => {
+      const el = ref.current
+      if (el && e.target instanceof Node && el.contains(e.target) && (e.target as Element).closest?.('[data-touch-hit], rect, path, circle')) return
+      setTip(null)
+    }
+    document.addEventListener('pointerdown', off, true)
+    return () => document.removeEventListener('pointerdown', off, true)
+  }, [touch, tip, ref])
   const focused = focus >= 0 && focus < pts.length ? pts[focus]! : null
   const pick = (d: Datum) => { if (interactive) onPick?.(d) }
   const onKey = (e: KeyboardEvent) => {
@@ -159,19 +183,19 @@ export function VizView({ spec, rows, interactive = true, onPick, tableView, leg
         className="block outline-none focus-visible:ring-2 focus-visible:ring-ring/40" style={{ fontFamily: 'inherit' }}
         data-testid={testId ? `${testId}-svg` : undefined}
       >
-        {scene.marks.map((m, i) => <MarkEl key={i} m={m} focused={!!focused && 'datum' in m && m.datum === focused} onHover={(d, x, y) => setTip(d ? { d, x, y } : null)} onPick={pick} />)}
+        {scene.marks.map((m, i) => <MarkEl key={i} m={m} touch={touch} focused={!!focused && 'datum' in m && m.datum === focused} onHover={(d, x, y) => setTip(d ? { d, x, y } : null)} onPick={pick} />)}
       </svg>
     )
   }
   return (
     <div className={cn('relative flex size-full min-h-0 min-w-0 flex-col', className)} data-testid={testId}>
       {showLegend && (
-        <div className="flex h-[26px] shrink-0 items-center gap-1 overflow-x-auto overflow-y-hidden" role="group" aria-label="Series">
+        <div className="flex shrink-0 items-center gap-1 overflow-x-auto overflow-y-hidden" style={{ height: legendH }} role="group" aria-label="Series">
           {scene.legend.map((l) => (
             <button
               key={l.key} type="button" aria-pressed={!l.hidden} tabIndex={interactive ? 0 : -1}
               onClick={() => interactive && setHidden((h) => (h.includes(l.key) ? h.filter((x) => x !== l.key) : [...h, l.key]))}
-              className={cn('flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted', l.hidden && 'opacity-45 line-through')}
+              className={cn('flex shrink-0 items-center gap-1.5 rounded text-muted-foreground hover:bg-muted', touch ? 'h-11 px-3 text-xs' : 'px-1.5 py-0.5 text-[11px]', l.hidden && 'opacity-45 line-through')}
               data-testid={testId ? `${testId}-legend-${l.key}` : undefined}
             >
               <span className="inline-block size-2.5 rounded-sm" style={{ background: resolveCss(l.color) }} />{l.label}
@@ -182,8 +206,8 @@ export function VizView({ spec, rows, interactive = true, onPick, tableView, leg
       <div ref={ref} className="relative min-h-0 flex-1 overflow-hidden">
         {size.width > 0 && body}
         {tipFor && !tableView && (
-          <div role="status" className="pointer-events-none absolute z-10 max-w-[260px] rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md"
-            style={{ left: Math.min(Math.max(0, tipFor.x + 12), Math.max(0, size.width - 200)), top: Math.max(0, tipFor.y - 34) }} data-testid={testId ? `${testId}-tooltip` : undefined}>
+          <div role="status" className={cn('pointer-events-none absolute z-10 rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md', touch ? 'max-w-[200px]' : 'max-w-[260px]')}
+            style={touch ? { left: Math.min(Math.max(0, tipFor.x - 100), Math.max(0, size.width - 200)), top: Math.max(0, tipFor.y - 58) } : { left: Math.min(Math.max(0, tipFor.x + 12), Math.max(0, size.width - 200)), top: Math.max(0, tipFor.y - 34) }} data-testid={testId ? `${testId}-tooltip` : undefined}>
             {tipFor.d.text}
           </div>
         )}

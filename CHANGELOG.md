@@ -11,7 +11,13 @@ Phase 2 (Reach), wave 1. Schema version 11.
 - **Print templates and PDF.** Dev mode > Print templates designs PDF documents from a record, a query or a formula (tables with totals and groups, repeated sections, approval history, photos, charts, Code 128 and QR codes, letterhead, "Page X of Y", Indian or international number formats, Hindi shaped correctly). Documents are generated on the server with the access of whoever prints. Apps get `Print`, `GeneratePdf`, `GenerateDocx` and a Print button; flows get "Generate a document"; scheduled reports can attach a PDF; bulk generation; six built-in templates; Word (.docx) templates without PDF conversion.
 - **Dashboards.** Live in Dev and User mode: KPI tiles, OEE gauge, trends, bars, Pareto and tables computed in the database as the viewer, one request per refresh, cached briefly and refreshed live. Date ranges follow the environment's fiscal year, week start, time zone and shifts. A Production overview template with OEE, scrap, first-pass yield, downtime Pareto, MTTR and schedule adherence comes with labelled sample data. A new Visual UI component brings every chart kind to apps. Query v2 gains count distinct, date buckets, key-ordered grouping and top N with Others.
 
+- **Dashboards: a visual tile editor.** In edit mode, **Add tile** and the pencil on a tile open it: table, kind, title, measures (sum / average / minimum / maximum, count with a condition, count of different values), simple calculations, grouping and date grouping, the date-range column, a fixed filter, sort, top N + Others, comparison, running totals, targets and chart options, with a live preview through the dashboard's own query path. Parts written through the API that the editor cannot edit (row calculations, nested conditions, calculations with several operators, series styling) are shown in words and kept.
+- **Phones: phone-style inputs.** Dropdown, ComboBox and PersonPicker open as bottom sheets with search; DatePicker, DateRangePicker and TimePicker use the phone's own pickers; NumberInput picks the right keypad and has a +/- button; Dialog and Sheet become bottom sheets at phone width. DataTable shows cards below 600 px on touch (new **Phone card columns** property); Form gets a save bar that stays above the keyboard; Alert's dismiss button and the Visual's points and legend have 44 px touch areas; the Print button shows a busy state. Verified in Chrome's phone emulation only, not on real devices.
+- **PDF charts match dashboards.** Charts in PDF documents are drawn by the dashboards' chart renderer (still sharp vectors, Hindi labels shaped correctly). The engine can draw all 15 chart kinds; print templates still offer bar, line, pie and gauge. On phones, Print offers Share and Download once the PDF is ready.
+- **Studio: phone preview.** Preview shows phone and tablet apps in a device frame (phone 360x800, 390x844, 412x915; tablet 800x1280; rotate) with the touch rules and the phone layout applied. A new **Check on phone** button shows a QR code of the app's phone address (not in demo mode). Not yet clicked through in a browser.
+
 ### Fixed
+- The record timeline's **Document** button listed print templates of other tables when the timeline's Table property was blank; it now offers only templates of the record's table.
 - The flow email step sent a field the Email action refused.
 - The service worker answered navigations to `/api/` addresses (PDF previews, attachments opened in a tab, the unsubscribe page) with the app shell.
 
@@ -20,9 +26,9 @@ Phase 2 (Reach), wave 1. Schema version 11.
 - Tests: four tests that only passed on Linux (a path built from a URL, the executable bit of an extracted file, single-word host names that Windows resolves slowly) now pass on Windows too.
 
 ### Known gaps in this wave
-- Dashboards: no visual tile query editor, no drag-and-drop layout, no TV mode, no email snapshot, not yet in solutions.
-- Phones: dropdowns, date pickers and dialogs are not phone-style; no card layout for data tables; QR scanning needs a browser with a built-in reader; no cold-start offline.
-- PDFs use their own small chart renderer, separate from the dashboard charts.
+- Dashboards: no drag-and-drop layout, no TV mode, no email snapshot, not yet in solutions; the tile editor cannot edit row calculations, nested conditions or series styling.
+- Phones: nothing is tested on real devices; QR scanning needs a browser with a built-in reader; no cold-start offline; no Android back-button handling for bottom sheets; the save bar moves when the offline strip appears.
+- Print templates offer only four of the 15 chart kinds the PDF engine can draw.
 
 ## [0.6.0] - 2026-11-19
 

@@ -1,9 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronDown, ListCollapse, PanelRight, PanelTop, AppWindow, X } from 'lucide-react'
 import type { ControlRenderProps, ControlType, FxRecord } from '@/contracts'
 import { cn } from '@/lib/utils'
 import { toBool, toColor, toNum, toRecords, toText, recordText } from '../util'
 import { DynIcon, LayoutBox, layoutProps, lc, pick, pickText, useSelection } from './helpers'
+import { useDevice } from '@/phone/env'
+import { SheetHandle, useSheetDrag } from '@/phone/sheet'
+import { overlayPlacement } from '@/phone/touch-logic'
+import { usePaneVisible } from '@/phone/touch-hooks'
 
 /* ------------------------------------------------------------------ Tabs */
 
@@ -96,11 +101,13 @@ function PanelHeader({
   description,
   showClose,
   onClose,
+  touch,
 }: {
   title: string
   description: string
   showClose: boolean
   onClose: () => void
+  touch?: boolean
 }) {
   if (!title && !description && !showClose) return null
   return (
@@ -114,7 +121,7 @@ function PanelHeader({
           type="button"
           aria-label="Close"
           onClick={onClose}
-          className="-mr-1 inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          className={cn('inline-flex shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground', touch ? 'size-11 -m-2' : '-mr-1 size-7')}
         >
           <X className="size-4" />
         </button>
@@ -143,10 +150,18 @@ function OverlayRender({ kind, ...p }: ControlRenderProps & { kind: 'Dialog' | '
   const showClose = toBool(props.ShowClose, true)
   const close = () => fire('OnClose')
   useEscape(!design && open, close)
+  // touch devices at phone width: a Dialog and a left / right / bottom Sheet are bottom sheets (src/phone/sheet.tsx)
+  const device = useDevice()
+  const placement = overlayPlacement(kind, lc(props.Side), device.touch, device.screenWidth)
+  const asSheet = !design && placement === 'bottom-sheet'
+  const drag = useSheetDrag(close)
+  const anchor = useRef<HTMLSpanElement>(null)
+  const paneVisible = usePaneVisible(anchor)
 
   const body = (
     <>
-      <PanelHeader title={title} description={description} showClose={showClose} onClose={close} />
+      {asSheet && <SheetHandle handlers={drag.handlers} />}
+      <PanelHeader title={title} description={description} showClose={showClose} onClose={close} touch={device.touch} />
       <LayoutBox props={props} mode={mode} className="min-h-0 w-full flex-1">
         {children}
       </LayoutBox>
@@ -176,7 +191,10 @@ function OverlayRender({ kind, ...p }: ControlRenderProps & { kind: 'Dialog' | '
   let panelClass = ''
   let panelStyle: React.CSSProperties = {}
   let backdropClass = ''
-  if (kind === 'Dialog') {
+  if (asSheet) {
+    panelClass = 'ab-overlay-sheet ab-sheet-enter border-t'
+    panelStyle = { height: `min(${H}px, calc(var(--vvh, 100dvh) - 16px))` }
+  } else if (kind === 'Dialog') {
     backdropClass = 'flex items-center justify-center p-6'
     panelClass = 'relative flex max-h-full max-w-full flex-col rounded-xl'
     panelStyle = { width: W, height: H }
@@ -188,7 +206,10 @@ function OverlayRender({ kind, ...p }: ControlRenderProps & { kind: 'Dialog' | '
     panelStyle = { height: H }
   }
 
-  return (
+  // a bottom sheet is drawn on document.body: inside the app surface (scrolled, maybe scaled) `fixed` would not mean the screen
+  // (only while its app tab is the one on screen: open apps stay mounted in hidden tab panels)
+  const wrap = (el: React.ReactElement) => (asSheet && typeof document !== 'undefined' ? <><span ref={anchor} className="hidden" />{paneVisible && createPortal(el, document.body)}</> : el)
+  return wrap(
     <div
       className={cn('fixed inset-0 z-[200] bg-black/50', backdropClass)}
       onClick={(e) => {
@@ -196,9 +217,11 @@ function OverlayRender({ kind, ...p }: ControlRenderProps & { kind: 'Dialog' | '
       }}
     >
       <div
+        ref={drag.ref}
         role="dialog"
         aria-modal="true"
         aria-label={title || kind}
+        data-overlay-placement={placement}
         className={cn('box-border border bg-card text-card-foreground', panelClass)}
         style={{ ...panelStyle, background: fill, boxShadow: dialogShadow }}
       >

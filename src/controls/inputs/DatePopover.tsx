@@ -5,6 +5,9 @@ import { Calendar } from '@/components/ui/calendar'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { formatDate, startOfDay, triggerClass } from './shared'
+import { useDevice } from '@/phone/env'
+import { dateToNative, nativeToDate } from '@/phone/touch-logic'
+import { NativeField } from './NativeDate'
 
 export interface DatePopoverProps {
   value: Date | null
@@ -26,12 +29,36 @@ export interface DatePopoverProps {
 /** Trigger button + calendar popover (single date). Shared by DatePicker and Form date fields. */
 export function DatePopover(p: DatePopoverProps) {
   const [open, setOpen] = useState(false)
+  const touch = useDevice().touch
   const canOpen = !p.disabled && !p.readOnly
   const matchers = [
     ...(p.min ? [{ before: startOfDay(p.min) }] : []),
     ...(p.max ? [{ after: startOfDay(p.max) }] : []),
   ]
   const text = p.value ? formatDate(p.value, p.format ?? 'yyyy-mm-dd') : ''
+  // touch devices: the phone's own date picker
+  if (touch && !p.readOnly) {
+    return (
+      <NativeField
+        kind="date"
+        id={p.id}
+        label={p.placeholder || 'Date'}
+        value={dateToNative(p.value)}
+        min={p.min ? dateToNative(p.min) : undefined}
+        max={p.max ? dateToNative(p.max) : undefined}
+        placeholder={p.placeholder}
+        disabled={p.disabled}
+        invalid={p.invalid}
+        clearable={p.clearable}
+        fontSize={p.fontSize}
+        onBlur={p.onBlur}
+        onValue={(s) => {
+          const d = nativeToDate(s, p.min, p.max)
+          if (d !== undefined) p.onChange(d)
+        }}
+      />
+    )
+  }
   return (
     <div className="relative size-full">
       <Popover

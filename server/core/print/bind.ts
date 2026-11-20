@@ -29,7 +29,7 @@ import { evaluate as evalFlowExpr, rowsToFx, src, type EvalEnv } from '../flows/
 import { schemaOf } from '../event-fx.ts'
 import { PAGE_COUNT, PAGE_NUMBER, type ImageRef, type RBlock, type RTableRow } from './layout.ts'
 import { fromDataUrl, imageInfo } from './images.ts'
-import type { ChartSpec } from './chart.ts'
+import { CHART_ROW_LIMIT, SINGLE_VALUE_KINDS, chartFromBlock, chartKind, type ChartBlockInput } from './chart.ts'
 
 export class BindError extends Error {
   status: number
@@ -535,21 +535,29 @@ export async function bindTemplate(inp: BindInput, data: BindData): Promise<Boun
           break
         }
         case 'chart': {
-          const spec: ChartSpec = { type: b.chartType, ...(b.title ? { title: await text(b.title, sc, label) } : {}), categories: [], series: [], ...(b.unit ? { unit: b.unit } : {}), format: (n) => formatNumber(n, Number.isInteger(n) ? 0 : 1, inp.fmt) }
-          if (b.chartType === 'gauge') {
-            const v = num(await fx(b.values?.[0]?.value ?? '', sc, label))
-            Object.assign(spec, { value: v, min: b.min ?? 0, max: b.max ?? 100, ...(b.bands?.length ? { bands: b.bands } : {}) })
+          // the block -> the dashboards' ChartSpec and rows (chart.ts); drawn by renderChartSvg in the layout
+          const cb = b as unknown as ChartBlockInput
+          const kind = chartKind(cb.chartType)
+          const defs = Array.isArray(cb.values) ? cb.values : []
+          const single: FxValue[] = []
+          const rowsIn: { label: string; values: FxValue[] }[] = []
+          if (SINGLE_VALUE_KINDS.includes(kind)) {
+            for (const x of defs.slice(0, 2)) single.push(await fx(x.value ?? '', sc, label))
           } else {
             const rows = await rowsOf(b.rows ?? '', sc, `${label} rows`)
-            const series = (b.values ?? []).map((x) => ({ name: x.name, values: [] as (number | null)[], ...(x.color ? { color: x.color } : {}) }))
-            for (const r of rows.slice(0, 200)) {
+            for (const r of rows.slice(0, CHART_ROW_LIMIT(kind))) {
               const rs: Scope = { ...sc, item: r }
-              spec.categories.push(asText(await fx(b.label ?? '', rs, label)))
-              for (const [i, x] of (b.values ?? []).entries()) series[i].values.push(num(await fx(x.value, rs, label)))
+              const values: FxValue[] = []
+              for (const x of defs) values.push(await fx(x.value ?? '', rs, label))
+              rowsIn.push({ label: b.label ? asText(await fx(b.label, rs, label)) : '', values })
             }
-            spec.series = series
           }
-          out.push({ ...common, k: 'chart', spec, height: b.height ?? 60 })
+          const chart = chartFromBlock(cb, {
+            ...(b.title ? { title: await text(b.title, sc, label) } : {}),
+            rows: rowsIn, single, asText: (v) => asText(v as FxValue), now: inp.now,
+            grouping: inp.fmt.grouping, currency: inp.fmt.currency, timeZone: inp.fmt.timeZone,
+          })
+          out.push({ ...common, k: 'chart', chart, height: b.height ?? 60 })
           break
         }
         case 'signature': {

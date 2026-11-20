@@ -12,6 +12,9 @@ import { attachmentIds, imageSource } from '@/runtime/attachments'
 import { AvatarCircle } from './basics'
 import { DynIcon, fieldText, formatDate, formatNumber, isIsoDateString, pick, prettify, selModeOf } from './helpers'
 import { queryMeta, rowCountText, useVirtualRows, viewMatches } from '../virtual'
+import { useDevice } from '@/phone/env'
+import { useBoxWidth } from '@/phone/touch-hooks'
+import { cardMode, cardPlan, parseCardColumns } from '@/phone/touch-logic'
 
 /* ------------------------------------------------------------------ DataTable */
 
@@ -143,6 +146,13 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
   const selMode = selModeOf(props.SelectionMode, 'single')
   const pageSize = Math.max(0, Math.round(toNum(props.PageSize, 0)))
   const emptyText = toText(props.EmptyText) || 'No data'
+  // phones: a table narrower than a phone on a touch device is drawn as cards (CardColumns picks and orders the columns)
+  const touch = useDevice().touch
+  const boxRef = useRef<HTMLDivElement>(null)
+  const boxWidth = useBoxWidth(boxRef)
+  const cards = cardMode(touch, boxWidth, design)
+  const plan = useMemo(() => (cards ? cardPlan(cols, parseCardColumns(toText(props.CardColumns))) : null), [cards, cols, props.CardColumns])
+  const [cardLimit, setCardLimit] = useState(100)
 
   const [query, setQuery] = useState(() => toText(outputs.SearchText))
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -204,16 +214,37 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
     const h = rowRef.current?.offsetHeight
     if (h && Math.abs(h - pitch) > 0.5) setPitch(h)
   }, [firstRowKey, dense, pitch])
-  const virtualOn = !design && pageSize === 0 && (!!meta || rows.length > 300)
+  const virtualOn = !design && !cards && pageSize === 0 && (!!meta || rows.length > 300)
   const win = useVirtualRows({
     count: pageRows.length, pitch, enabled: virtualOn, scrollRef,
-    onNearEnd: meta && pageSize === 0 && meta.hasMore ? () => void meta.loadMore() : undefined,
+    onNearEnd: !cards && meta && pageSize === 0 && meta.hasMore ? () => void meta.loadMore() : undefined,
   })
-  const shownRows = virtualOn ? pageRows.slice(win.start, win.end) : pageRows
+  const shownRows = virtualOn ? pageRows.slice(win.start, win.end) : cards ? pageRows.slice(0, cardLimit) : pageRows
   // a new sort or search starts at the top
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = 0
+    setCardLimit(100)
   }, [sortCol, sortDir, outputs.SearchText])
+  // cards have different heights: more cards (and more rows of a server query) load when the end is near
+  const onScroll = (e: React.UIEvent<HTMLElement>) => {
+    win.onScroll(e)
+    if (!cards) return
+    const el = e.currentTarget
+    if (el.scrollTop + el.clientHeight < el.scrollHeight - 300) return
+    if (cardLimit < pageRows.length) setCardLimit((l) => l + 100)
+    else if (meta && pageSize === 0 && meta.hasMore && !meta.loadingMore) void meta.loadMore()
+  }
+  // card layout has no column headers: a sort control takes their place
+  const setSort = (field: string, dir: 'asc' | 'desc') => {
+    if (!field) {
+      setOutput('SortColumn', '')
+      setOutput('SortOrder', '')
+    } else {
+      setOutput('SortColumn', field)
+      setOutput('SortOrder', dir === 'desc' ? 'Descending' : 'Ascending')
+    }
+    setOutput('Page', 1)
+  }
 
   const setPage = (p: number) => setOutput('Page', Math.min(pageCount, Math.max(1, p)))
 
@@ -270,7 +301,7 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
   const busy = !!meta && (meta.refreshing || meta.loadingMore)
 
   return (
-    <div className={cn('box-border flex size-full flex-col overflow-hidden rounded-lg border bg-card text-card-foreground', dense ? 'text-xs' : 'text-sm', design && 'pointer-events-none')}>
+    <div ref={boxRef} data-layout={cards ? 'cards' : 'table'} className={cn('box-border flex size-full flex-col overflow-hidden rounded-lg border bg-card text-card-foreground', dense ? 'text-xs' : 'text-sm', design && 'pointer-events-none')}>
       {searchable && (
         <div className="flex shrink-0 items-center gap-3 border-b px-3 py-2">
           <div className="relative w-64 max-w-full">
@@ -303,11 +334,79 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
           </span>
         </div>
       )}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto" onScroll={win.onScroll}>
+      {cards && sortable && cols.length > 0 && items.length > 0 && (
+        <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2" data-testid="card-sort">
+          <select
+            aria-label="Sort by"
+            className="h-11 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-sm"
+            value={sortCol && cols.some((c) => c.field === sortCol) ? sortCol : ''}
+            onChange={(e) => setSort(e.target.value, sortDir === 'desc' ? 'desc' : 'asc')}
+          >
+            <option value="">Sort: none</option>
+            {cols.filter((c) => !meta || meta.columns[c.field]).map((c) => (
+              <option key={c.field} value={c.field}>Sort by {c.header}</option>
+            ))}
+          </select>
+          <Button type="button" variant="outline" className="size-11 shrink-0 p-0" aria-label={sortDir === 'desc' ? 'Descending: tap for ascending' : 'Ascending: tap for descending'} disabled={!sortCol} onClick={() => setSort(sortCol, sortDir === 'desc' ? 'asc' : 'desc')}>
+            {sortDir === 'desc' ? <ArrowDown /> : <ArrowUp />}
+          </Button>
+        </div>
+      )}
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto" onScroll={onScroll}>
         {cols.length === 0 || (items.length === 0 && !query && !meta?.count) ? (
           <div className="flex size-full min-h-24 flex-col items-center justify-center gap-2 p-6 text-muted-foreground">
             <Table2 className="size-7 opacity-60" strokeWidth={1.5} />
             <span className="text-sm">{emptyText}</span>
+          </div>
+        ) : cards && plan ? (
+          <div role="list" className="divide-y" data-testid="data-cards">
+            {shownRows.map((rec, ri) => {
+              const sel = selKeys.size > 0 && selKeys.has(keyOf(rec))
+              const show = (c: Col) => {
+                const v = pick(rec, c.field)
+                const attIds = c.kind === 'text' ? attachmentIds(v) : []
+                if (c.kind === 'boolean' && typeof v === 'boolean') return v ? <Check className="size-4 text-primary" aria-label="Yes" /> : <span className="text-muted-foreground/60" aria-label="No">No</span>
+                if (attIds.length > 0) return <AttachmentCell value={v} thumb={28} />
+                return cellText(v, c.kind)
+              }
+              const blank = (c: Col) => {
+                const v = pick(rec, c.field)
+                return v == null || v === '' || (Array.isArray(v) && v.length === 0)
+              }
+              return (
+                <div
+                  key={typeof rec.__id === 'string' ? rec.__id : ri}
+                  role="listitem"
+                  data-card=""
+                  aria-current={sel || undefined}
+                  onClick={() => onRow(rec)}
+                  className={cn('flex min-h-11 items-start gap-3 px-4 py-3 transition-colors', selMode !== 'none' && 'cursor-pointer active:bg-muted/60', sel ? 'bg-primary/10' : striped && ri % 2 === 1 ? 'bg-muted/40' : '')}
+                >
+                  {showCheck && (
+                    <span onClick={(e) => e.stopPropagation()} className="-ml-1 mt-0.5 grid size-6 shrink-0 place-items-center" data-touch-target="">
+                      <Checkbox aria-label="Select row" checked={sel} onCheckedChange={() => onRow(rec)} />
+                    </span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="break-words text-sm font-semibold leading-snug">{blank(plan.title) ? <span className="text-muted-foreground">-</span> : show(plan.title)}</div>
+                    {plan.subtitle && !blank(plan.subtitle) && <div className="mt-0.5 break-words text-sm text-muted-foreground">{show(plan.subtitle)}</div>}
+                    {plan.lines.some((c) => !blank(c)) && (
+                      <dl className="mt-1.5 space-y-0.5 text-xs">
+                        {plan.lines.filter((c) => !blank(c)).map((c) => (
+                          <div key={c.field} className="flex gap-2">
+                            <dt className="shrink-0 text-muted-foreground">{c.header}:</dt>
+                            <dd className="min-w-0 break-words tabular-nums">{show(c)}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+            {pageRows.length === 0 && (
+              <div className="px-3 py-10 text-center text-muted-foreground">{meta && (meta.refreshing || meta.loadingMore) ? 'Loading…' : 'No matching rows'}</div>
+            )}
           </div>
         ) : (
           <table className="w-full border-separate border-spacing-0 text-left">
@@ -447,6 +546,7 @@ export const DataTable: ControlType = {
     { name: 'PageSize', kind: 'number', group: 'Layout', default: '=0' },
     { name: 'Striped', kind: 'boolean', group: 'Style', default: '=false' },
     { name: 'Dense', kind: 'boolean', group: 'Style', default: '=false' },
+    { name: 'CardColumns', label: 'Phone card columns', kind: 'text', group: 'Layout', default: '=""', simple: false },
     { name: 'EmptyText', kind: 'text', group: 'Content', default: '="No data"' },
     { name: 'OnSelect', kind: 'action', group: 'Behaviour', default: '=false' },
   ],

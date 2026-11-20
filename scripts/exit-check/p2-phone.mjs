@@ -40,7 +40,8 @@ const BASE = `http://127.0.0.1:${PORT}`
 const SHOTS = E.SHOTS || ''
 const ADMIN = { name: 'Sam Supervisor', email: 'sam@example.test', password: 'Exit-Example-Pass-2026' }
 if (!/^appbuilder_exit/.test(DB.database)) { console.error('The exit-check database name must start with appbuilder_exit (it is dropped).'); process.exit(2) }
-const DIST = path.join(root, 'dist')
+const DIST = E.EXIT_DIST ? path.resolve(E.EXIT_DIST) : path.join(root, 'dist')
+const ONLY_TOUCH = !!E.EXIT_ONLY_TOUCH // sign in and run section E only (touch pickers, cards, sheets)
 if (!fs.existsSync(path.join(DIST, 'index.html'))) { console.error('Build the app first (npx vite build).'); process.exit(2) }
 
 const { createApp } = await import(pathToFileURL(path.join(root, 'server/core/app.ts')).href)
@@ -318,8 +319,8 @@ async function offlineSave(appId) {
   log(`photo: original ${original} bytes`)
   await setNetwork('offline')
   await shot('04-before-offline-save.png')
-  await page.$eval(`${T('control-ProdForm')} ${T('form-save')}`, (e) => e.scrollIntoView({ block: 'center' }))
-  await tap(`${T('control-ProdForm')} ${T('form-save')}`)
+  await page.$eval(`${T('form-save')}`, (e) => e.scrollIntoView({ block: 'center' }))
+  await tap(`${T('form-save')}`)
   await waitFor(T('offline-banner'))
   await page.waitForFunction(() => document.querySelector('[data-testid="outbox-count"]')?.textContent === '2', { timeout: 15000 })
   await shot('05-offline-waiting.png')
@@ -348,7 +349,11 @@ async function offlineSave(appId) {
 async function restartWhileOffline(appId) {
   await fillForm('Line 4', 7)
   await setNetwork('offline')
-  await tap(`${T('control-ProdForm')} ${T('form-save')}`)
+  // the "You're offline" strip appears under the shell and the pinned save bar moves up above it: tap after that move,
+  // or the tap lands where Save was a moment ago (a person taps later than a script)
+  await page.waitForFunction(() => /offline/i.test(document.querySelector('[data-testid="connection-bar"]')?.textContent ?? ''), { timeout: 15000 })
+  await sleep(400)
+  await tap(`${T('form-save')}`)
   await sleep(1500)
   await page.waitForFunction(() => document.querySelector('[data-testid="outbox-count"]')?.textContent === '1', { timeout: 15000 })
   // the phone closes the browser tab / reloads while offline
@@ -358,7 +363,8 @@ async function restartWhileOffline(appId) {
   await shot('08-cold-start-offline.png')
   check((await rows()).length === 1, 'the queued row is still not on the server', '')
   await setNetwork('online')
-  await page.goto(`${BASE}/?app=${appId}`, { waitUntil: 'networkidle2' })
+  // the "No connection" page may reload itself the moment the network is back: an aborted goto is that reload
+  await page.goto(`${BASE}/?app=${appId}`, { waitUntil: 'networkidle2' }).catch(() => sleep(1500))
   await page.waitForFunction(async () => {
     const dbs = await indexedDB.databases()
     return dbs.some((d) => d.name?.startsWith('appbuilder-offline-'))
@@ -375,7 +381,7 @@ async function slowNetwork(appId) {
   await waitFor(`${T(`tab-pane-${appId}`)} [data-run-surface]`, 60000)
   const openMs = Date.now() - s
   await fillForm('Line 5', 9)
-  await tap(`${T('control-ProdForm')} ${T('form-save')}`)
+  await tap(`${T('form-save')}`)
   for (let i = 0; i < 60 && (await rows()).length < 3; i++) await sleep(500)
   check((await rows()).length === 3, 'slow 3G (400 ms latency, 500 kbit/s): the app opens from the cached shell and a save arrives', `opened in ${openMs} ms`)
   await setNetwork('online')
@@ -502,6 +508,288 @@ async function touchAudit() {
   return res
 }
 
+
+/* ------------------------------------------------------------------ E. touch pickers, native fields, cards, sheets */
+
+const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+async function desktop() {
+  await page.setUserAgent(DESKTOP_UA)
+  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1, isMobile: false, hasTouch: false })
+}
+const node = (name, type, props) => ({ name, type, props })
+const lbl = (name, y, formula) => node(name, 'Label', { X: '=16', Y: '=' + y, Width: '=328', Height: '=20', Text: formula })
+async function makeApp(name, nodes, width = 360, height = 800) {
+  const created = must(await api('POST', '/apps', { name, width, height }), 'create ' + name)
+  const def = must(await api('GET', '/apps/' + created.id), 'get ' + name).definition
+  def.screens[0].children = nodes.map((n, i) => ({ id: 'n_t' + i, name: n.name, type: n.type, props: n.props, children: [] }))
+  must(await api('PUT', '/apps/' + created.id, { definition: def }), 'save ' + name)
+  return created.id
+}
+async function openApp(id) {
+  await page.goto(BASE + '/#u-' + id, { waitUntil: 'networkidle2' })
+  await waitFor(T('tab-pane-' + id) + ' [data-run-surface]')
+  await sleep(700)
+}
+const ctl = (n) => T('control-' + n)
+const text = (n) => page.$eval(ctl(n), (e) => e.textContent.trim())
+const rectOf = (sel) => page.$eval(sel, (e) => { const r = e.getBoundingClientRect(); return { l: Math.round(r.left), t: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), b: Math.round(r.bottom), vw: innerWidth, vh: innerHeight } })
+/** write a value into an input the way a native picker does (React listens to input / change) */
+async function setNative(sel, v) {
+  await page.$eval(sel, (el, val) => {
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+    set.call(el, val)
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+  }, v)
+  await sleep(150)
+}
+const ymd = (n, y) => lbl(n, y, '="' + n + ':" & Year(' + n.slice(3) + '.SelectedDate) & "-" & Month(' + n.slice(3) + '.SelectedDate) & "-" & Day(' + n.slice(3) + '.SelectedDate)')
+
+async function touchControls() {
+  const FRUIT = '=["Apple","Apricot","Banana","Blueberry","Cherry","Date","Elderberry","Fig","Grape","Kiwi","Lemon","Lime","Mango","Melon","Nectarine","Orange","Papaya","Peach","Pear","Plum"]'
+  const id = await makeApp('Touch pickers', [
+    node('DD', 'Dropdown', { X: '=16', Y: '=8', Width: '=328', Height: '=40', Items: '=["Alpha","Bravo","Charlie","Delta"]' }),
+    node('CB', 'ComboBox', { X: '=16', Y: '=56', Width: '=328', Height: '=40', Items: FRUIT, SelectionMode: '=SelectionMode.Multiple' }),
+    node('DP', 'DatePicker', { X: '=16', Y: '=104', Width: '=328', Height: '=40' }),
+    node('DR', 'DateRangePicker', { X: '=16', Y: '=152', Width: '=328', Height: '=40' }),
+    node('TP', 'TimePicker', { X: '=16', Y: '=200', Width: '=328', Height: '=40', MinuteStep: '=5' }),
+    node('NI', 'NumberInput', { X: '=16', Y: '=248', Width: '=328', Height: '=40' }),
+    node('NJ', 'NumberInput', { X: '=16', Y: '=296', Width: '=328', Height: '=40', Min: '=0', Max: '=99', Step: '=1' }),
+    node('AL', 'Alert', { X: '=16', Y: '=344', Width: '=328', Height: '=72', Dismissible: '=true' }),
+    lbl('LblDD', 430, '="DD:" & DD.SelectedText'),
+    lbl('LblCB', 452, '="CB:" & CB.SelectedText'),
+    ymd('LblDP', 474),
+    lbl('LblDR', 496, '="DR:" & Year(DR.StartDate) & "-" & Month(DR.StartDate) & "-" & Day(DR.StartDate) & ">" & Year(DR.EndDate) & "-" & Month(DR.EndDate) & "-" & Day(DR.EndDate)'),
+    lbl('LblTP', 518, '="TP:" & TP.Value'),
+    lbl('LblNI', 540, '="NI:" & NI.Value'),
+    lbl('LblNJ', 562, '="NJ:" & NJ.Value'),
+    lbl('LblAL', 584, '="AL:" & AL.Dismissed'),
+  ])
+  await openApp(id)
+
+  /* ---- 1. Dropdown / ComboBox: bottom sheet with search and 44 px rows ---- */
+  await tap(ctl('DD') + ' [role=combobox]')
+  await waitFor(T('bottom-sheet'))
+  await sleep(300) // the sheet slides in for 180 ms
+  const sh = await rectOf(T('bottom-sheet'))
+  check(sh.w === sh.vw && Math.abs(sh.b - sh.vh) <= 1, 'Dropdown opens as a full-width bottom sheet at the bottom of the screen (not a popover)', JSON.stringify(sh))
+  await shot('11-dropdown-sheet.png')
+  const rowH = await page.$$eval(T('picker-row'), (els) => els.map((e) => Math.round(e.getBoundingClientRect().height)))
+  check(rowH.length === 4 && Math.min(...rowH) >= 44, 'the sheet rows are at least 44 px high', rowH.join(','))
+  check(!!(await page.$(T('bottom-sheet') + ' [cmdk-input]')), 'the sheet has a search field', '')
+  const noAutoFocus = await page.evaluate(() => !document.activeElement || document.activeElement.tagName !== 'INPUT')
+  check(noAutoFocus, 'opening the sheet does not pop the keyboard up by itself', '')
+  await tap(T('bottom-sheet') + ' [cmdk-input]')
+  await page.keyboard.type('ch')
+  await sleep(200)
+  const filtered = await page.$$eval(T('picker-row'), (els) => els.map((e) => e.textContent.trim()))
+  check(filtered.length === 1 && filtered[0] === 'Charlie', 'typing in the search field filters the rows', filtered.join(','))
+  // keyboard-safe: the sheet follows --kb (set by env.ts from the visual viewport) and is limited by --vvh
+  await page.evaluate(() => document.documentElement.style.setProperty('--kb', '280px'))
+  const lifted = await rectOf(T('bottom-sheet'))
+  check(Math.abs(lifted.b - (lifted.vh - 280)) <= 1, 'with the keyboard up (--kb 280 px) the sheet sits above it', JSON.stringify(lifted))
+  await page.evaluate(() => document.documentElement.style.setProperty('--kb', '0px'))
+  await tap(T('picker-row'))
+  await sleep(300)
+  check(!(await page.$(T('bottom-sheet'))) && /DD:Charlie/.test(await text('LblDD')), 'tapping a row selects it, runs the same outputs and closes the sheet', await text('LblDD'))
+
+  await tap(ctl('CB') + ' [role=combobox]')
+  await waitFor(T('bottom-sheet'))
+  await sleep(300) // the sheet slides in for 180 ms
+  check((await page.$$(T('picker-row'))).length === 20, 'ComboBox (multiple) opens the same sheet with all rows', '')
+  await tap(T('picker-row'))
+  await sleep(150)
+  await page.$$eval(T('picker-row'), (els) => els[1].click())
+  await sleep(150)
+  check(!!(await page.$(T('picker-sheet-done'))) && !!(await page.$(T('bottom-sheet'))), 'multiple selection keeps the sheet open and shows Done', '')
+  await tap(T('picker-sheet-done'))
+  await sleep(300)
+  const cb = await text('LblCB')
+  check(/Apple/.test(cb) && /Apricot/.test(cb) && !(await page.$(T('bottom-sheet'))), 'Done closes the sheet; both picks are in SelectedText', cb)
+  await tap(ctl('DD') + ' [role=combobox]')
+  await waitFor(T('bottom-sheet'))
+  await sleep(300) // the sheet slides in for 180 ms
+  await page.touchscreen.tap(180, 40)
+  await sleep(300)
+  check(!(await page.$(T('bottom-sheet'))), 'tapping outside closes the sheet', '')
+  // dragging the handle down closes a sheet
+  await tap(ctl('DD') + ' [role=combobox]')
+  await waitFor(T('bottom-sheet'))
+  await sleep(300) // the sheet slides in for 180 ms
+  const hr = await rectOf(T('bottom-sheet-handle'))
+  await page.touchscreen.touchStart(hr.l + hr.w / 2, hr.t + 10)
+  for (let i = 1; i <= 8; i++) await page.touchscreen.touchMove(hr.l + hr.w / 2, hr.t + 10 + i * 20)
+  await page.touchscreen.touchEnd()
+  await sleep(300)
+  check(!(await page.$(T('bottom-sheet'))), 'dragging the sheet handle down closes the sheet', '')
+  await page.reload({ waitUntil: 'networkidle2' }) // puppeteer's synthetic drag leaves its touch state odd
+  await waitFor(T('tab-pane-' + id) + ' [data-run-surface]')
+  await sleep(700)
+
+  /* ---- 2. native date / time pickers, same value contract ---- */
+  const dp = ctl('DP') + ' input[type=date]'
+  check(!!(await page.$(dp)) && !!(await page.$(ctl('DR') + ' input[type=date]')) && !!(await page.$(ctl('TP') + ' input[type=time]')), 'DatePicker, DateRangePicker (two fields) and TimePicker are native inputs on a touch device', '')
+  await shot('12-native-pickers.png')
+  await setNative(dp, '2026-03-15')
+  check(/DP:2026-3-15/.test(await text('LblDP')), 'DatePicker: the native value becomes SelectedDate (local midnight)', await text('LblDP'))
+  await tap(ctl('DP') + ' [aria-label="Clear date"]')
+  await sleep(200)
+  check(!/2026/.test(await text('LblDP')), 'DatePicker: the clear button empties SelectedDate (iOS pickers cannot clear)', await text('LblDP'))
+  const [dr1, dr2] = await page.$$eval(ctl('DR') + ' input[type=date]', (els) => els.map((e) => e.getAttribute('aria-label')))
+  check(dr1 === 'Start date' && dr2 === 'End date', 'DateRangePicker has a start and an end field', dr1 + ' / ' + dr2)
+  await setNative(ctl('DR') + ' input[aria-label="Start date"]', '2026-03-10')
+  await setNative(ctl('DR') + ' input[aria-label="End date"]', '2026-03-20')
+  check(/DR:2026-3-10>2026-3-20/.test(await text('LblDR')), 'DateRangePicker: StartDate and EndDate', await text('LblDR'))
+  await setNative(ctl('DR') + ' input[aria-label="End date"]', '2026-03-05')
+  check(/DR:2026-3-5>2026-3-5/.test(await text('LblDR')), 'DateRangePicker: an end before the start pulls the start along (never an inverted range)', await text('LblDR'))
+  const tp = ctl('TP') + ' input[type=time]'
+  await setNative(tp, '14:35')
+  check(/TP:14:35/.test(await text('LblTP')) && (await page.$eval(tp, (e) => e.getAttribute('step'))) === '300', 'TimePicker: Value is "HH:MM" and the picker steps by MinuteStep', await text('LblTP'))
+
+  /* ---- 3. NumberInput keyboard ---- */
+  const modes = await page.evaluate(() => [...document.querySelectorAll('[data-testid="control-NI"] input, [data-testid="control-NJ"] input')].map((e) => e.getAttribute('inputmode')))
+  check(modes[0] === 'decimal' && modes[1] === 'numeric', 'NumberInput asks for the decimal pad, and for the digits-only pad on a bounded whole-number range', modes.join(','))
+  check(!!(await page.$(ctl('NI') + ' ' + T('number-sign'))) && !(await page.$(ctl('NJ') + ' ' + T('number-sign'))), 'a field that may be negative has a sign button (no minus key on iOS pads); a Min 0 field does not', '')
+  const ni = ctl('NI') + ' input'
+  await tap(ni)
+  await page.$eval(ni, (e) => e.select())
+  const trace = []
+  for (const ch of '12,5') { await page.keyboard.type(ch); trace.push(await page.$eval(ni, (e) => e.value)) }
+  await sleep(150)
+  check(/NI:12.5/.test(await text('LblNI')), 'a decimal comma typed on the phone keyboard is read as the decimal point', await text('LblNI'))
+  const sg = await rectOf(ctl('NI') + ' ' + T('number-sign'))
+  await tap(ctl('NI') + ' ' + T('number-sign'))
+  await sleep(150)
+  check(/NI:-12.5/.test(await text('LblNI')) && (await page.evaluate(() => document.activeElement?.tagName)) === 'INPUT', 'the sign button flips the number and keeps the keyboard open (' + sg.w + ' x ' + sg.h + ' px button, 44 px touch area)', await text('LblNI'))
+
+  /* ---- 7. Alert dismiss ---- */
+  const ad = await rectOf(T('alert-dismiss'))
+  check(ad.w >= 44 && ad.h >= 44, 'Alert: the dismiss button is 44 x 44 px on a touch device', ad.w + ' x ' + ad.h)
+  await tap(T('alert-dismiss'))
+  await sleep(200)
+  check(/AL:true/.test(await text('LblAL')), 'Alert: tapping dismiss sets Dismissed', await text('LblAL'))
+
+  /* ---- 4. Dialog and Sheet at phone width ---- */
+  const dlg = await makeApp('Touch dialog', [node('DLG', 'Dialog', { Open: '=true', Title: '="Confirm"', Width: '=480', Height: '=320' })])
+  await openApp(dlg)
+  const dd = await page.$eval('[role=dialog][data-overlay-placement]', (e) => e.getAttribute('data-overlay-placement'))
+  const dr = await rectOf('[role=dialog][data-overlay-placement]')
+  const cl = await rectOf('[role=dialog][data-overlay-placement] [aria-label=Close]')
+  check(dd === 'bottom-sheet' && dr.w === dr.vw && Math.abs(dr.b - dr.vh) <= 1 && dr.h <= 320, 'Dialog at phone width on touch is a full-width bottom sheet', JSON.stringify(dr))
+  check(cl.w >= 44 && cl.h >= 44, 'the Dialog close button is 44 x 44 px', cl.w + ' x ' + cl.h)
+  await shot('13-dialog-sheet.png')
+  const shs = await makeApp('Touch sheet', [node('SHT', 'Sheet', { Open: '=true', Title: '="Details"', Side: '=Side.Right' })])
+  await openApp(shs)
+  const sp = await page.$eval('[role=dialog][data-overlay-placement]', (e) => e.getAttribute('data-overlay-placement'))
+  check(sp === 'bottom-sheet', 'a right-hand Sheet at phone width on touch is a bottom sheet', sp)
+
+  /* ---- 5. DataTable cards ---- */
+  const rowsT = '=Table({Name:"Ada",Status:"Open",Amount:30,Owner:"Zed",City:"Oslo"},{Name:"Bo",Status:"Closed",Amount:10,Owner:"Yan",City:"Rome"},{Name:"Cy",Status:"Open",Amount:20,Owner:"Xi",City:"Bern"})'
+  const tbl = await makeApp('Touch table', [
+    node('DT1', 'DataTable', { X: '=0', Y: '=0', Width: '=360', Height: '=300', Items: rowsT, CardColumns: '="Name,Amount,Status"' }),
+    node('DT2', 'DataTable', { X: '=0', Y: '=310', Width: '=360', Height: '=300', Items: rowsT }),
+    lbl('LblSel', 620, '="SEL:" & DT1.Selected.Name'),
+  ])
+  await openApp(tbl)
+  const lay = await page.$$eval('[data-layout=cards], [data-layout=table]', (els) => els.map((e) => e.getAttribute('data-layout')))
+  check(lay.length >= 2 && lay.every((l) => l === 'cards'), 'DataTable at phone width on touch is drawn as cards', lay.join(','))
+  await shot('14-data-cards.png')
+  const c1 = await page.$$eval(ctl('DT1') + ' [data-card]', (els) => els.map((e) => e.innerText.replace(/\s+/g, ' ').trim()))
+  check(c1.length === 3 && /^Ada 30/.test(c1[0]) && /Status: Open/.test(c1[0]) && !/Owner|City/.test(c1[0]), 'CardColumns: first column is the title, second the subtitle, the third a "label: value" line, the others are left out', c1[0])
+  const c2 = await page.$$eval(ctl('DT2') + ' [data-card]', (els) => els.map((e) => e.innerText.replace(/\s+/g, ' ').trim()))
+  check(/^Ada/.test(c2[0]) && /Status: Open/.test(c2[0]) && /Amount: 30/.test(c2[0]) && /Owner: Zed/.test(c2[0]) && /City: Oslo/.test(c2[0]), 'no CardColumns: the first column is the title, the others follow as label: value lines', c2[0])
+  const cr = await rectOf(ctl('DT1') + ' [data-card]')
+  check(cr.h >= 44, 'a card is at least 44 px high', String(cr.h))
+  await tap(ctl('DT1') + ' [data-card]')
+  await sleep(200)
+  check(/SEL:Ada/.test(await text('LblSel')), 'tapping a card selects its row', await text('LblSel'))
+  await page.select(ctl('DT1') + ' select[aria-label="Sort by"]', 'Amount')
+  await sleep(250)
+  const sorted = await page.$$eval(ctl('DT1') + ' [data-card]', (els) => els.map((e) => e.innerText.trim().split('\n')[0]))
+  check(sorted.join(',') === 'Bo,Cy,Ada', 'the sort control replaces the column headers (Amount ascending)', sorted.join(','))
+
+  /* ---- 8. Visual and Chart on touch ---- */
+  const viz = await makeApp('Touch charts', [
+    node('CH', 'Chart', { X: '=16', Y: '=8', Width: '=328', Height: '=240' }),
+    node('VIS', 'Visual', { X: '=16', Y: '=260', Width: '=328', Height: '=260', Kind: '="Line"' }),
+  ])
+  await openApp(viz)
+  const bar = await page.$eval(ctl('CH') + ' .recharts-bar-rectangle', (e) => { const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2] })
+  await page.touchscreen.tap(bar[0], bar[1])
+  await sleep(300)
+  const tip = await page.$eval(ctl('CH') + ' .recharts-tooltip-wrapper', (e) => ({ vis: getComputedStyle(e).visibility, text: e.textContent.trim() }))
+  check(tip.vis === 'visible' && tip.text.length > 0, 'Chart: a tap on a bar shows its tooltip', tip.text)
+  await shot('15-chart-tooltip.png')
+  const dot = await page.$eval(ctl('VIS') + ' circle[data-touch-hit]', (e) => { const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width } })
+  check(dot.w >= 43, 'Visual: every point has a 44 px touch circle', String(Math.round(dot.w)))
+  await page.touchscreen.tap(dot.x, dot.y)
+  await sleep(300)
+  const vt = await page.$eval(ctl('VIS') + ' [role=status]', (e) => e.textContent.trim()).catch(() => '')
+  check(vt.length > 0, 'Visual: a tap on a point shows its tooltip', vt)
+  await shot('16-visual-tooltip.png')
+  await page.touchscreen.tap(180, 700)
+  await sleep(300)
+  check(!(await page.$(ctl('VIS') + ' [role=status]')), 'Visual: a tap elsewhere hides the tooltip', '')
+  const leg = await page.$$eval(ctl('VIS') + ' [aria-pressed]', (els) => els.map((e) => Math.round(e.getBoundingClientRect().height)))
+  check(leg.length > 0 && Math.min(...leg) >= 44, 'Visual: the legend toggles are 44 px high on touch', leg.join(','))
+
+  return { pickers: id, table: tbl, dialog: dlg }
+}
+
+async function stickyBar(appId) {
+  // a short phone screen (the keyboard has the same effect): the form's own bottom is below the screen
+  await page.setViewport({ width: 360, height: 520, deviceScaleFactor: 3, isMobile: true, hasTouch: true })
+  await page.goto(BASE + '/?app=' + appId, { waitUntil: 'networkidle2' })
+  await waitFor(T('tab-pane-' + appId) + ' [data-run-surface]')
+  await sleep(800)
+  await page.$eval(T('control-ProdForm'), (e) => e.scrollIntoView({ block: 'start' }))
+  await sleep(500)
+  const pinned = await page.$(T('form-sticky-bar'))
+  check(!!pinned, 'Form on a short phone screen: the save bar is pinned to the bottom of the screen', '')
+  const r = await rectOf(T('form-sticky-bar'))
+  const hit = await page.evaluate(() => { const b = document.querySelector('[data-testid="form-save"]'); const q = b.getBoundingClientRect(); const el = document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2); return { ok: el === b || b.contains(el), h: Math.round(q.height), bottom: Math.round(q.bottom), vh: innerHeight } })
+  check(r.b <= r.vh + 1 && hit.ok && hit.h >= 44, 'the pinned bar is inside the screen, its Save button is tappable and 44 px high', JSON.stringify({ bar: r.b, vh: r.vh, ...hit }))
+  await page.evaluate(() => document.documentElement.style.setProperty('--kb', '260px'))
+  const up = await rectOf(T('form-sticky-bar'))
+  check(Math.abs(up.b - (up.vh - 260)) <= 1, 'with the keyboard up (--kb 260 px) the pinned bar sits above it', JSON.stringify(up))
+  await page.evaluate(() => document.documentElement.style.setProperty('--kb', '0px'))
+  await shot('17-sticky-save-bar.png')
+  // at the bottom of the form the bar is back in place (nothing floats over the form's own end)
+  await page.$eval(T('tab-pane-' + appId) + ' [data-run-surface]', (e) => { e.scrollTop = e.scrollHeight })
+  await sleep(500)
+  const inline = await page.evaluate(() => ({ pinned: !!document.querySelector('[data-testid="form-sticky-bar"]'), inline: !!document.querySelector('[data-sticky-bar="inline"]') }))
+  check(!inline.pinned && inline.inline, 'scrolled to the end of the form the bar is in its normal place again', JSON.stringify(inline))
+  await phone(360, 800)
+}
+
+async function desktopUnchanged(pickersId, tableId, dialogId) {
+  await desktop()
+  await page.goto(BASE + '/#u-' + pickersId, { waitUntil: 'networkidle2' })
+  await waitFor(T('tab-pane-' + pickersId) + ' [data-run-surface]')
+  await sleep(600)
+  const info = await page.evaluate(() => ({ touch: document.documentElement.classList.contains('touch'), date: !!document.querySelector('[data-testid="control-DP"] input[type=date]'), num: document.querySelector('[data-testid="control-NI"] input')?.getAttribute('inputmode'), sign: !!document.querySelector('[data-testid="number-sign"]') }))
+  check(!info.touch && !info.date && info.num === 'decimal' && !info.sign, 'desktop: no touch class, DatePicker is the calendar popover, NumberInput has no sign button', JSON.stringify(info))
+  await page.click(ctl('DD') + ' [role=combobox]')
+  await sleep(300)
+  check(!!(await page.$('[role=listbox]')) && !(await page.$(T('bottom-sheet'))), 'desktop: Dropdown still opens the popover list (no bottom sheet)', '')
+  await page.keyboard.press('Escape')
+  await page.click(ctl('CB') + ' [role=combobox]')
+  await sleep(300)
+  check(!!(await page.$('[data-slot=popover-content]')) && !(await page.$(T('bottom-sheet'))), 'desktop: ComboBox still opens the popover', '')
+  await page.keyboard.press('Escape')
+  await page.goto(BASE + '/#u-' + tableId, { waitUntil: 'networkidle2' })
+  await waitFor(T('tab-pane-' + tableId) + ' [data-run-surface]')
+  await sleep(500)
+  const lay = await page.$$eval('[data-layout=cards], [data-layout=table]', (els) => els.map((e) => e.getAttribute('data-layout')))
+  check(lay.length >= 2 && lay.every((l) => l === 'table') && !!(await page.$('table')), 'desktop: DataTable stays a table', lay.join(','))
+  await page.goto(BASE + '/#u-' + dialogId, { waitUntil: 'networkidle2' })
+  await waitFor(T('tab-pane-' + dialogId) + ' [data-run-surface]')
+  await sleep(500)
+  const pl = await page.$eval('[role=dialog][data-overlay-placement]', (e) => e.getAttribute('data-overlay-placement'))
+  check(pl === 'dialog', 'desktop: Dialog stays a centred dialog', pl)
+  await phone(360, 800)
+}
+
 /* ------------------------------------------------------------------ main */
 
 const consoleLines = []
@@ -528,6 +816,13 @@ try {
   page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warn') consoleLines.push(`${m.type()}: ${m.text()}`.slice(0, 300)) })
   page.on('pageerror', (e) => consoleLines.push(`pageerror: ${e.message}`.slice(0, 300)))
   await phone(360, 800)
+  if (ONLY_TOUCH) {
+    log('E. touch controls only')
+    await signIn()
+    const ids = await touchControls()
+    await stickyBar(appId)
+    await desktopUnchanged(ids.pickers, ids.table, ids.dialog)
+  } else {
   log('A. sign-in at 360 px, the PWA')
   await signIn()
   await page.goto(`${BASE}/#u`, { waitUntil: 'networkidle2' })
@@ -550,9 +845,15 @@ try {
   await phone(412, 915)
   await shellAtPhoneWidth()
   await touchAudit()
+  log('E. touch pickers, native fields, cards, sheets, the sticky save bar')
+  await phone(360, 800)
+  const ids = await touchControls()
+  await stickyBar(appId)
+  await desktopUnchanged(ids.pickers, ids.table, ids.dialog)
   await phone(360, 800)
   await signOutClears()
   await wipe()
+  }
 } catch (e) {
   failed = true
   console.error(e)

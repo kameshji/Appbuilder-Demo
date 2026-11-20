@@ -60,8 +60,21 @@ The bar shows the leading `=` for you. Typing one is optional; a single leading 
 ## Phone and tablet apps
 
 A phone or portrait tablet app shows as a tall frame on the canvas; **Fit** fits its height. Design it like any other
-app: anchors and auto-layout work the same. **Preview** runs it at its design size, centred. Change between desktop,
-phone and tablet sizes in **Settings** (see [Apps](apps.md#phone-and-tablet-apps)).
+app: anchors and auto-layout work the same. Change between desktop, phone and tablet sizes in **Settings** (see
+[Apps](apps.md#phone-and-tablet-apps)).
+
+**Preview** shows a phone or tablet app inside a device frame at the size of a real device, with the touch rules on
+(touch areas of at least 44 px, touch-style behaviour), so you see what a phone shows. The Preview bar switches between
+the phone sizes (360x800, 390x844, 412x915; a tablet is 800x1280) and has a **Rotate** button. A frame taller than your
+window is scaled down as a whole; the caption under it says by how much. The screen follows the phone layout rule: as
+wide as the device, at least as tall, taller content scrolls, so anchors (Stretch, End) behave as they will on a phone.
+Desktop apps preview as before.
+
+**Check on phone** (next to Preview, and in the Preview bar of a phone or tablet app) shows a QR code of the app's start
+address, `/?app=<id>` on this server: the same code as **Open on a phone** on the app's card in My apps. Scan it with the
+phone's camera. The phone must be able to reach this server (open Appbuilder by its network address, not localhost);
+the camera, offline use and installing to the home screen need HTTPS (see the Admin guide, Phones on the LAN); and the
+phone shows **saved** changes only, so wait for "Saved" first. The button is disabled in demo mode, which has no server.
 
 ![A phone app in the Studio](../../images/studio-phone-app.png)
 

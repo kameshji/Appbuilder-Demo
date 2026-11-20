@@ -18,7 +18,8 @@
  *     the field picker, a related list, a defects table with totals, a QR code), the server PDF preview, Publish.
  *  D. Printing a record from an app: a Print button UI component (Template, Record = LookUp(...)) opens the PDF in a new
  *     tab; a button with Print(...) does the same; a button Patch(..., {Report: GeneratePdf(...)}) stores it in the
- *     record's file column. The record timeline's "Document" action (API) stores it in Documents.
+ *     record's file column. The record timeline's "Document" action stores it in Documents (by the API, then by clicking
+ *     the timeline's Document button in an app: only the templates of the record's table are offered).
  *
  * Settings: EXIT_DB_HOST (127.0.0.1), EXIT_DB_PORT (5433), EXIT_DB_USER (abdev), EXIT_DB_PASSWORD (abdev-sandbox-only),
  * EXIT_DB_NAME (appbuilder_exit_pdf), EXIT_MAINT_DB (appbuilder_test), EXIT_PORT (5263), PUPPETEER_CORE
@@ -246,6 +247,29 @@ async function printFromApp(templateName, inspectionId) {
   check(!!cell && String(cell).startsWith('att') && att?.status === 200 && att.bytes.subarray(0, 5).toString() === '%PDF-', 'Patch(..., {Report: GeneratePdf(...)}) stores the PDF in the record\'s file column', String(cell))
 }
 
+/** the record timeline's Document button, clicked: a timeline without its Table property offers the record's templates only */
+async function timelineByClicking(expected, templateName, inspectionId) {
+  const created = await api('POST', '/apps', { name: 'Inspection timeline', width: 1280, height: 800 })
+  const def = (await api('GET', `/apps/${created.id}`)).definition
+  def.dataSources = ['Inspections']
+  def.screens[0].children.push({ id: 'n_tl', name: 'InspectionTimeline', type: 'RecordTimeline', props: { X: '=20', Y: '=20', Width: '=600', Height: '=700', Record: '=LookUp(Inspections, Number = "INSP-2026-0042")' }, children: [] })
+  await api('PUT', `/apps/${created.id}`, { definition: def })
+  await page.goto(`${BASE}/#run-${created.id}`, { waitUntil: 'domcontentloaded' })
+  const count = async () => (await q(`SELECT count(*)::int AS n FROM env_default.sys_documents WHERE "regardingId" = $1`, [inspectionId]))[0].n
+  const before = await count()
+  await click(T('timeline-generate-document'))
+  await page.waitForSelector('[data-testid^="generate-document-"]', { visible: true, timeout: 20000 })
+  const offered = await page.$$eval('[data-testid^="generate-document-"]', (els) => els.map((e) => e.textContent))
+  await shot('timeline-document.png')
+  check(JSON.stringify([...offered].sort()) === JSON.stringify([...expected].sort()), 'the timeline\'s Document button offers the templates of the record\'s table only', JSON.stringify(offered))
+  await click(`[data-testid="generate-document-${templateName}"]`)
+  let after = before
+  for (let i = 0; i < 60 && after === before; i++) { await sleep(500); after = await count() }
+  check(after === before + 1, 'a click on a template stores its PDF in the record\'s Documents', `${before} -> ${after}`)
+  await page.waitForFunction(() => /Inspection INSP-2026-0042\.pdf/.test(document.querySelector('[data-testid="record-timeline"]')?.textContent ?? ''), { timeout: 20000 })
+  record('the new document appears in the timeline', true)
+}
+
 /* ------------------------------------------------------------------ main */
 
 let failed = false
@@ -319,6 +343,8 @@ try {
   const doc = await api('POST', `/print/templates/${insTpl.id}/documents`, { recordId: p.inspection1 })
   const docRow = (await q(`SELECT "Name", "regardingId", "File" FROM env_default.sys_documents WHERE id = $1`, [doc.documentId]))[0]
   check(docRow?.regardingId === p.inspection1 && String(docRow.File).startsWith('att'), 'the record timeline action stores the inspection report in the record\'s Documents', docRow?.Name)
+  // the Daily OEE template (no record source) exists too: only the two inspection templates are offered
+  await timelineByClicking([insTpl.name, designed.name], insTpl.name, p.inspection1)
   check(!errors.length, 'no script errors in the browser', errors.slice(0, 3).join(' | '))
 } catch (e) {
   failed = true

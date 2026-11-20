@@ -15,6 +15,10 @@ import { cn } from '@/lib/utils'
 import { isRecord, toBool, toNum, toText } from '../util'
 import { Shell, formatDate, startOfDay, useDefaultApply, useFocusToken } from './shared'
 import { DatePopover } from './DatePopover'
+import { normalizeNumberText, PHONE_WIDTH } from '@/phone/touch-logic'
+import { useDevice } from '@/phone/env'
+import { StickyBar } from '@/phone/sheet-bar'
+import { useBoxWidth } from '@/phone/touch-hooks'
 import { AttachmentField } from './AttachmentField'
 import {
   type FieldVal,
@@ -177,8 +181,8 @@ function FieldEditor({ col, id, value, onChange, onBlur, invalid, lookups }: Fie
           value={str}
           className={cn('h-9 text-right', err)}
           onChange={(e) => {
-            const t = e.target.value
-            if (/^-?\d*\.?\d*$/.test(t)) onChange(t)
+            const t = normalizeNumberText(e.target.value)
+            if (t !== null) onChange(t)
           }}
           onBlur={onBlur}
           aria-invalid={invalid || undefined}
@@ -209,6 +213,10 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
   const root = useRef<HTMLDivElement>(null)
   useFocusToken(root, focusToken, design)
   const uid = useRef(Math.random().toString(36).slice(2, 8)).current
+  // phones: the save bar stays reachable above the on-screen keyboard (src/phone/sheet-bar.tsx)
+  const touch = useDevice().touch
+  const boxWidth = useBoxWidth(root)
+  const stickyBar = touch && !design && boxWidth > 0 && boxWidth < PHONE_WIDTH
 
   /* ---- schema ---- */
   const dsName = toText(props.DataSource).trim()
@@ -558,7 +566,7 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
         )}
         <div className="min-h-0 flex-1 overflow-y-auto p-4">{body}</div>
         {showButtons && table && (
-          <div className="flex shrink-0 items-center gap-3 border-t border-border px-4 py-3">
+          <StickyBar boxRef={root} active={stickyBar} className="flex items-center gap-3 border-t border-border bg-card px-4 py-3 text-card-foreground">
             <div className="min-w-0 flex-1 truncate text-xs">
               {lastError !== '' ? (
                 <span className="text-destructive" role="alert">{lastError}</span>
@@ -566,13 +574,13 @@ function FormRender({ props, mode, outputs, setOutput, fire, focusToken }: Contr
                 <span className="text-muted-foreground">Unsaved changes</span>
               ) : null}
             </div>
-            <Button type="button" variant="outline" size="sm" onClick={() => editable && fire('OnCancel')}>
+            <Button type="button" variant="outline" size="sm" className={touch ? 'h-11 px-4' : undefined} onClick={() => editable && fire('OnCancel')}>
               {toText(props.CancelText) || 'Cancel'}
             </Button>
-            <Button type="button" size="sm" onClick={save} disabled={busy} data-testid="form-save">
+            <Button type="button" size="sm" className={touch ? 'h-11 px-5' : undefined} onClick={save} disabled={busy} data-testid="form-save">
               {busy ? 'Saving...' : toText(props.SubmitText) || 'Save'}
             </Button>
-          </div>
+          </StickyBar>
         )}
       </div>
     </Shell>

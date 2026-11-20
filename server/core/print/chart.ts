@@ -1,220 +1,188 @@
 /**
- * Charts of the print engine: bar, line, pie and gauge drawn as vector shapes (docs/dev/pdf.md "Charts").
+ * Charts of the print engine (docs/dev/pdf.md "Charts"): a chart block -> the dashboards' ChartSpec and rows. The
+ * drawing is package C's renderChartSvg (src/charts/svg.ts, the same geometry as the dashboard tiles); svgops.ts turns its
+ * SVG into the layout engine's vector operations with the bundled fonts. There is no chart renderer of our own.
  *
- * `chartShapes(spec, w, h, measure)` returns shapes in a w x h box (points, origin top-left); the layout engine turns
- * them into PDF drawing operations, and `printChartSvg(spec, w, h)` turns the same shapes into an SVG string. A
- * deliberately small renderer for paper output. Package C's renderChartSvg (src/charts/svg.ts) produces SVG only; using it
- * here needs an SVG-to-PDF step (not built yet): this duplication is known (docs/dev/pdf.md).
+ * The stored block (src/platform/print.ts, kind 'chart') keeps its shape: `chartType`, `rows` (a formula returning the
+ * rows), `label` (a formula over ThisItem), `values` (name, formula, colour), `min`, `max`, `bands` (fractions of the
+ * range), `unit`, `title`, `height`. How the values are read per kind:
+ *
+ * | kinds | label | values |
+ * | --- | --- | --- |
+ * | bar, line, area, combo, pareto, histogram | category | one series each (combo: optional `kind` per value, default bar then line) |
+ * | pie, donut, funnel | category (slice, stage) | the first value |
+ * | scatter | colour group (optional) | x, y, size (optional) |
+ * | heatmap | row | column (text), value |
+ * | timeline | lane | start, end (blank: the generation time), status (text, optional) |
+ * | gauge, bullet, kpi (no rows) | - | the value, then an optional target (gauge, bullet) or comparison base (kpi) |
+ *
+ * Optional block fields the engine also reads when present (the template model does not declare them yet):
+ * `stack`, `orientation`, `dataLabels`, `legend`, `decimals`, `higherIsBetter`, and `kind` / `axis` / `dashed` per value.
  */
+import type { ChartKind, ChartSpec, SeriesSpec, Status } from '../../../src/charts/geometry.ts'
+import { CHART_KINDS } from '../../../src/charts/geometry.ts'
+import type { FormatDefaults, NumberFormat } from '../../../src/charts/format.ts'
 
-export interface ChartSpec {
-  type: 'bar' | 'line' | 'pie' | 'gauge'
-  title?: string
-  categories: string[]
-  series: { name: string; values: (number | null)[]; color?: string }[]
-  /** gauge */
-  value?: number | null
+/** a chart ready for layout: the spec without its size (the layout gives the box) and its rows */
+export interface PrintChart {
+  spec: Omit<ChartSpec, 'width' | 'height'>
+  rows: Record<string, unknown>[]
+}
+
+export interface ChartValueDef { name: string; value: string; color?: string; kind?: 'bar' | 'line' | 'area'; axis?: 'left' | 'right'; dashed?: boolean }
+
+/** the stored chart block as the engine reads it */
+export interface ChartBlockInput {
+  chartType: string
+  values: ChartValueDef[]
   min?: number
   max?: number
   bands?: number[]
   unit?: string
-  /** formats a number for labels (the template's grouping) */
-  format?: (n: number) => string
+  stack?: 'none' | 'stacked' | 'percent'
+  orientation?: 'vertical' | 'horizontal'
+  dataLabels?: boolean
+  legend?: boolean
+  decimals?: number
+  higherIsBetter?: boolean
 }
 
-export type Shape =
-  | { t: 'rect'; x: number; y: number; w: number; h: number; fill?: string; stroke?: string; lw?: number }
-  | { t: 'line'; x1: number; y1: number; x2: number; y2: number; color: string; lw: number; dash?: number[] }
-  | { t: 'path'; d: string; fill?: string; stroke?: string; lw?: number }
-  | { t: 'text'; x: number; y: number; text: string; size: number; color: string; anchor: 'start' | 'middle' | 'end'; bold?: boolean }
+/** kinds read from a single set of values (no rows formula) */
+export const SINGLE_VALUE_KINDS: ChartKind[] = ['gauge', 'bullet', 'kpi']
+/** row limits: charts of categories stay readable; point and period charts take more */
+export const CHART_ROW_LIMIT = (k: ChartKind): number => (k === 'scatter' || k === 'heatmap' || k === 'timeline' ? 1000 : 200)
 
-export const PALETTE = ['#4f46e5', '#0891b2', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#db2777', '#475569']
-const AXIS = '#94a3b8'
-const GRID = '#e2e8f0'
-const INK = '#334155'
-
-type Measure = (text: string, size: number, bold?: boolean) => number
-const roughMeasure: Measure = (t, s) => t.length * s * 0.55
-
-function niceMax(v: number): number {
-  if (v <= 0) return 1
-  const p = 10 ** Math.floor(Math.log10(v))
-  for (const m of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * p >= v) return m * p
-  return 10 * p
+export function chartKind(t: unknown): ChartKind {
+  return (CHART_KINDS as string[]).includes(String(t)) ? (t as ChartKind) : 'bar'
 }
 
-const fmt = (spec: ChartSpec, n: number): string => (spec.format ? spec.format(n) : Number.isInteger(n) ? String(n) : n.toFixed(1)) + (spec.unit ?? '')
-
-function clipText(t: string, maxW: number, size: number, measure: Measure): string {
-  if (measure(t, size) <= maxW) return t
-  let s = t
-  while (s.length > 1 && measure(s + '…', size) > maxW) s = s.slice(0, -1)
-  return s + '…'
+export interface ChartInputs {
+  title?: string
+  /** per row: the label's text and the values' raw results (rows kinds) */
+  rows: { label: string; values: unknown[] }[]
+  /** the values' raw results (gauge, bullet, kpi) */
+  single: unknown[]
+  /** a value as text (records, dates: the binder's display text) */
+  asText: (v: unknown) => string
+  /** the generation time (open timeline periods end here, so output is deterministic) */
+  now: Date
+  grouping: 'indian' | 'international'
+  currency: string
+  timeZone: string
 }
 
-export function chartShapes(spec: ChartSpec, w: number, h: number, measure: Measure = roughMeasure): Shape[] {
-  const out: Shape[] = []
-  let top = 0
-  if (spec.title) {
-    out.push({ t: 'text', x: 0, y: 10, text: spec.title, size: 9, color: INK, anchor: 'start', bold: true })
-    top = 16
+const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i
+
+export function toNumber(v: unknown): number | null {
+  if (v === null || v === undefined || v === '') return null
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  if (typeof v === 'boolean') return v ? 1 : 0
+  if (typeof v === 'string') {
+    const n = Number(v.replace(/,/g, '').trim())
+    return v.trim() && Number.isFinite(n) ? n : null
   }
-  const color = (i: number, c?: string) => c || PALETTE[i % PALETTE.length]
-  if (spec.type === 'gauge') return [...out, ...gauge(spec, w, h - top, top, measure)]
-  if (spec.type === 'pie') return [...out, ...pie(spec, w, h - top, top, measure, color)]
-  // bar and line: a value axis on the left, categories along the bottom, a legend when there are several series
-  const all = spec.series.flatMap((s) => s.values).filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
-  const maxV = niceMax(Math.max(0, ...all))
-  const minV = Math.min(0, ...all)
-  const lo = minV < 0 ? -niceMax(-minV) : 0
-  const legendH = spec.series.length > 1 ? 14 : 0
-  const labelW = Math.max(measure(fmt(spec, maxV), 7), measure(fmt(spec, lo), 7)) + 6
-  const x0 = labelW
-  const y0 = top + 4
-  const ph = h - top - 4 - 16 - legendH
-  const pw = w - x0 - 4
-  const yOf = (v: number) => y0 + ph - ((v - lo) / (maxV - lo)) * ph
-  for (let k = 0; k <= 4; k++) {
-    const v = lo + ((maxV - lo) * k) / 4
-    const y = yOf(v)
-    out.push({ t: 'line', x1: x0, y1: y, x2: x0 + pw, y2: y, color: k === 0 ? AXIS : GRID, lw: 0.5 })
-    out.push({ t: 'text', x: x0 - 3, y: y + 2.5, text: fmt(spec, Math.round(v * 100) / 100), size: 7, color: '#64748b', anchor: 'end' })
-  }
-  const n = Math.max(1, spec.categories.length)
-  const slot = pw / n
-  const every = Math.max(1, Math.ceil((measure('XXXXXXXX', 7) + 4) / slot))
-  spec.categories.forEach((c, i) => {
-    if (i % every) return
-    out.push({ t: 'text', x: x0 + slot * (i + 0.5), y: y0 + ph + 10, text: clipText(c, slot * every - 2, 7, measure), size: 7, color: '#475569', anchor: 'middle' })
-  })
-  if (spec.type === 'bar') {
-    const ns = Math.max(1, spec.series.length)
-    const bw = Math.min(28, (slot * 0.7) / ns)
-    spec.series.forEach((s, si) => {
-      s.values.forEach((v, i) => {
-        if (typeof v !== 'number' || !Number.isFinite(v)) return
-        const x = x0 + slot * i + (slot - bw * ns) / 2 + bw * si
-        const ya = yOf(Math.max(0, v))
-        const yb = yOf(Math.min(0, v))
-        out.push({ t: 'rect', x, y: ya, w: bw * 0.92, h: Math.max(0.3, yb - ya), fill: color(si, s.color) })
-        if (ns === 1 && n <= 16) out.push({ t: 'text', x: x + bw * 0.46, y: ya - 2, text: fmt(spec, Math.round(v * 10) / 10), size: 6.5, color: INK, anchor: 'middle' })
-      })
-    })
-  } else {
-    spec.series.forEach((s, si) => {
-      let d = ''
-      s.values.forEach((v, i) => {
-        if (typeof v !== 'number' || !Number.isFinite(v)) return
-        const x = x0 + slot * (i + 0.5)
-        d += `${d ? 'L' : 'M'}${x.toFixed(2)} ${yOf(v).toFixed(2)} `
-      })
-      if (d) out.push({ t: 'path', d: d.trim(), stroke: color(si, s.color), lw: 1.4 })
-      s.values.forEach((v, i) => {
-        if (typeof v !== 'number' || !Number.isFinite(v)) return
-        const x = x0 + slot * (i + 0.5)
-        out.push({ t: 'path', d: circle(x, yOf(v), 1.6), fill: color(si, s.color) })
-      })
-    })
-  }
-  if (legendH) {
-    let x = x0
-    const y = h - 4
-    spec.series.forEach((s, si) => {
-      out.push({ t: 'rect', x, y: y - 6, w: 7, h: 7, fill: color(si, s.color) })
-      out.push({ t: 'text', x: x + 10, y, text: s.name, size: 7, color: INK, anchor: 'start' })
-      x += 18 + measure(s.name, 7)
-    })
-  }
-  return out
+  return null
 }
 
-const circle = (cx: number, cy: number, r: number) => `M${(cx - r).toFixed(2)} ${cy.toFixed(2)} A${r} ${r} 0 1 0 ${(cx + r).toFixed(2)} ${cy.toFixed(2)} A${r} ${r} 0 1 0 ${(cx - r).toFixed(2)} ${cy.toFixed(2)} Z`
-
-function arc(cx: number, cy: number, r: number, a0: number, a1: number, inner = 0): string {
-  // angles in radians, 0 = 12 o'clock, clockwise
-  const p = (a: number, rr: number) => [cx + rr * Math.sin(a), cy - rr * Math.cos(a)].map((v) => v.toFixed(2)).join(' ')
-  const large = a1 - a0 > Math.PI ? 1 : 0
-  if (inner > 0) return `M${p(a0, r)} A${r} ${r} 0 ${large} 1 ${p(a1, r)} L${p(a1, inner)} A${inner} ${inner} 0 ${large} 0 ${p(a0, inner)} Z`
-  return `M${cx.toFixed(2)} ${cy.toFixed(2)} L${p(a0, r)} A${r} ${r} 0 ${large} 1 ${p(a1, r)} Z`
-}
-
-function pie(spec: ChartSpec, w: number, h: number, top: number, measure: Measure, color: (i: number, c?: string) => string): Shape[] {
-  const out: Shape[] = []
-  const vals = (spec.series[0]?.values ?? []).map((v) => (typeof v === 'number' && v > 0 ? v : 0))
-  const total = vals.reduce((a, b) => a + b, 0)
-  const r = Math.max(10, Math.min(h / 2 - 4, w * 0.25))
-  const cx = r + 4
-  const cy = top + h / 2
-  if (!total) {
-    out.push({ t: 'path', d: circle(cx, cy, r), stroke: AXIS, lw: 0.5 })
-    out.push({ t: 'text', x: cx, y: cy + 3, text: 'No data', size: 8, color: '#64748b', anchor: 'middle' })
-    return out
+function toInstant(v: unknown): Date | null {
+  if (v instanceof Date) return Number.isFinite(v.getTime()) ? v : null
+  if (typeof v === 'string' && v.trim()) {
+    const t = Date.parse(v)
+    return Number.isFinite(t) ? new Date(t) : null
   }
-  let a = 0
-  vals.forEach((v, i) => {
-    if (!v) return
-    const b = a + (v / total) * Math.PI * 2
-    out.push(b - a >= Math.PI * 2 - 1e-6 ? { t: 'path', d: circle(cx, cy, r), fill: color(i) } : { t: 'path', d: arc(cx, cy, r, a, b, r * 0.5), fill: color(i) })
-    a = b
-  })
-  // legend with shares
-  let y = cy - (Math.min(vals.length, 12) * 12) / 2 + 8
-  const lx = cx + r + 14
-  spec.categories.slice(0, 12).forEach((c, i) => {
-    out.push({ t: 'rect', x: lx, y: y - 6, w: 7, h: 7, fill: color(i) })
-    out.push({ t: 'text', x: lx + 10, y, text: clipText(`${c}: ${fmt(spec, vals[i])} (${Math.round((vals[i] / total) * 100)}%)`, w - lx - 12, 7, measure), size: 7, color: INK, anchor: 'start' })
-    y += 12
-  })
-  return out
+  return null
 }
 
-function gauge(spec: ChartSpec, w: number, h: number, top: number, measure: Measure): Shape[] {
-  const out: Shape[] = []
-  const min = spec.min ?? 0
-  const max = spec.max ?? 100
-  const v = typeof spec.value === 'number' && Number.isFinite(spec.value) ? spec.value : null
-  const r = Math.max(12, Math.min(w / 2 - 4, h - 22))
-  const cx = w / 2
-  const cy = top + r + 4
-  const inner = r * 0.68
-  const start = -Math.PI / 2
-  const span = Math.PI
-  const bands = spec.bands?.length ? spec.bands : [0.6, 0.85]
-  const colors = ['#fecaca', '#fde68a', '#bbf7d0']
+/** legacy gauge bands (fractions of the range, e.g. [0.6, 0.85]) -> bad / warn / good bands of values */
+export function statusBands(fractions: number[] | undefined, min: number, max: number): ChartSpec['bands'] {
+  const cuts = (fractions?.length ? fractions : [0.6, 0.85]).map((f) => Math.max(0, Math.min(1, Number(f)))).filter((f) => Number.isFinite(f)).sort((a, b) => a - b)
+  const statuses: Status[] = ['bad', 'warn', 'good']
+  const out: NonNullable<ChartSpec['bands']> = []
   let prev = 0
-  ;[...bands, 1].forEach((b, i) => {
-    const f = Math.max(prev, Math.min(1, b))
-    if (f > prev) out.push({ t: 'path', d: arc(cx, cy, r, start + span * prev, start + span * f, r * 0.88), fill: colors[Math.min(i, colors.length - 1)] })
+  ;[...cuts, 1].forEach((f, i) => {
+    if (f > prev) out.push({ from: min + (max - min) * prev, to: min + (max - min) * f, status: statuses[Math.min(i, statuses.length - 1)] })
     prev = f
   })
-  if (v !== null) {
-    const f = Math.max(0, Math.min(1, (v - min) / (max - min || 1)))
-    const col = f < bands[0] ? '#dc2626' : f < (bands[1] ?? 1) ? '#d97706' : '#16a34a'
-    out.push({ t: 'path', d: arc(cx, cy, r * 0.84, start, start + span, inner), fill: '#f1f5f9' })
-    if (f > 0) out.push({ t: 'path', d: arc(cx, cy, r * 0.84, start, start + span * f, inner), fill: col })
-    const a = start + span * f
-    out.push({ t: 'line', x1: cx, y1: cy, x2: cx + (r - 2) * Math.sin(a), y2: cy - (r - 2) * Math.cos(a), color: INK, lw: 1.5 })
-  }
-  out.push({ t: 'path', d: circle(cx, cy, 2.5), fill: INK })
-  const label = v === null ? '–' : fmt(spec, Math.round(v * 10) / 10)
-  out.push({ t: 'text', x: cx, y: cy + 16, text: label, size: Math.min(16, Math.max(9, r / 3)), color: INK, anchor: 'middle', bold: true })
-  out.push({ t: 'text', x: cx - r, y: cy + 10, text: fmt(spec, min), size: 6.5, color: '#64748b', anchor: 'start' })
-  out.push({ t: 'text', x: cx + r, y: cy + 10, text: fmt(spec, max), size: 6.5, color: '#64748b', anchor: 'end' })
-  void measure
   return out
 }
 
-const escXml = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!)
-
-/** the chart as an SVG document (w x h points) */
-export function printChartSvg(spec: ChartSpec, w = 400, h = 220, measure?: Measure): string {
-  const parts = chartShapes(spec, w, h, measure).map((s) => {
-    switch (s.t) {
-      case 'rect': return `<rect x="${s.x.toFixed(2)}" y="${s.y.toFixed(2)}" width="${s.w.toFixed(2)}" height="${s.h.toFixed(2)}" fill="${s.fill ?? 'none'}"${s.stroke ? ` stroke="${s.stroke}" stroke-width="${s.lw ?? 1}"` : ''}/>`
-      case 'line': return `<line x1="${s.x1.toFixed(2)}" y1="${s.y1.toFixed(2)}" x2="${s.x2.toFixed(2)}" y2="${s.y2.toFixed(2)}" stroke="${s.color}" stroke-width="${s.lw}"${s.dash ? ` stroke-dasharray="${s.dash.join(' ')}"` : ''}/>`
-      case 'path': return `<path d="${s.d}" fill="${s.fill ?? 'none'}"${s.stroke ? ` stroke="${s.stroke}" stroke-width="${s.lw ?? 1}"` : ''}/>`
-      case 'text': return `<text x="${s.x.toFixed(2)}" y="${s.y.toFixed(2)}" font-size="${s.size}" fill="${s.color}" text-anchor="${s.anchor}" font-family="Noto Sans, sans-serif"${s.bold ? ' font-weight="700"' : ''}>${escXml(s.text)}</text>`
+/** a stored chart block and its evaluated values -> the dashboards' ChartSpec and rows */
+export function chartFromBlock(b: ChartBlockInput, inp: ChartInputs): PrintChart {
+  const kind = chartKind(b.chartType)
+  const defaults: FormatDefaults = { locale: inp.grouping === 'international' ? 'en-US' : 'en-IN', currency: inp.currency || 'INR', timeZone: inp.timeZone || 'Asia/Kolkata' }
+  const format: NumberFormat = { ...(b.unit ? { suffix: b.unit } : {}), ...(typeof b.decimals === 'number' ? { decimals: b.decimals } : {}) }
+  const values = Array.isArray(b.values) ? b.values : []
+  const color = (v: ChartValueDef | undefined) => (v?.color && HEX.test(v.color) ? { color: v.color } : {})
+  const spec: PrintChart['spec'] = {
+    kind,
+    ...(inp.title ? { title: inp.title } : {}),
+    format,
+    defaults,
+    ...(b.legend === false ? { legend: false } : {}),
+    ...(b.dataLabels ? { dataLabels: true } : {}),
+    ...(typeof b.min === 'number' ? { min: b.min } : {}),
+    ...(typeof b.max === 'number' ? { max: b.max } : {}),
+    emptyText: 'No data',
+  }
+  const rows: Record<string, unknown>[] = []
+  if (SINGLE_VALUE_KINDS.includes(kind)) {
+    // the value as the old print charts showed it: rounded to one decimal (unless decimals is set; axis ticks unaffected)
+    const r1 = (x: number | null) => (x === null || typeof b.decimals === 'number' ? x : Math.round(x * 10) / 10)
+    const v = r1(toNumber(inp.single[0]))
+    const second = inp.single.length > 1 ? r1(toNumber(inp.single[1])) : null
+    spec.series = [{ key: 'v', label: values[0]?.name || 'Value', ...color(values[0]) }]
+    rows.push({ v })
+    if (kind === 'kpi') {
+      spec.kpi = { value: v, label: values[0]?.name || inp.title || 'Value', ...(values.length > 1 ? { base: second, baseLabel: values[1]?.name ? `vs ${values[1].name}` : undefined } : {}), ...(typeof b.higherIsBetter === 'boolean' ? { higherIsBetter: b.higherIsBetter } : {}), showLabel: true }
+    } else {
+      const min = typeof b.min === 'number' ? b.min : 0
+      const max = typeof b.max === 'number' ? b.max : 100
+      Object.assign(spec, { min, max, bands: statusBands(b.bands, min, max), ...(second !== null ? { target: second } : {}) })
     }
-  })
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">${parts.join('')}</svg>`
+    return { spec, rows }
+  }
+  const limit = CHART_ROW_LIMIT(kind)
+  const src = inp.rows.slice(0, limit)
+  const hasLabel = src.some((r) => r.label !== '')
+  if (kind === 'scatter') {
+    spec.series = values.slice(0, 2).map((v, i) => ({ key: `s${i}`, label: v.name || `Value ${i + 1}` }))
+    Object.assign(spec, { x: 's0', y: 's1', ...(values.length > 2 ? { size: 's2' } : {}), ...(hasLabel ? { colorBy: 'c' } : {}) })
+    for (const r of src) rows.push({ c: r.label, s0: toNumber(r.values[0]), s1: toNumber(r.values[1]), ...(values.length > 2 ? { s2: toNumber(r.values[2]) } : {}) })
+    return { spec, rows }
+  }
+  if (kind === 'heatmap') {
+    Object.assign(spec, { row: 'c', column: 'k', series: [{ key: 'v', label: values[1]?.name || 'Value' }] })
+    for (const r of src) rows.push({ c: r.label, k: inp.asText(r.values[0]), v: toNumber(r.values[1]) })
+    return { spec, rows }
+  }
+  if (kind === 'timeline') {
+    Object.assign(spec, { lane: 'c', start: 's0', end: 's1', ...(values.length > 2 ? { status: 's2' } : {}) })
+    delete spec.min
+    delete spec.max
+    for (const r of src) {
+      const a = toInstant(r.values[0])
+      if (!a) continue
+      rows.push({ c: r.label, s0: a, s1: toInstant(r.values[1]) ?? (inp.now.getTime() >= a.getTime() ? inp.now : a), ...(values.length > 2 ? { s2: inp.asText(r.values[2]) } : {}) })
+    }
+    return { spec, rows }
+  }
+  // categories: bar, line, area, combo, pareto, histogram, pie, donut, funnel
+  const one = kind === 'pie' || kind === 'donut' || kind === 'funnel' || kind === 'pareto'
+  const defs = one ? values.slice(0, 1) : values
+  spec.category = 'c'
+  spec.categoryType = 'text'
+  spec.series = defs.map((v, i): SeriesSpec => ({
+    key: `s${i}`, label: v.name || `Series ${i + 1}`, ...color(v),
+    ...(kind === 'combo' ? { kind: v.kind ?? (i === 0 ? 'bar' : 'line') } : {}),
+    ...(v.axis === 'right' ? { axis: 'right' } : {}),
+    ...(v.dashed ? { dashed: true } : {}),
+  }))
+  if (b.stack && b.stack !== 'none' && (kind === 'bar' || kind === 'area')) spec.stack = b.stack
+  if (b.orientation === 'horizontal' && (kind === 'bar' || kind === 'histogram')) spec.orientation = 'horizontal'
+  for (const r of src) {
+    const row: Record<string, unknown> = { c: r.label }
+    defs.forEach((_, i) => { row[`s${i}`] = toNumber(r.values[i]) })
+    rows.push(row)
+  }
+  return { spec, rows }
 }

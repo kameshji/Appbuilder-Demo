@@ -22,9 +22,44 @@ Open the dashboard and choose **Edit**. Each tile gets buttons to make it narrow
 the title becomes editable. **Save** keeps the change for everyone who sees the dashboard; **Cancel** drops it. The grid has 12 columns of
 80-pixel rows on a computer and becomes a single column on a phone.
 
-Editing tile queries, adding new tiles and choosing viewer roles have no screen yet in this version: they are part of the stored definition
-(`POST/PATCH /api/v1/dashboards`, see the developer page). Who may view: the owner, makers, administrators and the roles listed on the
-dashboard.
+## Add or change a tile
+
+In **Edit** mode, **Add tile** (top bar) opens the tile editor for a new tile; the pencil on a tile opens it for that tile. Everything is
+chosen from lists and boxes:
+
+- **Tile**: title, kind (bar, line, area, combination, pie, donut, scatter, heat map, gauge, bullet, KPI, funnel, Pareto, histogram,
+  timeline, table or text) and table. Choosing another table clears what depended on the old table's columns.
+- **Measures**: sum, average, minimum or maximum of a number column; count of rows, optionally only rows matching a condition (for
+  example "Reason is Breakdown"); count of different values of a column. Each has a label, a number format (whole number, two decimals,
+  currency, percent where 0.85 shows as 85 %, compact such as 12.3L) and a short name used in calculations.
+- **Calculations**: one measure (or number) with +, −, × or ÷ and another measure (or number), for example Good ÷ Total. Calculations
+  are worked out per result row from the measures, so a ratio is a ratio of sums. Division by zero shows a blank.
+- **Group by**: one or more columns, and a date grouping (day, week, month, quarter, year, fiscal quarter, fiscal year, day of the
+  week, hour of the day for date-and-time columns).
+- **Rows counted**: the date column the dashboard's date range applies to (or none), and a fixed filter: conditions such as "Shift is
+  A", "Minutes is at least 10", "Started on is before 1 Nov", joined by "all of these" or "any of these".
+- **Sort and limit**: sort by a measure, a calculation, a group column or the date; show only the top N, optionally adding up the rest
+  as one "Others" row (needs exactly one group column and no date grouping).
+- **Comparison, running totals and targets**: compare with the previous period or the same period last year (needs the date column),
+  running totals of measures, and targets summed from another table (optionally per value of the first group column).
+- **Chart** (or **Table**): which values are drawn (measures, comparison values as dashed lines, running totals, the target), the
+  category when there are several groupings, the tile's number format, stacking, upright or lying bars, minimum / maximum / target line
+  for gauges, the KPI's number, what it is compared with and whether higher is better, values on the chart, and whether clicking a
+  group value filters the other tiles on the same table.
+
+The preview on the right (on top on a tablet) shows the tile as the dashboard will, over the dashboard's current date range and with
+your own access; the dashboard's filter lists are not applied to it. Problems are listed in words at the bottom; red ones must be fixed
+before **Apply** (or **Add to the dashboard**). Apply puts the tile on the dashboard; **Save** the dashboard to keep it. Cancel, the X
+or Escape closes the editor without changing the tile.
+
+Parts written outside the editor (through the API) that the editor cannot change, such as a measure over a calculation of several
+columns, a condition with "one of" or nested groups, or a calculation with several operators like OEE, are shown in words and kept as
+they are when you change other things. You can replace them with a simple version from the editor.
+
+Not possible in the editor yet: colours of series, the right-hand axis of combination charts, gauge colour bands, KPI colour rules and
+sparklines, colour rules of table tiles, the dashboard's filter lists, refresh interval and viewer roles. These remain part of the stored
+definition (`POST/PATCH /api/v1/dashboards`, see the developer page). Who may view: the owner, makers, administrators and the roles
+listed on the dashboard.
 
 ## The minimal plant tables
 

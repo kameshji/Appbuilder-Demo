@@ -646,3 +646,21 @@ table rebuilds its indexes (1,000,000 rows: 17 s); deleted rows take space until
 **Decision.** One pure-TypeScript chart geometry serves the screen and standalone SVG. Each tile is one or more Query v2 aggregate plans run as the viewer through a per-dashboard batch endpoint; comparisons, targets and computed measures are extra plans plus arithmetic over aggregated rows, never a second security model. Results are cached for 20 seconds per user, keyed by the viewer's row predicate and visible columns, and dropped on table change.
 
 **Consequences.** A sharing change on a single row can take up to 20 seconds to show on a dashboard. Details: `docs/dev/dashboards.md`.
+
+## D35. Tile editor: the state is the stored tile, not a form model (P2 wave 1 gaps, Nov 2026)
+
+**Decision.** The visual tile editor (`src/portal/dashboards/TileEditor.tsx`, logic in `src/dashboards/editor.ts`) edits the draft `TileDef` directly. Each operation copies what it does not change, so fields without a screen survive editing. Conditions and calculations get a form only when converting it back gives the identical JSON; otherwise they are shown in words and kept until the maker replaces them. The preview reuses the viewer's batch path, so the maker sees what viewers get, under the maker's own access.
+
+**Consequences.** Row calculations, nested conditions and multi-operator calculations cannot be edited visually yet. Details: `docs/dev/dashboards.md`.
+
+## D36. PDF charts convert the dashboard renderer's SVG; the converter is closed (P2 wave 1 gaps, Nov 2026)
+
+**Decision.** The print engine has no chart renderer of its own. It calls `renderChartSvg` and `server/core/print/svgops.ts` converts exactly the SVG subset that function emits into the engine's vector operations, throwing on anything else, so a change to the dashboard renderer fails tests instead of vanishing from PDFs. Text is laid out with the bundled Noto fonts and fontkit shaping. This supersedes the "duplication" consequence of D33.
+
+**Consequences.** Offering more chart kinds to makers is a change to the template model (`src/platform/print.ts`), not the engine. Details: `docs/dev/pdf.md`.
+
+## D37. Refused uploads are drained briefly, not dropped; pg_restore output is read with either line ending (Windows baseline, Nov 2026)
+
+**Decision.** After a 413 the router discards the rest of the upload for at most 5 s or 64 MB and sends no `Connection: close` (Node destroys the socket itself when that header is sent, which resets the connection before the client reads the answer). The backup readers drop a CR before the LF. Both were found by the first full test run on Windows.
+
+**Consequences.** A refused upload holds its connection for up to 5 s. Details: `docs/dev/data-api.md`.

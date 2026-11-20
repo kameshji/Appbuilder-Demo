@@ -15,9 +15,17 @@ without a connection, and testing on a phone.
   get an invisible 44 px touch area automatically, but neighbours closer than that compete for taps. Leave 8 px between
   tappable things.
 - Nothing appears "on hover" on a phone. Do not hide actions behind hover.
-- Prefer a **Gallery** or **List** over a **Data table** on phones (the data table has no card layout yet).
-- Dropdowns, combo boxes and date pickers open their desktop lists, which work by touch but are small; for a short list
-  of choices use **Radio group** or **Segmented control** with large items.
+- A **Data table** shows as cards on a phone (narrower than 600 px): the first text column is the card title and a few
+  more columns follow. Set **Phone card columns** to choose and order them, for example `Name, Status, Amount` (the first
+  is the title, the second sits under it, the rest are labelled lines). A Gallery or List still gives you full control.
+- **Dropdowns, combo boxes and person pickers** open a bottom sheet with a search field and large rows. **Date pickers and
+  the time picker** open the phone's own picker and show the date in the phone's format (the Format property applies
+  on desktop only; the 12/24-hour setting is the phone's). **Number inputs** show a digits-only keypad when Min and Max
+  are whole numbers and Min is 0 or more, otherwise a keypad with a decimal point, plus a +/- button when negatives
+  are allowed.
+- **Dialogs and side sheets** open as bottom sheets on a phone; drag the handle down or tap outside to close.
+- On a form, the **Save** and **Cancel** buttons stay on screen above the keyboard while the form is longer than what
+  you can see.
 - Pull down at the top of a running app to reload its data.
 
 ## Scanning barcodes and QR codes

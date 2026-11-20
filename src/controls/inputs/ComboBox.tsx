@@ -8,6 +8,8 @@ import { cn } from '@/lib/utils'
 import { displayModeProp, toBool, toDisplayMode, toNum, toText } from '../util'
 import { Shell, isMultiple, itemText, selectionModeProp, triggerClass, useFocusToken } from './shared'
 import { useItemSelection } from './selection'
+import { useDevice } from '@/phone/env'
+import { PickerSheet } from '@/phone/sheet-picker'
 
 const MAX_VISIBLE = 200
 
@@ -19,6 +21,8 @@ export function ComboBoxRender({ props, mode, outputs, setOutput, fire, focusTok
   const searchFields = toText(props.SearchField).split(',').map((s) => s.trim()).filter((s) => s !== '')
   const sel = useItemSelection({ props, outputs, setOutput, multiple, field: displayField || undefined, withItems: true })
   const [open, setOpen] = useState(false)
+  // touch devices: the list opens as a bottom sheet with a search field (src/phone/sheet-picker.tsx)
+  const touch = useDevice().touch
   const root = useRef<HTMLDivElement>(null)
   useFocusToken(root, focusToken, design)
   // server mode: a table's rows arrive page by page and the search runs on the server (type-ahead)
@@ -77,33 +81,72 @@ export function ComboBoxRender({ props, mode, outputs, setOutput, fire, focusTok
     fire('OnChange')
   }
 
+  const changeOpen = (o: boolean) => {
+    if (!editable) return
+    setOpen(o)
+    if (!o) {
+      if (timer.current) { clearTimeout(timer.current); timer.current = null }
+      setTyped('')
+      setOutput('SearchText', '')
+    }
+  }
+  const triggerButton = (onClick?: () => void) => (
+    <button
+      type="button"
+      role="combobox"
+      aria-expanded={open}
+      disabled={dm === 'Disabled'}
+      onClick={onClick}
+      className={cn(triggerClass, clearable && label !== '' && dm === 'Edit' && 'pr-14')}
+      style={{ fontSize: toNum(props.Size, 14) }}
+    >
+      <span className={cn('min-w-0 truncate text-left', label === '' && 'text-muted-foreground')}>{label === '' ? placeholder : label}</span>
+      <ChevronsUpDown className="size-4 shrink-0 opacity-50" />
+    </button>
+  )
+  const clearButton = clearable && label !== '' && dm === 'Edit' && (
+    <button
+      type="button"
+      aria-label="Clear selection"
+      tabIndex={design ? -1 : undefined}
+      data-touch-target=""
+      className="absolute inset-y-0 right-8 flex w-6 items-center justify-center text-muted-foreground hover:text-foreground"
+      onClick={() => {
+        if (!editable) return
+        sel.set([])
+        fire('OnChange')
+      }}
+    >
+      <X className="size-3.5" />
+    </button>
+  )
+
+  if (touch && !design) {
+    return (
+      <Shell design={design} rootRef={root} className="relative">
+        {triggerButton(() => changeOpen(true))}
+        <PickerSheet
+          open={open && editable}
+          onClose={() => changeOpen(false)}
+          label={placeholder || 'Select an item'}
+          rows={visible.map((i) => ({ index: i, text: sel.texts[i], selected: sel.selected.includes(i) }))}
+          search={search}
+          onSearch={setSearch}
+          onPick={toggle}
+          multiple={multiple}
+          emptyText={meta && (meta.refreshing || timer.current) ? 'Searching…' : 'No results.'}
+          onNearEnd={meta?.hasMore && !meta.loadingMore ? () => void meta.loadMore() : undefined}
+          note={meta?.hasMore ? <div className="px-4 py-2 text-xs text-muted-foreground">{meta.loadingMore ? 'Loading…' : `${sel.items.length.toLocaleString('en-US')} of ${(meta.count ?? 0).toLocaleString('en-US')}: scroll or type to narrow`}</div> : undefined}
+        />
+        {clearButton}
+      </Shell>
+    )
+  }
+
   return (
     <Shell design={design} rootRef={root} className="relative">
-      <Popover
-        open={open && editable}
-        onOpenChange={(o) => {
-          if (!editable) return
-          setOpen(o)
-          if (!o) {
-            if (timer.current) { clearTimeout(timer.current); timer.current = null }
-            setTyped('')
-            setOutput('SearchText', '')
-          }
-        }}
-      >
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            role="combobox"
-            aria-expanded={open}
-            disabled={dm === 'Disabled'}
-            className={cn(triggerClass, clearable && label !== '' && dm === 'Edit' && 'pr-14')}
-            style={{ fontSize: toNum(props.Size, 14) }}
-          >
-            <span className={cn('min-w-0 truncate text-left', label === '' && 'text-muted-foreground')}>{label === '' ? placeholder : label}</span>
-            <ChevronsUpDown className="size-4 shrink-0 opacity-50" />
-          </button>
-        </PopoverTrigger>
+      <Popover open={open && editable} onOpenChange={changeOpen}>
+        <PopoverTrigger asChild>{triggerButton()}</PopoverTrigger>
         <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] min-w-56 p-0">
           <Command shouldFilter={false}>
             <CommandInput placeholder="Search..." value={search} onValueChange={setSearch} />
@@ -127,21 +170,7 @@ export function ComboBoxRender({ props, mode, outputs, setOutput, fire, focusTok
           </Command>
         </PopoverContent>
       </Popover>
-      {clearable && label !== '' && dm === 'Edit' && (
-        <button
-          type="button"
-          aria-label="Clear selection"
-          tabIndex={design ? -1 : undefined}
-          className="absolute inset-y-0 right-8 flex w-6 items-center justify-center text-muted-foreground hover:text-foreground"
-          onClick={() => {
-            if (!editable) return
-            sel.set([])
-            fire('OnChange')
-          }}
-        >
-          <X className="size-3.5" />
-        </button>
-      )}
+      {clearButton}
     </Shell>
   )
 }

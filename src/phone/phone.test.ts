@@ -10,6 +10,7 @@ import { installPlatform, startRouteOf } from './pwa'
 import { backoffMs, isIdempotentRead, isNetworkError, readKey } from '@/platform/offline-hook'
 import { TOUCH_MATRIX, wantsHitArea } from './touch'
 import { controls } from '@/controls'
+import { allowsNegative, applyNativeRange, barPinned, cardMode, cardPlan, dateToNative, dragDismiss, filterOptions, legendHeight, nativeToDate, nativeToTime, normalizeNumberText, numberInputMode, overlayPlacement, parseCardColumns, pointHitRadius, timeToNative, toggleSign } from './touch-logic'
 import { initialValues } from '@/controls/inputs/formSchema'
 import { locationError } from './device-fx'
 import { pullDistance } from './PullToRefresh'
@@ -186,6 +187,135 @@ describe('touch', () => {
     expect(pullDistance(-5)).toBe(0)
     expect(pullDistance(100)).toBe(50)
     expect(pullDistance(1000)).toBe(96)
+  })
+})
+
+describe('touch logic (pickers, native fields, cards, sheets, save bar)', () => {
+  it('filterOptions: case-insensitive contains, blank keeps all, limit', () => {
+    expect(filterOptions(['Apple', 'Banana', 'Grape'], 'AP')).toEqual([0, 2])
+    expect(filterOptions(['Apple', 'Banana'], '  ')).toEqual([0, 1])
+    expect(filterOptions(['a', 'a', 'a'], 'a', 2)).toEqual([0, 1])
+    expect(filterOptions(['x'], 'zz')).toEqual([])
+  })
+  it('native date: local yyyy-mm-dd both ways, invalid and out of range are ignored', () => {
+    expect(dateToNative(new Date(2026, 0, 5))).toBe('2026-01-05')
+    expect(dateToNative(null)).toBe('')
+    expect(dateToNative(new Date(NaN))).toBe('')
+    const d = nativeToDate('2026-03-09') as Date
+    expect([d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()]).toEqual([2026, 2, 9, 0])
+    expect(nativeToDate('')).toBeNull()
+    expect(nativeToDate('2026-02-30')).toBeUndefined()
+    expect(nativeToDate('09/03/2026')).toBeUndefined()
+    const min = new Date(2026, 2, 10)
+    const max = new Date(2026, 2, 20)
+    expect(nativeToDate('2026-03-09', min, max)).toBeUndefined()
+    expect(nativeToDate('2026-03-21', min, max)).toBeUndefined()
+    expect(nativeToDate('2026-03-10', min, max)).toBeInstanceOf(Date)
+    expect(nativeToDate('2026-03-20', min, max)).toBeInstanceOf(Date)
+  })
+  it('native range: never inverted, clearing the start clears the range, clearing the end keeps it open', () => {
+    const a = new Date(2026, 4, 10)
+    const b = new Date(2026, 4, 20)
+    const c = new Date(2026, 4, 25)
+    const early = new Date(2026, 4, 1)
+    expect(applyNativeRange('start', c, { start: a, end: b })).toEqual({ start: c, end: c })
+    expect(applyNativeRange('start', early, { start: a, end: b })).toEqual({ start: early, end: b })
+    expect(applyNativeRange('end', early, { start: a, end: b })).toEqual({ start: early, end: early })
+    expect(applyNativeRange('end', c, { start: a, end: b })).toEqual({ start: a, end: c })
+    expect(applyNativeRange('start', null, { start: a, end: b })).toEqual({ start: null, end: null })
+    expect(applyNativeRange('end', null, { start: a, end: b })).toEqual({ start: a, end: null })
+  })
+  it('native time: HH:MM both ways, seconds tolerated, bad text ignored', () => {
+    expect(timeToNative({ h: 7, m: 5 })).toBe('07:05')
+    expect(timeToNative(null)).toBe('')
+    expect(nativeToTime('07:05')).toEqual({ h: 7, m: 5 })
+    expect(nativeToTime('23:59:30')).toEqual({ h: 23, m: 59 })
+    expect(nativeToTime('')).toBeNull()
+    expect(nativeToTime('24:00')).toBeUndefined()
+    expect(nativeToTime('7:5')).toBeUndefined()
+  })
+  it('NumberInput: keypad choice, sign button, decimal comma', () => {
+    expect(numberInputMode(0, 100, 1)).toBe('numeric')
+    expect(numberInputMode(1, 20, 5)).toBe('numeric')
+    expect(numberInputMode(null, null, 1)).toBe('decimal')
+    expect(numberInputMode(-5, 5, 1)).toBe('decimal')
+    expect(numberInputMode(0, 10, 0.5)).toBe('decimal')
+    expect(numberInputMode(0, 10.5, 1)).toBe('decimal')
+    expect(allowsNegative(null)).toBe(true)
+    expect(allowsNegative(-1)).toBe(true)
+    expect(allowsNegative(0)).toBe(false)
+    expect(normalizeNumberText('12,5')).toBe('12.5')
+    expect(normalizeNumberText('-')).toBe('-')
+    expect(normalizeNumberText('1.2.3')).toBeNull()
+    expect(normalizeNumberText('1,2,3')).toBeNull()
+    expect(normalizeNumberText('abc')).toBeNull()
+    expect(toggleSign('5')).toBe('-5')
+    expect(toggleSign('-5')).toBe('5')
+    expect(toggleSign('')).toBe('-')
+  })
+  it('DataTable cards: only on a touch device in run mode below phone width', () => {
+    expect(cardMode(true, 360)).toBe(true)
+    expect(cardMode(true, 599)).toBe(true)
+    expect(cardMode(true, 600)).toBe(false)
+    expect(cardMode(false, 360)).toBe(false)
+    expect(cardMode(true, 360, true)).toBe(false)
+    expect(cardMode(true, 0)).toBe(false)
+  })
+  it('CardColumns parsing and the card plan (explicit priority and default)', () => {
+    expect(parseCardColumns('Name, Status:Stage , name,, Amount')).toEqual(['Name', 'Status', 'Amount'])
+    expect(parseCardColumns('')).toEqual([])
+    const cols = [
+      { field: 'Id', kind: 'number' }, { field: 'Name', kind: 'text' }, { field: 'Status', kind: 'text' },
+      { field: 'A', kind: 'text' }, { field: 'B', kind: 'text' }, { field: 'C', kind: 'text' }, { field: 'D', kind: 'text' }, { field: 'E', kind: 'text' },
+    ]
+    const dflt = cardPlan(cols, [])!
+    expect(dflt.title.field).toBe('Name')
+    expect(dflt.subtitle).toBeNull()
+    expect(dflt.lines.map((c) => c.field)).toEqual(['Id', 'Status', 'A', 'B', 'C'])
+    const ex = cardPlan(cols, ['status', 'nope', 'Id', 'Name'])!
+    expect([ex.title.field, ex.subtitle?.field, ex.lines.map((c) => c.field)]).toEqual(['Status', 'Id', ['Name']])
+    expect(cardPlan(cols, ['nope'])!.title.field).toBe('Name')
+    expect(cardPlan([{ field: 'N', kind: 'number' }], [])!.title.field).toBe('N')
+    expect(cardPlan([], ['x'])).toBeNull()
+  })
+  it('Dialog and Sheet placement', () => {
+    expect(overlayPlacement('Dialog', '', true, 360)).toBe('bottom-sheet')
+    expect(overlayPlacement('Dialog', '', false, 360)).toBe('dialog')
+    expect(overlayPlacement('Dialog', '', true, 900)).toBe('dialog')
+    expect(overlayPlacement('Sheet', 'Right', true, 360)).toBe('bottom-sheet')
+    expect(overlayPlacement('Sheet', 'left', true, 360)).toBe('bottom-sheet')
+    expect(overlayPlacement('Sheet', 'right', false, 360)).toBe('right')
+    expect(overlayPlacement('Sheet', 'right', true, 800)).toBe('right')
+    expect(overlayPlacement('Sheet', 'top', true, 360)).toBe('top')
+    expect(overlayPlacement('Sheet', 'bottom', true, 360)).toBe('bottom-sheet')
+    expect(overlayPlacement('Sheet', 'bottom', false, 360)).toBe('bottom')
+  })
+  it('sheet drag: far or fast pulls dismiss, short slow ones and upward ones do not', () => {
+    expect(dragDismiss(101, 800)).toBe(true)
+    expect(dragDismiss(50, 40)).toBe(true)
+    expect(dragDismiss(50, 400)).toBe(false)
+    expect(dragDismiss(30, 10)).toBe(false)
+    expect(dragDismiss(-200, 10)).toBe(false)
+  })
+  it('Form save bar pins only when the form end is hidden but a useful part is visible', () => {
+    const base = { barHeight: 64, viewTop: 0, viewBottom: 500 }
+    expect(barPinned({ ...base, formTop: 0, formBottom: 400 })).toBe(false)
+    expect(barPinned({ ...base, formTop: 0, formBottom: 900 })).toBe(true)
+    expect(barPinned({ ...base, formTop: 450, formBottom: 900 })).toBe(false)
+    expect(barPinned({ ...base, formTop: -900, formBottom: -10 })).toBe(false)
+    expect(barPinned({ ...base, formTop: 0, formBottom: 501 })).toBe(false)
+  })
+  it('chart touch sizes', () => {
+    expect(legendHeight(false)).toBe(26)
+    expect(legendHeight(true)).toBe(44)
+    expect(pointHitRadius(3, true)).toBe(22)
+    expect(pointHitRadius(30, true)).toBe(30)
+    expect(pointHitRadius(3, false)).toBe(3)
+  })
+  it('DataTable exposes the additive CardColumns property', () => {
+    const p = controls.list().find((c) => c.type === 'DataTable')!.props.find((x) => x.name === 'CardColumns')
+    expect(p).toBeTruthy()
+    expect(p!.simple).toBe(false)
   })
 })
 
