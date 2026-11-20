@@ -64,7 +64,7 @@ One unexplained event: in the first of the three runs the restore drill hung for
 
 ## Carried forward
 
-- Owner actions: real-device test script; a Meta account to confirm the WhatsApp points listed in `docs/dev/whatsapp.md`; the release signing key (template integrity rests on it); an outside security review; a decision on service-account print templates (any signed-in person can print any record of the table through one; documented, not changed).
+- Owner actions: real-device test script; a Meta account to confirm the WhatsApp points listed in `docs/dev/whatsapp.md`; the release signing key (template integrity rests on it); an outside security review. Decided by the owner on 20 Nov 2026: service-account print templates stay as they are (any signed-in person can print any record of the table through one; that is what a service account is for, as documented).
 - Deferred by the owner: dashboards' use of summary tables, the pivot table, cold-start offline.
 - Not built: Linked mode for UI component and screen templates; SMS; kiosk cycling of ranges or pages; choosing a screen for drill-through; sorting lists by a lookup column; a shared schedule-fields component (the snapshot screen copies the reports' fields).
 - Not verified in a browser: template uninstall, upgrade and Linked mode; the WhatsApp admin screens; service-account view tokens.

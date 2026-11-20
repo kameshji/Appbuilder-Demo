@@ -2,6 +2,7 @@
 
 Status: DECIDED in outline by the owner on 20 Nov 2026 ([master-plan.md](master-plan.md) sections 12 and 13). NOT yet
 specified in detail and NOT built. The hosting research is in [../internal/hosting-options.md](../internal/hosting-options.md).
+The proposed specification (a managed fleet of one install per organisation, with true multi-tenancy as a documented later option) is [hosting-spec.md](hosting-spec.md).
 
 ## Decisions
 

@@ -58,3 +58,8 @@ export async function upgradeEnvironmentTo13Templates(db: SqlDb, schema: string)
     if (!r[0]?.ok) throw new Error(`table ${schema}.${t} is missing after the schema update`)
   }
 }
+
+/** upgrade step to 14 (P3 package M1, solution templates): wired by the orchestrator; a no-op until the package needs it */
+export async function upgradeEnvironmentTo14Templates(_db: SqlDb, _schema: string): Promise<void> {
+  // filled in by the package if solution templates need new columns or tables (add the DDL to templatesEnvironmentDdl)
+}

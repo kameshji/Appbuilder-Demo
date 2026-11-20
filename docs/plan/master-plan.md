@@ -281,3 +281,25 @@ approved; nothing in it is built.
 
 Multi-tenancy is a new phase that is not in the phase table of section 5. Its outline is in
 `hosting-and-licensing.md`; it must be specified (like p0-spec.md) and approved before it is built.
+
+## 14. Owner decisions, 20 Nov 2026 (evening)
+
+- **Multi-tenancy is built before Phase 3.** Order: specification (`multi-tenancy-spec.md`), then the multi-tenancy phase, then Phase 3.
+- **Service-account print templates stay as they are** (any signed-in person can print any record of the table through one: the documented purpose of a service account).
+- **Tester terms:** a draft is written for a lawyer to review before launch (`../launch/tester-terms-draft.md`); it is not legal advice and must not be used unreviewed.
+
+## 15. Owner decisions, 20 Nov 2026 (night; supersede sections 13 and 14 where they differ)
+
+- **Nothing launches before the owner's last working day** at his employer. There is no launch pressure; the instruction is to make the product complete and working.
+- **The target to build for now is one server:** 10 to 20 paying organisations, each with 20 to 50 people (4 to 5 makers, the rest users), about 200 to 1,000 named users in all. "Tens of thousands of users" is 3 to 4 years away and must not drive what is built now.
+- **Still fixed:** true multi-tenancy inside the product for the cloud; one organisation per install with a lifetime licence on-premises, from the same code; online licence check with 3 days of grace.
+- **Consequence for the multi-tenancy phase:** tenant isolation at full strength, sized for one server process; more than one server process, sharding and large-scale load are designed for but not built (`multi-tenancy-spec.md`).
+- **Way of working:** keep building without waiting for approvals; where a question is open, the recommended default is chosen, recorded as "default chosen, owner may change", and reported at the end of each wave.
+
+## 16. Decision delegated by the owner, 20 Nov 2026: hosting is a managed fleet of installs
+
+The owner asked the orchestrator to choose between true multi-tenancy and one install per organisation, with one goal: a completed product that at most 20 organisations can use in a paid pilot. **Chosen: one install per organisation on the same server** (its own server process, its own PostgreSQL database and workspace, one reverse proxy with a host name per organisation). This supersedes "true multi-tenancy" in sections 13 and 15 for this stage.
+
+Reasons: isolation by process and database needs no change to the kernel and no re-review of Phases 0 to 2; a product bug cannot show one organisation another's data; hosted and on-premises are the same build; it is the shortest route to a paid pilot. Cost: a provisioning and fleet tool, more memory per organisation (to be measured), and operations work per instance. True multi-tenancy stays a documented later option (appendix of `hosting-spec.md`) for when the number of organisations makes a fleet too costly to run.
+
+Default chosen, owner may change.

@@ -364,10 +364,10 @@ describe.skipIf(!PG_URL)(PG_URL ? 'templates catalogue (PostgreSQL)' : `template
     expect(n).toBeGreaterThan(0)
     await h.q(`DROP TABLE ${S}.ab_template_installs`)
     await h.q(`UPDATE ab.environments SET schema_version = 12 WHERE id = 'default'`)
-    const { migrateEnvironmentSchema, environmentDdl } = await import('../meta-store.ts')
+    const { migrateEnvironmentSchema, environmentDdl, SCHEMA_VERSION } = await import('../meta-store.ts')
     const db = h.app.services.state.db!
     // the migration runs the environment DDL (which creates the table), then the step checks it is there
-    expect(await migrateEnvironmentSchema(db, { id: 'default', schema: S })).toEqual({ from: 12, to: 13 })
+    expect(await migrateEnvironmentSchema(db, { id: 'default', schema: S })).toEqual({ from: 12, to: SCHEMA_VERSION })
     expect((await h.q<{ n: number }>(`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'ab_template_installs'`, [S]))[0]!.n).toBe(1)
     // a schema without the table is refused by the step (downgrade guard)
     const { upgradeEnvironmentTo13Templates } = await import('./ddl.ts')

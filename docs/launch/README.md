@@ -11,6 +11,7 @@ product docs.
 | [BRIEF.md](BRIEF.md) | Binding go-to-market brief: product facts, honest status, constraints | founder |
 | [launch-plan.md](launch-plan.md) | Staged plan from today to first paying customers (Stages 0-4), pilot terms, success and kill criteria, pricing options and recommendation, the name process and 15 candidates | launch planning |
 | [legal-essentials.md](legal-essentials.md) | India-first legal and tax research for a lawyer and CA: employment constraint, entity, GST/TDS, IP and open-source, contracts, DPDP/GDPR/CERT-In, export rules, prioritised checklist | launch planning |
+| [tester-terms-draft.md](tester-terms-draft.md) | DRAFT tester (beta) terms for the hosted test, for a lawyer to review; not legal advice, not for use unreviewed | launch planning |
 | [payments.md](payments.md) | Payments set-up | separate workstream |
 | [marketing/](marketing/) | Brand foundations, strategy, lead generation, creatives | separate workstream |
 | [sales/](sales/) | Playbook, outreach kit, objections, battlecards | separate workstream |

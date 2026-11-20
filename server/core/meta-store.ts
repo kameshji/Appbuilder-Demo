@@ -9,7 +9,8 @@
  */
 import { PRINT_TABLES, printEnvironmentDdl, upgradeEnvironmentTo11Print } from './print/ddl.ts'
 import { dashboardsEnvironmentDdl, upgradeEnvironmentTo11Dashboards, upgradeEnvironmentTo12Dashboards } from './dashboards/ddl.ts'
-import { templatesEnvironmentDdl, upgradeEnvironmentTo13Templates } from './templates/ddl.ts'
+import { templatesEnvironmentDdl, upgradeEnvironmentTo13Templates, upgradeEnvironmentTo14Templates } from './templates/ddl.ts'
+import { chatEnvironmentDdl, upgradeEnvironmentTo14Chat } from './chat/ddl.ts'
 import { whatsappEnvironmentDdl, upgradeEnvironmentTo13Whatsapp } from './whatsapp/ddl.ts'
 import type {
   AttachmentRecord, ConnectionRecord, EnvironmentRecord, EnvironmentRef, MetaStore, MigrationSummary, SecretBox, SqlDb, UserRecord,
@@ -65,8 +66,10 @@ import { RECYCLE_TABLES, recycleEnvironmentDdl, upgradeEnvironmentTo10Recycle } 
  *    (dashboards/ddl.ts: ab_dashboard_tokens, ab_dashboard_snapshots, ab_dashboard_snapshot_runs).
  * 13: P2 package D (independent step): templates catalogue (templates/ddl.ts). P2 package E (independent step): WhatsApp
  *    connector (whatsapp/ddl.ts).
+ * 14: P3 package A (independent step): chat (chat/ddl.ts). P3 package M1 (independent step): solution templates
+ *    (templates/ddl.ts).
  */
-export const SCHEMA_VERSION = 13
+export const SCHEMA_VERSION = 14
 
 /** the database was upgraded by a newer server: this one must not touch it (downgrade guard) */
 export class SchemaTooNewError extends Error {
@@ -316,6 +319,7 @@ export function environmentDdl(schema: string): string[] {
     ...dashboardsEnvironmentDdl(schema),
     ...templatesEnvironmentDdl(schema),
     ...whatsappEnvironmentDdl(schema),
+    ...chatEnvironmentDdl(schema),
   ]
 }
 
@@ -437,6 +441,18 @@ export const ENVIRONMENT_STEPS: { to: number; describe: string; run(db: SqlDb, s
     to: 13,
     describe: 'WhatsApp connector (opt-in store, message log)',
     run: upgradeEnvironmentTo13Whatsapp,
+  },
+  {
+    // P3-A (independent step): chat
+    to: 14,
+    describe: 'chat (channels, members, messages: columns and tables of package A)',
+    run: upgradeEnvironmentTo14Chat,
+  },
+  {
+    // P3-M1 (independent step): solution templates
+    to: 14,
+    describe: 'solution templates (catalogue kind, sample rows, dependencies)',
+    run: upgradeEnvironmentTo14Templates,
   },
 ]
 
