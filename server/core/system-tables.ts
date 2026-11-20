@@ -171,7 +171,12 @@ function extraIndexes(d: Dialect, def: TableDef, spec: SystemTableSpec): string[
   if (spec.id === SYS.activities) {
     out.push(`CREATE INDEX IF NOT EXISTS ${quoteId(indexName(spec.source, 'index', 'mytasks'))} ON ${t} ("AssignedTo", "Status", "DueOn")`)
     out.push(`CREATE INDEX IF NOT EXISTS ${quoteId(indexName(spec.source, 'index', 'myteamtasks'))} ON ${t} ("AssignedTeam", "Status", "DueOn") WHERE "AssignedTeam" IS NOT NULL`)
+    // P3-T: the reminder job's scan (due and not yet sent), and exactly one next occurrence per completed task
+    out.push(`CREATE INDEX IF NOT EXISTS ${quoteId(indexName(spec.source, 'index', 'reminders'))} ON ${t} ("ReminderOn") WHERE "ReminderOn" IS NOT NULL`)
+    out.push(`CREATE UNIQUE INDEX IF NOT EXISTS ${quoteId(indexName(spec.source, 'unique', 'recurrenceparent'))} ON ${t} ("RecurrenceParent") WHERE "RecurrenceParent" IS NOT NULL`)
   }
+  // P3 (5.10): who a note or task is shared with: the read rule looks shares up by person or team
+  if (spec.id === SYS.activityShares) out.push(`CREATE INDEX IF NOT EXISTS ${quoteId(indexName(spec.source, 'index', 'principal'))} ON ${t} ("PrincipalType", "Principal")`)
   if (spec.id === SYS.mentions) out.push(`CREATE INDEX IF NOT EXISTS ${quoteId(indexName(spec.source, 'index', 'inbox'))} ON ${t} ("MentionedUser", "createdOn" DESC)`)
   // P3-A chat: history pages, change feed, search, one direct conversation per pair (chat/ddl.ts)
   out.push(...chatSystemIndexes(d.schema, spec.id))

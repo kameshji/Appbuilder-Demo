@@ -17,6 +17,8 @@ export type ChatLinkMsg =
   | { t: 'ping' }
   /** a main window takes chat back: the pop-out closes itself */
   | { t: 'bring-back' }
+  /** a main window opened a chat link (a notification) while chat is popped out: the pop-out opens that conversation */
+  | { t: 'open'; c: string; m: number | null }
 
 export const CHANNEL = 'appbuilder-chat'
 export const KEY_MSG = 'appbuilder-chat-msg'

@@ -256,6 +256,8 @@ export function createJobQueue(deps: JobDeps, options: JobQueueOptions = {}) {
   let listener: pg.Client | null = null
   let listening = false
   let listenRetry: NodeJS.Timeout | null = null
+  /** H-C read-only hook (hosting/read-only.ts): while paused, only job types it runs are claimed or scheduled */
+  let readOnly: { paused(): Promise<boolean>; runs(type: string): boolean } | null = null
 
   const db = (): SqlDb => {
     const d = deps.db()
@@ -347,21 +349,24 @@ export function createJobQueue(deps: JobDeps, options: JobQueueOptions = {}) {
 
   async function tickEnvironment(e: EnvironmentRef): Promise<void> {
     const now = Date.now()
+    // read-only (H-C): no outbox dispatch (table events, flows and their tick hooks wait), schedules and claims of
+    // the job types that run read-only only; nothing is dropped, everything continues when writable again
+    const paused = readOnly ? await readOnly.paused().catch(() => false) : false
     if (now - (lastReap.get(e.id) ?? 0) >= Math.max(250, visibilityMs / 2)) {
       lastReap.set(e.id, now)
       await reap()
     }
     if (now - (lastSchedule.get(e.id) ?? 0) >= schedulerEveryMs) {
       lastSchedule.set(e.id, now)
-      await schedulerTick()
+      await schedulerTick(new Date(), paused ? [...types.keys()].filter((t) => readOnly!.runs(t)) : null)
     }
-    if (deps.onTick) await deps.onTick(e)
-    await claim(e)
+    if (deps.onTick && !paused) await deps.onTick(e)
+    await claim(e, paused)
   }
 
   const runningOf = (type: string): number => [...running.values()].filter((r) => r.type === type).length
 
-  async function claim(e: EnvironmentRef): Promise<number> {
+  async function claim(e: EnvironmentRef, paused = false): Promise<number> {
     let free = concurrency - running.size
     if (free <= 0 || stopping) return 0
     const d = db()
@@ -369,7 +374,7 @@ export function createJobQueue(deps: JobDeps, options: JobQueueOptions = {}) {
     let n = 0
     for (const r of due) {
       const def = types.get(String(r.type))
-      if (!def) continue
+      if (!def || (paused && !readOnly?.runs(def.type))) continue
       const room = Math.min(free, (def.concurrency ?? 4) - runningOf(def.type), Number(r.n))
       if (room <= 0) continue
       const claimed = await d.query<Row>(
@@ -779,10 +784,10 @@ export function createJobQueue(deps: JobDeps, options: JobQueueOptions = {}) {
    * moves on, in one transaction. A slot later than misfireGraceMs follows the misfire policy: skip (no job) or
    * run_once (one job for the missed slots); either way the next slot is the first one after now.
    */
-  async function schedulerTick(now = new Date()): Promise<number> {
+  async function schedulerTick(now = new Date(), onlyTypes: string[] | null = null): Promise<number> {
     let n = 0
     await db().tx(async (t) => {
-      const due = await t.query<Row>(`SELECT * FROM ${T('ab_schedules')} WHERE enabled AND next_run_at IS NOT NULL AND next_run_at <= $1 ORDER BY next_run_at LIMIT 50 FOR UPDATE SKIP LOCKED`, [now])
+      const due = await t.query<Row>(`SELECT * FROM ${T('ab_schedules')} WHERE enabled AND next_run_at IS NOT NULL AND next_run_at <= $1 ${onlyTypes ? 'AND job_type = ANY($2::text[])' : ''} ORDER BY next_run_at LIMIT 50 FOR UPDATE SKIP LOCKED`, onlyTypes ? [now, onlyTypes] : [now])
       for (const r of due) {
         const s = toSchedule(r)
         const slot = new Date(s.nextRunAt!)
@@ -838,5 +843,9 @@ export function createJobQueue(deps: JobDeps, options: JobQueueOptions = {}) {
     drain,
     isRunning: () => started && !stopping,
     runningCount: () => running.size,
+    /** H-C: the read-only hook (hosting/routes.ts sets it); null removes it */
+    setReadOnly(gate: { paused(): Promise<boolean>; runs(type: string): boolean } | null) {
+      readOnly = gate
+    },
   }
 }

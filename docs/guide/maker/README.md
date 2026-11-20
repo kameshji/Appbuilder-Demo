@@ -7,6 +7,7 @@ For people who build apps.
 - [Formulas](formulas.md): a tutorial.
 - [Data](data.md): tables, data files, connections, attachments, large tables and what runs on the server.
 - [Data model designer](data-model.md): the diagram, drafts and plans, relationships and delete behaviours, patterns, reporting views.
+- [Tasks](tasks.md): reminders, the morning summary, repeats and sharing.
 - [The core data model](core-data-model.md): system tables (people, comments, tasks, files, reference data), the Record timeline, Tasks and Mentions, NextNumber.
 - [Security for makers](security-for-makers.md): what your app does when a user lacks access.
 - [Solutions](solutions.md): moving work between machines.

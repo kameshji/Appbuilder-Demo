@@ -27,6 +27,8 @@ code for 0.7.0 where Phase 2 touched it, otherwise for 0.6.0.
 | [Admin guide](admin/README.md): installation (Windows and Linux installers, offline, HTTPS, email with Microsoft 365 / Google Workspace), operations (services, logs, health, health email and heartbeat, diagnostics), users and roles, sign-in and identity, organisation, reference data, environments, connections (and HTTP / Email actions, access, email limits), webhook security, [flows](admin/flows.md) (run-as, kill switch, limits), [approvals](admin/approvals.md), backup and restore, disaster recovery, upgrades, audit log, jobs | The person who runs it | current |
 | [Phone apps](guide/maker/phone-apps.md), [print templates](guide/maker/print-templates.md), [dashboards](guide/maker/dashboards.md); admin: [phones](admin/phones.md), [printing](admin/printing.md), [dashboards](admin/dashboards.md); dev: [phone](dev/phone.md), [PDF engine](dev/pdf.md), [dashboards](dev/dashboards.md); [real-device test script](dev/phone-test-script.md) | Makers, administrators, developers | current (Phase 2 wave 1) |
 | [WhatsApp in flows](guide/maker/whatsapp.md); admin: [WhatsApp](admin/whatsapp.md) (connection, webhook, opt-ins, message log, notifications) | Makers, administrators | current (tested against a mock only) |
+| [Chat](help/chat.md) for everyone; [chat for teams](guide/chat.md); [tasks](help/tasks.md) and [tasks for makers](guide/maker/tasks.md); the [Manufacturing pack](guide/maker/manufacturing-pack.md) (solution template) and [shop floor on your phone](help/shop-floor-phone.md) | Everyone, makers | current (Phase 3; phone parts checked in emulation only) |
+| [Hosting: many installs on one server](admin/hosting.md): socket listening, the locked public URL, closed setup, read-only installs | Operators | current (Linux-only parts run in CI, not on a server yet) |
 | [Chat for administrators](admin/chat.md): retention, moderation, export, what administrators can and cannot see | Administrators | current (Phase 3 package A, server only) |
 | [Templates](guide/maker/templates.md): the built-in catalogue of UI component, screen, app and data model templates (binding, plan, Copy and Linked, uninstall); dev: [templates](dev/templates.md) | Makers, developers | current (Phase 2) |
 | [Help centre for end users](help/index.md): signing in, finding apps, lists and forms, records, notifications, approvals (quick start for approvers), scheduled emails | People who use the apps | current |
@@ -57,7 +59,9 @@ code for 0.7.0 where Phase 2 touched it, otherwise for 0.6.0.
 | [Release process: building, signing, the installers and the updater](dev/release-process.md) | current |
 | [Flows](dev/flows.md): the runtime (tables, execution, guarantees, triggers, security, ALM) and the designer | current |
 | [Approvals](dev/approvals.md) (routing, security, email links, flows, the visual editor) | current |
-| [Chat: server, HTTP and live API](dev/chat.md) | current (Phase 3 package A; no screens yet) |
+| [Chat: server, HTTP and live API](dev/chat.md) | current (Phase 3 packages A and B) |
+| [Tasks: reminders, digest, repeats, shares, shared schedule fields](dev/tasks.md) | current |
+| [Hosting support in the server](dev/hosting.md): rules for links, cookies, outbound connections, classifying routes and job types | current |
 | [Solution templates (authoring)](dev/solution-templates.md): writing a pack (format 2): tables, tokens, apps, flows, approvals, dashboards, print templates, roles, number sequences, reference and SAMPLE rows, dependencies, upgrades, the pack test | current |
 | [Templates catalogue](dev/templates.md): package format, slots and binding, integrity, plan and install paths, Linked upgrades, uninstall | current |
 | [WhatsApp connector](dev/whatsapp.md): connection, actions, opt-in store, webhook, notification channel; what is unverified without a Meta account | current |

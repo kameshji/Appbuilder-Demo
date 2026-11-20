@@ -16,6 +16,10 @@ import { errText, log } from './util.ts'
 import { newWorkId, runWithRequest } from './work-context.ts'
 import { withLiveOrigin } from './live/changes.ts'
 import { LIVE_CLIENT_HEADER } from '../../src/platform/live-protocol.ts'
+import { hostingFor } from './hosting/settings.ts'
+import { adaptCookiesOut } from './hosting/cookies.ts'
+import { readOnlyGateFor } from './hosting/read-only.ts'
+import { hostingRoutes } from './hosting/routes.ts'
 
 /** default JSON body limit; a route's maxBodyMB overrides it (JSON and raw bodies alike) */
 export const JSON_LIMIT_BYTES = 2 * 1024 * 1024
@@ -322,12 +326,24 @@ export interface MutationEvent {
   result: unknown
 }
 
+/** one registered route (hosting/read-only.test.ts enumerates them all) */
+export interface RouteInfo {
+  method: Method
+  /** without the /api/v1 prefix, e.g. "/apps/:id" */
+  pattern: string
+  /** `${method} ${pattern}`: the key of DESIGN_ROUTES and the read-only classification */
+  key: string
+  opts: RouteOptions
+}
+
 export interface ApiRouter extends Router {
   /** answers /api/* requests; resolves false for anything else */
   handle(req: IncomingMessage, res: ServerResponse): Promise<boolean>
   setSessionResolver(r: SessionResolver): void
   /** listen to successful non-GET requests (after the handler returned; listener errors are ignored) */
   onMutation(listener: (e: MutationEvent) => void): () => void
+  /** every registered route, in registration order */
+  routes(): RouteInfo[]
 }
 
 export interface RouterOptions extends CookieOptions {
@@ -343,6 +359,7 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
   const routes: Route[] = []
   let resolveSession: SessionResolver = async () => null
   const mutationListeners = new Set<(e: MutationEvent) => void>()
+  const readOnly = readOnlyGateFor(services)
 
   function add(method: Method, pattern: string, handler: Handler, o: RouteOptions) {
     let p = pattern.trim()
@@ -383,6 +400,8 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const url = new URL(req.url ?? '/', 'http://localhost')
     if (url.pathname !== '/api' && !url.pathname.startsWith('/api/')) return false
+    // H-A: __Host- cookie names behind a locked https public URL (hosting/cookies.ts), at the boundary for every cookie
+    if (hostingFor(services).hostCookies) adaptCookiesOut(req, res)
     // every API answer carries its request id (X-Request-Id; errors also in the body): the id the client sent when it is
     // well-formed, else a new one. The server log lines of the request carry the same id (work-context.ts), so support
     // can match a "Reference: ..." from an error message to the log.
@@ -441,12 +460,17 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
       if (m === null) throw new HttpError(404, 'not-found', 'Unknown API route.')
       if (m === 'method') throw new HttpError(405, 'method_not_allowed', 'Method not allowed.')
       const { route, params } = m
+      const routeKey = `${route.method} /${route.segments.join('/')}`
+      // H-A: a hosted install's first-run setup is done by the server commands (migrate, admin invite), never over HTTP
+      if (route.segments[0] === 'setup' && hostingFor(services).setupClosed) throw new HttpError(404, 'not-found', 'Unknown API route.')
       // setup endpoints: the TCP peer must be this machine, whatever the headers say
       // A reverse proxy on this machine (Caddy from the installers) connects from 127.0.0.1 for every client: a request
       // that carries forwarding headers came through it, so it is not "on this computer" (package L)
       if (route.opts.loopbackOnly && (!isLoopbackAddress(req.socket?.remoteAddress) || viaProxy(req))) {
         throw new HttpError(403, 'denied', 'This can only be done on the computer that runs Appbuilder (open it at http://localhost).')
       }
+      // H-C: THE read-only gate (hosting/read-only.ts): one place for every route, before the session and the body
+      await readOnly.check(method, routeKey, res)
       const requested = requestedEnvironment(req, url)
 
       const ctx: Ctx = {
@@ -569,7 +593,7 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
     }
   }
 
-  return {
+  const api: ApiRouter = {
     add,
     handle,
     setSessionResolver(r) {
@@ -581,5 +605,14 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
         mutationListeners.delete(listener)
       }
     },
+    routes() {
+      return routes.map((r) => {
+        const pattern = '/' + r.segments.join('/')
+        return { method: r.method, pattern, key: `${r.method} ${pattern}`, opts: r.opts }
+      })
+    },
   }
+  // hosting (H-A, H-C): the read-only status every signed-in person can read (the banner), and the job runner's gate
+  hostingRoutes(api, services, readOnly)
+  return api
 }

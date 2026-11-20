@@ -13,6 +13,8 @@ export const BUILTIN_TEMPLATE_FILES: { file: string; url: URL }[] = [
   // P3-M1 solution templates (format 2): the common business model and the worked example pack
   { file: 'business-model.json', url: new URL('./business-model.json', import.meta.url) },
   { file: 'visitor-log.json', url: new URL('./visitor-log.json', import.meta.url) },
+  // P3-M2: the manufacturing pack
+  { file: 'manufacturing.json', url: new URL('./manufacturing.json', import.meta.url) },
 ]
 
 export const BUILTIN_MANIFEST_URL = new URL('./manifest.json', import.meta.url)

@@ -1,26 +1,61 @@
-import { useRef } from 'react'
+import { useEffect, useRef, useSyncExternalStore } from 'react'
 import { AppWindow, ExternalLink, MessagesSquare, Undo2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { ChatPanel } from './ChatPanel'
 import { useChatDock } from './dock'
+import { PHONE_MAX_WIDTH, chatOpensInShell } from './deeplink'
+import { consumeChatLinkInShell, openChat } from './open'
+import { startChat, useChat } from './store'
+import { anyUnread, countLabel, totalBadge } from './unread'
 
-/** button for a top bar / command bar that opens and closes the dock */
+/** button for a top bar / command bar that opens and closes the dock; shows unread direct messages and mentions */
 export function ChatButton({ className, size = 'icon-sm' }: { className?: string; size?: 'icon-sm' | 'icon' }) {
   const open = useChatDock((s) => s.open)
+  const badge = useChat((s) => totalBadge(s.list))
+  const dot = useChat((s) => anyUnread(s.list))
+  // the main window keeps the list (and so the badge) current while the dock is closed
+  useEffect(() => { void startChat() }, [])
   return (
     <Button
       variant={open ? 'secondary' : 'ghost'}
       size={size}
-      className={className}
+      className={cn('relative', className)}
       data-testid="chat-button"
+      data-badge={badge}
       aria-pressed={open}
-      aria-label={open ? 'Hide chat' : 'Show chat'}
+      aria-label={`${open ? 'Hide chat' : 'Show chat'}${badge ? `, ${badge} unread` : ''}`}
       title={open ? 'Hide chat' : 'Chat'}
-      onClick={() => useChatDock.getState().toggle()}
+      onClick={() => (open ? useChatDock.getState().hide() : openChat())}
     >
       <MessagesSquare />
+      {badge > 0 ? (
+        <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-white" data-testid="chat-badge">{countLabel(badge)}</span>
+      ) : dot ? <span className="absolute right-0.5 top-0.5 size-2 rounded-full bg-primary" aria-hidden="true" /> : null}
     </Button>
+  )
+}
+
+/** deep links (#chat?c=..&m=..) that arrive in a main window at desktop width open in the dock */
+function useChatDeepLinks() {
+  useEffect(() => {
+    const check = () => { if (chatOpensInShell()) consumeChatLinkInShell() }
+    check()
+    window.addEventListener('hashchange', check)
+    return () => window.removeEventListener('hashchange', check)
+  }, [])
+}
+
+/** phone width: chat is a full screen of its own (#chat), never a dock beside the shell */
+const phoneQuery = `(max-width: ${PHONE_MAX_WIDTH}px)`
+function usePhoneWidth(): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      const m = typeof window !== 'undefined' ? window.matchMedia?.(phoneQuery) : undefined
+      m?.addEventListener('change', cb)
+      return () => m?.removeEventListener('change', cb)
+    },
+    () => (typeof window !== 'undefined' ? !!window.matchMedia?.(phoneQuery).matches : false),
   )
 }
 
@@ -32,7 +67,9 @@ export function ChatDock({ side = 'right' }: { side?: 'left' | 'right' }) {
   const poppedOut = useChatDock((s) => s.poppedOut)
   const blocked = useChatDock((s) => s.blocked)
   const drag = useRef<{ x: number; w: number } | null>(null)
-  if (!open) return null
+  const phone = usePhoneWidth()
+  useChatDeepLinks()
+  if (!open || phone) return null
 
   return (
     <aside

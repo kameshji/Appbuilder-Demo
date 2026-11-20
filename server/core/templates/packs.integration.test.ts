@@ -105,7 +105,7 @@ describe.skipIf(!PG_URL)(PG_URL ? 'solution templates (PostgreSQL)' : `solution 
     const r = await h.admin.get('/templates')
     expect(r.status).toBe(200)
     const sol = r.data.items.filter((x: Any) => x.kind === 'solution').map((x: Any) => x.id).sort()
-    expect(sol).toEqual(['builtin.business-model', 'builtin.visitor-log'])
+    expect(sol).toEqual(['builtin.business-model', 'builtin.manufacturing', 'builtin.visitor-log'])
     for (const t of r.data.items) expect(t.integrity, t.id).toBe('builtin')
     const d = (await h.admin.get('/templates/builtin.visitor-log')).data
     expect(d.dependencies).toEqual([{ id: 'builtin.business-model', name: 'Common business model', minVersion: '1.0.0' }])

@@ -3,8 +3,8 @@
  * snapshots.ts): list, create, edit, pause / resume, delete, "Send now" and the run history with each recipient's result
  * and the reason a recipient was skipped. Every recipient's copy is computed with THAT recipient's own access; someone who
  * cannot open the dashboard gets nothing. The schedule and recipient fields are the scheduled reports' (same shapes, same
- * rules, same wording as src/portal/Reports.tsx, whose editor is not a separate component: ScheduleFields and
- * RecipientFields below follow it line by line). Everything happens inside the sheet (a dialog would open behind it).
+ * rules, same wording as src/portal/Reports.tsx: both use the ONE shared ScheduleFields and RecipientFields of
+ * src/portal/ScheduleFields.tsx). Everything happens inside the sheet (a dialog would open behind it).
  */
 import { useCallback, useEffect, useState } from 'react'
 import { ArrowLeft, History, Mail, Pause, Pencil, Play, Plus, Send, Trash2, TriangleAlert } from 'lucide-react'
@@ -20,59 +20,12 @@ import { RANGE_PRESETS } from '@/dashboards/dates'
 import type { RangePreset } from '@/dashboards/dates'
 import type { ReportSchedule } from '../actionsApi'
 import { errMsg, fmtRelative, useToast } from '../kit'
-import { useCaps } from '../security'
 import { dashboardsApi } from './api'
 import type { SnapshotInfo, SnapshotInput, SnapshotRun } from './api'
 import { sel } from './ConditionBuilder'
+import { RecipientFields, ScheduleFields, browserZone } from '../ScheduleFields'
 
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-const browserZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' } catch { return 'UTC' } }
 export const SNAPSHOT_RULE = 'Each recipient gets the dashboard computed with their own access: only the rows and columns they may see. Someone who cannot open this dashboard gets nothing, and the history says why.'
-
-/** the scheduled reports' schedule fields (Reports.tsx ReportDialog "When") */
-export function ScheduleFields({ schedule, onChange, testPrefix = 'snapshot' }: { schedule: ReportSchedule; onChange(s: ReportSchedule): void; testPrefix?: string }) {
-  return (
-    <div className="grid grid-cols-[150px_1fr] items-end gap-3" data-testid={`${testPrefix}-schedule`}>
-      <label className="grid gap-1 text-xs"><span className="font-medium text-muted-foreground">When</span>
-        <select className={sel} value={schedule.frequency} onChange={(e) => onChange({ ...schedule, frequency: e.target.value as ReportSchedule['frequency'] })} data-testid={`${testPrefix}-frequency`}>
-          {['daily', 'weekdays', 'weekly', 'monthly', 'hourly', 'manual'].map((f) => <option key={f} value={f}>{f === 'manual' ? 'only by hand' : f}</option>)}
-        </select></label>
-      <div className="flex flex-wrap items-center gap-2">
-        {schedule.frequency === 'weekly' && <select className={sel} value={schedule.weekday ?? 1} onChange={(e) => onChange({ ...schedule, weekday: Number(e.target.value) })} aria-label="Weekday">{WEEKDAYS.map((w, i) => <option key={w} value={i}>{w}</option>)}</select>}
-        {schedule.frequency === 'monthly' && <Input className="h-8 w-20" inputMode="numeric" value={String(schedule.day ?? 1)} onChange={(e) => onChange({ ...schedule, day: Number(e.target.value) || 1 })} aria-label="Day of month" />}
-        {schedule.frequency === 'hourly' && <Input className="h-8 w-20" inputMode="numeric" value={String(schedule.minute ?? 0)} onChange={(e) => onChange({ ...schedule, minute: Number(e.target.value) || 0 })} aria-label="Minute" />}
-        {['daily', 'weekdays', 'weekly', 'monthly'].includes(schedule.frequency) && <Input type="time" className="h-8 w-28" value={schedule.time ?? '08:00'} onChange={(e) => onChange({ ...schedule, time: e.target.value })} aria-label="Time" data-testid={`${testPrefix}-time`} />}
-        {schedule.frequency !== 'manual' && <Input className="h-8 w-48" value={schedule.timeZone ?? 'UTC'} onChange={(e) => onChange({ ...schedule, timeZone: e.target.value })} aria-label="Time zone" />}
-      </div>
-    </div>
-  )
-}
-
-/** the scheduled reports' recipient picker (Reports.tsx ReportDialog "Recipients"): people and teams; others subscribe only themselves */
-export function RecipientFields({ userIds, teamIds, onChange, testPrefix = 'snapshot' }: { userIds: string[]; teamIds: string[]; onChange(r: { userIds: string[]; teamIds: string[] }): void; testPrefix?: string }) {
-  const caps = useCaps()
-  const users = usePlatform((s) => s.users)
-  const teams = usePlatform((s) => s.teams)
-  const canPick = caps.isAdmin || caps.isMaker
-  return (
-    <div className="grid gap-1.5" data-testid={`${testPrefix}-recipients`}>
-      <div className="text-xs font-medium">Recipients</div>
-      {canPick ? (
-        <>
-          <div className="flex flex-wrap gap-1">
-            {userIds.map((u) => <Badge key={u} variant="secondary" className="gap-1">{users.find((x) => x.id === u)?.name ?? u}<button type="button" aria-label="Remove" onClick={() => onChange({ userIds: userIds.filter((x) => x !== u), teamIds })}>x</button></Badge>)}
-            {teamIds.map((t) => <Badge key={t} variant="outline" className="gap-1">Team {teams.find((x) => x.id === t)?.name ?? t}<button type="button" aria-label="Remove" onClick={() => onChange({ userIds, teamIds: teamIds.filter((x) => x !== t) })}>x</button></Badge>)}
-          </div>
-          <select className={sel} value="" onChange={(e) => { const v = e.target.value; if (v.startsWith('team:')) onChange({ userIds, teamIds: [...new Set([...teamIds, v.slice(5)])] }); else if (v) onChange({ userIds: [...new Set([...userIds, v])], teamIds }) }} data-testid={`${testPrefix}-add-recipient`}>
-            <option value="">Add a person or team...</option>
-            {users.filter((u) => !userIds.includes(u.id) && (u as { kind?: string }).kind !== 'service').map((u) => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}
-            {teams.map((t) => <option key={t.id} value={`team:${t.id}`}>Team {t.name}</option>)}
-          </select>
-        </>
-      ) : <p className="text-xs text-muted-foreground">You (only makers and administrators send snapshots to other people).</p>}
-    </div>
-  )
-}
 
 type View = { kind: 'list' } | { kind: 'edit'; snap: SnapshotInfo | null } | { kind: 'runs'; snap: SnapshotInfo }
 
@@ -188,7 +141,7 @@ function SnapshotEditor({ dashboardId, def, snap, onDone }: { dashboardId: strin
       <label className="grid gap-1 text-xs"><span className="font-medium text-muted-foreground">Name (the email's subject uses the dashboard's title)</span>
         <Input className="h-8" value={name} maxLength={200} onChange={(e) => setName(e.target.value)} data-testid="snapshot-name" /></label>
       <ScheduleFields schedule={schedule} onChange={setSchedule} />
-      <RecipientFields userIds={rec.userIds} teamIds={rec.teamIds} onChange={setRec} />
+      <RecipientFields userIds={rec.userIds} teamIds={rec.teamIds} onChange={setRec} testPrefix="snapshot" noun="snapshots" />
       <p className="rounded-md bg-muted/60 p-2.5 text-xs" data-testid="snapshot-rule">{SNAPSHOT_RULE}</p>
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="grid gap-1 text-xs"><span className="font-medium text-muted-foreground">Date range</span>

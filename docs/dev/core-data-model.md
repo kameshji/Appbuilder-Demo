@@ -165,8 +165,27 @@ by record (`Comments(record)`) or by user (`MyTasks()`), which use the indexes a
 - Demo mode creates the same tables in memory (`ensureSystemTables`, projections refreshed from the demo users), with
   the same hooks and NextNumber; it has no security, as everywhere in demo mode.
 
+## Tasks, reminders, repeats and shares (P3 package T)
+
+Details in [tasks.md](tasks.md). What the system tables gained, with **no schema version change** (`provisionSystemTables`
+adds columns with `ADD COLUMN IF NOT EXISTS`):
+
+- **Activities** columns: `Recurrence` (JSON text, tasks only), `RecurrenceParent` (lookup to Activities: the task this one
+  was created from), `ReminderSentOn` (datetime), `Body` (limited rich text, notes), `Files` (file, multiple, 25 MB).
+  Indexes: `ReminderOn`; a UNIQUE partial index on `RecurrenceParent` (one next occurrence per task, whatever happens).
+- **ActivityShares** (`sys_activity_shares`, policy `parent`): `Activity` (the activity id, as *text*: a lookup would make
+  deleting an activity wait for its shares), `PrincipalType` (`user` or `team`), `Principal` (the id), `Access` (`read` or
+  `edit`); one row per activity and principal. Whoever can read the activity reads its shares; **only the activity's owner**
+  (and administrators) create, change or delete them. Index on `(PrincipalType, Principal)`.
+- **Activities read rule** is now: about OR assigned to me / my teams OR my own unregarded OR **shared with me or one of my
+  teams** (the teams are the current ones, so leaving a team ends the share at once). Update additionally allows an `edit`
+  share. Delete never follows a share. Comments about a shared activity follow the activity.
+- Hooks (collab.ts calls `server/core/tasks/service.ts`): `beforeWrite` normalises `Recurrence`, sanitises `Body` and checks a
+  share's target; `afterWrite` creates the next occurrence when a repeating task becomes Done; deleting an activity deletes
+  its shares (recycle-bin aware).
+
 ## Not done (later packages)
 
 Chat screens (the chat server exists since Phase 3 package A: [chat.md](chat.md); the communication tables are written by the chat service only), Documents UI beyond the timeline (folders,
-check-out), editing a comment from the timeline, reminders (`ReminderOn` is stored, nothing fires), currency rates
+check-out), editing a comment from the timeline, currency rates
 from outside, a template gallery button for the business model.

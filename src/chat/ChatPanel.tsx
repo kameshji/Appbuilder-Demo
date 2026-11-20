@@ -1,63 +1,110 @@
-import { AtSign, Hash, LayoutGrid, MessageCircle, MessageSquareText, MessagesSquare, Paperclip, Search, SendHorizontal } from 'lucide-react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { Loader2, MessagesSquare, WifiOff, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { LiveApi } from '@/platform/live-api'
-import { useChatLive } from './live'
+import { useBackClose } from '@/phone/back'
+import { ConversationList } from './ConversationList'
+import { Conversation } from './Conversation'
+import { clearNotice, closeConversation, closeThreadPane, openConversation, setPanelVisible, startChat, useChat } from './store'
 
 /**
- * THE chat module boundary. Everything the dock and the pop-out window show as "chat" is rendered by this component;
- * the dock (ChatDock.tsx), the pop-out window (ChatWindow.tsx) and their coordination (dock.ts, link.ts) do not need
- * to change when the real chat module (P3, on the realtime hub) drops in here.
+ * THE chat module boundary: everything the dock, the pop-out window and the phone screen show as chat. The dock
+ * (ChatDock.tsx), the pop-out window (ChatWindow.tsx) and their coordination (dock.ts, link.ts) stay as they are.
  *
- * Today: a designed "coming soon" state listing what chat will do. It already receives the realtime connection
- * (`live` prop, or the one the shell injected with setChatLive): the chat module subscribes to its topics through it.
+ * Narrow (the dock, a phone): the conversation list and the conversation are two screens; wide (the pop-out window at
+ * 680 px and more): side by side. A thread replaces the conversation with a back button. Keyboard: arrows in the list,
+ * Alt+Up / Alt+Down for the previous / next conversation, Escape goes back. `live` (the platform's connection) is
+ * accepted for compatibility; chat speaks to the hub on its own socket (socket.ts says why).
  */
-export function ChatPanel({ variant, live: given }: { variant: 'dock' | 'window'; live?: LiveApi | null }) {
-  // the realtime connection (topics, presence) the chat module will run on; injected by the shell (chat/live.ts)
-  const injected = useChatLive()
-  const live = given ?? injected
-  return (
-    <div data-testid="chat-panel" data-variant={variant} data-live={live ? live.status().state : 'none'} className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-auto px-4 py-5">
-        <div className="flex flex-col items-center text-center">
-          <span className="relative grid size-14 place-items-center rounded-2xl bg-primary/10 text-primary">
-            <MessagesSquare className="size-7" />
-            <span className="absolute -right-1 -top-1 rounded-full bg-card px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground shadow-sm ring-1 ring-border">Soon</span>
-          </span>
-          <h2 className="mt-3 text-[15px] font-semibold">Chat is on its way</h2>
-          <p className="mt-1 max-w-72 text-xs leading-relaxed text-muted-foreground">
-            Talk to your team next to the apps you work in. Planned for P3 Collaboration and templates.
-          </p>
-        </div>
-        <ul className={cn('mt-5 grid gap-2', variant === 'window' && 'sm:grid-cols-2')} data-testid="chat-features">
-          <Feature icon={Hash} title="Channels" text="Open and private channels for teams, sites and projects." />
-          <Feature icon={MessageCircle} title="Direct messages" text="One-to-one and small group conversations." />
-          <Feature icon={AtSign} title="Mentions" text="@someone or @channel, with a notification where they are." />
-          <Feature icon={Paperclip} title="File sharing" text="Drop files into a conversation; they stay with the message." />
-          <Feature icon={LayoutGrid} title="Share as a card" text="Share a record, an app or a dashboard; each reader sees only what they may." />
-          <Feature icon={MessageSquareText} title="Per-record discussion" text="Every record gets its own thread, right inside the app." />
-          <Feature icon={Search} title="Search" text="Find any message, file or shared card you have access to." />
-        </ul>
-      </div>
-      <div className="shrink-0 border-t border-border p-3">
-        <div className="flex h-9 items-center gap-2 rounded-lg border border-border bg-muted/50 px-3 text-xs text-muted-foreground" aria-disabled="true" title="Chat is not available yet">
-          <span className="flex-1 truncate">Message #general</span>
-          <SendHorizontal className="size-4 opacity-50" />
-        </div>
-      </div>
-    </div>
-  )
-}
+export function ChatPanel({ variant, phone = false }: { variant: 'dock' | 'window'; live?: LiveApi | null; phone?: boolean }) {
+  const status = useChat((s) => s.status)
+  const reason = useChat((s) => s.reason)
+  const conn = useChat((s) => s.conn)
+  const openId = useChat((s) => s.openId)
+  const threadId = useChat((s) => s.threadId)
+  const notice = useChat((s) => s.notice)
+  const root = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(0)
 
-function Feature({ icon: Icon, title, text }: { icon: typeof Hash; title: string; text: string }) {
+  useEffect(() => { void startChat() }, [])
+  useEffect(() => {
+    setPanelVisible(1)
+    return () => setPanelVisible(-1)
+  }, [])
+  useEffect(() => {
+    const el = root.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth))
+    ro.observe(el)
+    setWidth(el.clientWidth)
+    return () => ro.disconnect()
+  }, [])
+  const wide = variant === 'window' && width >= 680
+  const narrow = !wide
+
+  // phones: Android Back closes the thread, then the conversation (one history entry each, no address change)
+  useBackClose(phone && !!openId && !threadId, () => closeConversation())
+  useBackClose(phone && !!threadId, () => closeThreadPane())
+
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      const order = useChat.getState().list.order
+      if (!order.length) return
+      const i = openId ? order.indexOf(openId) : -1
+      const next = order[Math.max(0, Math.min(order.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))]
+      if (next && next !== openId) {
+        e.preventDefault()
+        void openConversation(next)
+      }
+      return
+    }
+    if (e.key === 'Escape' && !e.defaultPrevented) {
+      const t = e.target as HTMLElement
+      // a text box with something in it keeps Escape for itself
+      if ((t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement) && t.value) return
+      if (threadId) { e.preventDefault(); closeThreadPane() } else if (narrow && openId) { e.preventDefault(); closeConversation() }
+    }
+  }
+
+  let body
+  if (status === 'idle' || status === 'loading') {
+    body = <div className="grid flex-1 place-items-center" data-testid="chat-loading"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+  } else if (status === 'unavailable') {
+    body = (
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center" data-testid="chat-unavailable">
+        <span className="grid size-12 place-items-center rounded-2xl bg-muted text-muted-foreground"><MessagesSquare className="size-6" /></span>
+        <p className="text-sm font-medium">Chat is not available</p>
+        <p className="text-xs text-muted-foreground">{reason}</p>
+      </div>
+    )
+  } else if (wide) {
+    body = (
+      <div className="flex min-h-0 flex-1">
+        <ConversationList className="w-72 shrink-0 border-r border-border" />
+        {openId ? <Conversation key={openId} id={openId} narrow={false} /> : (
+          <div className="grid flex-1 place-items-center text-sm text-muted-foreground" data-testid="chat-none-open">Pick a conversation, or start a new one.</div>
+        )}
+      </div>
+    )
+  } else {
+    body = openId ? <Conversation key={openId} id={openId} narrow onBack={() => closeConversation()} /> : <ConversationList className="flex-1" />
+  }
+
   return (
-    <li className="flex gap-3 rounded-lg border border-border bg-background p-2.5">
-      <span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
-        <Icon className="size-4" />
-      </span>
-      <span className="min-w-0">
-        <span className="block text-xs font-semibold">{title}</span>
-        <span className="block text-[11.5px] leading-snug text-muted-foreground">{text}</span>
-      </span>
-    </li>
+    <div ref={root} data-testid="chat-panel" data-variant={variant} data-phone={phone ? '1' : '0'} data-live={conn} data-status={status} className="flex min-h-0 flex-1 flex-col pointer-coarse:[&_button]:min-h-11 pointer-coarse:[&_button]:min-w-11" onKeyDown={onKey}>
+      {status === 'ready' && conn !== 'open' && (
+        <p className={cn('flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs', conn === 'offline' ? 'bg-amber-500/10 text-amber-800 dark:text-amber-200' : 'bg-muted text-muted-foreground')} role="status" data-testid="chat-conn">
+          {conn === 'offline' ? <WifiOff className="size-3.5" /> : <Loader2 className="size-3.5 animate-spin" />}
+          {conn === 'offline' ? 'You are offline. Sending needs a connection; messages catch up when it is back.' : 'Reconnecting. Messages catch up when the connection is back.'}
+        </p>
+      )}
+      {notice && (
+        <p className="flex shrink-0 items-start gap-2 border-b border-border bg-amber-500/10 px-3 py-1.5 text-xs text-amber-800 dark:text-amber-200" role="alert" data-testid="chat-notice">
+          <span className="min-w-0 flex-1">{notice}</span>
+          <button type="button" aria-label="Dismiss" className="rounded p-0.5 hover:bg-amber-500/20" onClick={() => clearNotice()}><X className="size-3.5" /></button>
+        </p>
+      )}
+      {body}
+    </div>
   )
 }

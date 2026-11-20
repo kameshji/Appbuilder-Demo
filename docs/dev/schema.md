@@ -711,3 +711,7 @@ are in `connectors.md`.
 ### Chat (P3 package A, version 14, independent step)
 
 `upgradeEnvironmentTo14Chat` (`server/core/chat/ddl.ts`): `ab_chat_reports` (`id` `crp_...`, `message_id`, `channel_id`, `reporter_id`, `reason`, `state` open / handled, `outcome`, `handled_by`, `handled_on`, `created_on`; one open report per message and reporter) and `ab_chat_exports` (`id` `cex_...`, `channel_id`, `reason`, `by_id`, `created_on`, `token_hash` SHA-256 unique, `expires_on`, `downloaded_on`, `messages`, `files`) come from `environmentDdl`; the step checks they exist and logs a warning when the communication tables hold rows written before chat existed. The columns of Channels, Channel members, Messages, Mentions and Follows are system-table provisioning (`provisionSystemTables`), with indexes from `chatSystemIndexes`. Never copied with an environment, never in solutions.
+
+### Tasks and notes groundwork (P3 package T; schema version stays 14)
+
+System-table provisioning only: Activities gains `Recurrence`, `RecurrenceParent`, `ReminderSentOn`, `Body` and `Files`; new system table `ActivityShares` (`sys_activity_shares`, policy `parent`). `provisionSystemTables` adds the columns with `ADD COLUMN IF NOT EXISTS`. New indexes: `ReminderOn`, a unique partial index on `RecurrenceParent`, and `(PrincipalType, Principal)` on shares.

@@ -18,6 +18,7 @@ everywhere, and that is what these pages describe.
 | Write a comment, mention a colleague, add a task, attach a file | [Working with records](records.md) |
 | Choose which notifications and emails I get | [Notifications and email](notifications.md) |
 | Understand the report that arrives by email | [Reports you receive](scheduled-emails.md) |
+| Add, finish, repeat or share a task | [Tasks](tasks.md) |
 | See what to do when it says "This record was changed by ..." | [Someone else changed this record](changed-by-someone.md) |
 | Change my name, theme or session settings | [Your profile and settings](profile-and-settings.md) |
 | Report a problem to my administrator | [When something goes wrong](something-wrong.md) |

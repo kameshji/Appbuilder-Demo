@@ -31,9 +31,22 @@
  *   8  retention, moderation, audit   retention 30 days with the clock moved 31 days; a report, a moderator delete, an
  *                           archive, a member removal, a read-only person: each in the audit log without message text
  *
+ *
+ * The BROWSER PART (package B; checks marked 1B ... 8B) runs after it in headless Chrome against the same server, when
+ * dist/ is built (npm run build) and puppeteer-core is found (PUPPETEER_CORE, CHROME_PATH; scripts/exit-check/browser-env.mjs):
+ * four browser contexts (Bina with two tabs and the pop-out, Chetan, Omar in no private conversation, Dev an
+ * administrator) and Chetan on a 360 x 800 phone: a private channel made on screen, live delivery (p95), a second tab,
+ * keyboard, unread counts live and after a reload, history paged 50 at a time, a network cut while 20 messages are sent,
+ * the mention list and the notification deep link, a file, a photo and the 25 MB limit, a record card per reader (DOM and
+ * response bytes) that follows a change of the record, thread, reaction, edit, delete, report, the pop-out, a non-member
+ * (list, search, address), the phone screen with a keyboard inset, Admin console > Chat (report queue, read-only person,
+ * member removal, archive, the export with its typed reason, retention) and the audit log, light and dark themes.
+ *
  * Settings: APPBUILDER_TEST_DB (dot-source .sandbox/env.ps1) or EXIT_DB_HOST / EXIT_DB_PORT / EXIT_DB_USER /
  * EXIT_DB_PASSWORD / EXIT_MAINT_DB; EXIT_DB_NAME (appbuilder_exit_p3a); EXIT_PORT (5196); EXIT_SCALE (100000);
  * EXIT_WORKSPACE (.sandbox/p3a/workspace); KEEP=1 keeps the database. Refuses ports 5174 and 5433 (a real install).
+ * Browser part: EXIT_BROWSER=0 skips it, EXIT_ONLY_BROWSER=1 runs only it, SHOTS=<folder> keeps screenshots,
+ * EXIT_DEBUG_FREEZE=1 reports a stuck page's stack on failure. Temporary files go to .sandbox/p3b/tmp.
  * Prints PASS / FAIL / SKIP lines and a table; exit code 1 when a check fails.
  */
 import fs from 'node:fs'
@@ -66,6 +79,7 @@ if (!/^appbuilder_exit_p3a[a-z0-9_]*$/.test(DB.database)) { console.error('The d
 
 const imp = (p) => import(pathToFileURL(path.join(root, p)).href)
 const { createApp } = await imp('server/core/app.ts')
+const { serveStatic } = await imp('server/core/static.ts')
 const { setQuiet } = await imp('server/core/util.ts')
 setQuiet(true)
 
@@ -122,6 +136,627 @@ class Sock {
   close() { this.ws.terminate() }
 }
 
+/** debugging aid (EXIT_DEBUG_FREEZE=1): which page is stuck, and where */
+async function freezeReport(browser) {
+  for (const pg of await browser.pages().catch(() => [])) {
+    const alive = await Promise.race([pg.evaluate(() => 1).then(() => true, () => true), sleep(4000).then(() => false)])
+    log(`debug: ${pg.url()} ${alive ? 'responds' : 'FROZEN'}`)
+    if (alive) {
+      const info = await pg.evaluate(() => ({ notice: document.querySelector('[data-testid="chat-notice"]')?.textContent ?? '', status: document.querySelector('[data-testid="chat-panel"]')?.getAttribute('data-status') ?? '-', conv: document.querySelector('[data-testid="chat-conversation"]')?.getAttribute('data-id') ?? '-', text: (document.querySelector('[data-testid="chat-dock"]')?.textContent ?? '').slice(0, 300) })).catch(() => null)
+      log(`debug:   ${JSON.stringify(info)}`)
+      continue
+    }
+    const cdp = await pg.createCDPSession()
+    cdp.on('Debugger.paused', (e) => log(`debug stack: ${e.callFrames.slice(0, 15).map((f) => `${f.functionName || '(anon)'}@${f.location.lineNumber}`).join(' < ')}`))
+    await cdp.send('Debugger.enable')
+    await cdp.send('Debugger.pause')
+    await sleep(3000)
+  }
+}
+
+/* ==================================================================== the browser part (package B) */
+
+/**
+ * Exit checks 1 to 8 on screen, in headless Chrome against this server (dist/ must be built): several signed-in browser
+ * contexts (Bina with two tabs and the pop-out, Chetan, Omar who is in no private conversation, Dev an administrator,
+ * Chetan on a 360 x 800 phone). Each step records PASS / FAIL with the check number of the spec.
+ */
+async function browserPart({ C, ids, admin }) {
+  if (E.EXIT_BROWSER === '0') return record('B', 'browser part', 'SKIP', 'EXIT_BROWSER=0')
+  if (!fs.existsSync(path.join(root, 'dist', 'index.html'))) return record('B', 'browser part', 'SKIP', 'dist/index.html missing: run npm run build first')
+  const { chromePath, puppeteerCorePath } = await import(pathToFileURL(path.join(root, 'scripts', 'exit-check', 'browser-env.mjs')).href)
+  let puppeteer
+  try {
+    puppeteer = (await import(pathToFileURL(path.join(puppeteerCorePath(root), 'lib', 'puppeteer', 'puppeteer-core.js')).href)).default
+  } catch (e) {
+    return record('B', 'browser part', 'SKIP', `puppeteer-core not found (PUPPETEER_CORE): ${e.message}`)
+  }
+  log('browser part: starting Chrome')
+  const TMP = path.resolve(root, '.sandbox', 'p3b', 'tmp')
+  fs.mkdirSync(TMP, { recursive: true })
+  const SHOTS = E.SHOTS ? path.resolve(E.SHOTS) : ''
+  const browser = await puppeteer.launch({ executablePath: chromePath(), headless: true, args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'], protocolTimeout: 60000 })
+  const errors = []
+  const T = (id) => `[data-testid="${id}"]`
+  const shot = async (page, name) => { if (SHOTS) { fs.mkdirSync(SHOTS, { recursive: true }); await page.screenshot({ path: path.join(SHOTS, name) }) } }
+  const waitFn = (page, fn, arg, timeout = 20000) => page.waitForFunction(fn, { timeout, polling: 50 }, arg)
+  const has = (page, sel) => page.$(sel).then((h) => !!h)
+  const settle = () => sleep(250)
+  // a tab in the background gets no frames: puppeteer's clicks wait for one. The page acted on comes to the front
+  let fronted = null
+  const front = async (page) => { if (fronted !== page) { await page.bringToFront(); fronted = page; await sleep(50) } }
+  const pw = 'Some-Example-Pass-1'
+  async function newPage(ctx, vp = { width: 1440, height: 900 }) {
+    const page = await ctx.newPage()
+    await page.setViewport(vp)
+    page.on('pageerror', (e) => errors.push(`${e.message}`.slice(0, 300)))
+    page.on('dialog', (d) => d.accept())
+    return page
+  }
+  async function signIn(page, key) {
+    await front(page)
+    await page.goto(`${BASE}/#u`, { waitUntil: 'domcontentloaded' })
+    await page.waitForSelector('input[type=email]', { timeout: 30000 })
+    await page.type('input[type=email]', `${key}@example.test`)
+    await page.type('input[type=password]', pw)
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(() => !document.querySelector('input[type=password]'), { timeout: 30000 })
+    await page.waitForSelector(T('chat-button'), { timeout: 30000 })
+  }
+  /** the dock is open and chat is ready and live */
+  async function dockReady(page) {
+    await front(page)
+    if (!(await has(page, T('chat-dock')))) await page.click(T('chat-button'))
+    await page.waitForSelector(`${T('chat-dock')} ${T('chat-panel')}[data-status="ready"][data-live="open"]`, { timeout: 30000 })
+    await settle()
+  }
+  /** open a conversation in a narrow panel (back to the list first) */
+  async function openConv(page, id) {
+    await front(page)
+    const cur = await page.$eval(T('chat-conversation'), (e) => e.getAttribute('data-id')).catch(() => null)
+    if (cur === id) return
+    if (cur) await page.click(T('chat-back'))
+    await page.waitForSelector(`[data-conv="${id}"]`, { visible: true, timeout: 20000 })
+    // a DOM click on that row: the list reorders itself when messages arrive, a click by position could hit another row
+    await page.$eval(`[data-conv="${id}"]`, (e) => e.click())
+    await page.waitForSelector(`${T('chat-conversation')}[data-id="${id}"] ${T('chat-messages')}`, { timeout: 20000 })
+    await settle()
+  }
+  async function toList(page) {
+    await front(page)
+    if (await has(page, T('chat-back'))) await page.click(T('chat-back'))
+    await page.waitForSelector(T('chat-list'), { visible: true, timeout: 20000 })
+  }
+  async function sendUi(page, text, scope = T('chat-composer')) {
+    await front(page)
+    const sel = `${scope} ${T('chat-input')}`
+    await page.waitForSelector(sel, { visible: true, timeout: 20000 })
+    await page.type(sel, text)
+    await page.keyboard.press('Enter')
+  }
+  const textsIn = (page, scope = T('chat-messages')) => page.$$eval(`${scope} ${T('chat-message')}`, (els) => els.map((e) => (e.querySelector('.ab-richtext')?.textContent ?? '').trim()))
+  const waitText = (page, text, timeout) => waitFn(page, (t) => [...document.querySelectorAll('[data-testid="chat-message"]')].some((e) => e.textContent.includes(t)), text, timeout)
+  const msgSel = async (page, text) => {
+    const id = await page.$$eval(T('chat-message'), (els, t) => els.find((e) => e.textContent.includes(t))?.getAttribute('data-id') ?? null, text)
+    if (!id) throw new Error(`no message "${text}" on screen`)
+    return `${T('chat-message')}[data-id="${id}"]`
+  }
+  async function act(page, text, testId) {
+    await front(page)
+    const sel = await msgSel(page, text)
+    await page.hover(sel)
+    await settle()
+    await page.click(`${sel} ${T(testId)}`)
+  }
+  const api = async (c, method, p, body) => {
+    const r = await c.req(method, p, body)
+    if (r.status !== 200) throw new Error(`${method} ${p}: ${r.status} ${r.text.slice(0, 300)}`)
+    return r.data
+  }
+
+  try {
+    /* -------------------------------------------------------------- setup through the API */
+    const open = (await api(C.bina, 'POST', '/chat/conversations', { kind: 'channel', name: 'Plant floor', isPrivate: false })).id
+    await api(C.chet, 'POST', `/chat/conversations/${open}/join`)
+    await api(C.omar, 'POST', `/chat/conversations/${open}/join`)
+    const side = (await api(C.bina, 'POST', '/chat/conversations', { kind: 'channel', name: 'Side room', isPrivate: true, members: [ids.chet] })).id
+    const dm = (await api(C.bina, 'POST', '/chat/conversations', { kind: 'direct', members: [ids.chet] })).id
+    const grp = (await api(C.bina, 'POST', '/chat/conversations', { kind: 'group', members: [ids.chet, ids.dev] })).id
+    const arch = (await api(C.bina, 'POST', '/chat/conversations', { kind: 'channel', name: 'Old shifts', isPrivate: true })).id
+    await q(`INSERT INTO env_default.sys_messages ("id", "createdOn", "modifiedOn", "createdBy", "owner", "Channel", "Body", "BodyText", "Seq", "ChangeSeq", "Kind", "ReplyCount")
+             SELECT md5('b3' || g)::uuid::text, now() - ((400 - g) || ' minutes')::interval, now(), $1, $1, $2, '<p>shift note ' || g || '</p>', 'shift note ' || g, 1 + g, 1 + g, 'message', 0 FROM generate_series(1, 300) g`, [ids.bina, arch])
+    await q(`UPDATE env_default.sys_channels SET "LastSeq" = 301, "LastMessageOn" = now() - interval '100 minutes' WHERE id = $1`, [arch])
+
+    const ctxB = await browser.createBrowserContext()
+    const ctxC = await browser.createBrowserContext()
+    const ctxO = await browser.createBrowserContext()
+    const ctxD = await browser.createBrowserContext()
+    const A = await newPage(ctxB)
+    const Cp = await newPage(ctxC)
+    const O = await newPage(ctxO)
+    const D = await newPage(ctxD)
+    for (const [p, k] of [[A, 'bina'], [Cp, 'chet'], [O, 'omar'], [D, 'dev']]) await signIn(p, k)
+    await dockReady(A)
+    await dockReady(Cp)
+    ok('1B', true, 'four people signed in, each in a browser context of their own, with chat live in the dock')
+
+    /* -------------------------------------------------------------- 1: a private channel made on screen, live */
+    await front(A)
+    await A.click(T('chat-new'))
+    await A.waitForSelector(T('chat-new-dialog'))
+    await front(A)
+    await A.click(T('chat-new-channel'))
+    await front(A)
+    await A.type(T('chat-new-name'), 'Maintenance')
+    await front(A)
+    await A.click(T('chat-new-private'))
+    await front(A)
+    await A.type(T('chat-people-search'), 'Chet')
+    await A.waitForSelector(`${T('chat-people-pick')}[data-person="Chetan Rao"]`)
+    await front(A)
+    await A.click(`${T('chat-people-pick')}[data-person="Chetan Rao"]`)
+    await front(A)
+    await A.click(T('chat-new-create'))
+    await A.waitForSelector(`${T('chat-conversation')} ${T('chat-messages')}`, { timeout: 20000 })
+    const maint = await A.$eval(T('chat-conversation'), (e) => e.getAttribute('data-id'))
+    await Cp.waitForSelector(`[data-conv="${maint}"]`, { timeout: 10000 })
+    ok('1B', !!maint, 'a private channel created on screen appears in the member\'s list live (no reload)')
+    await shot(A, 'chat-dock.png')
+
+    /* -------------------------------------------------------------- 1: live delivery, people and tabs */
+    await openConv(Cp, maint)
+    const lat = []
+    for (let i = 0; i < 10; i++) {
+      const t1 = Date.now()
+      await sendUi(A, `latency check ${i}`)
+      await waitText(Cp, `latency check ${i}`, 10000)
+      lat.push(Date.now() - t1)
+    }
+    ok('1B', p95(lat) < 1000, 'a message typed in one browser reaches the other person on screen: p95 under 1 s', `p95 ${p95(lat)} ms over ${lat.length} (typing included)`)
+    const B = await newPage(ctxB)
+    await B.goto(`${BASE}/#u`, { waitUntil: 'domcontentloaded' })
+    await B.waitForSelector(T('chat-button'), { timeout: 30000 })
+    await dockReady(B)
+    await openConv(B, maint)
+    await api(C.chet, 'POST', `/chat/conversations/${maint}/messages`, { body: '<p>seen in both tabs</p>', clientId: 'tabs-check-0001' })
+    await waitText(A, 'seen in both tabs')
+    await waitText(B, 'seen in both tabs')
+    const bTexts = await textsIn(B)
+    ok('1B', bTexts.filter((x) => x === 'latency check 9').length === 1 && bTexts.includes('seen in both tabs'), 'a second tab of the same person shows the conversation and gets every change live')
+
+    /* -------------------------------------------------------------- keyboard */
+    await toList(B)
+    await front(B)
+    await B.focus(`[data-conv]`)
+    await front(B)
+    await B.keyboard.press('ArrowDown')
+    const focusedConv = await B.evaluate(() => document.activeElement?.getAttribute('data-conv'))
+    await front(B)
+    await B.keyboard.press('Enter')
+    await B.waitForSelector(`${T('chat-conversation')}[data-id="${focusedConv}"]`, { timeout: 10000 })
+    await B.waitForSelector(`${T('chat-composer')} ${T('chat-input')}`, { timeout: 10000 })
+    await front(B)
+    await B.focus(`${T('chat-composer')} ${T('chat-input')}`)
+    await front(B)
+    await B.keyboard.press('Escape')
+    await B.waitForSelector(T('chat-list'), { visible: true, timeout: 5000 })
+    ok('1B', !!focusedConv, 'keyboard: arrows move through the list, Enter opens, Escape goes back')
+
+    /* -------------------------------------------------------------- 1: unread counts, live and after a reload */
+    await openConv(A, dm)
+    await openConv(B, dm)
+    for (let i = 0; i < 3; i++) await api(C.chet, 'POST', `/chat/conversations/${open}/messages`, { body: `<p>unread ${i}</p>`, clientId: `unread-check-${i}-x` })
+    await toList(A)
+    await waitFn(A, (id) => document.querySelector(`[data-conv="${id}"]`)?.getAttribute('data-unread') === '3', open, 10000).catch(() => null)
+    const liveUnread = await A.$eval(`[data-conv="${open}"]`, (e) => e.getAttribute('data-unread'))
+    await front(B)
+    await B.reload({ waitUntil: 'domcontentloaded' })
+    await B.waitForSelector(T('chat-button'), { timeout: 30000 })
+    await dockReady(B)
+    await toList(B)
+    await B.waitForSelector(`[data-conv="${open}"]`, { timeout: 10000 })
+    const reloadUnread = await B.$eval(`[data-conv="${open}"]`, (e) => e.getAttribute('data-unread'))
+    await openConv(B, open)
+    await waitFn(A, (id) => document.querySelector(`[data-conv="${id}"]`)?.getAttribute('data-unread') === '0', open, 10000).catch(() => null)
+    const afterRead = await A.$eval(`[data-conv="${open}"]`, (e) => e.getAttribute('data-unread'))
+    ok('1B', liveUnread === '3' && reloadUnread === '3' && afterRead === '0', 'unread counts: live in the list, right after a reload, and cleared in the other tab when read', `live ${liveUnread}, after reload ${reloadUnread}, after reading in the other tab ${afterRead}`)
+
+    /* -------------------------------------------------------------- 1: history pages back 50 at a time */
+    const histReq = []
+    const onReq = (r) => { if (r.url().includes(`/chat/conversations/${arch}/messages`)) histReq.push(r.url()) }
+    B.on('request', onReq)
+    await openConv(B, arch)
+    const first = (await textsIn(B)).length
+    await front(B)
+    await B.click(T('chat-older'))
+    await waitFn(B, () => document.querySelectorAll('[data-testid="chat-messages"] [data-testid="chat-message"]').length >= 100, null, 10000)
+    const second = (await textsIn(B)).length
+    B.off('request', onReq)
+    const oldest = (await textsIn(B))[0]
+    ok('1B', first === 50 && second === 100 && histReq.length === 2 && histReq.every((u) => /limit=50/.test(u)) && /before=/.test(histReq[1]) && oldest === 'shift note 201', 'a long conversation shows 50 messages and pages back 50 at a time from the server (never the whole conversation)', `${first} then ${second}; oldest on screen "${oldest}"; requests ${histReq.map((u) => u.replace(/^.*\?/, '?')).join(' ')}`)
+
+    /* -------------------------------------------------------------- 1: network cut while 20 messages are sent */
+    await openConv(B, grp)
+    await front(B)
+    await B.setOfflineMode(true)
+    const cut = await B.waitForSelector(T('chat-conn'), { timeout: 8000 }).then(() => true, () => false)
+    if (!cut) await B.evaluate(() => window.__abChat?.drop())
+    const sentAway = []
+    for (let i = 0; i < 20; i++) sentAway.push((await api(C.dev, 'POST', `/chat/conversations/${grp}/messages`, { body: `<p>while away ${i}</p>`, clientId: `away-${i}-abcdefgh` })).message.id)
+    await sleep(500)
+    const duringCut = (await textsIn(B)).filter((t) => t.startsWith('while away')).length
+    await front(B)
+    await B.setOfflineMode(false)
+    await waitFn(B, () => [...document.querySelectorAll('[data-testid="chat-messages"] [data-testid="chat-message"]')].filter((e) => e.textContent.includes('while away')).length >= 20, null, 45000).catch(() => null)
+    await sleep(800)
+    const away = (await textsIn(B)).filter((t) => t.startsWith('while away'))
+    const inOrder = away.length === 20 && away.every((t, i) => t === `while away ${i}`)
+    ok('1B', duringCut === 0 && inOrder && (await B.$eval(T('chat-panel'), (e) => e.getAttribute('data-live'))) === 'open', 'the network is cut while 20 messages are sent: after it is back all 20 show exactly once and in order', `offline banner ${cut ? 'shown' : 'not shown (socket dropped by the hook)'}; ${duringCut} during the cut, ${away.length} after`)
+
+    /* -------------------------------------------------------------- 2: a mention picker of readers only, the notification deep link */
+    await front(Cp)
+    await Cp.click(T('chat-dock-close'))
+    await openConv(A, maint)
+    await front(A)
+    await A.type(`${T('chat-composer')} ${T('chat-input')}`, '@')
+    await A.waitForSelector(T('chat-mention-list'), { timeout: 10000 })
+    await sleep(400)
+    const offered = await A.$$eval(T('chat-mention-option'), (els) => els.map((e) => e.getAttribute('data-person')))
+    await front(A)
+    await A.type(`${T('chat-composer')} ${T('chat-input')}`, 'Chet')
+    await waitFn(A, () => [...document.querySelectorAll('[data-testid="chat-mention-option"]')].some((e) => e.getAttribute('data-person') === 'Chetan Rao'), null, 10000)
+    await front(A)
+    await A.keyboard.press('Enter')
+    await front(A)
+    await A.type(`${T('chat-composer')} ${T('chat-input')}`, 'please check pump 4')
+    await front(A)
+    await A.keyboard.press('Enter')
+    await waitText(A, 'please check pump 4')
+    const mentionSeq = Number(await A.$eval(await msgSel(A, 'please check pump 4'), (e) => e.getAttribute('data-seq')))
+    const mentionHtml = await A.$eval(`${await msgSel(A, 'please check pump 4')} [data-mention]`, (e) => e.getAttribute('data-mention'))
+    ok('2B', offered.includes('Chetan Rao') && !offered.includes('Omar Ali') && !offered.includes('Bina Shah') && mentionHtml === ids.chet, 'the mention list offers only people who can read the private channel; the sent mention names the person', `offered: ${offered.join(', ')}`)
+    await Cp.waitForSelector(T('notification-badge'), { timeout: 15000 })
+    await front(Cp)
+    await Cp.click(T('notification-bell'))
+    await Cp.waitForSelector(T('notification-item'), { timeout: 10000 })
+    const hashBefore = await Cp.evaluate(() => location.hash)
+    const items = await Cp.$$(T('notification-item'))
+    let clicked = false
+    for (const it of items) {
+      if ((await it.evaluate((e) => e.textContent)).includes('mentioned you')) { await (await it.$('button')).click(); clicked = true; break }
+    }
+    await Cp.waitForSelector(`${T('chat-dock')} ${T('chat-conversation')}[data-id="${maint}"]`, { timeout: 15000 })
+    await waitFn(Cp, (s) => window.__abChat?.state().focus?.seq === s, mentionSeq, 10000).catch(() => null)
+    const focusSeq = await Cp.evaluate(() => window.__abChat?.state().focus?.seq ?? null)
+    const onScreen = await has(Cp, `${T('chat-message')}[data-seq="${mentionSeq}"]`)
+    const hashAfter = await Cp.evaluate(() => location.hash)
+    ok('2B', clicked && focusSeq === mentionSeq && onScreen && !hashAfter.startsWith('#chat'), 'a mention notification in the bell opens the dock at that message; the page underneath stays', `focus seq ${focusSeq} (message ${mentionSeq}); address ${hashBefore} -> ${hashAfter}`)
+
+    /* -------------------------------------------------------------- 3: a file and a photo, the size limit */
+    const png = path.join(TMP, 'pump-photo.png')
+    fs.writeFileSync(png, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
+    const doc = path.join(TMP, 'pump-manual.txt')
+    fs.writeFileSync(doc, 'pump manual\n')
+    const fileInput = await A.$(`${T('chat-composer')} ${T('chat-file-input')}`)
+    await fileInput.uploadFile(png, doc)
+    await waitFn(A, () => document.querySelectorAll('[data-testid="chat-draft-file"][data-state="ready"]').length === 2, null, 15000)
+    await front(A)
+    await A.type(`${T('chat-composer')} ${T('chat-input')}`, 'photo and manual')
+    await front(A)
+    await A.click(T('chat-send'))
+    await Cp.waitForSelector(`${T('chat-file')}[data-name="pump-photo.png"] img`, { timeout: 15000 })
+    await Cp.waitForSelector(`${T('chat-file')}[data-name="pump-manual.txt"]`, { timeout: 15000 })
+    const fileUrl = await Cp.$eval(`${T('chat-file')}[data-name="pump-manual.txt"]`, (e) => e.getAttribute('href'))
+    const memberGet = await Cp.evaluate((u) => fetch(u).then(async (r) => ({ s: r.status, t: await r.text() })), fileUrl)
+    const outsiderGet = await O.evaluate((u) => fetch(u).then(async (r) => ({ s: r.status, t: await r.text() })), fileUrl)
+    const missingGet = await O.evaluate(() => fetch('/api/v1/attachments/att_000000000000?env=default').then(async (r) => ({ s: r.status, t: await r.text() })))
+    const strip = (t) => t.replace(/"requestId":"[^"]+"/, '')
+    ok('3B', memberGet.s === 200 && memberGet.t === 'pump manual\n' && outsiderGet.s === 404 && strip(outsiderGet.t) === strip(missingGet.t), 'a file and a photo sent on screen open for a member (the photo as an image); a non-member gets the answer of a missing attachment', `member ${memberGet.s}, non-member ${outsiderGet.s}`)
+    const big = path.join(TMP, 'big-26mb.bin')
+    if (!fs.existsSync(big) || fs.statSync(big).size !== 26 * 1024 * 1024) fs.writeFileSync(big, Buffer.alloc(26 * 1024 * 1024))
+    const uploads = []
+    const onUp = (r) => { if (r.method() === 'POST' && r.url().includes('/files?')) uploads.push(r.url()) }
+    A.on('request', onUp)
+    await (await A.$(`${T('chat-composer')} ${T('chat-file-input')}`)).uploadFile(big)
+    await A.waitForSelector(T('chat-composer-error'), { timeout: 10000 })
+    const bigErr = await A.$eval(T('chat-composer-error'), (e) => e.textContent)
+    A.off('request', onUp)
+    ok('3B', /larger than 25 MB/.test(bigErr) && uploads.length === 0, 'a file over 25 MB is refused on screen before anything is uploaded', bigErr)
+
+    /* -------------------------------------------------------------- 4: a card, per reader (DOM and response bytes) */
+    const tb = (await api(admin, 'POST', '/tables', { displayName: 'Pumps', name: 'ExitPumps', columns: [{ displayName: 'Code', type: 'text' }, { displayName: 'Cost', type: 'text' }] }))
+    const partial = await api(admin, 'POST', '/roles', { name: 'Pumps without cost', apps: [], privileges: [{ table: tb.id, create: false, read: 'all', update: 'none', delete: 'none', columns: { Cost: 'none' } }] })
+    const full = await api(admin, 'POST', '/roles', { name: 'Pumps in full', apps: [], privileges: [{ table: tb.id, create: true, read: 'all', update: 'all', delete: 'none' }] })
+    await api(admin, 'PATCH', `/users/${ids.chet}`, { roleIds: [partial.id] })
+    await api(admin, 'PATCH', `/users/${ids.bina}`, { roleIds: [full.id] })
+    const row = (await api(admin, 'POST', `/data/${tb.id}/rows`, { values: { Code: 'P-04', Cost: 'COST-SECRET-9131' } })).row.id
+    const cardBodies = []
+    const onRes = async (r) => { if (r.url().includes('/chat/cards/resolve')) cardBodies.push(await r.text().catch(() => '')) }
+    Cp.on('response', onRes)
+    await api(C.bina, 'POST', `/chat/conversations/${open}/messages`, { body: '<p>pump card</p>', cards: [{ kind: 'record', env: 'default', table: tb.id, row, fields: ['Code', 'Cost'] }], clientId: 'card-check-0001' })
+    await openConv(A, open)
+    await openConv(Cp, open)
+    await A.waitForSelector(`${T('chat-card')}[data-state="available"] ${T('chat-card-field')}[data-field="Cost"]`, { timeout: 15000 })
+    await Cp.waitForSelector(`${T('chat-card')}[data-state="available"]`, { timeout: 15000 })
+    await sleep(500)
+    const fullText = await A.$eval(`${T('chat-card')}[data-state="available"]`, (e) => e.textContent)
+    const partText = await Cp.$eval(`${T('chat-card')}[data-state="available"]`, (e) => e.textContent)
+    const partFields = await Cp.$$eval(`${T('chat-card')} ${T('chat-card-field')}`, (els) => els.map((e) => e.getAttribute('data-field')))
+    const chetHtml = await Cp.content()
+    ok('4B', fullText.includes('COST-SECRET-9131') && partText.includes('P-04') && !partText.includes('COST-SECRET') && partFields.join() === 'Code' && !chetHtml.includes('COST-SECRET'), 'a record card shows a full reader the chosen fields and leaves a hidden column out for another reader (on screen)', `full: "${fullText.trim()}"; partial: "${partText.trim()}"`)
+    ok('4B', cardBodies.length > 0 && cardBodies.every((b) => !b.includes('COST-SECRET') && !b.includes('"Cost"')), 'the partial reader\'s card responses carry neither the value nor the column name (response bytes)', `${cardBodies.length} responses`)
+    await api(admin, 'PATCH', `/data/${tb.id}/rows/${row}`, { changes: { Code: 'P-04B' } })
+    const followed = await waitFn(A, () => [...document.querySelectorAll('[data-testid="chat-card"]')].some((e) => e.textContent.includes('P-04B')), null, 15000).then(() => true, () => false)
+    Cp.off('response', onRes)
+    ok('4B', followed, 'a change to the record updates the card on screen (the table topic ticks, the card asks the server again)')
+
+    /* -------------------------------------------------------------- 1: thread, reaction, edit, delete on screen */
+    await sendUi(A, 'thread root here')
+    await waitText(Cp, 'thread root here')
+    await act(Cp, 'thread root here', 'chat-reply')
+    await Cp.waitForSelector(T('chat-thread-messages'), { timeout: 10000 })
+    await sendUi(Cp, 'first reply in the thread', T('chat-thread-composer'))
+    await waitText(Cp, 'first reply in the thread')
+    const rootSel = await msgSel(A, 'thread root here')
+    const replied = await waitFn(A, (s) => document.querySelector(`${s} [data-testid="chat-thread-summary"]`)?.getAttribute('data-replies') === '1', rootSel, 10000).then(() => true, () => false)
+    await front(Cp)
+    await Cp.click(T('chat-back'))
+    await Cp.waitForSelector(T('chat-messages'), { timeout: 10000 })
+    ok('1B', replied, 'a reply in a thread shows as "1 reply" under the message for the other person, live')
+    await act(Cp, 'thread root here', 'chat-react')
+    await Cp.waitForSelector(`${T('chat-emoji')}[data-emoji="👍"]`, { timeout: 5000 })
+    await front(Cp)
+    await Cp.click(`${T('chat-emoji')}[data-emoji="👍"]`)
+    const reacted = await waitFn(A, (s) => document.querySelector(`${s} [data-testid="chat-reaction"][data-emoji="👍"]`)?.getAttribute('data-count') === '1', rootSel, 10000).then(() => true, () => false)
+    ok('1B', reacted, 'a reaction reaches the other person live')
+    await sendUi(A, 'edit me please')
+    await waitText(Cp, 'edit me please')
+    await act(A, 'edit me please', 'chat-more')
+    await A.waitForSelector(T('chat-edit-action'), { visible: true, timeout: 5000 })
+    await front(A)
+    await A.click(T('chat-edit-action'))
+    await A.waitForSelector(T('chat-edit-input'), { timeout: 5000 })
+    await A.$eval(T('chat-edit-input'), (e) => e.select())
+    await front(A)
+    await A.type(T('chat-edit-input'), 'edited on screen')
+    await front(A)
+    await A.keyboard.press('Enter')
+    const edited = await waitFn(Cp, () => [...document.querySelectorAll('[data-testid="chat-message"]')].some((e) => e.textContent.includes('edited on screen') && e.querySelector('[data-testid="chat-edited"]')), null, 10000).then(() => true, () => false)
+    ok('1B', edited, 'an edit of my own message reaches the other person, marked "(edited)"')
+    await sendUi(A, 'delete me please')
+    await waitText(Cp, 'delete me please')
+    const delSel = await msgSel(Cp, 'delete me please')
+    await act(A, 'delete me please', 'chat-more')
+    await A.waitForSelector(T('chat-delete-action'), { visible: true, timeout: 5000 })
+    await front(A)
+    await A.click(T('chat-delete-action'))
+    const deleted = await waitFn(Cp, (s) => !!document.querySelector(`${s} [data-testid="chat-deleted"]`), delSel, 10000).then(() => true, () => false)
+    ok('1B', deleted, 'a deleted message leaves a "Message deleted" line for the other person, live')
+    await sendUi(A, 'please report me')
+    await waitText(Cp, 'please report me')
+    const reportedId = await Cp.$eval(await msgSel(Cp, 'please report me'), (e) => e.getAttribute('data-id'))
+    await act(Cp, 'please report me', 'chat-more')
+    await Cp.waitForSelector(T('chat-report-action'), { visible: true, timeout: 5000 })
+    await front(Cp)
+    await Cp.click(T('chat-report-action'))
+    await front(Cp)
+    await Cp.type(T('chat-report-reason'), 'Not appropriate here')
+    await front(Cp)
+    await Cp.click(T('chat-report-send'))
+    await Cp.waitForSelector(T('chat-report-done'), { timeout: 10000 })
+    await front(Cp)
+    await Cp.keyboard.press('Escape')
+
+    /* -------------------------------------------------------------- 1: the pop-out window */
+    await shot(A, 'chat-dock-conversation.png')
+    const popTarget = browser.waitForTarget((t) => t.url().includes('#chat') && t.browserContext() === ctxB, { timeout: 15000 })
+    await front(A)
+    await A.click(T('chat-popout'))
+    const P = await (await popTarget).page()
+    P.on('pageerror', (e) => errors.push(`${e.message}`.slice(0, 300)))
+    await P.setViewport({ width: 900, height: 760 })
+    await P.waitForSelector(`${T('chat-window')}[data-popup="1"] ${T('chat-panel')}[data-status="ready"]`, { timeout: 30000 })
+    await P.waitForSelector(`${T('chat-conversation')}[data-id="${open}"]`, { timeout: 15000 })
+    await A.waitForSelector(T('chat-popped-out'), { timeout: 10000 })
+    const bPopped = await B.waitForSelector(T('chat-popped-out'), { timeout: 10000 }).then(() => true, () => false)
+    await api(C.chet, 'POST', `/chat/conversations/${open}/messages`, { body: '<p>to the window</p>', clientId: 'popout-check-01' })
+    const inPop = await waitText(P, 'to the window', 10000).then(() => true, () => false)
+    const wide = await P.$(T('chat-list')).then(Boolean)
+    await shot(P, 'chat-popout.png')
+    ok('1B', inPop && bPopped && wide, 'popped out: the window shows the list and the conversation side by side and gets messages live; both tabs\' docks say chat is in another window')
+    await front(A)
+    await A.click(T('chat-bring-back'))
+    await A.waitForSelector(`${T('chat-dock')} ${T('chat-panel')}`, { timeout: 15000 })
+    await sleep(500)
+    ok('1B', !(await has(A, T('chat-popped-out'))), 'Bring back puts chat into the dock again')
+    if (!P.isClosed()) await P.close().catch(() => {})
+    await dockReady(A)
+    await openConv(A, open)
+
+    /* -------------------------------------------------------------- 5: a non-member: list, search, direct address */
+    await dockReady(O)
+    await toList(O)
+    const oList = await O.$$eval('[data-conv]', (els) => els.map((e) => e.getAttribute('data-conv')))
+    const searchBodies = []
+    const onSearch = async (r) => { if (r.url().includes('/chat/search')) searchBodies.push(await r.text().catch(() => '')) }
+    O.on('response', onSearch)
+    await front(O)
+    await O.type(T('chat-search'), 'pump')
+    await O.waitForSelector(T('chat-search-results'), { timeout: 10000 })
+    await sleep(1200)
+    const oHits = await O.$$eval(T('chat-search-hit'), (els) => els.map((e) => e.textContent))
+    O.off('response', onSearch)
+    await O.$eval(T('chat-search'), (e) => { e.value = '' })
+    await O.goto(`${BASE}/#chat?c=${maint}`, { waitUntil: 'domcontentloaded' })
+    await O.waitForSelector(T('chat-button'), { timeout: 30000 })
+    await O.waitForSelector(T('chat-notice'), { timeout: 15000 })
+    const notice = await O.$eval(T('chat-notice'), (e) => e.textContent)
+    const leaked = await has(O, `${T('chat-conversation')}[data-id="${maint}"]`)
+    const oPage = await O.content()
+    ok('5B', !oList.includes(maint) && !oList.includes(side) && oHits.every((h) => !h.includes('please check pump 4')) && searchBodies.every((b) => !b.includes('please check pump') && !b.includes(maint)) && /not available/.test(notice) && !leaked && !oPage.includes('please check pump 4'),
+      'a private channel is invisible to a non-member: not in the list, not in search (screen and response bytes), and its address shows "not available"', `list ${oList.length}, hits ${oHits.length}, notice "${notice.trim()}"`)
+
+    /* -------------------------------------------------------------- 1: phone width, keyboard inset */
+    const Ph = await newPage(ctxC, { width: 360, height: 800, isMobile: true, hasTouch: true, deviceScaleFactor: 2 })
+    await Ph.goto(`${BASE}/#u`, { waitUntil: 'domcontentloaded' })
+    await Ph.waitForSelector(T('nav-toggle'), { timeout: 30000 })
+    await settle()
+    await front(Ph)
+    await Ph.tap(T('nav-toggle'))
+    await Ph.waitForSelector(T('nav-chat'), { visible: true, timeout: 10000 })
+    await settle()
+    await front(Ph)
+    await Ph.tap(T('nav-chat'))
+    await Ph.waitForSelector(`${T('chat-window')}[data-popup="0"] ${T('chat-panel')}[data-status="ready"]`, { timeout: 30000 }).catch(async (e) => {
+      log(`phone: ${Ph.url()} ${await Ph.evaluate(() => JSON.stringify({ w: innerWidth, name: window.name, body: document.body.innerText.slice(0, 300), panel: document.querySelector('[data-testid="chat-panel"]')?.outerHTML.slice(0, 200) ?? null }))}`)
+      throw e
+    })
+    const phHash = await Ph.evaluate(() => location.hash)
+    await Ph.waitForSelector(`[data-conv="${open}"]`, { timeout: 15000 })
+    await settle()
+    await front(Ph)
+    await Ph.tap(`[data-conv="${open}"]`)
+    await Ph.waitForSelector(`${T('chat-conversation')}[data-id="${open}"] ${T('chat-composer')}`, { timeout: 15000 })
+    await settle()
+    const listHidden = !(await has(Ph, T('chat-list')))
+    const rowH = await Ph.$eval(T('chat-back'), (e) => e.getBoundingClientRect().height)
+    const before = await Ph.$eval(T('chat-composer'), (e) => e.getBoundingClientRect().bottom)
+    await Ph.evaluate(() => document.documentElement.style.setProperty('--kb', '300px'))
+    await settle()
+    const lifted = await Ph.$eval(T('chat-composer'), (e) => e.getBoundingClientRect().bottom)
+    await shot(Ph, 'chat-phone-keyboard.png')
+    await Ph.evaluate(() => document.documentElement.style.setProperty('--kb', '0px'))
+    await front(Ph)
+    await Ph.type(`${T('chat-composer')} ${T('chat-input')}`, 'sent from the phone')
+    await front(Ph)
+    await Ph.tap(T('chat-send'))
+    const fromPhone = await waitText(A, 'sent from the phone', 10000).then(() => true, () => false)
+    await Ph.evaluate(() => history.back())
+    const backToList = await Ph.waitForSelector(T('chat-list'), { visible: true, timeout: 10000 }).then(() => true, () => false)
+    const hashAfterBack = await Ph.evaluate(() => location.hash)
+    ok('1B', phHash.startsWith('#chat') && listHidden && rowH >= 44 && before <= 800 && lifted <= 800 - 300 + 2 && fromPhone && backToList && hashAfterBack.startsWith('#chat'),
+      'phone size (360 x 800): chat fills the screen from the menu, list and conversation are two screens, buttons are 44 px touch targets, the composer sits above the keyboard inset, a message sent from the phone arrives, Back returns to the list',
+      `composer bottom ${Math.round(before)} -> ${Math.round(lifted)} px with --kb 300px; back button ${Math.round(rowH)} px; ${hashAfterBack}`)
+    await Ph.close()
+
+    /* -------------------------------------------------------------- 8 and 5: Admin console > Chat */
+    await openConv(Cp, maint)
+    await D.goto(`${BASE}/#admin-chat`, { waitUntil: 'domcontentloaded' })
+    await D.waitForSelector(T('chat-admin'), { timeout: 30000 })
+    await D.waitForSelector(`${T('chat-admin-report')}[data-message="${reportedId}"]`, { timeout: 15000 })
+    const repText = await D.$eval(`${T('chat-admin-report')}[data-message="${reportedId}"] ${T('chat-admin-report-text')}`, (e) => e.textContent)
+    const convTable = await D.$eval(T('chat-admin-conversations'), (e) => e.textContent)
+    await front(D)
+    await D.click(`${T('chat-admin-report')}[data-message="${reportedId}"] ${T('chat-admin-report-delete')}`)
+    const moderated = await waitFn(A, (id) => document.querySelector(`[data-testid="chat-message"][data-id="${id}"]`)?.textContent.includes('deleted by an administrator'), reportedId, 10000).then(() => true, () => false)
+    ok('8B', repText.includes('please report me') && !convTable.includes('please check pump') && moderated, 'a member reports a message on screen; the administrator sees it in the queue (conversations show no text) and deletes it; the members see "deleted by an administrator"')
+    // read-only person
+    await front(D)
+    await D.type(T('chat-admin-ro-people-search'), 'Omar')
+    await D.waitForSelector(`${T('chat-admin-ro-people-pick')}[data-person="Omar Ali"]`, { timeout: 10000 })
+    await front(D)
+    await D.click(`${T('chat-admin-ro-people-pick')}[data-person="Omar Ali"]`)
+    await front(D)
+    await D.click(T('chat-admin-ro-add'))
+    await D.waitForSelector(`${T('chat-admin-readonly-person')}[data-name="Omar Ali"]`, { timeout: 10000 })
+    const omarMe = await api(C.omar, 'GET', '/chat/me')
+    ok('8B', omarMe.readOnly === true, 'an administrator makes a person read-only in chat on screen')
+    // remove a member: the removed person's screen loses the conversation within 5 s
+    await D.waitForSelector(`${T('chat-admin-conv')}[data-id="${side}"]`, { timeout: 10000 })
+    await front(D)
+    await D.click(`${T('chat-admin-conv')}[data-id="${side}"] ${T('chat-admin-members')}`)
+    await D.waitForSelector(`${T('chat-admin-member')}[data-name="Chetan Rao"]`, { timeout: 10000 })
+    const tRemove = Date.now()
+    await front(D)
+    await D.click(`${T('chat-admin-member')}[data-name="Chetan Rao"] ${T('chat-admin-member-remove')}`)
+    const gone = await waitFn(Cp, (id) => !window.__abChat?.state().list.byId[id], side, 5000).then(() => Date.now() - tRemove, () => -1)
+    await front(D)
+    await D.keyboard.press('Escape')
+    ok('5B', gone >= 0 && gone < 5000, 'a member removed by an administrator loses the conversation on screen within 5 s', `${gone} ms`)
+    // archive
+    await front(D)
+    await D.click(`${T('chat-admin-conv')}[data-id="${side}"] ${T('chat-admin-archive')}`)
+    await sleep(800)
+    const sideNow = await api(C.bina, 'GET', `/chat/conversations/${side}`)
+    ok('8B', sideNow.archived === true, 'an administrator archives a conversation on screen')
+    // the export with its typed reason, announced in the conversation
+    await front(D)
+    await D.click(`${T('chat-admin-conv')}[data-id="${maint}"] ${T('chat-admin-export')}`)
+    await D.waitForSelector(T('chat-admin-export-dialog'), { timeout: 10000 })
+    await front(D)
+    await D.type(T('chat-admin-export-reason'), 'Exit check: an audited export on screen')
+    await front(D)
+    await D.click(T('chat-admin-export-confirm'))
+    const needPw = await D.waitForSelector(`${T('chat-admin-export-password')}, ${T('chat-admin-export-done')}`, { timeout: 10000 }).then((h) => h.evaluate((e) => e.getAttribute('data-testid')))
+    if (needPw === 'chat-admin-export-password') {
+      await front(D)
+      await D.type(T('chat-admin-export-password'), pw)
+      await front(D)
+      await D.click(T('chat-admin-export-confirm'))
+    }
+    await D.waitForSelector(T('chat-admin-export-done'), { timeout: 15000 })
+    const announced = await Cp.waitForSelector(`${T('chat-system')}[data-event="export"]`, { timeout: 10000 }).then(() => true, () => false)
+    const dl = await D.$eval(T('chat-admin-export-download'), (e) => e.getAttribute('href'))
+    const zip = await D.evaluate((u) => fetch(u).then(async (r) => ({ s: r.status, type: r.headers.get('content-type'), n: (await r.arrayBuffer()).byteLength })), dl)
+    await shot(D, 'chat-admin.png')
+    await front(D)
+    await D.keyboard.press('Escape')
+    ok('5B', announced && zip.s === 200 && zip.n > 100, 'the administrator exports a conversation with a typed reason on screen; its members see the announcement live; the ZIP downloads', `${needPw === 'chat-admin-export-password' ? 'recent sign-in asked; ' : ''}ZIP ${zip.n} bytes (${zip.type})`)
+    // retention set on screen
+    await front(D)
+    await D.click(`${T('chat-ret-channel')} button:nth-of-type(2)`).catch(async () => {
+      const btn = await D.$$(`${T('chat-ret-channel')} button`)
+      await btn[1].click()
+    })
+    await D.waitForSelector(T('chat-ret-channel-days'), { timeout: 5000 })
+    await front(D)
+    await D.click(T('chat-ret-channel-days'))
+    await D.keyboard.down('Control')
+    await D.keyboard.press('KeyA')
+    await D.keyboard.up('Control')
+    await D.keyboard.press('Backspace')
+    await front(D)
+    await D.type(T('chat-ret-channel-days'), '30')
+    await front(D)
+    const putBodies = []
+    const onPut = (r) => { if (r.method() === 'PUT' && r.url().includes('/chat/admin/settings')) putBodies.push(r.postData()) }
+    D.on('request', onPut)
+    await D.click(T('chat-admin-save'))
+    await sleep(800)
+    D.off('request', onPut)
+    await shot(D, 'chat-admin-retention.png')
+    if (!putBodies.length) log(`retention: no PUT sent; days field "${await D.$eval(T('chat-ret-channel-days'), (e) => e.value)}", save disabled ${await D.$eval(T('chat-admin-save'), (e) => e.disabled)}`)
+    const stNow = await api(C.dev, 'GET', '/chat/admin/settings')
+    await api(C.dev, 'PUT', '/chat/admin/settings', { retention: { channel: null } })
+    ok('8B', stNow.retention.channel === 30, 'retention per kind is set on screen (30 days for channels)', JSON.stringify(stNow.retention))
+    const acts = await q(`SELECT action, details::text AS d FROM env_default.ab_audit WHERE action LIKE 'chat.%' AND user_id = $1 AND at > now() - interval '30 minutes'`, [ids.dev]).catch(async () => q(`SELECT action, details::text AS d FROM env_default.ab_audit WHERE action LIKE 'chat.%' AND user_id = $1`, [ids.dev]))
+    const need = ['chat.report.handle', 'chat.readonly', 'chat.member.remove', 'chat.channel.archive', 'chat.export', 'chat.settings']
+    ok('8B', need.every((a) => acts.some((x) => x.action === a)) && !acts.some((x) => x.d.includes('please report me') || x.d.includes('please check pump')), 'every administrator action done on screen is in the audit log, without message text', need.filter((a) => acts.some((x) => x.action === a)).join(', '))
+
+    /* -------------------------------------------------------------- themes */
+    const lightBg = await A.$eval(T('chat-dock'), (e) => getComputedStyle(e).backgroundColor)
+    await front(A)
+    await A.click(T('portal-theme-toggle'))
+    await sleep(400)
+    const dark = await A.evaluate(() => document.documentElement.classList.contains('dark'))
+    const darkBg = await A.$eval(T('chat-dock'), (e) => getComputedStyle(e).backgroundColor)
+    await shot(A, 'chat-dock-dark.png')
+    await front(A)
+    await A.click(T('portal-theme-toggle'))
+    ok('1B', dark && lightBg !== darkBg, 'chat follows the light and dark themes', `${lightBg} / ${darkBg}`)
+
+    ok('B', errors.length === 0, 'no script errors in any page', errors.slice(0, 3).join(' | '))
+  } catch (e) {
+    failures++
+    const where = String(e?.stack ?? '').split('\n').filter((l) => l.includes('p3-chat.mjs')).map((l) => l.replace(/^.*p3-chat\.mjs:/, 'line ')).join(', ')
+    record('B', 'the browser part', 'FAIL', `${String(e?.message ?? e).slice(0, 400)} (${where})`)
+    if (E.EXIT_DEBUG_FREEZE === '1') await freezeReport(browser)
+    if (SHOTS) { let i = 0; for (const pg of await browser.pages().catch(() => [])) await pg.screenshot({ path: path.join(SHOTS, `fail-${i++}.png`) }).catch(() => {}) }
+  } finally {
+    await browser.close().catch(() => {})
+  }
+}
+
 let app = null
 let server = null
 const socks = []
@@ -132,7 +767,9 @@ try {
   fs.rmSync(WORKSPACE, { recursive: true, force: true })
   fs.mkdirSync(WORKSPACE, { recursive: true })
   app = await createApp({ env: { APPBUILDER_MIGRATION_BACKUP: 'skip' }, config: { workspaceDir: WORKSPACE }, printSetupCode: false, jobs: true })
-  server = http.createServer((req, res) => { app.handle(req, res).then((h) => { if (!h) res.writeHead(404).end() }, () => { if (!res.headersSent) res.writeHead(500); res.end() }) })
+  // the browser part needs the built client (npm run build): dist/ is served for everything the API does not answer
+  const dist = path.join(root, 'dist')
+  server = http.createServer((req, res) => { app.handle(req, res).then((h) => { if (!h) { if (fs.existsSync(path.join(dist, 'index.html'))) serveStatic(dist, req, res); else res.writeHead(404).end() } }, () => { if (!res.headersSent) res.writeHead(500); res.end() }) })
   server.on('upgrade', (req, socket, head) => { if (!app.handleUpgrade(req, socket, head)) socket.destroy() })
   await new Promise((r) => server.listen(PORT, '127.0.0.1', r))
   const admin = new P('admin')
@@ -142,7 +779,7 @@ try {
   await admin.post('/auth/login', { email: ADMIN.email, password: ADMIN.password })
   const ids = {}
   const C = {}
-  for (const [key, name, roles] of [['asha', 'Asha', ['role_viewer']], ['ravi', 'Ravi', ['role_viewer']], ['meera', 'Meera', ['role_viewer']], ['nia', 'Nia', ['role_viewer']], ['kiran', 'Kiran', ['role_viewer']], ['dev', 'Dev', ['role_admin']]]) {
+  for (const [key, name, roles] of [['asha', 'Asha', ['role_viewer']], ['ravi', 'Ravi', ['role_viewer']], ['meera', 'Meera', ['role_viewer']], ['nia', 'Nia', ['role_viewer']], ['kiran', 'Kiran', ['role_viewer']], ['dev', 'Dev', ['role_admin']], ['bina', 'Bina Shah', ['role_viewer']], ['chet', 'Chetan Rao', ['role_viewer']], ['omar', 'Omar Ali', ['role_viewer']]]) {
     const u = await admin.post('/users', { name, email: `${key}@example.test`, roleIds: roles, password: 'Some-Example-Pass-1' })
     ids[key] = u.data.id
     await q('UPDATE ab.users SET must_change_password = false WHERE id = $1', [u.data.id])
@@ -152,6 +789,9 @@ try {
   C.ravi2 = new P('Ravi (second tab)')
   C.ravi2.cookie = C.ravi.cookie
 
+  // EXIT_ONLY_BROWSER=1: the browser part only (the API part below is skipped)
+  api: {
+  if (E.EXIT_ONLY_BROWSER === '1') { record('-', 'API part', 'SKIP', 'EXIT_ONLY_BROWSER=1'); break api }
   /* ---------------------------------------------------------------- 1 */
   log('check 1: chat end to end')
   const open = (await C.asha.post('/chat/conversations', { kind: 'channel', name: 'General', isPrivate: false })).data.id
@@ -347,6 +987,10 @@ try {
   const need = ['chat.report.handle', 'chat.channel.archive', 'chat.member.remove', 'chat.readonly', 'chat.settings']
   ok(8, ro.status === 403, 'a person made read-only in chat cannot post')
   ok(8, need.every((a) => acts.some((x) => x.action === a)) && !acts.some((x) => x.d.includes('not nice') && x.action !== 'chat.report.handle'), 'every administrator action is in the audit log with who, when and what (not message text)', acts.map((a) => a.action).join(', '))
+  } // api
+
+  /* ---------------------------------------------------------------- the browser part (package B) */
+  await browserPart({ C, ids, admin })
 } catch (e) {
   failures++
   record('-', 'the run', 'FAIL', String(e?.stack ?? e).slice(0, 600))

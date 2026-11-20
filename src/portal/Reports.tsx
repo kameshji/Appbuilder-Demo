@@ -17,6 +17,7 @@ import { ConfirmDialog, Empty, Field, PageHeader, Panel, Segmented, fmtRelative,
 import { useCaps } from './security'
 import { printApi } from '@/print/api'
 import { reportsApi, type ReportDef, type ReportInfo, type ReportRun, type ReportSchedule } from './actionsApi'
+import { RecipientFields, ScheduleFields, browserZone } from './ScheduleFields'
 
 const sel = 'h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30'
 const OPS = [
@@ -24,7 +25,6 @@ const OPS = [
   { v: 'contains', l: 'contains' }, { v: 'startsWith', l: 'starts with' }, { v: 'isNull', l: 'is blank' },
 ]
 const NUMERIC = new Set(['number', 'decimal', 'currency', 'autonumber'])
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
 export interface Builder {
   columns: string[]
@@ -59,13 +59,11 @@ export function buildPlan(t: TableDef, b: Builder): Record<string, unknown> {
 }
 
 const blankBuilder = (): Builder => ({ columns: [], filters: [], sort: null, groupBy: '', measures: [] })
-const browserZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' } catch { return 'UTC' } }
 
 function ReportDialog({ report, onClose, onSaved }: { report: ReportInfo | 'new' | null; onClose(): void; onSaved(): void }) {
   const caps = useCaps()
   const tables = usePlatform((s) => s.tables)
   const users = usePlatform((s) => s.users)
-  const teams = usePlatform((s) => s.teams)
   const me = usePlatform((s) => s.currentUserId)
   const { fail, toast } = useToast()
   const existing = report && report !== 'new' ? report : null
@@ -90,7 +88,6 @@ function ReportDialog({ report, onClose, onSaved }: { report: ReportInfo | 'new'
   const [busy, setBusy] = useState(false)
   const table = tables.find((t) => t.id === tableId)
   const cols = (table?.columns ?? []).filter((c) => !['image', 'file'].includes(c.type))
-  const canPick = caps.isAdmin || caps.isMaker
   const services = users.filter((u) => (u as { kind?: string }).kind === 'service')
 
   const def = (): Partial<ReportDef> => ({
@@ -218,33 +215,8 @@ function ReportDialog({ report, onClose, onSaved }: { report: ReportInfo | 'new'
               </table>
             </div>
           )}
-          <div className="grid grid-cols-[150px_1fr] items-end gap-3" data-testid="report-schedule">
-            <Field label="When">
-              <select className={sel} value={schedule.frequency} onChange={(e) => setSchedule({ ...schedule, frequency: e.target.value as ReportSchedule['frequency'] })} data-testid="report-frequency">
-                {['daily', 'weekdays', 'weekly', 'monthly', 'hourly', 'manual'].map((f) => <option key={f} value={f}>{f === 'manual' ? 'only by hand' : f}</option>)}
-              </select>
-            </Field>
-            <div className="flex flex-wrap items-center gap-2">
-              {schedule.frequency === 'weekly' && <select className={sel} value={schedule.weekday ?? 1} onChange={(e) => setSchedule({ ...schedule, weekday: Number(e.target.value) })} aria-label="Weekday">{WEEKDAYS.map((w, i) => <option key={w} value={i}>{w}</option>)}</select>}
-              {schedule.frequency === 'monthly' && <Input className="h-8 w-20" inputMode="numeric" value={String(schedule.day ?? 1)} onChange={(e) => setSchedule({ ...schedule, day: Number(e.target.value) || 1 })} aria-label="Day of month" />}
-              {schedule.frequency === 'hourly' && <Input className="h-8 w-20" inputMode="numeric" value={String(schedule.minute ?? 0)} onChange={(e) => setSchedule({ ...schedule, minute: Number(e.target.value) || 0 })} aria-label="Minute" />}
-              {['daily', 'weekdays', 'weekly', 'monthly'].includes(schedule.frequency) && <Input type="time" className="h-8 w-28" value={schedule.time ?? '08:00'} onChange={(e) => setSchedule({ ...schedule, time: e.target.value })} aria-label="Time" data-testid="report-time" />}
-              {schedule.frequency !== 'manual' && <Input className="h-8 w-48" value={schedule.timeZone ?? 'UTC'} onChange={(e) => setSchedule({ ...schedule, timeZone: e.target.value })} aria-label="Time zone" />}
-            </div>
-          </div>
-          <div className="grid gap-1.5" data-testid="report-recipients">
-            <div className="text-xs font-medium">Recipients</div>
-            {canPick ? (
-              <>
-                <div className="flex flex-wrap gap-1">{userIds.map((u) => <Badge key={u} variant="secondary" className="gap-1">{users.find((x) => x.id === u)?.name ?? u}<button type="button" aria-label="Remove" onClick={() => setUserIds(userIds.filter((x) => x !== u))}>x</button></Badge>)}{teamIds.map((t) => <Badge key={t} variant="outline" className="gap-1">Team {teams.find((x) => x.id === t)?.name ?? t}<button type="button" aria-label="Remove" onClick={() => setTeamIds(teamIds.filter((x) => x !== t))}>x</button></Badge>)}</div>
-                <select className={sel} value="" onChange={(e) => { const v = e.target.value; if (v.startsWith('team:')) setTeamIds([...new Set([...teamIds, v.slice(5)])]); else if (v) setUserIds([...new Set([...userIds, v])]) }} data-testid="report-add-recipient">
-                  <option value="">Add a person or team...</option>
-                  {users.filter((u) => !userIds.includes(u.id) && (u as { kind?: string }).kind !== 'service').map((u) => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}
-                  {teams.map((t) => <option key={t.id} value={`team:${t.id}`}>Team {t.name}</option>)}
-                </select>
-              </>
-            ) : <p className="text-xs text-muted-foreground">You (only makers and administrators send reports to other people).</p>}
-          </div>
+          <ScheduleFields schedule={schedule} onChange={setSchedule} testPrefix="report" />
+          <RecipientFields userIds={userIds} teamIds={teamIds} onChange={(r) => { setUserIds(r.userIds); setTeamIds(r.teamIds) }} testPrefix="report" noun="reports" />
           <div className="grid grid-cols-2 gap-3">
             <Field label="Rows in the email body" hint="All rows are in the CSV file (up to 5,000)"><Input inputMode="numeric" value={inlineRows} onChange={(e) => setInlineRows(e.target.value.replace(/[^0-9]/g, ''))} /></Field>
             <Field label="Attach a PDF" hint="A printable table of the rows, or a print template (made with each recipient's access)">

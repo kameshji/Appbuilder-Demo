@@ -230,7 +230,7 @@ try {
   await templatesPage(page)
   await click(page, T('tpl-kind-solution'))
   const cards = await page.$$eval('[data-testid^="tpl-card-"]', (els) => els.map((e) => e.getAttribute('data-testid')))
-  check(cards.length === 2 && cards.includes('tpl-card-builtin.visitor-log') && cards.includes('tpl-card-builtin.business-model'), 'the catalogue lists the two solution templates (Solutions kind)', cards.join(', '))
+  check(cards.length >= 2 && cards.includes('tpl-card-builtin.visitor-log') && cards.includes('tpl-card-builtin.business-model'), 'the catalogue lists the two solution templates (Solutions kind)', cards.join(', '))
   await openTemplate(page, 'builtin.visitor-log')
   const detail = await text(page, T('tpl-detail'))
   check(/2 apps/.test(detail) && /flow/.test(detail) && /number sequence/.test(detail) && /business-model/.test(detail) && /built in/i.test(detail), 'the detail says what the pack contains (apps, flow, number sequence ...) and that it needs the common business model', detail.replace(/\s+/g, ' ').slice(0, 260))

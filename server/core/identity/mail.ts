@@ -19,6 +19,7 @@ import { recipientsOf, sendSmtp, SmtpError, validAddress, type SmtpSecurity, typ
 import { renderTemplate, type MailTemplate, type TemplateVars } from './templates.ts'
 import { hostProblem } from '../net-policy.ts'
 import { checkTokenUrl, getAccessToken, oauthDefaults, OAuthTokenError, type OAuthGrant, type OAuthProvider } from './oauth-token.ts'
+import { lockedPublicUrl } from '../hosting/settings.ts'
 
 export const MAIL_JOB = 'mail.send'
 const KEY = 'identity.smtp'
@@ -56,6 +57,8 @@ export interface StoredOAuth {
 /** what the Admin console sees (never the password, client secret or refresh token) */
 export type PublicSmtp = Omit<StoredSmtp, 'passwordSealed' | 'oauth2'> & {
   hasPassword: boolean
+  /** H-A: the public address is set by APPBUILDER_PUBLIC_URL and cannot be changed here */
+  publicUrlLocked?: boolean
   oauth2?: Omit<StoredOAuth, 'clientSecretSealed' | 'refreshTokenSealed'> & { hasClientSecret: boolean; hasRefreshToken: boolean }
 }
 
@@ -130,7 +133,8 @@ export function createMailService(services: CoreServices): MailService {
   }
   const toPublic = (s: StoredSmtp): PublicSmtp => {
     const { passwordSealed, oauth2, ...rest } = s
-    const out: PublicSmtp = { ...rest, auth: s.auth ?? 'password', hasPassword: !!passwordSealed }
+    const locked = lockedPublicUrl(services)
+    const out: PublicSmtp = { ...rest, auth: s.auth ?? 'password', hasPassword: !!passwordSealed, ...(locked ? { publicUrl: locked, publicUrlLocked: true } : {}) }
     if (oauth2) {
       const { clientSecretSealed, refreshTokenSealed, ...o } = oauth2
       out.oauth2 = { ...o, hasClientSecret: !!clientSecretSealed, hasRefreshToken: !!refreshTokenSealed }
@@ -266,6 +270,12 @@ export function createMailService(services: CoreServices): MailService {
           throw new HttpError(422, 'invalid', 'The public address must be a web address such as https://apps.example.com.', 'publicUrl')
         }
       }
+      // H-A: a locked public address (APPBUILDER_PUBLIC_URL) is kept; another one is refused
+      const locked = lockedPublicUrl(services)
+      if (locked) {
+        if (publicUrl && publicUrl !== locked) throw new HttpError(422, 'invalid', `The public address is set by the operator (${locked}) and cannot be changed here.`, 'publicUrl')
+        publicUrl = locked
+      }
       let passwordSealed = cur?.passwordSealed ?? null
       if (b.password !== undefined && b.password !== null) {
         if (typeof b.password !== 'string' || b.password.length > 1024) throw new HttpError(422, 'invalid', 'The password must be text.', 'password')
@@ -383,7 +393,8 @@ export function createMailService(services: CoreServices): MailService {
     },
     async brand() {
       const s = services.state.db ? await stored() : null
-      return { installName: s?.installName || 'Appbuilder', publicUrl: s?.publicUrl || '' }
+      // H-A: the locked public address wins (every email link, webhook and WhatsApp callback URL comes from here)
+      return { installName: s?.installName || 'Appbuilder', publicUrl: lockedPublicUrl(services) || s?.publicUrl || '' }
     },
   }
   return service

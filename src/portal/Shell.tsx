@@ -8,10 +8,11 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ChatButton } from '@/chat/ChatDock'
-import { useChatDock } from '@/chat/dock'
+import { openChat } from '@/chat/open'
 import { ProfileAvatar, SettingsEntry } from './Profile'
 import { EnvironmentPicker, EnvironmentStripe } from './EnvironmentPicker'
 import { RestoreNotice } from './RestoreNotice'
+import { ReadOnlyBanner } from './ReadOnlyBanner'
 import { useCaps } from './security'
 import { useTheme } from './theme'
 import { modulesFor, moduleRoute, type ModuleEntry, type ShellMode } from './modules'
@@ -104,7 +105,7 @@ function ModuleNav({ mode, active, caps }: { mode: ShellMode; active: string; ca
   return (
     <>
       {live.map((m) => (
-        <NavButton key={m.key} testId={`nav-${m.key}`} active={active === m.key} icon={m.icon} label={m.label} onClick={() => go(moduleRoute(m))} />
+        <NavButton key={m.key} testId={`nav-${m.key}`} active={active === m.key} icon={m.icon} label={m.label} onClick={() => (m.action === 'chat' ? openChat() : go(moduleRoute(m)))} />
       ))}
       {mode === 'dev' && soon.length > 0 && <div className="mb-0.5 mt-3 px-2.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/80">Coming soon</div>}
       {soon.map((m) => (
@@ -116,7 +117,7 @@ function ModuleNav({ mode, active, caps }: { mode: ShellMode; active: string; ca
           icon={m.icon}
           label={m.label}
           soon={m.status === 'soon'}
-          onClick={() => (m.action === 'chat' ? useChatDock.getState().show() : go(moduleRoute(m)))}
+          onClick={() => (m.action === 'chat' ? openChat() : go(moduleRoute(m)))}
         />
       ))}
     </>
@@ -235,6 +236,7 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
       </header>
       <EnvironmentStripe />
       <RestoreNotice />
+      <ReadOnlyBanner />
       {user && <TabStrip activeId={activeTab} />}
       <div className="flex min-h-0 flex-1">
         {!appTab && (

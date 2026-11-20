@@ -69,6 +69,12 @@ run. Forms wait for the server before reporting success. (decision D9 in [decisi
     `APPBUILDER_TRUST_PROXY=1` and the request carries `X-Forwarded-Proto: https` (an HTTPS reverse proxy in front). The
     built-in server speaks plain HTTP, so on a plain loopback install the cookie is not marked `Secure`
     (`cookieIsSecure` in `server/core/router.ts`).
+  - **`__Host-` prefix** (hosting phase): with a locked `https://` public address (`APPBUILDER_PUBLIC_URL`) every
+    Appbuilder cookie (`ab_session`, `ab_mfa`, `ab_td`, `ab_dev`) is sent as `__Host-<name>; Secure; Path=/` without
+    `Domain`, and only `__Host-` cookies are read. Sibling installs `a.<domain>` and `b.<domain>` are the same site, so
+    without it a page on one could set a `Domain=<domain>` cookie the other receives; browsers never accept such a cookie
+    under the `__Host-` prefix. Plain cookies from before the switch are ignored and cleared: people sign in once more
+    (`server/core/hosting/cookies.ts`).
 - **Lifetime from the policy** (Admin console > Sign-in and security): an **idle timeout** (default 7 days; each use
   extends the expiry, the database and cookie are updated at most every 10 minutes or every quarter of the timeout) and
   an **absolute lifetime** counted from sign-in however active the session is (default 30 days; 0 = none).
@@ -167,6 +173,12 @@ Until the database is configured and the first user exists, the setup endpoints 
   administrator is created the code is replaced by a new one that is never printed. So a local program that cannot read
   the server's console (or its log file) cannot do the setup.
 
+**Hosted installs** (`APPBUILDER_SETUP=closed`, the default of `APPBUILDER_HOSTED=1`) do not offer these routes at all: they
+answer 404, also before setup, and no setup code is printed. The first administrator is made on the server by
+`appbuilder migrate` and `appbuilder admin invite` (no password; a one-time invitation sent to the locked public address),
+audited with source `cli`. When the server listens on a Unix socket (`APPBUILDER_SOCKET`) the peer has no address, so
+`loopbackOnly` refuses every request anyway: the socket is reached only through the proxy.
+
 Whoever passes both and calls `/setup/admin` first becomes the administrator. Afterwards:
 
 - `/setup/admin` answers "Setup is already complete" (409).
@@ -213,6 +225,11 @@ also shows the location only to administrators (others see "Server database").
   webhooks, view tokens, unsubscribe links) still read their (small) body first.
 - **Errors** never include stack traces, SQL or secrets: unexpected errors become "Internal server error." and are logged
   on the server.
+- **Read-only state** (hosting phase): one gate in the router, after the route is matched and before the session and the
+  body, refuses every route that is not a GET and not on the short list of routes that stay usable (sign-in, reads sent
+  as POST, exports, account recovery) with 503 `install_read_only` / `licence_read_only`. A route added later is refused
+  until it is classified; a test requests every registered route (`server/core/hosting/read-only.ts`,
+  `read-only.integration.test.ts`; [Operations](operations.md#read-only-installs)).
 - Static files (the web app) are served without the Host check; they contain no data. Requests with `..`, hidden
   (`.`-prefixed), empty or backslash path parts are refused (`server/core/static.ts`).
 
@@ -374,6 +391,11 @@ address (since 0.6.0). Loopback and private networks are allowed (an on-premises
 mail relay live there); set `APPBUILDER_OUTBOUND_PRIVATE=deny` to refuse them too. The SMTP client connects to the
 address it checked; the database drivers resolve the name again when they connect, so a DNS answer that changes in
 between is not caught for database connections. Connection hosts can only be set by administrators.
+`APPBUILDER_OUTBOUND_PRIVATE=deny` is honoured by every outbound path, also over an HTTP connection's own "allow private
+network addresses" switch and the heartbeat's "in this network" switch; `APPBUILDER_OUTBOUND_DENY` adds host names
+(`*.domain` allowed) nothing may connect to. A hosted install (`APPBUILDER_HOSTED=1`) always runs with `deny` and refuses
+its own public host name (tests: `server/core/hosting/hosting.test.ts`, which also lists every server file that opens a
+connection, so a new one fails until it is reviewed).
 
 **HTTP connections (P1)** are stricter, because flows and events call them with data from users: every request and every
 redirect must go to a host on the connection's allow-list (required; `*` refused), loopback and private addresses need

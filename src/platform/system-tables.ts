@@ -33,6 +33,7 @@ export const SYS = {
   comments: 'sys_comments',
   mentions: 'sys_mentions',
   follows: 'sys_follows',
+  activityShares: 'sys_activity_shares',
   tags: 'sys_tags',
   tagLinks: 'sys_tag_links',
   shares: 'sys_shares',
@@ -169,7 +170,26 @@ export const SYSTEM_TABLES: SystemTableSpec[] = [
       ...regardingCols(false),
       look('ParentActivity', 'Parent activity', 'Activities'),
       col('ReminderOn', 'Reminder', 'datetime'), col('Category', 'Category', 'text'),
+      // P3-T / P3-N (p3-spec 5.10): the task reminder job stamps ReminderSentOn; Recurrence is the shared schedule fields' value
+      // (src/platform/recurrence.ts) and RecurrenceParent the task whose completion created this occurrence (unique: exactly
+      // once); Body is a note's rich text (sanitised by the Notes service, never by this table) and Files its images
+      col('Recurrence', 'Repeats', 'multiline'), look('RecurrenceParent', 'Repeated from', 'Activities'), col('ReminderSentOn', 'Reminder sent on', 'datetime'),
+      col('Body', 'Note', 'multiline'), col('Files', 'Files', 'file', { multiple: true, maxSizeMB: 25 }),
     ],
+  },
+  {
+    id: SYS.activityShares, name: 'ActivityShares', displayName: 'Activity shares', group: 'collaboration', kind: 'table', policy: 'parent', source: SYS.activityShares, primaryColumn: 'Principal', extensible: false,
+    parent: { column: 'Activity', table: SYS.activities },
+    description: 'A note or task shared with a person or a team. Whoever can read the activity sees who it is shared with; only its owner (and administrators) add, change or remove shares.',
+    columns: [
+      // the id of the activity, as text (not a lookup: a lookup would make deleting an activity wait for its shares; shares go
+      // with their activity in tasks/service.ts, and the existence of the activity is checked when a share is written)
+      col('Activity', 'Activity', 'text', { required: true, indexed: true }),
+      col('PrincipalType', 'Shared with (kind)', 'choice', { choices: ['user', 'team'], required: true }),
+      col('Principal', 'Shared with', 'text', { required: true }),
+      col('Access', 'Access', 'choice', { choices: ['read', 'edit'], default: 'read', required: true }),
+    ],
+    uniqueTogether: [['Activity', 'PrincipalType', 'Principal']],
   },
   {
     id: SYS.comments, name: 'Comments', displayName: 'Comments', group: 'collaboration', kind: 'table', policy: 'regarding', source: SYS.comments, primaryColumn: 'Body', extensible: true, regarding: true,
@@ -610,9 +630,12 @@ function regardingPolicy(table: TableDef, op: SystemOp, env: SystemPredicateEnv)
     case SYS.activities: {
       const mine = or([eq('AssignedTo', me), myTeamsCond('AssignedTeam', env.teams)])
       const personal = and([unregarded, or([eq('owner', me), eq('createdBy', me)])])
-      if (op === 'read') return or([about, mine, personal])
+      // P3 (5.10): shared with me or one of my teams (ActivityShares); an edit share may also change the activity
+      const shared = activitySharedWith(table, env, false)
+      const sharedEdit = activitySharedWith(table, env, true)
+      if (op === 'read') return or([about, mine, personal, shared])
       if (op === 'create') return or([unregarded, about])
-      if (op === 'update') return and([or([about, mine, personal]), or([eq('createdBy', me), eq('owner', me), mine])])
+      if (op === 'update') return and([or([about, mine, personal, sharedEdit]), or([eq('createdBy', me), eq('owner', me), mine, sharedEdit])])
       return and([or([about, personal]), or([eq('createdBy', me), eq('owner', me)])])
     }
     case SYS.documents: {
@@ -736,8 +759,29 @@ function parentPredicate(table: TableDef, op: SystemOp, env: SystemPredicateEnv)
   const parentRead = systemPredicate(parent, 'read', env)
   if (isFalse(parentRead)) return FALSE
   const viaParent: Condition = isTrue(parentRead) ? TRUE : { semi: { col: spec.parent.column, table: parent, key: 'id', where: parentRead } }
+  // activity shares (P3, 5.10): readers of the activity see its shares; only the activity's OWNER writes them (someone who
+  // merely reads, is assigned or was shared with cannot pass it on)
+  if (table.id === SYS.activityShares) {
+    if (op === 'read') return viaParent
+    return { semi: { col: spec.parent.column, table: parent, key: 'id', where: eq('owner', env.user.id) } }
+  }
   if (op === 'read' || op === 'create') return viaParent
   return and([viaParent, eq('owner', env.user.id)])
+}
+
+/**
+ * "Shared with me or one of my teams" on an Activities row: a share row for the user, or for one of the user's teams
+ * (optionally only edit shares). False when the shares table is not in the same store (fails closed).
+ */
+function activitySharedWith(activities: TableDef, env: SystemPredicateEnv, editOnly: boolean): Condition {
+  const shares = env.tables.find((t) => t.id === SYS.activityShares)
+  if (!shares || !env.sameStore(activities, shares)) return FALSE
+  const who = or([
+    and([eq('PrincipalType', 'user'), eq('Principal', env.user.id)]),
+    and([eq('PrincipalType', 'team'), inList('Principal', env.teams)]),
+  ])
+  if (isFalse(who)) return FALSE
+  return { semi: { col: 'id', table: shares, key: 'Activity', where: editOnly ? and([who, eq('Access', 'edit')]) : who } }
 }
 
 /* ------------------------------------------------------------------ rich text */

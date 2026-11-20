@@ -24,6 +24,7 @@ import {
 import { currentEnvironment } from './env-context.ts'
 import { errText } from './util.ts'
 import { liveRowsSql } from '../connectors/postgres/sql.ts'
+import type { Tasks } from './tasks/service.ts'
 
 const q = (id: string): string => `"${id.replace(/"/g, '""')}"`
 const invalid = (m: string, field?: string) => new HttpError(422, 'invalid', m, field)
@@ -50,6 +51,8 @@ export interface CollabDeps {
   forUser(user: UserDef): Promise<UserContext>
   notifications(): NotificationService | undefined
   enqueue(type: string, payload: unknown, opts?: { delayMs?: number }): Promise<void>
+  /** P3-T (tasks/service.ts): recurrence, note bodies, activity shares; optional (tests of collab alone leave it out) */
+  tasks?(): Tasks | null
   log(level: 'info' | 'warn' | 'error', msg: string): void
 }
 
@@ -194,6 +197,7 @@ export function createCollab(deps: CollabDeps) {
           if (has('Description') && !blank(next.Description)) set.Description = sanitizeRichText(str(next.Description))
           if (op === 'create' && blank(next.Type)) set.Type = 'Task'
           if (op === 'create' && blank(next.Status)) set.Status = 'Open'
+          Object.assign(set, deps.tasks?.()?.beforeActivityWrite(next, has) ?? {})
           if (has('Status')) {
             const done = str(next.Status) === 'Done'
             const wasDone = str(old?.Status) === 'Done'
@@ -207,6 +211,9 @@ export function createCollab(deps: CollabDeps) {
           }
           break
         }
+        case SYS.activityShares:
+          Object.assign(set, (await deps.tasks?.()?.beforeShareWrite(op, next, changed ?? null)) ?? {})
+          break
         case SYS.mentions: {
           if (op === 'update' && ctx) {
             const other = [...(changed ?? [])].filter((c) => c !== 'IsRead' && c !== 'ReadOn' && c !== 'modifiedOn')
@@ -247,14 +254,18 @@ export function createCollab(deps: CollabDeps) {
         if (op === 'create') await deps.enqueue(COLLAB_NOTIFY_JOB, { kind: 'comment', id: String(row.id), exclude: [...added, str(row.createdBy)] })
       }
       if (def.id === SYS.activities) {
+        // recurring tasks: completing one creates the next, in this same unit of work
+        await deps.tasks?.()?.afterActivityWrite(op, row, old)
         const to = str(row.AssignedTo)
-        if (to && to !== str(old?.AssignedTo) && to !== ctx?.user.id) await deps.enqueue(COLLAB_NOTIFY_JOB, { kind: 'assigned', id: String(row.id), userIds: [to] })
+        // the next occurrence of a repeating task is not an assignment (the reminder and the digest cover it)
+        if (to && to !== str(old?.AssignedTo) && to !== ctx?.user.id && !str(row.RecurrenceParent)) await deps.enqueue(COLLAB_NOTIFY_JOB, { kind: 'assigned', id: String(row.id), userIds: [to] })
       }
     },
 
     async afterDelete(def, ids, capture) {
       if (!ids.length || !deps.db()) return
       await cascade(def.id, ids, 0, capture)
+      if (def.id === SYS.activities) await deps.tasks?.()?.afterActivityDelete(ids, capture)
     },
 
     nextNumber: (name) => nextNumber(name),
@@ -303,6 +314,7 @@ export function createCollab(deps: CollabDeps) {
       }
       n += (await db().exec(`UPDATE ${S(t)} SET ${q(REGARDING.table)} = NULL, ${q(REGARDING.id)} = NULL WHERE ${where()}`, params)).affectedRows
     }
+    if (removedActivities.length) n += (await deps.tasks?.()?.afterActivityDelete(removedActivities, capture)) ?? 0
     if (removedActivities.length && depth < 1) n += await cascade(SYS.activities, removedActivities, depth + 1, capture)
     return n
   }
@@ -341,6 +353,7 @@ export function createCollab(deps: CollabDeps) {
     if (byId.has(SYS.mentions) && byId.has(SYS.comments)) {
       removed += (await db().exec(`DELETE FROM ${S(SYS.mentions)} m WHERE m."Comment" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ${S(SYS.comments)} c WHERE c."id" = m."Comment")`)).affectedRows
     }
+    removed += (await deps.tasks?.()?.sweepShares()) ?? 0
     return { removed }
   }
 

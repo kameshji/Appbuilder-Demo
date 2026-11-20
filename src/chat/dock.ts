@@ -1,10 +1,12 @@
 /**
  * State of the chat dock (right-side panel in the shell and the Studio): open/closed and width (remembered in
- * localStorage), and whether chat is popped out into its own window. The chat module itself is not built yet; it
- * renders inside `ChatPanel` (ChatPanel.tsx), the only component that needs to change when it arrives.
+ * localStorage), and whether chat is popped out into its own window. The chat itself renders inside `ChatPanel`
+ * (ChatPanel.tsx) in the dock and in the pop-out.
  */
 import { create } from 'zustand'
-import { HEARTBEAT_MS, KEY_WINDOW, heartbeatFresh, openChatLink, type ChatLink } from './link'
+import { HEARTBEAT_MS, KEY_WINDOW, heartbeatFresh, openChatLink, type ChatLink, type ChatLinkMsg } from './link'
+import { POPUP_NAME } from './deeplink'
+import { closeConversation, useChat } from './store'
 
 const PREFS_KEY = 'appbuilder-chat-dock'
 export const MIN_WIDTH = 300
@@ -74,8 +76,10 @@ export const useChatDock = create<ChatDockState>((set, get) => {
     },
     popOut: () => {
       let w: Window | null = null
+      // the conversation open in the dock opens in the window too
+      const open = useChat.getState().openId
       try {
-        w = window.open(`${location.pathname}${location.search}#chat`, 'appbuilder-chat', 'popup,width=440,height=760')
+        w = window.open(`${location.pathname}${location.search}#chat${open ? `?c=${open}` : ''}`, POPUP_NAME, 'popup,width=440,height=760')
       } catch {
         w = null
       }
@@ -90,6 +94,8 @@ export const useChatDock = create<ChatDockState>((set, get) => {
       }
       set({ poppedOut: true, open: true, blocked: false })
       save()
+      // the dock's own conversation stops (the window has it now)
+      closeConversation()
       return true
     },
     bringBack: () => {
@@ -99,6 +105,11 @@ export const useChatDock = create<ChatDockState>((set, get) => {
     },
   }
 })
+
+/** tells the pop-out window something (a main window only) */
+export function postToChatWindow(msg: ChatLinkMsg): void {
+  link?.post(msg)
+}
 
 let started = false
 /**

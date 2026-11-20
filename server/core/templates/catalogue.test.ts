@@ -18,8 +18,8 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 describe('built-in template catalogue', () => {
   it('has one usable template of each P2 kind and the two solution templates, each verified against the manifest', () => {
     const all = catalogue()
-    expect(all.map((e) => e.pkg.kind).sort()).toEqual(['app', 'component', 'dataModel', 'screen', 'solution', 'solution'])
-    expect(all.filter((e) => e.pkg.kind === 'solution').map((e) => e.pkg.id).sort()).toEqual(['builtin.business-model', 'builtin.visitor-log'])
+    expect(all.map((e) => e.pkg.kind).sort()).toEqual(['app', 'component', 'dataModel', 'screen', 'solution', 'solution', 'solution'])
+    expect(all.filter((e) => e.pkg.kind === 'solution').map((e) => e.pkg.id).sort()).toEqual(['builtin.business-model', 'builtin.manufacturing', 'builtin.visitor-log'])
     for (const e of all) expect(e.integrity, `${e.source}: ${e.note}`).toBe('builtin')
   })
   it('the manifest and the digests are up to date (run node server/core/templates/manifest.ts --write after an edit)', () => {

@@ -186,11 +186,11 @@ export const MODULES: readonly ModuleEntry[] = [
     ],
   },
   {
-    key: 'chat', label: 'Chat', icon: MessagesSquare, modes: ['user'], status: 'soon', phase: 'P3', action: 'chat',
+    key: 'chat', label: 'Chat', icon: MessagesSquare, modes: ['user'], status: 'live', phase: 'P3', action: 'chat',
     tagline: 'Talk to your team without leaving your apps.',
     details: [
-      'Channels, direct messages, mentions and file sharing.',
-      'Share a record, an app or a dashboard as a card; discuss a record in its own thread; search everything.',
+      'Open and private channels, direct and group conversations, threads, reactions, mentions and files; in the dock, its own window or full screen on a phone.',
+      'Shared records, apps and dashboards show each reader only what they may see; search finds messages in the conversations you can read.',
     ],
   },
   {

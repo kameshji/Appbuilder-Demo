@@ -98,6 +98,8 @@ describe.skipIf(!PG_URL)('job queue and kernel guarantees (PostgreSQL)', () => {
     const s = await A().post('/admin/schedules', { name: 'Every minute', cron: '* * * * *', jobType: 'test.noop', payload: {} })
     expect(s.status, JSON.stringify(s.data)).toBe(200)
     const slot = new Date(Math.floor(Date.now() / 60000) * 60000)
+    // built-in schedules that run every minute (task reminders) must not come due in the same tick
+    await h.q("UPDATE env_default.ab_schedules SET next_run_at = now() + interval '1 day' WHERE id <> $1", [s.data.id])
     await h.q('UPDATE env_default.ab_schedules SET next_run_at = $2 WHERE id = $1', [s.data.id, slot])
     expect(await inDefault(() => k().jobs.schedulerTick())).toBe(1)
     // a restart that lost the advance of next_run_at: a second worker (new queue) sees the same slot again
@@ -126,7 +128,7 @@ describe.skipIf(!PG_URL)('job queue and kernel guarantees (PostgreSQL)', () => {
     const list = (await A().get('/admin/schedules')).data.items
     // the backup schedules (package J) are managed on the Backups page; they live in Default's schedules too, as do the
     // install-wide log retention schedules (package M)
-    expect(list.filter((x: any) => x.builtIn && !x.jobType.startsWith('backup.')).map((x: any) => x.jobType).sort()).toEqual(['actions.retention', 'approval.retention', 'attachments.sweep', 'audit.retention', 'chat.retention', 'collab.orphan-sweep', 'data.recycle-purge', 'flow.digest', 'flow.retention', 'identity.mail-log.retention', 'identity.signin-log.retention', 'notifications.delivery-retention', 'notifications.digest', 'ops.health_daily', 'ops.health_watch', 'ops.heartbeat', 'outbox.retention', 'print.sweep', 'rollup.reconcile', 'whatsapp.retention'])
+    expect(list.filter((x: any) => x.builtIn && !x.jobType.startsWith('backup.')).map((x: any) => x.jobType).sort()).toEqual(['actions.retention', 'approval.retention', 'attachments.sweep', 'audit.retention', 'chat.retention', 'collab.orphan-sweep', 'data.recycle-purge', 'flow.digest', 'flow.retention', 'identity.mail-log.retention', 'identity.signin-log.retention', 'notifications.delivery-retention', 'notifications.digest', 'ops.health_daily', 'ops.health_watch', 'ops.heartbeat', 'outbox.retention', 'print.sweep', 'rollup.reconcile', 'tasks.digest', 'tasks.reminders', 'whatsapp.retention'])
     expect((await A().post('/admin/schedules', { name: 'bad', cron: '61 * * * *', jobType: 'test.noop' })).status).toBe(422)
   }, 60000)
 

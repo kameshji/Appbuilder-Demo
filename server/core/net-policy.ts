@@ -95,11 +95,29 @@ function deniedClasses(env: NodeJS.ProcessEnv = process.env): AddressClass[] {
   return env.APPBUILDER_OUTBOUND_PRIVATE === 'deny' ? [...ALWAYS_DENIED, 'loopback', 'private'] : ALWAYS_DENIED
 }
 
+/**
+ * H-A: APPBUILDER_OUTBOUND_DENY, comma-separated host names (`api.example.com`, `*.apps.example.com`) or IP addresses
+ * nothing may connect to (a hosted install: its own public address and its siblings'; the hosted profile adds the
+ * install's own public host by itself).
+ */
+export function deniedByList(host: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const list = env.APPBUILDER_OUTBOUND_DENY
+  if (!list) return false
+  const h = host.trim().replace(/\.$/, '').toLowerCase().replace(/^\[|\]$/g, '')
+  for (const raw of list.split(',')) {
+    const e = raw.trim().replace(/\.$/, '').toLowerCase().replace(/^\[|\]$/g, '')
+    if (!e) continue
+    if (e.startsWith('*.') ? h.endsWith(e.slice(1)) && h.length > e.length - 1 : h === e) return true
+  }
+  return false
+}
+
 /** a literal check without DNS (sync callers): null when allowed, else the reason */
 export function hostProblem(host: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const h = host.trim().replace(/\.$/, '').toLowerCase()
   if (!h) return 'The host is empty.'
   if (METADATA_NAMES.has(h)) return `"${host}" is a cloud metadata service; Appbuilder does not connect to it.`
+  if (deniedByList(h, env)) return `${host} is on this server's list of refused addresses (APPBUILDER_OUTBOUND_DENY); Appbuilder does not connect to it.`
   const bare = h.replace(/^\[|\]$/g, '')
   if (net.isIP(bare) || /^::ffff:/.test(bare)) {
     const c = classifyAddress(bare)

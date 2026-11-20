@@ -748,3 +748,25 @@ table rebuilds its indexes (1,000,000 rows: 17 s); deleted rows take space until
 **Decision.** Query v2 sort keys may go through a lookup (`via`), compiled as one LEFT JOIN per key to the target rows the caller may read. Unreadable, missing and deleted targets take the blank key and tie by the listed row's natural order, so a row's position reveals nothing about hidden rows; a hidden target column is a 403; connectors without a query engine refuse with 422. The browser's small-table cache and offline answers moved to Query v2 and the v1 read route was removed.
 
 **Consequences.** Decision D12 (a PHP gateway implementing Data API v1) no longer describes a thin gateway: it would have to reimplement Query v2 and pass its parity suites. D12 is left for the owner to keep, rewrite or retire. Details: `docs/dev/query-v2.md`, `docs/dev/data-api.md`.
+
+## D52. Chat screens use their own live connection; phone chat is a full-screen page (P3 package B, Nov 2026)
+
+**Decision.** Chat in the browser speaks to the live hub on its own WebSocket (same protocol, cookie and origin checks) because the page's live client does not deliver chat pushes or subscription sequence numbers to topic handlers and drops topics on an environment switch. At phone width chat is a full-screen page, never a dock. Sending needs a connection; nothing is queued across reloads.
+
+**Consequences.** One more of a user's 20 sockets per tab until the page's client routes chat topics. Details: `docs/dev/chat.md`.
+
+## D53. Tasks: once-only reminders, shares by id, jobs skip when read-only (P3 package T, Nov 2026)
+
+**Decision.** Reminders are once-only through a per-`ReminderOn` idempotency key plus a `ReminderSentOn` stamp; a unique partial index on `RecurrenceParent` guards against duplicate next occurrences. Shares store the activity id as text, not a lookup (a required lookup would block deleting a shared activity); the tasks service removes share rows. Details: `docs/dev/tasks.md`.
+
+## D54. Manufacturing pack keeps the Phase 2 production shapes (P3 package M2, Nov 2026)
+
+**Decision.** `Machine` stays a text code, `Scrap` means every unit rejected the first time and `Rework` a part of it, so the existing presets and print templates bind unchanged (checked by a test). Recipients are role members read from RoleAssignments because notify has no role target and packs carry no people. The daily OEE PDF is a scheduled flow until scheduled reports become a pack component.
+
+**Consequences.** Known platform gaps listed in the CHANGELOG (self-approval, flow ownership, uninstall after sample removal). Details: `docs/guide/maker/manufacturing-pack.md`.
+
+## D55. Hosting H-A and H-C: one read-only gate that fails closed; locked public URL; __Host- cookies (Nov 2026)
+
+**Decision.** One gate in the router, before the session and the body, refuses every non-GET route not on an explicit allow-list with 503 `install_read_only` / `licence_read_only`; new routes are refused until classified and a test requests every route. 503, not a 4xx, because the phone outbox keeps 5xx items waiting. The job runner pauses unlisted job types and their schedules and stops outbox dispatch; mail, backups and health keep running. `__Host-` cookies are applied at the HTTP boundary and old plain cookies are not accepted (people sign in once more). The public URL is locked through `APPBUILDER_PUBLIC_URL`, enforced in the one function every link uses. Hosted defaults come from `APPBUILDER_HOSTED=1`.
+
+**Consequences.** Details: `docs/dev/hosting.md`, `docs/admin/hosting.md`.

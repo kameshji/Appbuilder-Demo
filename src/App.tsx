@@ -7,6 +7,7 @@ import { linkPlatform } from '@/runtime/store'
 import { errorMessage } from '@/runtime/data'
 import { RunApp } from '@/runtime/RunApp'
 import { ChatWindow } from '@/chat/ChatWindow'
+import { chatOpensInShell, shellRouteForChat } from '@/chat/deeplink'
 import { startPreferenceEffects } from '@/portal/theme'
 import { ConnectionBar } from '@/phone/ConnectionBar'
 import { OfflineStart, offlineAtStart, rememberServerMode } from '@/phone/OfflineStart'
@@ -72,8 +73,9 @@ export default function App() {
   // its app tabs, the Studio) lives in the shell, so app tabs stay mounted while you build.
   // P2-A: the connection strip is in the page flow under everything (it never covers an app's buttons)
   if (route.page === 'run') return <AuthGate><WithStrip><RunApp key={route.id} appId={route.id} /></WithStrip></AuthGate>
-  if (route.page === 'chat') return <AuthGate><ChatWindow /></AuthGate>
-  return <AuthGate><WithStrip><Portal route={route} /></WithStrip></AuthGate>
+  // P3-B: a chat link (#chat?c=..) in a main window at desktop width keeps the shell; the dock opens it (src/chat/deeplink.ts)
+  if (route.page === 'chat' && !chatOpensInShell()) return <AuthGate><ChatWindow /></AuthGate>
+  return <AuthGate><WithStrip><Portal route={route.page === 'chat' ? shellRouteForChat() : route} /></WithStrip></AuthGate>
 }
 
 function WithStrip({ children }: { children: ReactNode }) {

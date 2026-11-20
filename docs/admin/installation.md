@@ -385,6 +385,12 @@ environment file (`appbuilder.env`; on Windows also into the WinSW configuration
 | `APPBUILDER_LOG_FILE` | on | `off`: no file log (console only). |
 | `APPBUILDER_PG_BIN` | `PATH` | Folder of `pg_dump` / `pg_restore` for backups (the installers set the installed PostgreSQL's `bin`). |
 | `APPBUILDER_BACKUP_DIR` | `<workspace>/backups` | The backup folder; set, it cannot be changed in the Admin console (the installers set `<data>/backups`). |
+| `APPBUILDER_PUBLIC_URL` | none | The install's public address, **locked**: every link Appbuilder generates (emails, approval and unsubscribe links, webhook and WhatsApp callback addresses) starts with it, and Admin console > Email cannot change it. An `https://` address also gives the cookies the `__Host-` prefix (everyone signs in once more after it is first set). For hosted installs; see [Hosting](hosting.md). |
+| `APPBUILDER_DB_POOL` | `10` | Connections of the system database pool (2 to 100). Hosted installs use 6. |
+| `APPBUILDER_JOBS_POLL_MS` | `1000` | How often the job worker looks for work when no database notification woke it. Hosted installs use 5000. |
+| `APPBUILDER_SETUP` | open | `closed`: the first-run setup screen's routes answer 404; the first administrator is made with `appbuilder admin invite`. |
+| `APPBUILDER_READ_ONLY` | off | `1` (suspended) or `payment`, `maintenance`, `licence`: the install is read-only (sign-in, reads and exports still work). The command `appbuilder read-only on` does the same without a restart. |
+| `APPBUILDER_SOCKET`, `APPBUILDER_HOSTED`, `APPBUILDER_ENV_FILE`, `APPBUILDER_INSTANCE_DIR`, `APPBUILDER_OUTBOUND_DENY`, `APPBUILDER_SHUTDOWN_MS` | none | Options for many installs on one server; see [Hosting](hosting.md). |
 
 Notes:
 

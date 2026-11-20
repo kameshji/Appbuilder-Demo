@@ -160,9 +160,40 @@ Tables can keep deleted rows for a number of days ([Data](../guide/maker/data.md
 | `appbuilder verify-release <zip or folder>` | checks a package's checksums and signature without installing it |
 | `appbuilder diagnostics [--out file]` | writes a diagnostics bundle |
 | `appbuilder restore <archive> ...` | disaster recovery from an install backup ([Disaster recovery](disaster-recovery.md)) |
+| `appbuilder read-only on --reason <r> [--message <text>]` | makes the install read-only (`suspended`, `payment`, `maintenance` or `licence`); a running server applies it within 5 seconds ([Read-only installs](#read-only-installs)) |
+| `appbuilder read-only off` / `status` | writable again / shows the state (exit code 3 while read-only) |
+| `appbuilder migrate` | creates or upgrades the database schema, then exits (hosted installs; [Hosting](hosting.md)) |
+| `appbuilder admin invite --email <e> --name <n>` | an install administrator without a password and a one-time invitation email ([Hosting](hosting.md)) |
+| `appbuilder hosting-check` | prints the hosting settings and their problems (exit code 1 with problems) |
 
 On Linux `appbuilder restore` runs as the `appbuilder` user so the restored files belong to the service. The tools read
-the service's environment file themselves.
+the service's environment file themselves (`APPBUILDER_ENV_FILE` too). Changes made by `read-only`, `migrate` and
+`admin` are in the install audit log with source `cli`, the operating-system user and the host name.
+
+## Read-only installs
+
+An install can be put in **one read-only state** with a reason: suspended by its operator, unpaid, maintenance, or (later)
+its licence could not be verified for more than three days. Set it with `appbuilder read-only on --reason ...` (stored in
+the database, no restart; ended with `read-only off`) or with `APPBUILDER_READ_ONLY` in the service environment (ends when
+it is removed and the service restarted).
+
+While read-only:
+
+- every change is refused with HTTP 503 and the error code `install_read_only` (`licence_read_only` for the licence
+  reason), a message that says why and what still works, and `Retry-After: 300`. Signed-in people see a banner with the
+  same words;
+- reading works: apps, lists, dashboards, reports, the Admin console;
+- **exports always work**: Admin console > Export data, backups (scheduled, made now, downloaded, verified), CSV
+  downloads, a chat conversation's export;
+- signing in and out works, with the second step, invitations, a forgotten password and a forced password change; an
+  install administrator can still create a reset code or remove a lost second step for someone;
+- phones keep their offline changes waiting (the 503 is "try again later") and send them when the install is writable;
+- live connections stay open;
+- background work that would change data waits: table events, flows, approval and task reminders, notification and
+  WhatsApp sends, scheduled reports and snapshots, retention sweeps. Queued work is kept and runs when the install is
+  writable; a schedule's missed runs follow its misfire setting, as after the server was off. Emails (sign-in codes,
+  reset links), backups and health alerts go on. The full list is in [docs/dev/hosting.md](../dev/hosting.md).
+- inbound webhooks and WhatsApp callbacks are answered 503, which their senders retry later.
 
 ## Not supported yet
 

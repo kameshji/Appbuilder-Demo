@@ -1,0 +1,84 @@
+# Hosting: many installs on one server
+
+For the operator of a hosted Appbuilder: one Linux server that runs one install per organisation, each with its own
+process, database and role, folder and secret key, behind one reverse proxy (Caddy) with a host name per organisation.
+The design is in [the hosting specification](../plan/hosting-spec.md). This page covers what one install offers for that
+(packages H-A and H-C). The fleet tool `abfleet`, which creates, updates, backs up and suspends installs, comes in a later
+package and uses exactly these settings and commands.
+
+An on-premises install does not need any of this: with none of the settings below it behaves as before.
+
+## The settings of one install
+
+Each install reads its settings from its environment. With `APPBUILDER_ENV_FILE=/srv/appbuilder/<org>/instance.env` the
+server and every command load that file first (lines `KEY=value`, `#` comments; a variable already set in the process wins).
+
+| Variable | Hosted value | What it does |
+| --- | --- | --- |
+| `APPBUILDER_HOSTED` | `1` | The hosted profile: the defaults below switch to the hosted values, and outbound connections to loopback and private networks are always refused (`APPBUILDER_OUTBOUND_PRIVATE=deny`; another value stops the server at start). |
+| `APPBUILDER_PUBLIC_URL` | `https://<host>.<domain>` | The **locked** public address. Every link the install generates starts with it: invitation, reset and email-change links, approval answer links, unsubscribe links, notification and report links, dashboard snapshot links, webhook and WhatsApp callback addresses. Admin console > Email shows it and refuses another one. Its host is added to the allowed host names, and (hosted) to `APPBUILDER_OUTBOUND_DENY`. An `https://` address turns on `__Host-` cookies and `Secure`. Required with `APPBUILDER_HOSTED=1`. |
+| `APPBUILDER_SOCKET` | `/run/appbuilder/<org>/http.sock` | Listen on this Unix domain socket instead of a TCP port. A stale socket file is removed at start; one a running server answers on stops the second server. The file is removed when the server stops. |
+| `APPBUILDER_SOCKET_MODE` | `660` (default) | The socket's permission bits: the install's user and the proxy's group. Rights for others are refused. |
+| `PORT`, `APPBUILDER_HOST` | `7101` to `7199`, `127.0.0.1` | The fallback without sockets: one port per install on loopback. |
+| `APPBUILDER_SETUP` | `closed` (hosted default) | `/api/v1/setup/*` answers 404, also before setup; no setup code is printed. Setup is done with the commands below. |
+| `APPBUILDER_DB_POOL` | `6` (hosted default; 10 otherwise) | Connections of the system database pool. With the job worker's LISTEN connection, a backup and the commands, set `ALTER DATABASE ... CONNECTION LIMIT 12`. |
+| `APPBUILDER_JOBS_POLL_MS` | `5000` (hosted default; 1000 otherwise) | The job worker's polling fallback. Database notifications still wake it at once; an idle install used 0.2 % of a core instead of 0.3 % in the measurements. |
+| `APPBUILDER_INSTANCE_DIR` | `/srv/appbuilder/<org>` | The one folder the install writes to. The workspace, `APPBUILDER_LOG_DIR`, `APPBUILDER_BACKUP_DIR` and `APPBUILDER_SETUP_CODE_FILE` must be inside it, or the server does not start. |
+| `APPBUILDER_WORKSPACE` | `/srv/appbuilder/<org>/workspace` | As on-premises: `server.json`, `.secret-key`, environments' files, logs. |
+| `APPBUILDER_BACKUP_DIR` | `/srv/appbuilder/<org>/backups` | As on-premises. |
+| `APPBUILDER_OUTBOUND_DENY` | the install's own host (added by itself) | Comma-separated host names (`*.domain` allowed) or addresses nothing may connect to. Add `*.<domain>` to refuse sibling installs by name. |
+| `APPBUILDER_READ_ONLY` | not set | `1` or `suspended`, `payment`, `maintenance`, `licence`: read-only from start (see [Read-only](#read-only)); `APPBUILDER_READ_ONLY_MESSAGE` adds one line. |
+| `APPBUILDER_SHUTDOWN_MS` | `15000` (hosted default; 5000 otherwise) | How long a stopping server waits before it exits. Longer than the job worker's 10 seconds of grace, so running jobs are handed back cleanly. |
+| `APPBUILDER_TRUST_PROXY`, `APPBUILDER_SECURE_COOKIE` | `1` (hosted defaults) | As on-premises behind a reverse proxy. |
+| `APPBUILDER_DB_HOST` ... or `server.json` | the install's own database and role | As on-premises (`appbuilder seed-config` seals the password). |
+
+Check an environment before starting: `appbuilder hosting-check` prints the effective settings and every problem (exit
+code 1 with problems). The server refuses to start with the same problems.
+
+## First-run setup without the setup screen
+
+Over the proxy the setup screen is never offered. On the server, as the install's user, with its environment:
+
+```bash
+appbuilder seed-config --workspace /srv/appbuilder/o1/workspace --db-name ab_o1 --db-user ab_o1 < password-file
+appbuilder migrate                                         # creates the schema, then exits
+appbuilder admin invite --email it@acme.example --name "Asha Rao"
+```
+
+`admin invite` creates an install administrator **without a password** and emails a one-time invitation (valid 7 days)
+with the locked public address; the person chooses a password when opening it. Nothing secret is printed. Without a mail
+relay it refuses, unless you add `--print-link`, which prints the link (treat it like a password). Both commands work with
+the server stopped or running, and are recorded in the install audit log with source `cli`.
+
+## Health
+
+`GET /api/v1/health` answers `{"status":"ok"}` (200), `starting` or `degraded` (503) to anyone, nothing more: no version,
+host or database. Over a socket: `curl --unix-socket /run/appbuilder/o1/http.sock http://localhost/api/v1/health`, or
+`appbuilder health` (it uses `APPBUILDER_SOCKET` when set). The socket appears only after the database is open and
+migrated, so the proxy never reaches a half-started install.
+
+## Stopping
+
+On `SIGTERM` the install stops accepting connections, closes idle ones, closes the live connections, gives running jobs
+10 seconds (the rest are handed back for the next start), closes the database and exits (at the latest after
+`APPBUILDER_SHUTDOWN_MS`).
+
+## Read-only
+
+One state with a reason: `suspended` (by the operator), `payment` (unpaid), `maintenance`, `licence` (later: the licence
+could not be verified for more than 3 days). Set it with `appbuilder read-only on --reason suspended [--message "..."]`
+(applied by a running server within 5 seconds, no restart), end it with `appbuilder read-only off`, see it with
+`appbuilder read-only status`. Writes are refused, reads, sign-in and exports work; the details are in
+[Operations](operations.md#read-only-installs).
+
+## Cookies
+
+With an `https://` public address every Appbuilder cookie carries the `__Host-` prefix, so one install's pages cannot set a
+cookie another install receives (`a.<domain>` and `b.<domain>` are the same site to a browser). When you switch an existing
+install to it, people sign in once more and a remembered device asks for the second step once; nothing else changes.
+
+## Not part of this yet
+
+The fleet tool (`abfleet`), the systemd template unit, the Caddy site template, per-install OS users, database roles with
+their REVOKEs and limits, the licence service: later packages of the hosting phase. Listening on a Unix socket, the socket's
+permissions and the clean stop are tested on Linux (continuous integration); on Windows only the TCP variant runs.

@@ -36,6 +36,12 @@
       "id": "builtin.visitor-log",
       "version": "1.0.0",
       "sha256": "215e02c21fc245ba49a1ec9d993b59d2300c987bd7fdb5f070059d400c0bd765"
+    },
+    {
+      "file": "manufacturing.json",
+      "id": "builtin.manufacturing",
+      "version": "1.0.0",
+      "sha256": "d05d031a9319c022f17e42a4a3e7a3f4b81c1937cff7fc6b6bdfa47bf4b4e1ee"
     }
   ]
 }

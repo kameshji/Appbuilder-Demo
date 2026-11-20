@@ -29,8 +29,10 @@ import { createKernel } from './kernel.ts'
 import type { Kernel } from './kernel.ts'
 import { watchSessions } from './live/session-events.ts'
 import { createCollab, registerCollabJobs } from './collab.ts'
+import { createTasks } from './tasks/service.ts'
 import { setNextNumberProvider } from './event-fx.ts'
 import type { Collab } from './collab.ts'
+import type { Tasks } from './tasks/service.ts'
 import { createFlows, type Flows } from './flows/index.ts'
 
 export type SqlDbFactory = (settings: DatabaseSettings, password: string) => SqlDb
@@ -139,6 +141,8 @@ export type CoreServices = Services & {
   kernel: Kernel
   /** core data model at run time: system-table hooks, timeline, number sequences (collab.ts) */
   collab: Collab
+  /** tasks (P3 package T): reminders, overdue digest, recurring tasks, activity shares (tasks/service.ts) */
+  tasks: Tasks
   /** flows (P1 package A): definitions, triggers, the run engine (flows/index.ts) */
   flows: Flows
   /** approvals (P1 package C): requests, routing, answers, delegation, escalation (approvals/service.ts); set by createApp */
@@ -244,6 +248,11 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   // backups and restores (package J): registers its job types on the kernel before the worker starts
   const backup = createBackupService({ get: () => services, kernel, env: procEnv })
   const healthAlerts = createHealthAlerts({ get: () => services, kernel })
+  // tasks (P3-T): reminders, the overdue digest, recurring tasks, activity shares (tasks/service.ts)
+  const tasks = createTasks({
+    db: () => state.db, meta: getMeta, data: () => data, notifications: () => services.notifications, env: procEnv,
+    log: (level, msg) => log(level, msg),
+  })
   // core data model (P0-N): system-table hooks, polymorphic cascade, number sequences, timeline and notification jobs
   const collab = createCollab({
     db: () => state.db,
@@ -252,9 +261,11 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     forUser: (u) => security.forUser(u),
     notifications: () => services.notifications,
     enqueue: async (type, payload, o) => { await kernel.jobs.enqueue(type, payload, { priority: 1, ...(o?.delayMs ? { delayMs: o.delayMs } : {}) }) },
+    tasks: () => tasks,
     log: (level, msg) => log(level, msg),
   })
   registerCollabJobs(kernel, collab)
+  tasks.registerJobs(kernel)
   registerRecycleJobs(kernel, () => data.recycle)
   setNextNumberProvider((name) => collab.nextNumber(name))
   // flows (P1 package A): job types, the outbox consumer for table triggers, the wait sweeper
@@ -552,6 +563,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     attachments,
     kernel,
     collab,
+    tasks,
     flows,
     env,
     environment: currentEnvironment,
