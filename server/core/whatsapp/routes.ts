@@ -79,6 +79,8 @@ export function whatsappRoutes(router: ApiRouter, s: CoreServices, actions: Acti
     const phone = await phoneOrThrow(s, b.phone)
     const source = (typeof b.source === 'string' ? b.source : 'administrator') as OptInSource
     if (!(OPTIN_SOURCES as readonly string[]).includes(source)) throw new HttpError(422, 'invalid', `The source is one of: ${OPTIN_SOURCES.join(', ')}.`, 'source')
+    // 'inbound keyword' means the person wrote START or STOP to the number: only the webhook records it
+    if (source === 'inbound keyword') throw new HttpError(422, 'invalid', 'The source "inbound keyword" is recorded only when the person writes the keyword to the WhatsApp number.', 'source')
     const o = await recordOptIn(db(s), {
       phone, status: b.status as 'opted_in', source, evidence: String(b.evidence ?? ''), by: ctx.user!.user.id,
       contactTable: typeof b.contactTable === 'string' ? b.contactTable : null, contactRow: typeof b.contactRow === 'string' ? b.contactRow : null,

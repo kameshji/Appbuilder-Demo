@@ -84,7 +84,7 @@ cookie, which is HttpOnly. Then the session cookie decides: none, expired, disab
 **Every subscription names its environment** and is checked with the same function as HTTP requests
 (`userContextFor`: 404 unknown environment, 403 no access). Security contexts are cached per socket and environment for
 10 seconds and dropped at every security change (`security.invalidate`), after which every subscription is checked again
-and the ones no longer allowed are ended.
+and the ones no longer allowed are ended. Only a refusal (401, 403, 404) ends a subscription; a check that could not be done (the database, an environment being restored: 503) keeps it and is tried again 5 seconds later and then with every minute's sweep until it succeeds (finding P2-3 of `docs/internal/security-review-p2.md`: before, it waited for the next security change, and presence messages are not re-checked per message).
 
 **The leak rule for table messages** (`tableMessageFor`, unit-tested in `server/core/live/hub.test.ts`, end to end in
 `server/core/live.integration.test.ts` and `scripts/docs-shots/live.mjs`):

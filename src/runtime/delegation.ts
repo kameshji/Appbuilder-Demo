@@ -17,8 +17,9 @@ import { analyze, bindResult, explain, residualScope, type AnalyzeResult, type P
 import { parse } from '@/fx/parser'
 import { freeIdentifiers, type Node } from '@/fx/ast'
 import { isSystemMacro, systemMacroTables } from '@/fx/functions/collab'
-import { columnKind, type ColumnKind, type QueryPlan, type SchemaInfo, type SortKeyV2, type TableSchemaInfo } from '@/platform/query'
-import { platform, type QueryState } from '@/platform'
+import { columnKind, type ColumnKind, type ConditionV2, type QueryPlan, type SchemaInfo, type SortKeyV2, type TableSchemaInfo } from '@/platform/query'
+import { platform, type QueryState, type TableDef } from '@/platform'
+import { lookupSearchCondition } from '@/controls/lookups'
 import { platformMode, platformState } from './data'
 
 /** tables at most this big run formulas the server can't run in the browser (same threshold as the platform) */
@@ -216,18 +217,53 @@ function info(r: AnalyzeResult, where: DelegationInfo['where']): DelegationInfo 
   return { where, explain: explain(r), diagnostics: r.diagnostics, plans: r.plans.length }
 }
 
-/** shape the plan of the list by the control's view (sort by a header, search box) */
+/**
+ * Lookup columns of a table and the target each may be searched in by label (src/controls/lookups.ts). A lookup whose
+ * target is unknown, not readable or has a hidden or non-text primary column maps to null: it is left out of a search
+ * rather than matched by its id.
+ */
+function lookupTargets(table: string): Map<string, TableDef | null> {
+  const out = new Map<string, TableDef | null>()
+  const st = platformState()
+  const def = st?.tables.find((t) => t.name === table)
+  if (!def) return out
+  const priv = st?.session?.privileges
+  for (const c of def.columns) {
+    if (c.type !== 'lookup') continue
+    const target = c.lookupTable ? st!.tables.find((t) => t.name === c.lookupTable || t.id === c.lookupTable) : undefined
+    const tp = target ? priv?.tables[target.id] : undefined
+    const hidden = !!target && !!priv && !priv.isAdmin && (!tp || tp.read === 'none' || tp.columns[target.primaryColumn] === 'none')
+    // a lookup path into another store is refused by the server: such a column is left out of the search
+    const sameStore = !!target && (target.connectionId ?? 'conn_default') === (def.connectionId ?? 'conn_default')
+    out.set(c.name, target && !hidden && sameStore ? target : null)
+  }
+  return out
+}
+
+/**
+ * shape the plan of the list by the control's view (sort by a header, search box). Lookup columns (lookups.ts): never
+ * sorted on the server (that would order by the row id; the DataTable does not offer it), searched by the target
+ * row's label through a lookup path (`via`), not by id.
+ */
 function withView(plan: QueryPlan, view: ListView | undefined, kinds: Record<string, ColumnKind>): QueryPlan {
   if (!view) return plan
   let p = plan
   const visible = plan.select ? plan.select : Object.keys(kinds)
-  if (view.sort && visible.includes(view.sort.col) && kinds[view.sort.col] && kinds[view.sort.col] !== 'other') {
+  const lookups = lookupTargets(plan.table)
+  if (view.sort && visible.includes(view.sort.col) && kinds[view.sort.col] && kinds[view.sort.col] !== 'other' && !lookups.has(view.sort.col)) {
     p = { ...p, sort: [view.sort, ...(p.sort ?? []).filter((k) => k.col !== view.sort!.col)] }
   }
   const text = view.search?.trim()
   if (text) {
     const cols = (view.searchColumns?.length ? view.searchColumns : visible).filter((c) => kinds[c] === 'text' && !['id', 'createdBy', 'owner'].includes(c))
-    const cond = cols.length ? { or: cols.map((c) => ({ col: c, op: 'contains' as const, value: text.toLowerCase() })) } : { const: false }
+    const parts: ConditionV2[] = []
+    for (const c of cols) {
+      if (!lookups.has(c)) { parts.push({ col: c, op: 'contains', value: text.toLowerCase() }); continue }
+      const target = lookups.get(c)
+      const via = target ? lookupSearchCondition(c, target, text.toLowerCase()) : null
+      if (via) parts.push(via)
+    }
+    const cond: ConditionV2 = parts.length ? { or: parts } : { const: false }
     p = { ...p, filter: p.filter ? { and: [p.filter, cond] } : cond }
   }
   return p

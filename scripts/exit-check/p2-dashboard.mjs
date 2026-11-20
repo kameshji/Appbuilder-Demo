@@ -24,14 +24,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import pg from 'pg'
+import { chromePath, puppeteerCorePath } from './browser-env.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..', '..')
-const BASE = (process.env.BASE || 'http://localhost:5201').replace(/\/$/, '')
+const BASE = (process.env.BASE || 'http://127.0.0.1:5201').replace(/\/$/, '')
 const PG_URL = process.env.PG_URL || 'postgres://abdev:abdev-sandbox-only@127.0.0.1:5433/appbuilder_test_p2dash'
 const ROWS = Number(process.env.ROWS || 1_000_000)
 const RUNS = Number(process.env.RUNS || 5)
-const OUT = process.env.OUT || path.join(root, 'docs', 'images')
+const OUT = process.env.OUT || process.env.SHOTS || path.join(root, 'docs', 'images')
 const BROWSER = process.env.BROWSER !== '0'
 const ADMIN = { name: 'Test Admin', email: 'admin@example.test', password: 'Example-Only-Pass-2026' }
 const SUP = { name: 'Sunita Supervisor', email: 'sup1@example.test', password: 'Example-Only-Pass-2027' }
@@ -170,9 +171,9 @@ let browserMs = []
 let phoneOk = false
 let crossOk = false
 if (BROWSER) {
-  const PUPPETEER_CORE = process.env.PUPPETEER_CORE || '/tmp/pgcheck/node_modules/puppeteer-core'
+  const PUPPETEER_CORE = puppeteerCorePath(root)
   const { default: puppeteer } = await import(pathToFileURL(path.join(PUPPETEER_CORE, 'lib/puppeteer/puppeteer-core.js')).href)
-  const browser = await puppeteer.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] })
+  const browser = await puppeteer.launch({ executablePath: chromePath(), headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] })
   try {
     const page = await browser.newPage()
     await page.setViewport({ width: 1440, height: 1000 })

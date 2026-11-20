@@ -32,7 +32,7 @@ import { JobError } from '../jobs.ts'
 import { errText, log, uid } from '../util.ts'
 import { ArchiveError, isEncryptedFile, sha256OfFile } from './archive.ts'
 import {
-  connect, createArchive, extractEnvironmentFiles, openArchive, restoreSchema, schemaOf, tableData, verifyArchive,
+  closeAfter, connect, createArchive, extractEnvironmentFiles, openArchive, restoreSchema, schemaOf, tableData, verifyArchive,
   type BackupArchive, type EnvSource, type Manifest, type Progress,
 } from './engine.ts'
 import { copyColumns, parseCopyLine, preDataSql, qi, readCopyLines, copyInto } from './dbdump.ts'
@@ -841,7 +841,7 @@ export function createBackupService(deps: BackupServiceDeps) {
         if (typeof b.confirmName !== 'string' || b.confirmName.trim() !== target.name) throw new HttpError(422, 'invalid', `Type the name of the environment ("${target.name}") to confirm.`, 'confirmName')
         const opId = await newOp({ kind: 'restore', backupId: id, mode: 'in-place', source: src.id, target: target.id, by: actor.user.id })
         handedOver = true
-        void exclusive('restore', () => restoreInPlace(opId, a, src.id, target, b, actor, (row.manifest_sha256 as string | null) ?? null)).catch(() => {})
+        closeAfter(a, exclusive('restore', () => restoreInPlace(opId, a, src.id, target, b, actor, (row.manifest_sha256 as string | null) ?? null)))
         return getOp(opId)
       }
       if (b.mode !== 'new') throw new HttpError(422, 'invalid', 'mode must be "new" or "in-place".', 'mode')
@@ -859,7 +859,7 @@ export function createBackupService(deps: BackupServiceDeps) {
       s().environments.invalidate()
       const opId = await newOp({ kind: 'restore', backupId: id, mode: 'new', source: src.id, target: newId, by: actor.user.id })
       handedOver = true
-      void exclusive('restore', () => restoreAsNew(opId, a, src.id, newId, name, b, actor, (row.manifest_sha256 as string | null) ?? null)).catch(() => {})
+      closeAfter(a, exclusive('restore', () => restoreAsNew(opId, a, src.id, newId, name, b, actor, (row.manifest_sha256 as string | null) ?? null)))
       return getOp(opId)
     } finally {
       if (!handedOver) await a.close()
@@ -1154,7 +1154,7 @@ export function createBackupService(deps: BackupServiceDeps) {
       if (target.locked && target.type === 'production' && b.mode === 'new') throw new HttpError(403, 'denied', 'This environment is locked: new tables arrive by solution only. Unlock it, or replace the rows of an existing table.')
       const opId = await newOp({ kind: 'restore-tables', backupId: id, mode: b.mode, source: b.environment, target: envId, by: actor.user.id })
       handed = true
-      void exclusive('restore', () => applyTables(opId, a, plan, b, actor, envId)).catch(() => {})
+      closeAfter(a, exclusive('restore', () => applyTables(opId, a, plan, b, actor, envId)))
       return getOp(opId)
     } finally {
       if (!handed) await a.close()
@@ -1296,8 +1296,14 @@ export function createBackupService(deps: BackupServiceDeps) {
     const row = await rowById(id)
     if (!row) throw new HttpError(404, 'not-found', 'There is no such backup.')
     const { a } = await archiveFor(id, passphrase)
-    const opId = await newOp({ kind: 'verify', backupId: id, by: actor?.user.id ?? null })
-    void exclusive('verify', async () => {
+    let opId: string
+    try {
+      opId = await newOp({ kind: 'verify', backupId: id, by: actor?.user.id ?? null })
+    } catch (e) {
+      await a.close()
+      throw e
+    }
+    closeAfter(a, exclusive('verify', async () => {
       try {
         const v = await verifyArchive(a, { expectedManifestSha256: (row.manifest_sha256 as string | null) ?? null, onProgress: progressFor('op', opId) })
         if (row.state === 'uploaded' || row.state === 'missing' || !row.summary) {
@@ -1312,7 +1318,7 @@ export function createBackupService(deps: BackupServiceDeps) {
       } finally {
         await a.close()
       }
-    }).catch(() => {})
+    }))
     return getOp(opId)
   }
 

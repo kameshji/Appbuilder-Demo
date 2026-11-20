@@ -5,6 +5,7 @@ import type { ControlRenderProps, ControlType, FxRecord } from '@/contracts'
 import { cn } from '@/lib/utils'
 import { toBool, toColor, toNum, toRecords, toText } from './util'
 import { lc, tableSignature } from './display/helpers'
+import { tableOfRows, useLookupRequests } from './lookupLabels'
 
 type GLayout = 'vertical' | 'horizontal' | 'grid'
 function layoutOf(v: unknown): GLayout {
@@ -83,6 +84,11 @@ function GalleryRender({ props, mode, outputs, setOutput, fire, renderTemplate }
       : 'overflow-y-auto overflow-x-hidden'
 
   const shown = virtualOn ? rows.slice(win.start, win.end) : rows
+  // lookup columns of the rows on screen: their target rows are fetched in batches (whole rows), so a template's
+  // ThisItem.Customer.Name works in server mode for any table (src/controls/lookupLabels.ts, runtime recordById)
+  const def = tableOfRows(items, meta?.table)
+  const lookupReqs = !def ? [] : def.columns.filter((c) => c.type === 'lookup' && c.lookupTable && !c.system).map((c) => ({ table: c.lookupTable!, ids: shown.map((r) => r[c.name]) }))
+  useLookupRequests(lookupReqs, { full: true })
   const spacer = (h: number) => (h > 0 ? <div aria-hidden style={{ height: Math.max(0, h - gap), flexShrink: 0, gridColumn: '1 / -1' }} /> : null)
   return (
     <div

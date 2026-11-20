@@ -1385,6 +1385,7 @@ Type: `Gallery` · default size 320 x 320 · main property: `Items`
 **Events:** `OnSelect`.
 
 - **Template.** The UI components inside it are a template that is repeated for every item in `Items`. Inside the template, `ThisItem` is the current item. The Studio shows one blank template row when `Items` is empty.
+- In a template, `ThisItem.Customer` is the id of a lookup; `ThisItem.Customer.Name` reads a field of the record it points at (fetched for the rows in view, as the signed-in user).
 - `Layout` is text: `"Vertical"`, `"Horizontal"` or `"Grid"` (it is not the `Layout` enum). Vertical rows are as wide as the gallery and `TemplateHeight` tall; horizontal rows are `TemplateWidth` x `TemplateHeight`; a grid uses `Columns`.
 
 ### Form
@@ -1426,6 +1427,7 @@ Type: `Form` · default size 720 x 420 · main property: `DataSource`
 - `NewForm`, `EditForm` and `ViewForm` change the form's `Mode` output, which takes over from the `Mode` property once it has been set. `ResetForm` puts the fields back to their starting values.
 - `SubmitForm` checks `Valid` first. When it is false, the inline messages appear, `Error` is set and `OnFailure` runs; nothing is written.
 - `SignatureFields` lists image (or file) columns that are signed instead of uploaded, for example `"Signature"`: the field is a signature pad and the PNG is uploaded after the row is saved, like a photo.
+- A lookup field is a search box over the target table: type part of a record's name (its primary column) and pick it. The server is asked as you type, so it works for tables of any size, and only records the user may read are offered. An optional lookup has a clear button. On phones and tablets lookup and choice fields open a sheet from the bottom.
 - In a running app (server mode) an unsaved New or Edit form is kept as a draft on the device (encrypted, for the signed-in user) and restored after an accidental reload, with a "Draft restored" note and a Discard button. Saving, Discard, signing out and a device wipe delete it.
 
 ### Data table
@@ -1463,6 +1465,7 @@ Type: `DataTable` · default size 640 x 360 · main property: `Items`
 **Events:** `OnSelect`.
 
 - **Selection.** `Selected` is the first selected item; `SelectedItems` holds all of them.
+- A lookup column shows the name of the record it points at (the target table's primary column), fetched for the rows on screen; a record the user may not see, or one that was deleted, shows "Not available", never its id. A list that pages from the server cannot be sorted by a lookup column (its header has no sort arrow); the search box finds rows by the lookup's name.
 - `Columns` entries are a field name or `field:Header`. With `Columns` blank the table hides fields that start with `__` and the `id` field but still shows system columns such as `createdOn` and `owner`. Set `Columns` in generated apps.
 
 ### List

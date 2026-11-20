@@ -141,7 +141,7 @@ describe('plan', () => {
     expect(t.formFields.map((c) => c.name)).toEqual(['Name', 'Credit', 'Code', 'Email', 'Phone', 'Website', 'Tier', 'AccountManager', 'Employees', 'Rating', 'Since', 'LastVisit', 'Active', 'Notes', 'Logo', 'Contract', 'Score'])
     expect(t.leftOut.map((x) => x.column.name)).toEqual(['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner'])
     expect(t.listColumns.map((c) => c.name)).toEqual(['Name', 'Credit', 'Code', 'Email', 'Phone', 'Website', 'Tier'])
-    expect(t.listColumns.some((c) => ['lookup', 'multiline', 'file'].includes(c.type))).toBe(false)
+    expect(t.listColumns.some((c) => ['multiline', 'file'].includes(c.type))).toBe(false)
     expect(t.related.map((r) => r.label)).toEqual(['Orders (Customer)', 'Orders (Bill to)', 'A very long table display name that goes on and on forever and ever more still'])
     expect(t.undo).toBe(true)
     expect(t.timeline).toBe(true)
@@ -155,12 +155,32 @@ describe('plan', () => {
     expect(msg.some((m) => m.startsWith('blocked|Color||') && m.includes('built-in name'))).toBe(true)
     expect(msg.some((m) => m.startsWith('blocked|Nope|'))).toBe(true)
     expect(msg.some((m) => m.startsWith('skipped|Customers||') && m.includes('cannot read'))).toBe(true)
-    expect(msg.some((m) => m.startsWith('limited|Customers|Account manager|') && m.includes('not a search box'))).toBe(true)
+    // the lookup picker searches the server now: a note (how it works), no longer a limitation
+    expect(msg.some((m) => m.startsWith('note|Customers|Account manager|') && m.includes('search box that asks the server') && m.includes('cannot be sorted'))).toBe(true)
+    expect(msg.some((m) => /not a search box|2,000|row id/.test(m))).toBe(false)
     expect(msg.some((m) => m.startsWith('note|Customers|Score|') && m.includes('read-only'))).toBe(true)
     expect(msg.some((m) => m.startsWith('note|Readings||') && m.includes('no search box'))).toBe(true)
     expect(msg.some((m) => m.startsWith('note|Staff|Manager|') && m.includes('own table'))).toBe(true)
     expect(p.tables.map((t) => t.table.name)).toEqual(['Customers', 'Readings', 'Staff'])
     expect(p.tables[1]!.search).toBe(false)
+  })
+
+  it('lists show lookups (by label) when their target can be read; related lists leave out the lookup back', () => {
+    const p = planAutoApp(all, { name: '', device: 'desktop', tables: ['Customers', 'Orders'] })
+    const o = p.tables.find((t) => t.table.name === 'Orders')!
+    expect(o.listColumns.map((c) => c.name)).toEqual(['OrderNo', 'Customer', 'BillTo', 'Status', 'Amount', 'Due'])
+    const c = p.tables.find((t) => t.table.name === 'Customers')!
+    // Orders (Customer): BillTo is listed, Customer (this record) is not
+    expect(c.related[0]!.listColumns.map((x) => x.name)).toEqual(['OrderNo', 'BillTo', 'Status', 'Amount', 'Due'])
+    expect(p.screens.find((s) => s.name === 'Orders: list')!.what).toContain('sort by any column but lookups')
+    // phone: a required lookup is the card's subtitle
+    const ph = planAutoApp(all, { name: '', device: 'phone', tables: ['Orders'] }).tables[0]!
+    expect(ph.cardColumns.map((x) => x.name)).toEqual(['OrderNo', 'Customer', 'Amount', 'Due'])
+    // a lookup to a table the maker cannot read is left out of lists (it could only show "Not available")
+    const hidden = planAutoApp(all, { name: '', device: 'desktop', tables: ['Orders'], readable: (t) => t.name !== 'Customers' }).tables[0]!
+    expect(hidden.listColumns.some((x) => x.type === 'lookup')).toBe(false)
+    const { def } = gen(['Customers', 'Orders'])
+    expect(nodes(def).find((n) => n.name === 'OrdersTable')!.props.Columns).toBe('="OrderNo:Order no, Customer:Customer, BillTo:Bill to, Status:Status, Amount:Amount, Due:Due"')
   })
 
   it('a read-only table gets no New, no Delete and a view form', () => {

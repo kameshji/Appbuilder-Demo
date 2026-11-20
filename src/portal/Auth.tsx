@@ -2,6 +2,7 @@
  * Server-mode startup gates (setup wizard, login) and the change-password dialog.
  * The account menu is the avatar menu in Profile.tsx. Exported for reuse: AuthGate (see index.ts), ChangePasswordDialog.
  */
+import { beforeSignOut } from '@/phone/offline'
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { ArrowLeft, ArrowRight, Check, CircleAlert, Database, KeyRound, LogOut, Mail, Moon, ShieldCheck, Shapes, Sun } from 'lucide-react'
 import { PlatformError, platform, usePlatform, type Session } from '@/platform'
@@ -553,7 +554,7 @@ function ForcedEnrolment() {
         {codes
           ? <div className="grid gap-4"><RecoveryCodes codes={codes} account={email} /><Button onClick={() => void finish()} data-testid="forced-mfa-done"><Check /> I saved them, continue</Button></div>
           : <TotpEnrolment onDone={(c) => { if (c) setCodes(c); else void finish() }} />}
-        <button type="button" className="mt-4 w-full text-center text-xs text-muted-foreground hover:underline" onClick={() => { void platform.auth.logout() }}>Sign out</button>
+        <button type="button" className="mt-4 w-full text-center text-xs text-muted-foreground hover:underline" onClick={() => { void beforeSignOut((t) => window.confirm(t)).then((ok) => { if (ok) void platform.auth.logout() }) }}>Sign out</button>
       </div>
     </GateFrame>
   )
@@ -656,7 +657,7 @@ export function ChangePasswordDialog({ open, onOpenChange, forced = false }: { o
           <FormError message={error} />
           <DialogFooter>
             {forced
-              ? <Button type="button" variant="ghost" onClick={() => { void platform.auth.logout() }} data-testid="cp-sign-out"><LogOut /> Sign out</Button>
+              ? <Button type="button" variant="ghost" onClick={() => { void beforeSignOut((t) => window.confirm(t)).then((ok) => { if (ok) void platform.auth.logout() }) }} data-testid="cp-sign-out"><LogOut /> Sign out</Button>
               : <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>}
             <Button type="submit" disabled={!valid || busy} data-testid="cp-save">Change password</Button>
           </DialogFooter>

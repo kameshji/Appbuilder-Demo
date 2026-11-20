@@ -147,6 +147,9 @@ export function createWhatsappProvider(): ActionProvider {
         case 'recordOptIn': {
           const phone = phoneOf(call, inputs.to)
           if (inputs.source === 'administrator') throw new OutboundError('invalid_input', 'The source "administrator" is only for administrators in the Admin console.')
+          // P2 security re-check (finding P2-10): "inbound keyword" means the person wrote START or STOP to the number;
+          // a flow claiming it would make a maker's record look like the person's own message
+          if (inputs.source === 'inbound keyword') throw new OutboundError('invalid_input', 'The source "inbound keyword" is recorded only by the webhook, when the person writes the keyword to the WhatsApp number.')
           const o = await recordOptIn(db(call), {
             phone, status: inputs.status as 'opted_in' | 'opted_out', source: inputs.source as 'form', evidence: String(inputs.evidence ?? ''),
             by: call.identity ? call.identity.user.id : 'system', contactTable: inputs.contactTable as string | undefined, contactRow: inputs.contactRow as string | undefined, connectionId: call.connection.id,

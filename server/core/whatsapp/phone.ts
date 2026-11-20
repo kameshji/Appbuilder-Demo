@@ -21,6 +21,10 @@ export function normalizePhone(input: unknown, defaultCountryCode: string | unde
   if (!s) throw new PhoneError('A phone number is required.')
   if (s.length > 40) throw new PhoneError('The phone number is too long.')
   if (/[^0-9+\s().\-/]/.test(s)) throw new PhoneError('A phone number has digits only (with an optional + and the country code).')
+  // P2 security re-check (finding P2-9): "+44 (0)20 ..." / "+91 (0) 98..." writes the trunk prefix in brackets; it is not
+  // dialled after the country code. Kept, it made a second number for the same phone, so an opt-in recorded in that
+  // form survived the person's STOP (recorded for the number Meta reports).
+  if (/^\s*(\+|00)/.test(s)) s = s.replace(/\(\s*0\s*\)/g, '')
   s = s.replace(/[\s().\-/]/g, '')
   let digits: string
   if (s.startsWith('+')) digits = s.slice(1)

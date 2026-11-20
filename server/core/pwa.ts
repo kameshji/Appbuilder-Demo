@@ -332,7 +332,8 @@ export function pwaRoutes(router: ApiRouter, services: Services & { config: Serv
     const u = ctx.user!
     const a = await services.meta.apps.get(ctx.params.id)
     if (!a) throw new HttpError(404, 'not-found', 'App not found.')
-    if (!u.privileges.isAdmin && !u.privileges.isMaker && !u.canRunApp(a.meta.id)) throw new HttpError(403, 'denied', 'You do not have access to this app.')
+    // P2 security re-check (finding P2-7): the same answer as an app that does not exist (no existence oracle)
+    if (!u.privileges.isAdmin && !u.privileges.isMaker && !u.canRunApp(a.meta.id)) throw new HttpError(404, 'not-found', 'App not found.')
     const def = a.definition as { theme?: { primary?: string }; offline?: { color?: string } }
     const colour = colourHex(def.theme?.primary) ?? DEFAULT_COLOUR
     const id = encodeURIComponent(a.meta.id)

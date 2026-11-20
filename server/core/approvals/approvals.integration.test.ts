@@ -438,7 +438,7 @@ describe.skipIf(!PG_URL)('approvals (PostgreSQL)', () => {
     expect(await pendingOf(req.id)).toEqual(['dev@example.com'])
   })
 
-  it('policies travel in solutions (approvers by reference; users by email); pending requests do not', async () => {
+  it('policies travel in solutions (approvers by reference; users by email); pending requests do not', { timeout: 30_000 }, async () => { // export, backup (pg_dump) and import: seconds on a busy Windows machine
     const pol = (await h.admin.get('/approvals/policies')).data.items.find((p: any) => p.name === 'Purchase')
     const sol = await h.admin.post('/solutions', { name: 'Purchasing', displayName: 'Purchasing', publisher: 'Acme', version: '1.0.0' })
     expect(sol.status, JSON.stringify(sol.data)).toBe(200)

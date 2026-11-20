@@ -206,7 +206,7 @@ describe.skipIf(!PG_URL)(PG_URL ? 'operations endpoints (PostgreSQL)' : `operati
     expect(contacts.rows).toBeGreaterThan(0)
     expect(def.tables.some((t: { system: boolean }) => t.system)).toBe(true)
     expect(def.jobs).toMatchObject({ dead: 0 })
-  })
+  }, 30_000) // counts every table: seconds on a busy Windows machine
 
   it('diagnostics bundle: a ZIP with health, schema, errors and logs, and no secret', async () => {
     const r = await A.req('POST', '/api/v1/admin/diagnostics')

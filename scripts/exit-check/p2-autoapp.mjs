@@ -9,7 +9,11 @@
  *
  * A server is started in this process (EXIT_PORT, default 5191) on an EMPTY database (EXIT_DB_NAME, default ab_d1:
  * created and dropped here; KEEP=1 keeps it). Tables are made through the API: Customers (every common column type,
- * the recycle bin on) and Orders (a required lookup to Customers). Then, by clicking in headless Chrome:
+ * the recycle bin on), Products (2,500 rows: more than the browser holds for a table in server mode) and Orders (a
+ * required lookup to Customers, an optional one to Products). Lookups (A and B): New order picks both by typing (the
+ * picker searches the server; desktop with the keyboard only), the list shows both by name and never an id, a lookup
+ * header is not sortable (with a reason) and the card sort leaves it out, the list search finds orders by the customer's
+ * name, and offline the picker says the table is not available offline (desktop). Then, by clicking in headless Chrome:
  *
  *  A. desktop app from the Tables page ("Create app", both tables): run it; home tile, the list shows the rows, search
  *     and sort run on the server, open a record, edit and save, the related Orders list shows the customer's orders,
@@ -104,6 +108,8 @@ async function api(c, method, p, body) {
   return r.data
 }
 const rowsOf = async (table) => (await api(admin, 'POST', '/query', { plan: { version: 2, table } })).rows
+/** Products by name -> id (set up below) */
+const productIds = new Map()
 
 /* ------------------------------------------------------------------ browser helpers */
 
@@ -201,6 +207,50 @@ async function pickOption(page, formSel, col, label) {
   const handles = await page.$$('[role="option"]')
   for (const h of handles) if ((await h.evaluate((x) => x.textContent.trim())) === label) { await h.click(); break }
   await sleep(200)
+}
+/** a lookup field of the Form (the searchable picker): open it, type, wait for the server's answer, pick the row */
+async function pickLookup(page, formSel, col, typed, label) {
+  const sel = `${formSel} [id$="-${col}"]`
+  await page.waitForSelector(sel, { visible: true, timeout: 15000 })
+  await page.$eval(sel, (e) => e.scrollIntoView({ block: 'center' }))
+  await page.click(sel)
+  const input = '[data-testid="lookup-popover"] [cmdk-input], [data-testid="picker-sheet"] [cmdk-input]'
+  await page.waitForSelector(input, { visible: true, timeout: 10000 })
+  await page.type(input, typed)
+  // the server's answer for the typed text (every row shown matches it), not the rows from before typing
+  await page.waitForFunction((label, typed) => {
+    const o = [...document.querySelectorAll('[role="option"]')]
+    return o.length > 0 && o.every((x) => x.textContent.toLowerCase().includes(typed.toLowerCase())) && o.some((x) => x.textContent.trim() === label)
+  }, { timeout: 15000 }, label, typed)
+  await sleep(150)
+  if (SHOTS) {
+    await shot(page, `picker-${col}-${await page.evaluate(() => innerWidth)}.png`)
+    await page.evaluate(() => document.documentElement.classList.add('dark'))
+    await shot(page, `picker-${col}-${await page.evaluate(() => innerWidth)}-dark.png`)
+    await page.evaluate(() => document.documentElement.classList.remove('dark'))
+  }
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      for (const h of await page.$$('[role="option"]')) if ((await h.evaluate((x) => x.textContent.trim())) === label) { await h.click(); break }
+      break
+    } catch (e) {
+      if (!/detached/.test(String(e))) throw e
+      await sleep(200)
+    }
+  }
+  await page.waitForFunction((sel, label) => document.querySelector(sel)?.textContent.includes(label), { timeout: 10000 }, sel, label)
+}
+/** the same with the keyboard only (desktop): focus the field, Enter opens the search, type, Enter picks the first match */
+async function pickLookupByKeys(page, formSel, col, typed, label) {
+  const sel = `${formSel} [id$="-${col}"]`
+  await page.waitForSelector(sel, { visible: true, timeout: 15000 })
+  await page.focus(sel)
+  await page.keyboard.press('Enter')
+  await page.waitForSelector('[data-testid="lookup-popover"] [cmdk-input]', { visible: true, timeout: 10000 })
+  await page.keyboard.type(typed)
+  await page.waitForFunction((label) => { const o = [...document.querySelectorAll('[role="option"]')]; return o.length === 1 && o[0].textContent.trim() === label }, { timeout: 15000 }, label)
+  await page.keyboard.press('Enter')
+  await page.waitForFunction((sel, label) => document.querySelector(sel)?.textContent.includes(label) && !document.querySelector('[data-testid="lookup-popover"]'), { timeout: 10000 }, sel, label)
 }
 async function formValue(page, formSel, col) {
   return page.$eval(`${formSel} [id$="-${col}"]`, (e) => (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA' ? e.value : e.textContent)).catch(() => null)
@@ -338,12 +388,17 @@ async function runChecks(page, label, appId, phone) {
   await waitScreen(page, 'SalesOrdersDetail')
   const oform = await N(page, 'SalesOrdersForm')
   await page.waitForFunction((s) => !!document.querySelector(`${s} [id$="-OrderNo"]`), { timeout: 15000 }, oform)
-  const pre = await formValue(page, oform, 'Customer')
+  // the picker shows "…" until the record's name has been fetched: wait for the name
+  let pre = await formValue(page, oform, 'Customer')
+  for (let i = 0; i < 100 && (!pre || pre.trim() === '…'); i++) {
+    await new Promise((r) => setTimeout(r, 100))
+    pre = await formValue(page, oform, 'Customer')
+  }
   await setField(page, oform, 'Amount', '42')
   await setField(page, oform, 'OrderNo', `${label.toUpperCase()}-ADD`)
   await click(page, `${oform} ${T('form-save')}`)
   const added = await waitApi(async () => (await rowsOf('SalesOrders')).find((o) => o.OrderNo === `${label.toUpperCase()}-ADD`), '+ Add saved')
-  check(added.Customer === c03.id, P('"+ Add" creates a child row with the lookup set to this record'), `picker showed "${(pre ?? '').trim()}"`)
+  check(added.Customer === c03.id && /Customer 03/.test(pre ?? '') && !(pre ?? '').includes(c03.id), P('"+ Add" creates a child row with the lookup set to this record (the picker shows its name, not the id)'), `picker showed "${(pre ?? '').trim()}"`)
   await waitScreen(page, phone ? 'CustomersRelated' : 'CustomersDetail')
 
   // New order from the Orders list, the lookup picked in the form
@@ -355,14 +410,38 @@ async function runChecks(page, label, appId, phone) {
   await waitScreen(page, 'SalesOrdersDetail')
   const oform2 = await N(page, 'SalesOrdersForm')
   await setField(page, oform2, 'OrderNo', `${label.toUpperCase()}-NEW`)
-  await pickOption(page, oform2, 'Customer', 'Customer 05')
+  if (phone) await pickLookup(page, oform2, 'Customer', 'Customer 05', 'Customer 05')
+  else await pickLookupByKeys(page, oform2, 'Customer', 'Customer 05', 'Customer 05')
+  // Products has 2,500 rows (more than the browser holds for a table): the picker finds one by typing (server search)
+  await pickLookup(page, oform2, 'Product', 'Product 2345', 'Product 2345')
   await pickOption(page, oform2, 'Status', 'Open')
   await shot(page, `${label}-new-order.png`)
   await click(page, `${oform2} ${T('form-save')}`)
   await waitScreen(page, 'SalesOrdersList')
   const c05 = (await rowsOf('Customers')).find((r) => r.Name === 'Customer 05')
   const made = await waitApi(async () => (await rowsOf('SalesOrders')).find((o) => o.OrderNo === `${label.toUpperCase()}-NEW`), 'new order saved')
-  check(made.Customer === c05.id && made.Status === 'Open', P('New, with the lookup picked in the form, creates the row'), made.OrderNo)
+  check(made.Customer === c05.id && made.Status === 'Open', P('New, with the lookup picked in the form (typed, searched on the server), creates the row'), made.OrderNo)
+  check(made.Product === productIds.get('Product 2345'), P('a lookup to a table of 2,500 rows (more than the browser holds) is picked by typing'), `Product ${made.Product}`)
+
+  // the list shows lookups by label (resolved in batches), never the id; sorting by a lookup is visibly unavailable
+  const olist0 = await N(page, 'SalesOrdersTable')
+  const newRow = (await waitItems(page, olist0, (r) => r.some((x) => x.includes(`${label.toUpperCase()}-NEW`) && x.includes('Customer 05') && (phone || x.includes('Product 2345'))), 'lookup labels in the list')).find((x) => x.includes(`${label.toUpperCase()}-NEW`))
+  const allText = (await listItems(page, olist0)).join(' ')
+  check(!allText.includes(c05.id) && !allText.includes(made.Product), P(phone ? 'the cards show the customer by name (a required lookup is the subtitle), never an id' : 'the list shows Customer and Product by name (Product from the 2,500-row table), never an id'), newRow.slice(0, 90))
+  if (!phone) {
+    const th = await page.$$eval(`${olist0} thead th`, (l) => l.map((e) => ({ t: e.innerText.trim(), s: e.getAttribute('data-sortable'), title: e.getAttribute('title') ?? '' })))
+    const cust = th.find((x) => x.t === 'Customer')
+    check(cust && cust.s === 'false' && /record id/.test(cust.title) && th.find((x) => x.t === 'Order no')?.s === 'true', P('sorting by a lookup column is visibly unavailable (no sort control, a reason on hover); other columns sort'), JSON.stringify(cust))
+  } else {
+    const opts = await page.$$eval(`${olist0} select[aria-label="Sort by"] option`, (l) => l.map((o) => o.value))
+    check(!opts.includes('Customer') && opts.includes('OrderNo'), P('phone: the card sort does not offer lookup columns'), opts.join(','))
+  }
+  // the search box finds orders by the customer's name (a lookup path on the server, not the id)
+  const of05 = (await rowsOf('SalesOrders')).filter((o) => o.Customer === c05.id).length
+  await page.type(`${olist0} input[placeholder="Search"]`, 'Customer 05')
+  const found = await waitItems(page, olist0, (r) => r.length === of05 && r.every((x) => x.includes('Customer 05')), 'search by lookup label')
+  check(of05 >= 4 && found.length === of05, P('search finds rows by a lookup\'s name (server side)'), `${found.length} of ${of05} rows`)
+  await retype(page, `${olist0} input[placeholder="Search"]`, '')
 
   // delete with confirmation: Cancel keeps it, Delete removes it, Undo restores it
   const olist = await N(page, 'SalesOrdersTable')
@@ -392,6 +471,23 @@ async function runChecks(page, label, appId, phone) {
     await waitApi(async () => (await rowsOf('SalesOrders')).some((o) => o.id === made.id), 'restored')
     check(true, P('Undo (the table keeps deleted rows) brings the row back'))
   } else check(false, P('Undo offered after the delete'), 'no undo toast')
+
+  if (!phone) {
+    // no connection: a lookup to a table that is not kept on the device says so in plain words (no spinner forever)
+    await press(page, 'SalesOrdersNewButton')
+    await waitScreen(page, 'SalesOrdersDetail')
+    const oform3 = await N(page, 'SalesOrdersForm')
+    await page.waitForSelector(`${oform3} [id$="-Product"]`, { visible: true, timeout: 15000 })
+    await page.setOfflineMode(true)
+    await page.click(`${oform3} [id$="-Product"]`)
+    await page.waitForSelector('[data-testid="lookup-popover"] [cmdk-input]', { visible: true, timeout: 10000 })
+    await page.type('[data-testid="lookup-popover"] [cmdk-input]', 'Product 77')
+    const msg = await page.waitForFunction(() => { const m = document.querySelector('[data-testid="lookup-message"]'); return m && /offline/.test(m.textContent) ? m.textContent : null }, { timeout: 30000 }).then((h) => h.jsonValue()).catch(() => null)
+    await shot(page, `${label}-picker-offline.png`)
+    await page.setOfflineMode(false)
+    await page.keyboard.press('Escape')
+    check(msg && /Products is not available offline/.test(msg), P('offline: the lookup picker says the table is not available offline'), msg ?? 'no message')
+  }
 }
 
 /* ------------------------------------------------------------------ main */
@@ -425,10 +521,16 @@ try {
       { displayName: 'Code', name: 'Code', type: 'autonumber', prefix: 'C-' },
     ],
   })
+  // a lookup target with more than 2,000 rows (the browser never holds such a table whole in server mode)
+  const products = await api(admin, 'POST', '/tables', { displayName: 'Products', name: 'Products', columns: [{ displayName: 'Name', name: 'Name', type: 'text', required: true }] })
+  const csv = 'Name\n' + Array.from({ length: 2500 }, (_, i) => `Product ${String(i + 1).padStart(4, '0')}`).join('\n')
+  await api(admin, 'POST', '/data/Products/import', { csv, mode: 'append' })
+  for (const r of (await api(admin, 'POST', '/query', { plan: { version: 2, table: 'Products', filter: { col: 'Name', op: 'eq', value: 'Product 2345' } } })).rows) productIds.set(r.Name, r.id)
   const orders = await api(admin, 'POST', '/tables', {
     displayName: 'Sales orders', name: 'SalesOrders', recycleDays: 30, columns: [
       { displayName: 'Order no', name: 'OrderNo', type: 'text', required: true },
       { displayName: 'Customer', name: 'Customer', type: 'lookup', lookupTable: 'Customers', required: true },
+      { displayName: 'Product', name: 'Product', type: 'lookup', lookupTable: 'Products' },
       { displayName: 'Status', name: 'Status', type: 'choice', choices: ['Open', 'Done'] },
       { displayName: 'Amount', name: 'Amount', type: 'currency' },
       { displayName: 'Due', name: 'Due', type: 'date' },
@@ -442,10 +544,10 @@ try {
     await sleep(15) // distinct createdOn: "newest first" is deterministic
   }
   for (let i = 1; i <= 12; i++) for (let k = 1; k <= 3; k++) await api(admin, 'POST', '/data/SalesOrders/rows', { values: { OrderNo: `ORD-${String(i).padStart(2, '0')}-${k}`, Customer: ids[i - 1], Status: k === 1 ? 'Open' : 'Done', Amount: i * k } })
-  const role = await api(admin, 'POST', '/roles', { name: 'App users', apps: 'all', privileges: [customers, orders].map((t) => ({ table: t.id, create: true, read: 'all', update: 'all', delete: 'all' })) })
+  const role = await api(admin, 'POST', '/roles', { name: 'App users', apps: 'all', privileges: [customers, orders, products].map((t) => ({ table: t.id, create: true, read: 'all', update: 'all', delete: 'all' })) })
   const una = await api(admin, 'POST', '/users', { name: USER.name, email: USER.email, password: USER.password, roleIds: [role.id] })
   await q('UPDATE ab.users SET must_change_password = false WHERE id = $1', [una.id ?? una.user?.id])
-  record('setup', true, `12 customers, 36 orders, a user without the Maker role`)
+  check(productIds.get('Product 2345'), 'setup', `12 customers, 36 orders, 2,500 products (CSV import), a user without the Maker role`)
 
   browser = await puppeteer.launch({ executablePath: E.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--window-size=1600,1000', '--allow-file-access-from-files'] })
   const ctx = await browser.createBrowserContext()
@@ -457,7 +559,7 @@ try {
   await page.goto(`${BASE}/#tables`, { waitUntil: 'domcontentloaded' })
   const A = await createFromDialog(page, { open: 'tables-create-app', tables: ['Customers', 'SalesOrders'], device: 'desktop', name: 'Customers desktop' })
   check(A.preview.length === 5 && A.preview[0].startsWith('Home'), 'A: the dialog previews the screens (home, list and details per table)', A.preview.map((s) => s.split(' - ')[0]).join(' | '))
-  check(A.issues.some((s) => /Customer/.test(s) && /not a search box/.test(s)) && A.issues.some((s) => /Notes/.test(s)), 'A: the dialog lists what it cannot do (the lookup picker, long text and files only in the form)', `${A.issues.length} issues`)
+  check(A.issues.some((s) => /Customer/.test(s) && /search box that asks the server/.test(s) && /cannot be sorted/.test(s)) && !A.issues.some((s) => /not a search box|row id/.test(s)) && A.issues.some((s) => /Notes/.test(s)), 'A: the dialog lists what it cannot do (lookups: no sort by them; long text and files only in the form), no longer the old picker limits', `${A.issues.length} issues`)
   const defA = await api(admin, 'GET', `/apps/${A.id}`)
   const appA = defA.definition
   check(appA.width === 1920 && appA.screens.map((s) => s.name).join() === 'Home,CustomersList,CustomersDetail,SalesOrdersList,SalesOrdersDetail', 'A: created through the normal app path: an ordinary 1920x1080 app on the server', appA.screens?.map((s) => s.name).join())

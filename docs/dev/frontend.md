@@ -432,6 +432,49 @@ UI components. Demo mode, collections and formulas without table reads take none
   searches the text columns on the server (300 ms debounce), shows the exact count, reads lookup labels for the rows on screen by id,
   and exports CSV through `GET /tables/:id/csv`. Demo mode keeps the in-memory grid.
 
+## Lookup fields and labels
+
+Lookups work on tables of any size, in server mode, demo mode and offline, through the platform facade only (no direct
+HTTP). Decisions are pure functions in `src/controls/lookups.ts` (tested in `lookups.test.ts`); the React side is
+`src/controls/lookupLabels.ts` (label store and batch requests) and `src/controls/inputs/LookupPicker.tsx`.
+
+- **Form lookup field** (`LookupPicker`): a combobox button with the current value's label. Opening it runs
+  `pickerPlan(target, text)`: `contains` on the target's primary column (a number primary column: equality when the text
+  is a number), sorted by it, `select` that column only; through `useQuery` with `pageSize` 25 (the cache asks for the
+  exact count with the first page, `loadMore` on scroll). Typing is debounced (250 ms). The query runs as the signed-in
+  user, so only rows they may read are offered. The current value's label is read by id (below), so it shows even when
+  the row is far from the first page. Desktop: a popover with a cmdk search box (arrows, Enter, Escape; Backspace or
+  Delete on the closed button clears an optional value; a clear button too). Touch: `PickerSheet` (bottom sheet, search,
+  44 px rows, more rows near the end). Messages (`pickerMessage`): "No Products match "x".", "Products has no records you
+  can pick yet.", "Could not load Products: ...", and offline "Products is not available offline. Connect to pick a
+  record." (an "available offline" table answers from the device through `remote.ts`'s snapshot path, so it simply
+  works). A target table the user cannot see shows "You cannot see ... here". The Form no longer checks a lookup
+  against a list held in the browser: the picker only offers existing rows and the server refuses an id that is not a
+  readable row of the target (`checkLookup`).
+- **Form choice fields on touch** (`ChoiceSheetField`): the same bottom sheet over `choices`; desktop keeps the Radix
+  select.
+- **Labels in lists** (`useLookupRequests`, `lookupLabel`): a component asks for the ids it shows that it has not asked
+  for yet as `id in [...]` plans of at most 200 ids (`labelPlans`), so a screenful costs one request per target table,
+  never one per row; identical plans of several components are one request (the query cache). Answers fill a label store
+  per signed-in user and table (`labelStoreKey`); asked ids that did not come back are stored as null. A component keeps
+  owning its plans while mounted (at most 40), so the query cache refetches them when the target changes (a save here, a
+  live message) and labels follow.
+- **Rows the viewer cannot read, or deleted rows**: the cell shows a muted, italic *Not available* (tooltip: "This
+  record was deleted or you cannot see it."). Never the id, and the two cases are not told apart (the server answers a
+  hidden row exactly like a missing one). While a batch is on its way the cell shows "…".
+- **DataTable** (and its phone cards): lookup columns of the rows' table (`QueryMeta.table`, or the table whose columns
+  the rows have) render labels. Sorting: a list paged from the server cannot sort by a lookup (it would order by id):
+  the header has no sort arrow, `data-sortable="false"`, a reason on hover, and the card **Sort by** box leaves it out;
+  `withView` in `src/runtime/delegation.ts` also ignores such a sort. A list held in the browser sorts by label (up to
+  2,000 distinct ids; it then asks for every label). Search: on the server, a lookup column is searched through its
+  target's primary column with a lookup path (`lookupSearchCondition`: `{ via: { col, table, where: contains } }`),
+  never by id; targets that are unreadable, have a hidden or non-text primary column, or live in another connection are
+  left out of the search. In the browser, search reads labels.
+- **Gallery**: lookups of the rows in view are fetched as whole rows (`{ full: true }`), and `recordById`
+  (`src/runtime/data.ts`) reads them (`lookupRowById`), so a template's `ThisItem.Customer.Name` works in server mode for
+  any target table, not only Users. The evaluator records the answer's `q:<key>` (`lookupRowDep`) and re-runs when it
+  arrives. `ThisItem.Customer` itself is still the id (formulas need it for `Patch` and filters).
+
 ## Live data, presence and notifications
 
 The platform keeps one realtime connection per tab (`platform.live`, `src/platform/live.ts` and `remote-live.ts`; protocol and rules

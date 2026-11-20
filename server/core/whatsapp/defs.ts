@@ -129,7 +129,7 @@ export const RECORD_OPTIN_ACTION: ActionDef = {
     properties: {
       to,
       status: { type: 'string', enum: ['opted_in', 'opted_out'], title: 'Status' },
-      source: { type: 'string', enum: ['form', 'import', 'inbound keyword'], title: 'Source', description: 'Where the consent came from ("administrator" is only for administrators in the Admin console).' },
+      source: { type: 'string', enum: ['form', 'import'], title: 'Source', description: 'Where the consent came from ("administrator" is only for administrators in the Admin console; "inbound keyword" only for the webhook, when the person writes START or STOP).' },
       evidence: { type: 'string', minLength: 10, maxLength: 2000, title: 'Evidence', 'x-ui': 'textarea', description: 'What the person agreed to and how, for example "Ticked \'Send me order updates on WhatsApp\' on the order form, order SO-1001".' },
       contactTable: { type: 'string', maxLength: 100, title: 'Contact table', description: 'Optional: the table of the person or contact row.' },
       contactRow: { type: 'string', maxLength: 100, title: 'Contact row', description: 'Optional: the row id.' },

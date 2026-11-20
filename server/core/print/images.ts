@@ -1,6 +1,15 @@
 /** PNG and JPEG sniffing for the print engine: type and pixel size from the file header (no decoding). */
 export interface ImageInfo { type: 'png' | 'jpeg'; width: number; height: number }
 
+/**
+ * The most pixels a PNG may have to be printed (P2 security re-check, finding P2-4). pdfkit decodes a PNG with
+ * transparency (or a palette with transparency) into memory, 4 bytes a pixel, in the one server process; a few-MB PNG of
+ * a plain colour can declare 30,000 x 30,000 pixels (3.6 GB decoded). 40 megapixels (160 MB decoded) is more than a
+ * phone photo; JPEGs are embedded as they are (never decoded on the server), so they have no pixel limit.
+ */
+export const MAX_PNG_PIXELS = 40_000_000
+export const pixelProblem = (i: ImageInfo): string | null => (i.type === 'png' && i.width * i.height > MAX_PNG_PIXELS ? `a PNG image of ${i.width} x ${i.height} pixels is larger than the ${MAX_PNG_PIXELS / 1_000_000} megapixels that can be printed` : null)
+
 export function imageInfo(b: Buffer): ImageInfo | null {
   if (b.length > 24 && b.readUInt32BE(0) === 0x89504e47 && b.readUInt32BE(4) === 0x0d0a1a0a && b.toString('ascii', 12, 16) === 'IHDR') {
     const width = b.readUInt32BE(16)

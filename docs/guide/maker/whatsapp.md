@@ -24,7 +24,7 @@ status `accepted`. Delivery and reading arrive later in the message log; they do
 **Nothing is sent to a number without a current opt-in.** The step fails with "has no current WhatsApp opt-in" and
 nothing is sent. Opt-ins are recorded by administrators (Admin console > WhatsApp), by people themselves in Settings, by
 STOP / START messages people send, or by your flow with the action **Record an opt-in or opt-out**: give the number, the
-status, the source (`form`, `import` or `inbound keyword`) and evidence, for example
+status, the source (`form` or `import`; "inbound keyword" is recorded only when the person writes START or STOP) and evidence, for example
 `"Ticked 'Send me order updates on WhatsApp' on order " & Trigger.Record.Number`. Record only consent the person really
 gave: your business is responsible for it. **Check a number's opt-in** tells you whether a number may be messaged, so a
 flow can choose email instead.

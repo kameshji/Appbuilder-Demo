@@ -54,6 +54,12 @@ What you get, per table:
   the form; on phones they are on a separate **Related** screen.
 - Several tables: a **Home** screen with a tile per table and its number of records. On desktop a lookup to another
   table of the app gets an **Open ...** button on the detail screen (at most two).
+- **Lookups**: in the form, a lookup is a search box: type part of the record's name and pick it (the server is asked as
+  you type, so it works for tables of any size; on phones it opens a sheet from the bottom). An optional lookup has a
+  clear button. Lists and phone cards show the record's name (the target table's primary column). A record you are not
+  allowed to see, or one that was deleted, shows as *Not available*, never as an id. The list's search box finds rows by
+  that name too. A list cannot be sorted by a lookup column (its header has no sort arrow): the server would sort by the
+  hidden record id, not by the names you see.
 
 The result is an ordinary app: change, move or delete anything in the Studio. Nothing stays linked to the generator, so
 generating again creates a new app; it never changes the one you have. Who can use the app and its data is decided by
@@ -61,8 +67,7 @@ security roles, as for any app.
 
 Not supported yet:
 
-- Lookup fields in the generated form are a plain drop-down list, not a search box, and only list rows the browser holds
-  (up to 2,000). Lists do not show lookup columns (they would show the row id).
+- Sorting a list by a lookup column (see above).
 - Pick-and-choose of fields or columns in the dialog (change them in the Studio afterwards), tablet-specific layouts
   (the phone layout is used for portrait sizes), and dashboards beyond the record counts on the home screen.
 - System tables (people, collaboration, logs) are not offered; tables whose formula name is a built-in name of the

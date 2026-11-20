@@ -28,7 +28,7 @@ import { isRecord } from '../../../src/fx/values.ts'
 import { evaluate as evalFlowExpr, rowsToFx, src, type EvalEnv } from '../flows/expr.ts'
 import { schemaOf } from '../event-fx.ts'
 import { PAGE_COUNT, PAGE_NUMBER, type ImageRef, type RBlock, type RTableRow } from './layout.ts'
-import { fromDataUrl, imageInfo } from './images.ts'
+import { fromDataUrl, imageInfo, pixelProblem } from './images.ts'
 import { CHART_ROW_LIMIT, SINGLE_VALUE_KINDS, chartFromBlock, chartKind, type ChartBlockInput } from './chart.ts'
 
 export class BindError extends Error {
@@ -348,6 +348,8 @@ export async function bindTemplate(inp: BindInput, data: BindData): Promise<Boun
   async function addImage(bytes: Buffer, label: string, caption?: string): Promise<ImageRef | null> {
     const info = imageInfo(bytes)
     if (!info) { warn(`${label}: only PNG and JPEG images can be printed; one image was left out.`); return null }
+    const px = pixelProblem(info)
+    if (px) { warn(`${label}: ${px}; it was left out.`); return null }
     if (bytes.length > inp.maxImageBytes) { warn(`${label}: an image is larger than ${Math.round(inp.maxImageBytes / 1048576)} MB and was left out.`); return null }
     if (imageBytes + bytes.length > PRINT_LIMITS.maxImagesMB * 1048576) { warn(`${label}: the images of this document are larger than ${PRINT_LIMITS.maxImagesMB} MB together; the rest were left out.`); return null }
     const { createHash } = await import('node:crypto')

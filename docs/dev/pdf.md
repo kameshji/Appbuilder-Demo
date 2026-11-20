@@ -134,7 +134,7 @@ Generation runs as an identity:
 | A person (app, API, Print button, timeline, designer preview) | That person, unless the template runs as a service account |
 | A flow (`document.generate`) | The flow's run-as identity |
 | A scheduled report (PDF attached) | Each recipient (or the report's service account), the same identity as the email's data |
-| A template with `runAs: {serviceAccount}` | The service account; set by administrators only, audited `print.run_as_service`; each such generation audited `print.generate_as_service`; the log says "service account X for Y" |
+| A template with `runAs: {serviceAccount}` | The service account; set by administrators only, audited `print.run_as_service`; each such generation audited `print.generate_as_service`; the log says "service account X for Y". **Any signed-in person can then print any record of the template's table that the service account reads**, also records they cannot see themselves (templates have no audience of their own): use it only for data everyone may print |
 
 Rows and columns the identity cannot read are absent: a record it cannot read is "not found" (404), related rows are
 trimmed by row security, a hidden column prints blank and the generation log (and the API answer) gets a warning
@@ -149,8 +149,9 @@ Drafts are previewed by makers only; everyone else generates the published versi
 readable by its creator and by administrators (`GET /print/files/:token`). `GeneratePdf` chooses the token in the
 browser and returns it at once; the server registers it as pending and fills it. **A token in a file or image column**
 (insert or update through the data service, e.g. `Patch(T, r, {Report: GeneratePdf("Inspection report", r)})`) is
-claimed by `setGeneratedFileClaimer` (data.ts): the server waits up to 90 s for a pending token, refuses another person's
-token (422), copies the bytes into a new attachment of that row and column and writes its id. A claimed file left in an
+claimed by `setGeneratedFileClaimer` (data.ts): the server waits up to 90 s for a pending token (at most 10 s for a token
+that does not exist yet: the GeneratePdf request that registers it may arrive just after the write), refuses another person's
+token at once (422; `GET /print/files/:token` answers 404 at once), copies the bytes into a new attachment of that row and column and writes its id. A claimed file left in an
 unsaved row is removed by the attachment orphan sweep. The email action accepts `{fileToken}` attachments (the run-as
 identity must be the token's creator).
 
@@ -200,7 +201,13 @@ Apply writes the template as published, as a new version, inside the import's tr
 
 500 pages, 20,000 rows, 60 s per document; images 10 MB each and 60 MB per document (PNG and JPEG only; others are left
 out with a warning); 400 blocks, nesting 6, 2 MB per template (static images 600 KB each); bulk 2,000 records; files 24 h;
-Word templates 10 MB. A document over the page limit fails with a clear message.
+Word templates 10 MB. A document over the page limit fails with a clear message. A PNG may have at most 40 megapixels
+(`MAX_PNG_PIXELS`: pdfkit decodes PNGs with transparency into memory; a small file can declare 30,000 x 30,000 pixels),
+larger ones are left out with a warning; JPEGs are embedded without decoding. A Word template's ZIP directory is checked
+before it is unpacked, on upload and before every generation (solution packages skip the upload check): at most 128 MB
+unpacked, 100 times compression, 2,000 parts, no ZIP64 (`DOCX_LIMITS`). Title, author, subject and keywords lose `<`, `>`
+and `&` (replaced by look-alikes) because pdfkit writes them unescaped into the XMP metadata. Security review:
+`docs/internal/security-review-p2.md`.
 
 ## Tests
 

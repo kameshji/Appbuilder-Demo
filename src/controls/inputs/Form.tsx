@@ -21,6 +21,7 @@ import { StickyBar } from '@/phone/sheet-bar'
 import { useBoxWidth } from '@/phone/touch-hooks'
 import { AttachmentField } from './AttachmentField'
 import { SignatureField } from './SignatureField'
+import { ChoiceSheetField, LookupPicker, LookupText } from './LookupPicker'
 import { DraftScope, draftKeyOf, draftNote, draftRecordKey, formDrafts, restoreDecision } from '@/phone/drafts'
 import {
   type FieldVal,
@@ -47,19 +48,20 @@ function safe<T>(fn: () => T, fallback: T): T {
   }
 }
 
-/** Re-render when schemas or rows change. The hook calls are unconditional; a missing platform just yields 0. */
-function useWorkspaceVersion(): number {
-  let v = 0
+/**
+ * Re-render when schemas or rows change: one hook call, always made (a hook inside try/catch could be skipped by a
+ * throw, changing the hook order between renders). The selector itself never throws; a platform without state gives ''.
+ */
+function workspaceStamp(s: { dataVersion?: number; tables?: { modifiedOn?: string }[] } | null | undefined): string {
   try {
-    v += usePlatform((s) => s.dataVersion)
-    v += usePlatform((s) => s.tables.length)
     // schema edits replace the TableDef (modifiedOn changes)
-    const stamp = usePlatform((s) => s.tables.map((t) => t.modifiedOn).join('|'))
-    v += stamp.length
+    return `${s?.dataVersion ?? 0}|${s?.tables?.length ?? 0}|${(s?.tables ?? []).map((t) => t.modifiedOn ?? '').join('|')}`
   } catch {
-    /* platform not ready */
+    return ''
   }
-  return v
+}
+function useWorkspaceVersion(): string {
+  return usePlatform(workspaceStamp)
 }
 
 const NONE = '__none__'
@@ -86,10 +88,10 @@ interface FieldProps {
   onChange(v: FieldVal): void
   onBlur(): void
   invalid: boolean
-  lookups: LookupOption[]
+  touch: boolean
 }
 
-function FieldEditor({ col, id, value, onChange, onBlur, invalid, lookups }: FieldProps) {
+function FieldEditor({ col, id, value, onChange, onBlur, invalid, touch }: FieldProps) {
   const err = invalid ? 'border-destructive focus-visible:border-destructive focus-visible:ring-destructive/20' : ''
   const str = typeof value === 'string' ? value : ''
   switch (col.type) {
@@ -139,9 +141,12 @@ function FieldEditor({ col, id, value, onChange, onBlur, invalid, lookups }: Fie
         </div>
       )
     }
-    case 'choice':
-    case 'lookup': {
-      const options: LookupOption[] = col.type === 'choice' ? (col.choices ?? []).map((c) => ({ id: c, label: c })) : lookups
+    case 'lookup':
+      // a searchable picker over the server (any table size), the bottom sheet on touch
+      return <LookupPicker col={col} id={id} value={str} invalid={invalid} onChange={(v) => onChange(v)} onBlur={onBlur} />
+    case 'choice': {
+      if (touch) return <ChoiceSheetField col={col} id={id} value={str} invalid={invalid} onChange={(v) => onChange(v)} onBlur={onBlur} />
+      const options: LookupOption[] = (col.choices ?? []).map((c) => ({ id: c, label: c }))
       return (
         <Select
           value={str === '' ? undefined : str}
@@ -195,15 +200,15 @@ function FieldEditor({ col, id, value, onChange, onBlur, invalid, lookups }: Fie
   }
 }
 
-/** Read-only rendering of a value (View mode). */
-function displayValue(col: ColumnDef, v: FieldVal | undefined, lookups: LookupOption[]): string {
+/** Read-only rendering of a value (View mode). Lookups show their label (LookupText), never the id. */
+function displayValue(col: ColumnDef, v: FieldVal | undefined): React.ReactNode {
   if (col.type === 'boolean') return v === true ? 'Yes' : 'No'
   if (v instanceof Date) {
     const d = formatDate(v, 'yyyy-mm-dd')
     return col.type === 'datetime' ? `${d} ${String(v.getHours()).padStart(2, '0')}:${String(v.getMinutes()).padStart(2, '0')}` : d
   }
   const s = typeof v === 'string' ? v : ''
-  if (col.type === 'lookup') return lookups.find((o) => o.id === s)?.label ?? s
+  if (col.type === 'lookup') return s ? <LookupText col={col} value={s} /> : ''
   return s
 }
 
@@ -256,24 +261,11 @@ function FormRender({ node, props, mode, outputs, setOutput, fire, focusToken }:
   const item: FxRecord | null = isRecord(props.Item) ? props.Item : null
   const iKey = itemKey(item)
 
-  /* ---- lookup options ---- */
-  const lookups = useMemo(() => {
-    const out: Record<string, LookupOption[]> = {}
-    for (const c of cols) {
-      if (c.type !== 'lookup' || !c.lookupTable) continue
-      out[c.name] = safe(() => {
-        const t = platform.tables.get(c.lookupTable as string)
-        const primary = t?.primaryColumn ?? 'id'
-        return platform.tables.rows(c.lookupTable as string).map((r) => {
-          const id = toText(r.__id ?? r.id)
-          const label = toText(r[primary])
-          return { id, label: label === '' ? id : label }
-        })
-      }, [] as LookupOption[])
-    }
-    return out
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [colsKey, version])
+  /*
+   * Lookup fields pick from the server (LookupPicker): any table size, as the signed-in user. Membership is not checked
+   * against a list held in the browser any more (there is none for a large table); the picker only offers existing
+   * rows and the server refuses an id that is not a readable row of the target.
+   */
 
   /* ---- values (reload on Item / table / mode / reset) ---- */
   const resetToken = toNum(outputs.__reset, 0)
@@ -354,7 +346,7 @@ function FormRender({ node, props, mode, outputs, setOutput, fire, focusToken }:
         if (c.required && !has) errors[c.name] = `${c.displayName || c.name} is required`
         continue
       }
-      const m = validateField(c, values[c.name], lookups)
+      const m = validateField(c, values[c.name])
       if (m) errors[c.name] = m
     }
   }
@@ -624,7 +616,7 @@ function FormRender({ node, props, mode, outputs, setOutput, fire, focusToken }:
                   {isFileType(c.type) && attachmentIds(values[c.name]).length > 0 ? (
                     <AttachmentCell value={values[c.name]} thumb={40} max={6} />
                   ) : (
-                    displayValue(c, values[c.name], lookups[c.name] ?? []) || <span className="text-muted-foreground">-</span>
+                    displayValue(c, values[c.name]) || <span className="text-muted-foreground">-</span>
                   )}
                 </div>
               ) : isFileType(c.type) && sigSet.has(c.name.toLowerCase()) ? (
@@ -653,7 +645,7 @@ function FormRender({ node, props, mode, outputs, setOutput, fire, focusToken }:
                   col={c}
                   id={id}
                   value={values[c.name] ?? (c.type === 'boolean' ? false : '')}
-                  lookups={lookups[c.name] ?? []}
+                  touch={touch}
                   invalid={Boolean(showMsg)}
                   onChange={(v) => setField(c.name, v)}
                   onBlur={() => editable && setTouched((t) => (t[c.name] ? t : { ...t, [c.name]: true }))}

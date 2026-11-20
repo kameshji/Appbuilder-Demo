@@ -14,11 +14,21 @@ import PizZip from 'pizzip'
 import type { FxEngine, FxRecord, FxScope, FxValue } from '../../../src/contracts.ts'
 import { isRecord } from '../../../src/fx/values.ts'
 import { plainText, type FormatOptions } from '../../../src/platform/print-format.ts'
+import { checkZip, type ZipLimits } from '../zip-guard.ts'
 
 export const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
+/**
+ * P2 security re-check (finding P2-5): a .docx is a ZIP that PizZip unpacks in memory. Its directory is checked first
+ * (zip-guard.ts), on upload and again before every generation (templates also arrive in solution packages, which do not
+ * pass the upload check): at most 128 MB unpacked, 100 times compression, 2,000 parts, no ZIP64. A Word document is
+ * compressed 5 to 20 times; a 10 MB "document" of zeros unpacks to gigabytes.
+ */
+export const DOCX_LIMITS: ZipLimits = { maxTotal: 128 * 1024 * 1024, maxRatio: 100, maxEntries: 2000 }
+
 /** the tags of a template (designer: "fields used"); throws on a malformed template with the reason */
 export function docxTags(bytes: Buffer): string[] {
+  checkZip(bytes, 'The Word template', DOCX_LIMITS)
   const zip = new PizZip(bytes)
   const tags = new Set<string>()
   const doc = new Docxtemplater(zip, { paragraphLoop: true, linebreaks: true, parser: (tag) => { tags.add(tag); return { get: () => '' } } })
@@ -37,6 +47,7 @@ function docxError(e: unknown): string {
 }
 
 export function fillDocx(bytes: Buffer, base: FxScope, engine: FxEngine, fmt: FormatOptions, warn: (m: string) => void): Buffer {
+  checkZip(bytes, 'The Word template', DOCX_LIMITS)
   let zip: PizZip
   try {
     zip = new PizZip(bytes)

@@ -125,6 +125,39 @@ function sessionUserId(): string | null {
   return st.mode === 'server' && st.session ? st.session.user.id : null
 }
 
+/**
+ * The open store, only while it belongs to the person signed in now (P2 security re-check, finding P2-2). Another person
+ * can sign in on the same page without a reload (after a session ran out, or a sign-out that did not go through
+ * beforeSignOut): the previous person's store must then never answer reads, take writes or replay its outbox, because
+ * the requests would carry the new person's session.
+ */
+function mine(): UserStore | null {
+  const s = current
+  const uid = sessionUserId()
+  return s && uid && s.userId === uid ? s : null
+}
+
+/** the signed-in person changed (or signed out): forget the previous store's key; its sealed data stays on the device */
+function lockForeignStore(): void {
+  const s = current
+  if (!s || s.userId === sessionUserId()) return
+  note('locked: the signed-in user changed')
+  current = null
+  snapMemo.clear()
+  syncGen.clear()
+  try {
+    sessionStorage.removeItem(sessionKeyName(s.userId))
+  } catch {
+    /* no session storage */
+  }
+  s.codec = null
+  void s.outbox.setCodec(null).catch(() => {})
+  useOffline.setState({ items: [], unlocked: false, active: apps.size > 0, tables: {}, tableNotice: null })
+}
+
+/** the record key of a kept answer: keyed (never the request text in clear) and per environment */
+const answerKey = async (s: UserStore, key: string): Promise<string> => `a:${await s.codec!.name(`${getRequestEnvironment()}\u0000${key}`)}`
+
 async function fetchKey(userId: string): Promise<{ key: string; epoch: number } | null> {
   try {
     const cached = sessionStorage.getItem(sessionKeyName(userId))
@@ -164,7 +197,11 @@ async function ensureStarted(): Promise<UserStore | null> {
     const kv = openKV(userId)
     const outbox = new Outbox(kv, { send })
     const store: UserStore = { userId, kv, outbox, codec: null, cacheIndex: new Map() }
-    outbox.subscribe(() => useOffline.setState({ items: outbox.list(), unlocked: outbox.unlocked, active: apps.size > 0 || outbox.count > 0 }))
+    // the UI shows the outbox of the person signed in only (a locked store of someone else says nothing)
+    outbox.subscribe(() => {
+      if (current !== store || store.userId !== sessionUserId()) return
+      useOffline.setState({ items: outbox.list(), unlocked: outbox.unlocked, active: apps.size > 0 || outbox.count > 0 })
+    })
     outbox.onSent = (item, _res, settled) => {
       note(`sent ${item.kind} ${item.table}${settled ? '' : ' (after restart)'}`)
       if (settled) return
@@ -179,6 +216,7 @@ async function ensureStarted(): Promise<UserStore | null> {
     const idx = await kv.get<Array<[string, CacheEntry]>>('meta', 'cache-index')
     store.cacheIndex = new Map(idx ?? [])
     current = store
+    useOffline.setState({ items: outbox.list(), unlocked: outbox.unlocked, active: apps.size > 0 || outbox.count > 0 })
     await unlock(store)
     return store
   })().finally(() => {
@@ -214,6 +252,13 @@ async function unlock(store: UserStore): Promise<void> {
     }
     await store.kv.put('meta', 'epoch', k.epoch)
     await store.kv.put('meta', 'check', await codec.seal('appbuilder-offline'))
+    // answers kept by an older version under the request text in clear: drop them (the text held filter values)
+    const legacy = [...store.cacheIndex.keys()].filter((x) => !x.startsWith('a:') && !x.startsWith('snap:'))
+    for (const x of legacy) {
+      store.cacheIndex.delete(x)
+      await store.kv.delete('cache', x)
+    }
+    if (legacy.length) await store.kv.put('meta', 'cache-index', [...store.cacheIndex.entries()])
     store.codec = codec
     await store.outbox.setCodec(codec)
     if (useConnectivity.getState().status === 'online') void replay()
@@ -268,7 +313,7 @@ async function send(r: SendRequest): Promise<SendResult> {
 
 let replayTimer: ReturnType<typeof setInterval> | null = null
 export async function replay(): Promise<void> {
-  const s = current
+  const s = mine()
   if (!s || !s.codec || s.outbox.count === 0) return
   note(`replay ${s.outbox.count}`)
   const r = await s.outbox.flush()
@@ -290,9 +335,10 @@ function startTimers() {
 
 /* ------------------------------------------------------------------ read cache */
 
-async function storeAnswer(key: string, table: string, answer: unknown): Promise<void> {
-  const s = current
+async function storeAnswer(requestKey: string, table: string, answer: unknown): Promise<void> {
+  const s = mine()
   if (!s?.codec) return
+  const key = await answerKey(s, requestKey)
   const sealed = await s.codec.seal(answer)
   const bytes = sealed.data.byteLength
   if (bytes > CACHE_CAP_BYTES / 4) return
@@ -321,9 +367,11 @@ async function enforceBudget(s: UserStore, keep: string): Promise<void> {
   }
 }
 
-async function cachedAnswer(key: string): Promise<unknown | undefined> {
-  const s = current
-  if (!s?.codec || !s.cacheIndex.has(key)) return undefined
+async function cachedAnswer(requestKey: string): Promise<unknown | undefined> {
+  const s = mine()
+  if (!s?.codec) return undefined
+  const key = await answerKey(s, requestKey)
+  if (!s.cacheIndex.has(key)) return undefined
   const sealed = await s.kv.get<Sealed>('cache', key)
   if (!sealed) return undefined
   try {
@@ -607,18 +655,19 @@ export function note(e: string): void {
 }
 const hook: OfflineHook = {
   divert(table, rowId) {
-    if (!isOfflineTable(table) || !current?.codec) return false
-    const d = useConnectivity.getState().status === 'offline' || current.outbox.pendingFor(table, rowId)
+    const s = mine()
+    if (!isOfflineTable(table) || !s?.codec) return false
+    const d = useConnectivity.getState().status === 'offline' || s.outbox.pendingFor(table, rowId)
     note(`write ${table}: ${d ? 'to the outbox' : 'to the server'}`)
     return d
   },
   accepts(table) {
-    const a = isOfflineTable(table) && !!current?.codec
+    const a = isOfflineTable(table) && !!mine()?.codec
     note(`no connection for ${table}: ${a ? 'kept' : 'not an offline table'}`)
     return a
   },
   queue(w: QueuedWrite, cb: QueueCallbacks) {
-    const s = current
+    const s = mine()
     if (!s) {
       cb.fail(new Error('The offline store is not available.'))
       return
@@ -660,6 +709,8 @@ export function startOffline(): void {
   // a signed-in user with items left from an earlier session: open the store so they are counted and sent
   platform.subscribe(() => {
     const uid = sessionUserId()
+    // another person (or nobody) is signed in now: the previous person's store is locked at once
+    if (current && current.userId !== uid) lockForeignStore()
     if (uid && current?.userId !== uid && !starting) {
       void hasStore(uid).then((has) => {
         if (has) void ensureStarted()

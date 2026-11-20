@@ -7,6 +7,7 @@ import { setDeviceNotifier } from '@/phone/device-fx'
 import type { FxRecord, FxValue } from '@/contracts'
 import { platform, PlatformError, userRecord, type ColumnDef, type DataErrorEvent, type Row, type TableDef, type WorkspaceState } from '@/platform'
 import { CODE_MESSAGES } from '@/platform/errorMessages'
+import { lookupRowById } from '@/controls/lookupLabels'
 
 export const SYSTEM_COLUMNS = new Set(['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner'])
 
@@ -389,6 +390,9 @@ export function recordById(id: string): FxRecord | null | undefined {
   }
   const hit = idIndex.map.get(id.toLowerCase())
   if (hit) return hit
+  // a row a Gallery fetched for its lookup columns (src/controls/lookupLabels.ts; any table, as the viewer)
+  const fetched = lookupRowById(id)
+  if (fetched) return fetched
   const users = st.tables.find((t) => t.id === 'sys_users')
   if (users) ensureTablesLoaded([users.name])
   return null

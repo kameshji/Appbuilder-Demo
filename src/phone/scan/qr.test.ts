@@ -119,10 +119,11 @@ function noiseFrame(w: number, h: number, seed = 3): Frame {
   return { data, width: w, height: h }
 }
 
-const decode = makeQrDecode(jsQR, 0)
+// a frozen clock: the time budget (tested separately below) must not skip decodes when the machine is busy
+  const decode = makeQrDecode(jsQR, 0, () => 0)
 /** inverted codes are tried on every 4th frame in production: give the decoder four frames */
 function readInFrames(f: Frame, tries = 4): string | null {
-  const d = makeQrDecode(jsQR, 4)
+  const d = makeQrDecode(jsQR, 4, () => 0)
   for (let i = 0; i < tries; i++) {
     const t = d(f.data, f.width, f.height)
     if (t) return t
@@ -225,7 +226,7 @@ describe('QR fallback decoder (jsQR) on generated images', () => {
 })
 
 describe('frame pipeline (1D decoder and QR together)', () => {
-  const qr = makeQrDecode(jsQR, 0)
+  const qr = makeQrDecode(jsQR, 0, () => 0)
   it('reads a QR code only when QR is wanted', () => {
     const f = renderQr(qrMatrix('PIPE-QR'), { px: 5 })
     expect(decodeFrame(f, new Set(['code_128']), qr)).toEqual({ text: 'PIPE-QR', format: 'qr_code' })

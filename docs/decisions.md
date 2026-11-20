@@ -712,3 +712,15 @@ table rebuilds its indexes (1,000,000 rows: 17 s); deleted rows take space until
 **Decision.** Recorded in `docs/plan/master-plan.md` section 12: customers are several small organisations (hosted with recurring payment, or on-site with a one-time payment); licences are verified online (supersedes the offline licence file); no cold-start offline on phones; summary-table use and the pivot table are deferred; the full phase order stands. How to host several organisations is proposed, not decided, in `docs/plan/hosting-and-licensing.md`.
 
 **Consequences.** The product is not multi-tenant today; hosting many organisations needs either a fleet of installs or a kernel change.
+
+## D46. Owner decisions of 20 Nov 2026 (later): true multi-tenancy for the cloud, lifetime on-premises licence, 3 days of grace
+
+**Decision.** The cloud product is to be truly multi-tenant (supersedes the fleet-of-installs proposal); on-premises stays one organisation per install under a lifetime licence; licences are verified online with 3 days of grace; hosted testers may start before an outside security review (risk accepted by the owner). Recorded in `docs/plan/master-plan.md` section 13; outline in `docs/plan/hosting-and-licensing.md`.
+
+**Consequences.** Multi-tenancy is a new, unspecified phase that changes the kernel (tenant above environments, tenant resolution before the session, per-tenant caches, limits, secrets and backups, more than one server process, a control plane, an isolation test suite, load tests). Nothing of it exists; everything built so far assumes one organisation and one process.
+
+## D47. Phase 2 close: lookups resolved on the server, request bodies read after the session check, exit checks as one script (P2 package F, Nov 2026)
+
+**Decision.** Form lookups are a server-side type-ahead and lists resolve lookup names in batches as the viewer; a record the viewer cannot read and a deleted one both show "Not available" (the server answers them alike). Sorting a server-paged list by a lookup is shown as unavailable instead of sorting by id. The router reads a request body only after the session and sign-in level are checked. `scripts/exit-check/p2.mjs` runs the seven exit checks, including the P0 and P1 checks, which now run on Windows. Service-account print templates keep letting any signed-in person print any record of their table (documented in the security review; owner decision pending).
+
+**Consequences.** Version 0.7.0. What is unverified and carried forward is listed in `docs/plan/p2-spec.md`.

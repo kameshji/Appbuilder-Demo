@@ -127,6 +127,10 @@ export function createSnapshots(services: CoreServices) {
     const name = String(o.name ?? prev?.name ?? dash.name).trim().slice(0, 200)
     if (!name) throw invalid('A snapshot needs a name.', 'name')
     const schedule = parseSchedule(o.schedule ?? prev?.schedule)
+    // P2 security re-check (finding P2-8): a snapshot (a PDF per recipient) runs at most once an hour; any person who can
+    // open a dashboard may subscribe themselves, and a cron of every minute made each of them a steady load of PDFs and mail
+    const cronText = scheduleCron(schedule)
+    if (cronText && parseCron(cronText).minutes.size > 1) throw invalid('A snapshot runs at most once an hour: choose one minute of the hour.', 'schedule')
     const rec = isObj(o.recipients) ? o.recipients : prev?.recipients ?? { userIds: [who.user.id], teamIds: [] }
     const userIds = [...new Set((Array.isArray(rec.userIds) ? rec.userIds : []).map(String))].slice(0, REPORT_MAX_RECIPIENTS)
     const teamIds = [...new Set((Array.isArray(rec.teamIds) ? rec.teamIds : []).map(String))].slice(0, 50)
@@ -388,9 +392,22 @@ export function snapshotRoutes(router: ApiRouter, services: CoreServices, snaps:
     return { ok: true }
   }, { auth: 'user' })
 
+  // P2 security re-check (finding P2-8): a recipient's "run now" (their own copy) at most once a minute per snapshot; the
+  // snapshot's owner and administrators are not limited
+  const lastManual = new Map<string, number>()
   router.add('POST', '/dashboards/snapshots/:sid/run', async (ctx) => {
     const { info } = await visible(ctx)
     const me = ctx.user!
+    const k = `${info.id}\u0000${me.user.id}`
+    const at = Date.now()
+    const prevRun = lastManual.get(k) ?? 0
+    if (!info.canEdit && at - prevRun < 60_000) {
+      const wait = Math.ceil((60_000 - (at - prevRun)) / 1000)
+      ctx.res.setHeader('Retry-After', String(wait))
+      throw new HttpError(429, 'rate_limited', `This snapshot was run a moment ago; try again in ${wait} s.`)
+    }
+    lastManual.set(k, at)
+    if (lastManual.size > 5000) for (const x of [...lastManual.keys()].slice(0, 2500)) lastManual.delete(x)
     const all = info.canEdit
     const job = await services.kernel.jobs.enqueue(SNAPSHOT_JOB, { snapshotId: info.id, trigger: 'manual', ...(all ? {} : { only: [me.user.id] }) }, { createdBy: me.user.id, correlationId: `dashboard-snapshot:${info.id}` })
     await audit(ctx, 'dashboard.snapshot.run', { id: info.id, dashboard: info.dashboardId, forEveryone: all })

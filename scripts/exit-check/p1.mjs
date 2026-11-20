@@ -36,6 +36,7 @@ import http from 'node:http'
 import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import pg from 'pg'
+import { chromePath, puppeteerCorePath } from './browser-env.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const E = process.env
@@ -54,7 +55,7 @@ const { serveStatic } = await import(pathToFileURL(path.join(root, 'server/core/
 const { runInEnvironment } = await import(pathToFileURL(path.join(root, 'server/core/env-context.ts')).href)
 const { setQuiet } = await import(pathToFileURL(path.join(root, 'server/core/util.ts')).href)
 const { startFakeSmtp } = await import(pathToFileURL(path.join(root, 'server/core/identity/fake-smtp.ts')).href)
-const { default: puppeteer } = await import(pathToFileURL(path.join(E.PUPPETEER_CORE || '/tmp/pgcheck/node_modules/puppeteer-core', 'lib/puppeteer/puppeteer-core.js')).href)
+const { default: puppeteer } = await import(pathToFileURL(path.join(puppeteerCorePath(root, E), 'lib/puppeteer/puppeteer-core.js')).href)
 setQuiet(true)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -75,6 +76,8 @@ async function q(sql, params = []) {
   try { return (await c.query(sql, params)).rows } finally { await c.end() }
 }
 
+// vitest through node itself: `npx` is a .cmd file on Windows and cannot be started without a shell
+const VITEST = path.join(root, 'node_modules', 'vitest', 'vitest.mjs')
 /** a child process with its output; resolves with the exit code */
 function run(cmd, args, env = {}, timeoutMs = 30 * 60_000) {
   return new Promise((resolve) => {
@@ -148,7 +151,7 @@ async function tab(email) {
   const page = await ctx.newPage()
   await page.setViewport({ width: 1440, height: 900 })
   page.on('dialog', (d) => d.accept())
-  await page.goto(`${BASE}/#home`, { waitUntil: 'networkidle0' })
+  await page.goto(`${BASE}/#home`, { waitUntil: 'networkidle2' })
   await page.waitForSelector('[data-testid="login-form"]', { visible: true, timeout: 20000 })
   await page.type('[data-testid="login-email"]', email)
   await page.type('[data-testid="login-password"]', email === ADMIN.email ? ADMIN.password : PASS)
@@ -192,7 +195,7 @@ async function checkApprovals() {
 
     // a. the inbox page
     const a = await ask('Exit: from the inbox')
-    await page.goto(`${BASE}/#u-approvals`, { waitUntil: 'networkidle0' })
+    await page.goto(`${BASE}/#u-approvals`, { waitUntil: 'networkidle2' })
     await page.waitForSelector(T('approvals-row'), { timeout: 20000 })
     await page.evaluate((title) => { const r = [...document.querySelectorAll('[data-testid="approvals-row"]')].find((x) => x.textContent.includes(title)); r?.querySelector('[data-testid="approvals-open"]')?.click() }, 'Exit: from the inbox')
     await answerOnPage(page, a.id)
@@ -201,7 +204,7 @@ async function checkApprovals() {
     // b. the bell
     const b = await ask('Exit: from the bell')
     await settle()
-    await page.goto(`${BASE}/#home`, { waitUntil: 'networkidle0' })
+    await page.goto(`${BASE}/#home`, { waitUntil: 'networkidle2' })
     await click(page, T('notification-bell'))
     await page.waitForSelector(T('notification-item'), { timeout: 20000 })
     const opened = await page.evaluate((title) => {
@@ -224,7 +227,7 @@ async function checkApprovals() {
     const url = /Approve: (\S+)/.exec(mail.text ?? '')?.[1]
     need(url && url.includes('#u-approvals?link='), 'an Approve link in the email')
     need((await status(c.id)) === 'pending', 'opening nothing yet decided nothing')
-    await page.goto(url, { waitUntil: 'networkidle0' })
+    await page.goto(url, { waitUntil: 'networkidle2' })
     await page.waitForSelector(T('approval-link'), { visible: true, timeout: 20000 })
     await click(page, T('approval-link-confirm'))
     await page.waitForSelector(T('approval-link-done'), { timeout: 20000 })
@@ -237,7 +240,7 @@ async function checkApprovals() {
     const det = (await admin('GET', `/approvals/${d.id}`)).request
     need(det.assignments.some((x) => x.userId === dee.id && x.source === 'delegation' && x.status === 'pending'), 'the deputy is asked (source delegation)')
     const deePage = await tab('dee@example.test')
-    await deePage.goto(`${BASE}/#u-approvals?id=${d.id}`, { waitUntil: 'networkidle0' })
+    await deePage.goto(`${BASE}/#u-approvals?id=${d.id}`, { waitUntil: 'networkidle2' })
     await answerOnPage(deePage, d.id)
     await mona.api('DELETE', `/approvals/delegations/${dl.delegation?.id ?? dl.id}`)
     notes.push('delegation: the deputy approved on her page')
@@ -252,7 +255,7 @@ async function checkApprovals() {
     const ed = (await admin('GET', `/approvals/${e.id}`)).request
     need(ed.assignments.some((x) => x.userId === dev.id && x.source === 'escalation' && x.status === 'pending'), 'after the due date Dev (Mona\'s manager) is asked')
     const devPage = await tab('dev@example.test')
-    await devPage.goto(`${BASE}/#u-approvals?id=${e.id}`, { waitUntil: 'networkidle0' })
+    await devPage.goto(`${BASE}/#u-approvals?id=${e.id}`, { waitUntil: 'networkidle2' })
     await answerOnPage(devPage, e.id)
     app.services.flows.setClock({ now: () => new Date() })
     notes.push('escalation: Dev asked after 2 h (simulated), approved')
@@ -327,7 +330,7 @@ async function checkAlm() {
     const answers = []
     page.on('response', async (res) => { if (res.url().includes('/deploy') && res.request().method() === 'POST') answers.push(`${res.status()} ${(await res.text().catch(() => '')).slice(0, 300)}`) })
     page.answers = answers
-    await page.goto(`${BASE}/#solution-${sol.id}`, { waitUntil: 'networkidle0' })
+    await page.goto(`${BASE}/#solution-${sol.id}`, { waitUntil: 'networkidle2' })
     await click(page, T('deploy-solution-button'))
     await page.waitForSelector(T('deploy-dialog'), { visible: true })
     await page.select(T('deploy-target'), env.id)
@@ -449,7 +452,7 @@ async function checkRecycle() {
 async function checkAdminFlows() {
   try {
     const page = await tab(ADMIN.email)
-    await page.goto(`${BASE}/#admin-flows`, { waitUntil: 'networkidle0' })
+    await page.goto(`${BASE}/#admin-flows`, { waitUntil: 'networkidle2' })
     await page.waitForSelector(T('admin-kill-switch'), { visible: true, timeout: 20000 })
     const before = await page.$eval(T('kill-switch-state'), (e) => e.textContent)
     await click(page, T('admin-pause-flows'))
@@ -469,14 +472,15 @@ async function checkAdminFlows() {
 
 async function checkSuites() {
   const env = { APPBUILDER_TEST_DB: `postgres://${DB.user}:${DB.password}@${DB.host}:${DB.port}/${MAINT}`, FLOW_THROUGHPUT_RUNS: '50' }
-  const r = await run('npx', ['vitest', 'run', 'server/core/approvals/approvals-exit.integration.test.ts', 'server/core/flows/flows-durability.integration.test.ts', '-t', 'exit check 1|purchase'], env)
+  const r = await run(process.execPath, [VITEST, 'run', 'server/core/approvals/approvals-exit.integration.test.ts', 'server/core/flows/flows-durability.integration.test.ts', '-t', 'exit check 1|purchase'], env)
   const o = plain(r.out)
   const tests = /Tests\s+(.+)/.exec(o)?.[1]?.trim() ?? '?'
   const dur = /Duration\s+(\S+)/.exec(o)?.[1] ?? '?'
   record(1, 'the purchase approval flow over a simulated week with two server restarts: no lost or duplicated step', r.code === 0, `approvals-exit.integration.test.ts (real approvals service) and flows-durability "exit check 1": ${tests} in ${dur} (the flow clock is moved in-process)`)
 }
 async function checkDesigner() {
-  const r = await run(process.execPath, ['scripts/exit-check/p1-designer.mjs'])
+  // its own database and port (the child inherits this script's environment, whose EXIT_DB_NAME and EXIT_PORT belong to this run)
+  const r = await run(process.execPath, ['scripts/exit-check/p1-designer.mjs'], { EXIT_DB_NAME: 'appbuilder_exit_designer', ...(E.EXIT_PORT ? { EXIT_PORT: String(PORT + 1) } : {}) })
   const o = plain(r.out)
   const passes = (o.match(/ PASS /g) ?? []).length
   const fails = o.split('\n').filter((l) => / FAIL /.test(l))
@@ -492,7 +496,7 @@ async function checkDocs() {
     'docs/help/quick-start-approver.md', 'docs/help/notifications.md', 'docs/internal/security-review-p1.md',
   ]
   const missing = required.filter((f) => !fs.existsSync(path.join(root, f)))
-  const r = await run('npx', ['vitest', 'run', 'scripts/docs-links.test.ts', 'scripts/naming.test.ts'])
+  const r = await run(process.execPath, [VITEST, 'run', 'scripts/docs-links.test.ts', 'scripts/naming.test.ts'])
   const tests = /Tests\s+(.+)/.exec(plain(r.out))?.[1]?.trim() ?? '?'
   record(7, 'docs: maker guide for flows and approvals, admin guide, dev docs, reference for triggers and actions', r.code === 0 && !missing.length, `${required.length - missing.length}/${required.length} required pages${missing.length ? ` (missing: ${missing.join(', ')})` : ''}; link checker and naming test: ${tests}`)
 }
@@ -513,7 +517,7 @@ try {
   await admin('POST', '/auth/login', { email: ADMIN.email, password: ADMIN.password })
   smtp = await startFakeSmtp()
   await admin('PUT', '/identity/email', { host: '127.0.0.1', port: smtp.port, security: 'none', fromAddress: 'apps@example.test', installName: 'Exit Apps', publicUrl: BASE })
-  if (!SKIP.has('browser')) browser = await puppeteer.launch({ executablePath: E.CHROME_PATH || '/usr/bin/google-chrome', headless: 'new', args: ['--no-sandbox'] })
+  if (!SKIP.has('browser')) browser = await puppeteer.launch({ executablePath: chromePath(E), headless: 'new', args: ['--no-sandbox'] })
   if (browser) await checkApprovals()
   await checkReport()
   if (browser) await checkAlm()

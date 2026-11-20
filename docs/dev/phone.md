@@ -86,8 +86,13 @@ wide (the narrowest common phone) or 390/412.
   the headers; cards load in steps of 100 and a server query loads more near the end. Virtualization is off in card mode.
 - **Form sticky save bar** (`sheet-bar.tsx`): when the form's own bottom is below the visible viewport (keyboard, or a form
   taller than the screen) but a useful part is visible (`barPinned`), the Save/Cancel bar is pinned at `bottom: var(--kb)`,
-  above the shell's connection bar, with a placeholder keeping the layout. Choice and lookup fields of the Form still use
-  the Radix select; `revealFocused` (env.ts) does not know about the pinned bar.
+  above the shell's connection bar, with a placeholder keeping the layout. `revealFocused` (env.ts) does not know about
+  the pinned bar.
+- **Form choice and lookup fields** (`controls/inputs/LookupPicker.tsx`): on touch devices both open the bottom sheet
+  (`PickerSheet`: search, 44 px rows, a 44 px field). Lookups search the server as you type and load more rows near the
+  end (any table size; "not available offline" for tables not kept on the device); choices filter their list. Optional
+  fields have a clear button. Desktop keeps the Radix select for choices and a searchable popover for lookups
+  (`docs/dev/frontend.md` "Lookup fields and labels"). Checked in Chrome's phone emulation only.
 - Alert's dismiss button has a 44 px touch area. **Visual**: invisible 44 px hit circles around points, a tap shows the
   tooltip and a tap elsewhere hides it, 44 px legend rows. **Chart** (recharts) already showed its tooltip on a tap: no
   change. **PrintButton** has a busy state so a second tap cannot download the PDF twice; the download on iOS Safari is
@@ -102,7 +107,7 @@ wide (the narrowest common phone) or 390/412.
 | --- | --- | --- |
 | works | 46 | usable by touch as it was (display-only UI components count here; Chart was reviewed and needed no change) |
 | fixed | 39 | changed for touch: P2-A (touch areas, nearest-target taps, tabs scroll, photo capture, scan components), the touch-limitation package (bottom-sheet pickers, native date/time, NumberInput, Dialog/Sheet, DataTable cards, Form save bar, Alert, Visual, PrintButton) and the new SignaturePad |
-| limitation | 0 | none left as a matrix status; the remaining gaps are inside the notes (native pickers ignore Format/Use24Hour, Form choice/lookup fields use the Radix select, nothing tested on a real phone) |
+| limitation | 0 | none left as a matrix status; the remaining gaps are inside the notes (native pickers ignore Format/Use24Hour, nothing tested on a real phone) |
 
 The exit script measures the real touch areas of 35 interactive UI components at their default size in Chrome's phone
 emulation (all pass; 28 of them need the extended area).
@@ -196,7 +201,7 @@ Unavailable, NeedsHttps. Blank-filled records on the server.
 
 - Server (`server/core/pwa.ts`): `GET /api/v1/pwa/manifest.webmanifest` (install manifest, no session),
   `GET /api/v1/pwa/apps/:id/manifest.webmanifest` (an app's manifest: its name, an icon in its theme colour with its
-  initials, `start_url` and `id` `/?app=<id>`; users who may run the app), `GET /api/v1/pwa/icon.png?s=&c=&t=&m=` (PNG
+  initials, `start_url` and `id` `/?app=<id>`; users who may run the app; everyone else gets the same 404 as for an app that does not exist), `GET /api/v1/pwa/icon.png?s=&c=&t=&m=` (PNG
   icons drawn by the server: rounded square or maskable full bleed, 5x7 bitmap letters, 4x supersampling; deterministic
   from the parameters, cached a day), `GET /api/v1/pwa/sw.js` (`Service-Worker-Allowed: /`).
 - The page links the app's manifest while an app is shown (`setAppManifest`), so "Add to Home screen" adds that app.
@@ -207,7 +212,7 @@ Unavailable, NeedsHttps. Blank-filled records on the server.
   `/api/` is never answered from a cache except the PWA paths above. **Update flow**: a new build installs a new worker
   that waits; the page shows "New version available — Reload"; Reload posts `skip-waiting` and reloads on
   `controllerchange`. The page checks for updates when it becomes visible and hourly.
-- Sign-out posts `clear` to the worker and deletes the `ab-*` caches (and the offline store, below).
+- Sign-out from the profile menu (`beforeSignOut`) posts `clear` to the worker and deletes the `ab-*` caches (and the offline store, below). The other sign-out buttons (Settings, the pending-password screen) do not call it yet (finding P2-2 of `docs/internal/security-review-p2.md`); the store is then locked, not deleted, as soon as the signed-in person changes (below).
 - Service workers, the camera and WebCrypto need a **secure context**: HTTPS or localhost. On a LAN use the installer's
   HTTPS option and trust its certificate authority on the phones: `docs/admin/phones.md`.
 
@@ -268,7 +273,7 @@ the outbox instead of failing; its optimistic row stays visible in this session.
   or the filter cut are marked `truncated` (the existing "partial data" flag). A plan the executor cannot run fails with
   "Could not reach the server" as before.
 - Never another user's rows: the store is per user (database name and key), and every read checks the sealed user id
-  and environment against the session. Wipe, epoch change and sign-out delete the database, so the kept rows go with it.
+  and environment against the session. Wipe, epoch change and sign-out (profile menu) delete the database, so the kept rows go with it. When another person signs in on the same page (a session that ran out, another sign-out path), the previous person's store is locked at once: its key leaves memory and `sessionStorage`, and it neither answers, takes writes nor replays its outbox (which would carry the new session); its sealed data stays until that person signs in again or the device is wiped.
 
 ### Form drafts across reloads
 
@@ -310,7 +315,7 @@ the outbox instead of failing; its optimistic row stays visible in this session.
 - AES-256-GCM (WebCrypto), random 96-bit IV per record, key imported non-extractable. The key text is kept in memory and
   `sessionStorage` only; the device id (not secret) in `localStorage`.
 - In clear: item kind, table, row id, status, times and the sequence (to count and order without the key); the cache
-  index (table names, sizes, times; record keys name the environment and table); draft keys (app, screen, form, table,
+  index (table names, sizes, times; kept tables are named `snap:<environment>:<table>`, kept answers `a:<HMAC>`: a keyed hash of the environment and the request under a subkey of the offline key, never the request text, which holds filter values and search words); draft keys (app, screen, form, table,
   record id) and their times. Sealed: values, files, error messages, server rows, cached answers, the rows of tables kept
   for offline use, drafts and their files.
 - `meta.epoch` and a sealed check record: a different epoch or a check that does not decrypt deletes the database.
@@ -335,8 +340,10 @@ the outbox instead of failing; its optimistic row stays visible in this session.
 - **A lost phone with the browser closed, or storage read out of the device**: the store is encrypted; the key is only
   in that browser session's storage and on the server (derivable). Without a valid session nobody gets the key; after a
   wipe the server never issues it again.
-- **A shared phone**: each user has their own database and key; sign-out deletes the user's store (it asks first when
-  changes are waiting).
+- **A shared phone**: each user has their own database and key; sign-out from the profile menu deletes the user's store
+  (it asks first when changes are waiting); another person signing in on the same page locks the previous store (no
+  answers, writes or replay for the new person). Draft keys and outbox metadata (table, row id, times) stay readable in
+  IndexedDB to anyone with the device until the store is deleted.
 - Not protected: an attacker with the running, signed-in browser; malware on the phone; screenshots.
 
 ### Limits (honest)

@@ -20,7 +20,7 @@ import type { DatabaseSettings, EnvironmentDirs } from '../contracts.ts'
 import { poolConfig } from '../../connectors/postgres/db.ts'
 import {
   ArchiveError, MANIFEST_NAME, MARKER_NAME, TarWriter, encryptedFileSink, listTar, memberBuffer, memberStream, openReader, plainFileSink,
-  type MemberInfo, type RandomReader, type TarEntry,
+  type MemberInfo, type OpenFile, type RandomReader, type TarEntry,
 } from './archive.ts'
 import {
   LineCounter, RestoreDataParser, catalogOf, copyColumns, copyInto, countRows, exportTable, postDataSql, preDataSql, qi, renameInSql,
@@ -378,11 +378,21 @@ export interface BackupArchive {
   workDir(): Promise<string>
   /** db/dump.pgc as a file (pg_dump archives) */
   dumpFile(): Promise<string>
+  /** safe to call more than once; every caller that gets an archive must close it, also when it hands it to background work that may never start (see `closeAfter`) */
   close(): Promise<void>
 }
 
-export async function openArchive(file: string, passphrase?: string | null, o: { workRoot?: string } = {}): Promise<BackupArchive> {
-  const reader = await openReader(file, passphrase)
+/**
+ * Hands an open archive to background work (a restore or a check queued behind the install's lock). The work closes the archive
+ * itself, but it never starts when the queue cannot take it (the lock connection fails, the database is down): then this
+ * closes the archive, so the file handle is not left to the garbage collector (an error on Node 24 and later).
+ */
+export function closeAfter(a: Pick<BackupArchive, 'close'>, work: Promise<unknown>): void {
+  work.catch(() => a.close().catch(() => {}))
+}
+
+export async function openArchive(file: string, passphrase?: string | null, o: { workRoot?: string; open?: OpenFile } = {}): Promise<BackupArchive> {
+  const reader = await openReader(file, passphrase, { open: o.open })
   try {
     const list = await listTar(reader)
     if (!list.length || list[0].name !== MARKER_NAME) throw new ArchiveError('format', 'This file is not an Appbuilder backup.')

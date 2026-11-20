@@ -192,7 +192,7 @@ Idempotent: yes. Side effect: none. Time limit: 10 s.
 | --- | --- | --- | --- |
 | `to` | string or number | yes | The customer's phone number. Without a country code the connection's default country code is used (for example 98765 43210 -> +91 98765 43210). |
 | `status` | `opted_in`, `opted_out` | yes | Status |
-| `source` | `form`, `import`, `inbound keyword` | yes | Where the consent came from ("administrator" is only for administrators in the Admin console). |
+| `source` | `form`, `import` | yes | Where the consent came from ("administrator" is only for administrators in the Admin console; "inbound keyword" only for the webhook, when the person writes START or STOP). |
 | `evidence` | string | yes | What the person agreed to and how, for example "Ticked 'Send me order updates on WhatsApp' on the order form, order SO-1001". |
 | `contactTable` | string |  | Optional: the table of the person or contact row. |
 | `contactRow` | string |  | Optional: the row id. |

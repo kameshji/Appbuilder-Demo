@@ -396,8 +396,17 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
   async function handleIn(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
     /** a streamBody route answered without reading its body: close instead of draining the upload */
     let unreadStream = false
+    /**
+     * P2 security re-check: the body is read only AFTER the session and the route's sign-in level are checked, so a
+     * client that may not use a route cannot make the server buffer its body (up to the route's limit: 40 MB for
+     * solution packages) first. A request refused before its body was read is answered and its body discarded briefly
+     * (lingerClose), like a refused upload.
+     */
+    let unreadBody = false
     const closeIfUnread = () => {
-      if (!unreadStream || req.complete) return
+      if ((!unreadStream && !unreadBody) || req.complete) return
+      unreadStream = false
+      unreadBody = false
       lingerClose(req, res)
     }
     try {
@@ -458,34 +467,10 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
         },
       }
 
-      // body (limit: the route's maxBodyMB, else 2 MB for JSON / 25 MB for raw)
       const hasBody = method !== 'GET' && method !== 'HEAD'
-      const routeLimit = route.opts.maxBodyMB !== undefined ? route.opts.maxBodyMB * 1024 * 1024 : route.opts.raw ? DEFAULT_RAW_MB * 1024 * 1024 : JSON_LIMIT_BYTES
-      if (hasBody && route.opts.raw && route.opts.streamBody) {
-        unreadStream = true
-        ctx.readBody = (limitBytes: number) => {
-          if (!unreadStream) return Promise.reject(new Error('readBody called twice'))
-          unreadStream = false
-          return readBody(req, Math.min(limitBytes, routeLimit))
-        }
-      } else if (hasBody) {
-        if (route.opts.raw) {
-          ctx.rawBody = await readBody(req, routeLimit)
-        } else {
-          const buf = await readBody(req, routeLimit)
-          if (buf.length) {
-            const type = String(req.headers['content-type'] ?? 'application/json')
-            if (!/^application\/json\b/i.test(type)) throw new HttpError(415, 'invalid', 'Request body must be application/json.')
-            try {
-              ctx.body = JSON.parse(buf.toString('utf8'))
-            } catch {
-              throw new HttpError(422, 'invalid', 'Request body is not valid JSON.')
-            }
-          }
-        }
-      }
+      if (hasBody && !(route.opts.raw && route.opts.streamBody)) unreadBody = true
 
-      // auth (and the environment: the session's access decides which one the request may work in)
+      // auth (and the environment: the session's access decides which one the request may work in), BEFORE the body
       if (route.opts.auth !== 'none') {
         if (!services.ready()) throw new HttpError(503, 'unavailable', 'The database is not configured yet.')
         const user = await resolveSession(ctx, { allowNoEnvironment: route.opts.noEnvironment })
@@ -510,6 +495,34 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
           ctx.user = undefined
         }
         if (ctx.user) ctx.environmentId = ctx.user.environmentId
+      }
+
+      // body (limit: the route's maxBodyMB, else 2 MB for JSON / 25 MB for raw)
+      const routeLimit = route.opts.maxBodyMB !== undefined ? route.opts.maxBodyMB * 1024 * 1024 : route.opts.raw ? DEFAULT_RAW_MB * 1024 * 1024 : JSON_LIMIT_BYTES
+      if (hasBody && route.opts.raw && route.opts.streamBody) {
+        unreadStream = true
+        ctx.readBody = (limitBytes: number) => {
+          if (!unreadStream) return Promise.reject(new Error('readBody called twice'))
+          unreadStream = false
+          return readBody(req, Math.min(limitBytes, routeLimit))
+        }
+      } else if (hasBody) {
+        // from here on readBody answers for the body (its own 413 discards the rest of an oversized upload)
+        unreadBody = false
+        if (route.opts.raw) {
+          ctx.rawBody = await readBody(req, routeLimit)
+        } else {
+          const buf = await readBody(req, routeLimit)
+          if (buf.length) {
+            const type = String(req.headers['content-type'] ?? 'application/json')
+            if (!/^application\/json\b/i.test(type)) throw new HttpError(415, 'invalid', 'Request body must be application/json.')
+            try {
+              ctx.body = JSON.parse(buf.toString('utf8'))
+            } catch {
+              throw new HttpError(422, 'invalid', 'Request body is not valid JSON.')
+            }
+          }
+        }
       }
 
       const liveOrigin = req.headers[LIVE_CLIENT_HEADER.toLowerCase()]

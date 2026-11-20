@@ -347,14 +347,23 @@ export function createPrintService(services: CoreServices) {
     return (await db().query<Row>(`SELECT * FROM ${T('ab_print_files')} WHERE token = $1`, [token]))[0] ?? null
   }
 
-  /** waits (at most 90 s) while a token is being generated */
-  async function readyFile(token: string): Promise<Row> {
-    const end = Date.now() + 90_000
+  /**
+   * waits (at most 90 s) while a token is being generated. P2 security re-check (finding P2-6): a token that does not
+   * exist is waited for at most ABSENT_WAIT_MS (the GeneratePdf request that registers it may arrive just after the
+   * write that uses it), and someone else's token answers at once (`who`: the creator or an administrator only). Before,
+   * any signed-in user could hold a request for 90 s, polling the database every 150 ms, with any made-up token.
+   */
+  const ABSENT_WAIT_MS = 10_000
+  async function readyFile(token: string, who?: UserContext | null): Promise<Row> {
+    const started = Date.now()
+    const end = started + 90_000
+    if (!GENERATED_TOKEN_RE.test(token)) throw invalid('There is no generated file with this token (they are kept 24 hours).')
     for (;;) {
       const f = await fileRow(token)
+      if (f && who && !who.privileges.isAdmin && String(f.created_by ?? '') !== who.user.id) throw new HttpError(404, 'not-found', 'There is no generated file with this token.')
       if (f?.state === 'ready') return f
       if (f?.state === 'failed') throw invalid(`The generated file failed: ${String(f.error ?? 'unknown error')}`)
-      if (Date.now() > end) throw invalid(f ? 'The file is still being generated; try again in a moment.' : 'There is no generated file with this token (they are kept 24 hours).')
+      if (Date.now() > end || (!f && Date.now() - started > ABSENT_WAIT_MS)) throw invalid(f ? 'The file is still being generated; try again in a moment.' : 'There is no generated file with this token (they are kept 24 hours).')
       await new Promise((r) => setTimeout(r, 150))
     }
   }
@@ -367,14 +376,14 @@ export function createPrintService(services: CoreServices) {
 
   /** a generated file for someone: the creator, or an administrator */
   async function fileFor(token: string, who: UserContext | null): Promise<{ row: Row; bytes: Buffer }> {
-    const f = await readyFile(token)
+    const f = await readyFile(token, who)
     if (who && !who.privileges.isAdmin && String(f.created_by ?? '') !== who.user.id) throw new HttpError(404, 'not-found', 'There is no generated file with this token.')
     return { row: f, bytes: await fileBytes(f) }
   }
 
   /** data.ts calls this for a gen_ token written into a file or image column (Patch(..., {File: GeneratePdf(...)})) */
   setGeneratedFileClaimer(async (ctx, def, col: ColumnDef, rowId, token) => {
-    const f = await readyFile(token).catch((e: Error) => { throw new HttpError(422, 'invalid', `${col.displayName || col.name}: ${e.message}`, col.name) })
+    const f = await readyFile(token, ctx).catch((e: Error) => { throw new HttpError(422, 'invalid', `${col.displayName || col.name}: ${e.message}`, col.name) })
     if (!ctx.privileges.isAdmin && String(f.created_by ?? '') !== ctx.user.id) throw new HttpError(422, 'invalid', `${col.displayName || col.name}: there is no generated file with this token.`, col.name)
     if (col.type === 'image' && !String(f.mime).startsWith('image/')) throw new HttpError(422, 'invalid', `${col.displayName || col.name} holds images; a ${String(f.file_name)} cannot go there.`, col.name)
     // a copy for the cell (the token stays usable until it expires)

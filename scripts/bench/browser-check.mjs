@@ -17,11 +17,12 @@ import { fileURLToPath } from 'node:url'
  */
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { chromePath, puppeteerCorePath } from '../exit-check/browser-env.mjs'
 
-const PUPPETEER_CORE = process.env.PUPPETEER_CORE || '/tmp/pgcheck/node_modules/puppeteer-core'
+const PUPPETEER_CORE = puppeteerCorePath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..'))
 const { default: puppeteer } = await import(pathToFileURL(path.join(PUPPETEER_CORE, 'lib/puppeteer/puppeteer-core.js')).href)
-const CHROME = process.env.CHROME_PATH || '/usr/bin/google-chrome'
-const BASE = (process.env.BASE || 'http://localhost:5196').replace(/\/$/, '')
+const CHROME = chromePath()
+const BASE = (process.env.BASE || 'http://127.0.0.1:5196').replace(/\/$/, '')
 const ADMIN = { email: process.env.EMAIL || 'admin@example.test', password: process.env.PASSWORD || 'Example-Only-Pass-2026' }
 const REP = { name: 'Rita Rep', email: 'rep@example.test', password: 'Rep-Example-Pass-2026' }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -101,7 +102,7 @@ async function signedIn(who) {
   const ctx = await browser.createBrowserContext()
   const page = await ctx.newPage()
   page.on('pageerror', (e) => console.log('  [page error]', e.message))
-  await page.goto(BASE + '/#home', { waitUntil: 'networkidle0' })
+  await page.goto(BASE + '/#home', { waitUntil: 'networkidle2' })
   await page.waitForSelector(`${tid('login-form')}, ${tid('portal-root')}`, { visible: true })
   if (await page.$(tid('login-form'))) {
     await page.type(tid('login-email'), who.email)
@@ -296,7 +297,7 @@ if (process.env.DEMO_HTML !== '0') {
   const ctx = await browser.createBrowserContext()
   const page = await ctx.newPage()
   page.on('pageerror', (e) => console.log('  [page error]', e.message))
-  await page.goto(pathToFileURL(file).href, { waitUntil: 'networkidle0' })
+  await page.goto(pathToFileURL(file).href, { waitUntil: 'networkidle2' })
   await page.waitForSelector(tid('portal-root'), { visible: true, timeout: 20000 })
   const mode = await page.evaluate(() => window.__ab ? 'linked' : 'none')
   await page.evaluate(() => { location.hash = '#apps' })

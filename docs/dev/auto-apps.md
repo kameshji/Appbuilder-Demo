@@ -48,7 +48,7 @@ rule (`docs/dev/phone.md`): nothing is wider than the design, and wider phones w
 | text, email, phone, url | input (validated) | yes | subtitle if no choice column |
 | autonumber | read-only, after required fields; left out in New | yes | - |
 | choice | select | yes | subtitle |
-| lookup | select of the target's rows (the target is added as a data source) | no (lists would show the row id) | no |
+| lookup | searchable picker over the server (the target is added as a data source) | yes, by label (not sortable) when the target is readable | subtitle when required |
 | number, decimal, currency | numeric input | yes | a line (numbers and dates first) |
 | date, datetime | date picker (native on touch) | yes | a line |
 | boolean | switch | yes | - |
@@ -86,7 +86,7 @@ that keep deleted rows (`src/runtime/UndoDelete.tsx`); the dialog text says whet
 
 `plan.issues` (`blocked`, `skipped`, `limited`, `note`), most serious first, shown in the dialog: tables not found, not
 readable or named like a built-in enum (`Color`); tables without columns; unknown column types; lookups to missing or
-unreadable tables; the lookup picker's limits; long text and files only in the form; calculated columns; no text column
+unreadable tables; how lookups are picked and listed (not sortable); long text and files only in the form; calculated columns; no text column
 (no search box); child tables that cannot be read; junction tables (their related list shows their own columns only);
 lookups to the table itself; more than two parent links; tables in connections that cannot run queries (lists capped at
 5,000 rows); read-only tables (no New, no Delete, a view form).
@@ -101,15 +101,26 @@ lookups to the table itself; more than two parent links; tables in connections t
   table held in the browser, 1,000,000 rows; action formulas step by step, as `prepareAction` does). Layout (nothing
   wider than the design, anchors), and the app running in a runtime store without a DOM (home, list, New, Back, the
   delete confirmation, the related screen, OnStart variables).
-- `scripts/exit-check/p2-autoapp.mjs`: see its header. Last run: 39 checks pass (server mode desktop and phone, the
-  Studio, the table page, a user without the Maker role, demo mode). Phones are Chrome's emulation, not real devices.
+- `scripts/exit-check/p2-autoapp.mjs`: see its header. Lookups (this package): Products has 2,500 rows; a new order
+  picks Customer and Product by typing (server search), the list shows both by name and never an id, the Customer header
+  is not sortable (with a reason), the card sort leaves it out, the list search finds orders by the customer's name, the
+  desktop pick is done with the keyboard only, and with no connection the picker says "Products is not available
+  offline". Last run: 48 checks pass (server mode desktop and phone, the Studio, the table page, a user without the
+  Maker role, demo mode). Phones are Chrome's emulation, not real devices.
+
+## Lookups
+
+The Form's lookup field is a searchable picker that queries the target on the server as you type, and DataTable /
+Gallery / phone cards show a lookup as the target row's primary column (batched label requests): see
+[frontend.md "Lookup fields and labels"](frontend.md#lookup-fields-and-labels). So the generator lists lookup columns
+whose target the maker can read (`listColumnsOf(..., lookupOk)`, `relatedColumnsOf`: a related list leaves out only the
+lookup back to the record), makes a required lookup the phone card's subtitle, and says in the dialog (a note, no longer
+a limitation) that lists cannot be sorted by a lookup (the server would order by record id) while the search box finds
+it by name. Lookups to tables the maker cannot read stay out of lists (they could only show "Not available").
 
 ## Known gaps (UI components and runtime, not changed here)
 
-- The Form's lookup field is a Radix select over `platform.tables.rows(target)`: not searchable, and empty for targets
-  the browser does not hold (over 2,000 rows in server mode), which makes a required lookup impossible to fill there. A
-  server-backed searchable lookup field in the Form (or a per-field picker property) is needed.
-- DataTable and Gallery show a lookup column as the row id (no label lookup for lists), so lookups are left out of lists.
+- Sorting a list by a lookup column on the server (needs a sort through a lookup path in Query v2; not in the plan).
 - Generated colours are fixed (no theme-aware colour tokens in formulas).
 - Phone related lists are on their own screen rather than in tabs over the form, so the Form is never hidden while it
   holds unsaved edits (whether a hidden Form keeps them was not checked).

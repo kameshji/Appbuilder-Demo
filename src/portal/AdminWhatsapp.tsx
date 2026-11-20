@@ -82,7 +82,7 @@ export function WhatsappAdminSection({ title }: { title(t: string, sub?: ReactNo
         <div className="grid gap-2 sm:grid-cols-[160px_130px_150px_minmax(0,1fr)_auto]">
           <Input placeholder="+91 ..." value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} aria-label="Phone number" data-testid="wa-optin-phone" />
           <select className={sel} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as 'opted_in' })} aria-label="Status"><option value="opted_in">Opted in</option><option value="opted_out">Opted out</option></select>
-          <select className={sel} value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} aria-label="Source"><option value="administrator">Administrator</option><option value="form">Form</option><option value="import">Import</option><option value="inbound keyword">Inbound keyword</option></select>
+          <select className={sel} value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} aria-label="Source"><option value="administrator">Administrator</option><option value="form">Form</option><option value="import">Import</option></select>
           <Input placeholder="Evidence: what the person agreed to, where and when" value={form.evidence} onChange={(e) => setForm({ ...form, evidence: e.target.value })} aria-label="Evidence" data-testid="wa-optin-evidence" />
           <Button size="sm" disabled={!form.phone.trim() || form.evidence.trim().length < 10} onClick={() => void record()} data-testid="wa-optin-record">Record</Button>
         </div>

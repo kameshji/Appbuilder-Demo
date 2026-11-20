@@ -45,6 +45,8 @@ export interface RelatedPlan {
   label: string
   /** the child also gets screens in this app (rows open its detail screen; "+ Add" creates a child row) */
   inApp: boolean
+  /** the related list's columns: the child's own, without the lookup that points back here (it is this record) */
+  listColumns: ColumnDef[]
 }
 
 export interface ParentLink {
@@ -140,29 +142,40 @@ export function orderFields(t: TableDef, title: ColumnDef | null): ColumnDef[] {
   return stable(cols, (c) => (c === title ? 0 : c.required && !c.computed && c.type !== 'autonumber' ? 1 : fieldRank(c)))
 }
 
-/** list columns: title, then required, then short values; never long text, files or lookups (lists show lookup ids) */
-export function listColumnsOf(t: TableDef, title: ColumnDef | null, max: number): ColumnDef[] {
-  const listable = (c: ColumnDef) => !isSystemCol(c) && !['multiline', 'file', 'lookup'].includes(c.type) && KNOWN.includes(c.type)
+/**
+ * list columns: title, then required, then short values; never long text or files. Lookups are listed when
+ * `lookupOk` says their target can be read (lists show the target row's label, resolved in batches); by default not.
+ */
+export function listColumnsOf(t: TableDef, title: ColumnDef | null, max: number, lookupOk: (c: ColumnDef) => boolean = () => false): ColumnDef[] {
+  const listable = (c: ColumnDef) => !isSystemCol(c) && !['multiline', 'file'].includes(c.type) && KNOWN.includes(c.type) && (c.type !== 'lookup' || lookupOk(c))
   const rank = (c: ColumnDef) => {
     if (c === title) return 0
     if (c.required) return 1
     if (c.type === 'image') return 9
-    if (TEXTISH.includes(c.type) || c.type === 'choice' || c.type === 'autonumber') return 2
+    if (TEXTISH.includes(c.type) || c.type === 'choice' || c.type === 'autonumber' || c.type === 'lookup') return 2
     if (NUMBERISH.includes(c.type) || c.type === 'date' || c.type === 'datetime') return 3
     return 4
   }
   return stable(t.columns.filter(listable), rank).slice(0, max)
 }
 
-/** a phone card: title, a subtitle (a choice or text), then up to two lines (dates and numbers first) */
+/** a phone card: title, a subtitle (a required lookup, a choice or text), then up to two lines (dates and numbers first) */
 export function cardColumnsOf(title: ColumnDef | null, list: ColumnDef[]): ColumnDef[] {
   const rest = list.filter((c) => c !== title && c.type !== 'image')
-  const sub = rest.find((c) => c.type === 'choice') ?? rest.find((c) => TEXTISH.includes(c.type))
+  const sub = rest.find((c) => c.type === 'lookup' && c.required) ?? rest.find((c) => c.type === 'choice') ?? rest.find((c) => TEXTISH.includes(c.type))
   const lines = stable(rest.filter((c) => c !== sub), (c) => (c.type === 'date' || c.type === 'datetime' || NUMBERISH.includes(c.type) ? 0 : 1)).slice(0, 2)
   return [...(title ? [title] : []), ...(sub ? [sub] : []), ...lines]
 }
 
 const lookupTarget = (all: TableDef[], c: ColumnDef) => (c.lookupTable ? all.find((t) => t.name === c.lookupTable || t.id === c.lookupTable) : undefined)
+
+/** a related list's columns: the child's primary column first, then its short columns; not the lookup back to the parent */
+export function relatedColumnsOf(child: TableDef, back: ColumnDef, lookupOk: (c: ColumnDef) => boolean = () => false): ColumnDef[] {
+  const usable = (c: ColumnDef) => !c.system && c !== back && !['multiline', 'file', 'image'].includes(c.type) && (c.type !== 'lookup' || lookupOk(c))
+  const primary = child.columns.find((c) => c.name === child.primaryColumn && usable(c))
+  const rest = child.columns.filter((c) => usable(c) && c !== primary)
+  return [...(primary ? [primary] : []), ...rest].slice(0, 6)
+}
 
 /** Plan an auto app over `opts.tables` (names) of `all` (every table of the environment). Never throws. */
 export function planAutoApp(all: TableDef[], opts: AutoAppOptions): AutoAppPlan {
@@ -187,6 +200,8 @@ export function planAutoApp(all: TableDef[], opts: AutoAppOptions): AutoAppPlan 
     chosen.push(t)
   }
   const inApp = new Set(chosen.map((t) => t.name))
+  // a lookup is shown in lists when its target exists and can be read (the label comes from there)
+  const lookupOk = (c: ColumnDef) => { const x = lookupTarget(all, c); return !!x && readable(x) }
   const sources = new Set<string>(chosen.map((t) => t.name))
   const plans: TablePlan[] = chosen.map((t) => {
     const title = titleColumnOf(t)
@@ -194,10 +209,10 @@ export function planAutoApp(all: TableDef[], opts: AutoAppOptions): AutoAppPlan 
     const formFields = orderFields(t, title)
     // a phone card can only show columns of the list (DataTable CardColumns picks among Columns): on phones the card
     // columns lead the list; on desktop the card (touch screens under 600 px) picks from the desktop list
-    const cardColumns = cardColumnsOf(title, listColumnsOf(t, title, layout === 'wide' ? 7 : 40))
+    const cardColumns = cardColumnsOf(title, listColumnsOf(t, title, layout === 'wide' ? 7 : 40, lookupOk))
     const listColumns = layout === 'wide'
-      ? listColumnsOf(t, title, 7)
-      : [...cardColumns, ...listColumnsOf(t, title, 40).filter((c) => !cardColumns.includes(c))].slice(0, Math.max(4, cardColumns.length))
+      ? listColumnsOf(t, title, 7, lookupOk)
+      : [...cardColumns, ...listColumnsOf(t, title, 40, lookupOk).filter((c) => !cardColumns.includes(c))].slice(0, Math.max(4, cardColumns.length))
     const leftOut = t.columns.filter(isSystemCol).map((column) => ({ column, reason: 'system column (filled in by the platform)' }))
     const issue = (level: IssueLevel, message: string, column?: ColumnDef) => issues.push({ level, table: t.displayName, ...(column ? { column: column.displayName || column.name } : {}), message })
 
@@ -214,7 +229,8 @@ export function planAutoApp(all: TableDef[], opts: AutoAppOptions): AutoAppPlan 
         else if (!readable(target)) issue('limited', `Looks up ${target.displayName}, which you cannot read: the field may have nothing to pick.`, c)
         else {
           sources.add(target.name)
-          issue('limited', `Picked from a list of ${target.displayName} (the form's picker is a plain list, not a search box, and only shows rows the browser holds: up to 2,000). Not shown in the record list (lists would show the row id).`, c)
+          const shown = target.columns.find((x) => x.name === target.primaryColumn)
+          issue('note', `Picked with a search box that asks the server as you type (any number of ${target.displayName}). Lists show its ${shown?.displayName || target.primaryColumn}; a list cannot be sorted by it (the server would order by record id), and its search box finds it by that name.`, c)
         }
       }
       if (c.type === 'multiline' || c.type === 'file') issue('note', `Shown in the form only (${c.type === 'file' ? 'files' : 'long text'} are not shown in the list).`, c)
@@ -230,7 +246,7 @@ export function planAutoApp(all: TableDef[], opts: AutoAppOptions): AutoAppPlan 
       if (!readable(child)) { issue('skipped', `${child.displayName} points at this table, but you cannot read it: no related list.`); continue }
       if (isEnumName(child.name)) { issue('skipped', `${child.displayName} points at this table, but its formula name is a built-in name: no related list.`); continue }
       for (const col of links) {
-        related.push({ table: child, column: col, label: links.length > 1 ? `${child.displayName} (${col.displayName || col.name})` : child.displayName, inApp: inApp.has(child.name) })
+        related.push({ table: child, column: col, label: links.length > 1 ? `${child.displayName} (${col.displayName || col.name})` : child.displayName, inApp: inApp.has(child.name), listColumns: relatedColumnsOf(child, col, lookupOk) })
         sources.add(child.name)
       }
       const other = child.columns.filter((c) => !c.system && c.type === 'lookup' && !links.includes(c))
@@ -259,7 +275,8 @@ export function planAutoApp(all: TableDef[], opts: AutoAppOptions): AutoAppPlan 
   if (home) screens.push({ name: 'Home', what: `a tile per table (${plans.map((p) => p.table.displayName).join(', ')}) with its row count` })
   for (const p of plans) {
     const d = p.table.displayName
-    screens.push({ name: `${d}: list`, what: `${p.search ? 'search, ' : ''}sort by any column, ${layout === 'compact' ? 'phone cards' : 'a table'} paged from the server${p.readOnly ? '' : ', New'}` })
+    const sortWhat = p.listColumns.some((c) => c.type === 'lookup') ? 'sort by any column but lookups' : 'sort by any column'
+    screens.push({ name: `${d}: list`, what: `${p.search ? 'search, ' : ''}${sortWhat}, ${layout === 'compact' ? 'phone cards' : 'a table'} paged from the server${p.readOnly ? '' : ', New'}` })
     const extras = [p.timeline ? 'timeline' : '', ...p.related.map((r) => r.label)].filter(Boolean)
     screens.push({ name: `${d}: details`, what: `a form with ${p.formFields.length} ${p.formFields.length === 1 ? 'field' : 'fields'}${p.readOnly ? ' (read-only)' : `, Save, Cancel, Delete with confirmation${p.undo ? ' and Undo' : ''}`}${extras.length && layout === 'wide' ? `; ${extras.join(', ')}` : ''}` })
     if (layout === 'compact' && extras.length) screens.push({ name: `${d}: related`, what: extras.join(', ') })

@@ -33,8 +33,13 @@ export const graphBase = (): string => baseForTests ?? GRAPH_BASE
 export function isReservedGraphHost(entry: string): boolean {
   const e = entry.trim().toLowerCase().replace(/\.$/, '')
   if (!e) return false
-  return hostAllowed(GRAPH_HOST, [e]) || hostAllowed('graph.whatsapp.com', [e]) || e === 'graph.whatsapp.com'
+  if (hostAllowed(GRAPH_HOST, [e]) || hostAllowed('graph.whatsapp.com', [e]) || e === 'graph.whatsapp.com') return true
+  // P2 security re-check (finding P2-11): Meta serves the same Graph API under other names of its domains
+  // (b-graph.facebook.com, graph.facebook.net, ...): every host of these domains, and every pattern covering one, is reserved
+  const host = e.replace(/^\*\./, '')
+  return META_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`) || hostAllowed(`graph.${d}`, [e]))
 }
+const META_DOMAINS = ['facebook.com', 'facebook.net', 'fb.com', 'fbcdn.net', 'whatsapp.com', 'whatsapp.net', 'fbsbx.com']
 
 export interface WhatsappSecret { accessToken?: string; appSecret?: string; verifyToken?: string }
 

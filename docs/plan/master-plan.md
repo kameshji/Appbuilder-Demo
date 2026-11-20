@@ -264,3 +264,20 @@ solution templates (manufacturing pack, CRM, ERP) in P3.
 
 How hosted, multi-organisation operation is to be built is proposed in `hosting-and-licensing.md` and is NOT yet
 approved; nothing in it is built.
+
+## 13. Owner decisions, 20 Nov 2026 (later; supersede section 12 where they differ)
+
+- **It is a platform, and the cloud product is truly multi-tenant.** Tens of thousands of users are expected. Cloud
+  customers share one hosted service with tenant isolation built into the product; the fleet-of-installs approach
+  ("A" in `hosting-and-licensing.md`) is rejected for the cloud.
+- **On-premises stays single-organisation:** one organisation installs the server and uses the desktop and phone apps
+  on its own servers, under a lifetime ("LTV") licence.
+- **Go-to-market:** controlled testing first with invited start-ups and companies; those who like it subscribe at a
+  price for N seats.
+- **Licence grace period:** 3 days when the licence service cannot be reached, no more.
+- **Hosted customers may start before the outside security review.** This supersedes the master plan's "security
+  review by an outside party before the pilot goes beyond one company" for the hosted testers. The risk is accepted by
+  the owner: until that review, isolation between tenants rests on internal review and tests only.
+
+Multi-tenancy is a new phase that is not in the phase table of section 5. Its outline is in
+`hosting-and-licensing.md`; it must be specified (like p0-spec.md) and approved before it is built.

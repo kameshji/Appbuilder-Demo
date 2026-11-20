@@ -323,9 +323,8 @@ function relatedPanel(b: Builder, p: TablePlan, n: TableNames, tn: Map<string, T
   for (const rel of p.related) {
     const cs = stemOf(rel.table.name, 20)
     const cn = rel.inApp ? tn.get(rel.table.name) : undefined
-    const childPlan = rel.table
-    // the child's columns without the lookup that points back here (it is this record)
-    const cols = listColumnsForChild(childPlan, rel.column)
+    // the child's columns without the lookup that points back here (it is this record); other lookups show labels
+    const cols = rel.listColumns
     const addH = cn ? 44 : 0
     const listBox: Box = { x: content.x, y: content.y + addH, w: content.w, h: content.h - addH }
     const vis = visible(i)
@@ -354,13 +353,6 @@ function relatedPanel(b: Builder, p: TablePlan, n: TableNames, tn: Map<string, T
     i++
   }
   return out
-}
-
-function listColumnsForChild(child: TableDef, back: ColumnDef): ColumnDef[] {
-  const usable = (c: ColumnDef) => !c.system && c !== back && !['multiline', 'file', 'lookup', 'image'].includes(c.type)
-  const primary = child.columns.find((c) => c.name === child.primaryColumn && usable(c))
-  const rest = child.columns.filter((c) => usable(c) && c !== primary)
-  return [...(primary ? [primary] : []), ...rest].slice(0, 6)
 }
 
 function deleteDialog(b: Builder, p: TablePlan, n: TableNames, W: number, H: number, wide: boolean): ControlNode {

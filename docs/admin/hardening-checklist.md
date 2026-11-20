@@ -135,6 +135,22 @@ See [Sign-in and identity](sign-in-and-identity.md).
 - [ ] When someone loses their phone: Admin console > Users > the person's menu > **Reset two-step verification** (it also
   signs them out everywhere); they set it up again at the next sign-in.
 
+## Phones, PDFs, dashboards, templates and WhatsApp (Phase 2)
+
+- [ ] **Shared phones**: tell people to sign out from the profile menu (it deletes the phone's offline data; other ways of
+  signing out only lock it), keep sessions short there, and use **Wipe phone and offline data** (Users > the person's
+  menu) when a phone is lost. Keep "available offline" tables narrow (a filter such as `owner = User().Id`, a low row cap).
+- [ ] **Print templates that run as a service account**: every signed-in person can print every record of the
+  template's table that the service account reads. Use it only for data everyone may print; review the audit entries
+  `print.run_as_service` and `print.generate_as_service`.
+- [ ] **Dashboard view tokens** (TV screens): prefer a service account with narrow roles over your own account (an
+  administrator's token shows every row), give each token an expiry, and revoke tokens of screens that are gone. The token
+  is in the kiosk browser's address bar and history: use a dedicated browser profile on the screen, and keep reverse
+  proxies from logging `Authorization` headers.
+- [ ] **WhatsApp**: give "use" on the WhatsApp connection only to makers whose flows may record consent (a flow can
+  record an opt-in; it is attributed, not prevented), review the opt-in history now and then, and keep the app secret set
+  (without it the webhook refuses everything).
+
 ## Data and connections
 
 - [ ] Use least-privilege database users for every extra PostgreSQL or MySQL connection (read-only where possible). A
@@ -175,5 +191,12 @@ See [Sign-in and identity](sign-in-and-identity.md).
 - [ ] **Update** when new versions appear, after a backup ([Upgrades](upgrades.md)).
 - [ ] Know where the server's console output goes: the setup code, errors and the migration summary appear there (the
   migration summary is also in the audit log as `schema.migrate`).
-- [ ] Do not expose the server to the internet or a shared network, not even through a port forward or tunnel, until
-  TLS and the weaknesses listed in [Security model](security-model.md#explicit-limitations) are dealt with.
+- [ ] **Never expose the built-in port (5174) itself**: no `APPBUILDER_HOST=0.0.0.0`, no port forward and no tunnel that
+  ends at that port; it speaks plain HTTP. Other computers and phones reach Appbuilder only through the installers'
+  HTTPS option (Caddy: `--https lan` for the local network, `--https domain` for the internet) or your own TLS reverse
+  proxy ([Which way users reach it](installation.md#which-way-users-reach-it)). An SSH tunnel to `127.0.0.1:5174` for
+  one administrator (the first-run setup, maintenance) is fine: it is encrypted and needs an SSH login.
+- [ ] **Before choosing `--https domain`** (the sign-in page on the internet), do this whole checklist, require two-step
+  verification for everyone, set up email (password reset, new-device mail), and read the
+  [explicit limitations](security-model.md#explicit-limitations): Appbuilder has had internal reviews only, no outside
+  security review.

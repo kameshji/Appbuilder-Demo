@@ -7,7 +7,7 @@
  * line on what is coming and when (phases of docs/plan/master-plan.md). Client preferences live in ONE store,
  * src/platform/preferences.ts.
  */
-import { wipeDeviceData } from '@/phone/offline'
+import { beforeSignOut, wipeDeviceData } from '@/phone/offline'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   ArrowLeft, Bell, Check, Database, Download, ExternalLink, FileText, Info, KeyRound, Languages, LogOut, MessagesSquare, Monitor, Moon,
@@ -256,7 +256,7 @@ function ProfileSection() {
         </Row>
         {!demo && (
           <Row title="Sign out" description="End your session in this browser." testId="setting-signout">
-            <Button size="sm" variant="outline" onClick={() => { platform.auth.logout().catch(fail) }} data-testid="settings-sign-out"><LogOut /> Sign out</Button>
+            <Button size="sm" variant="outline" onClick={() => { void beforeSignOut((t) => window.confirm(t)).then((ok) => { if (ok) platform.auth.logout().catch(fail) }) }} data-testid="settings-sign-out"><LogOut /> Sign out</Button>
           </Row>
         )}
       </Group>
@@ -298,7 +298,7 @@ function SecurityRows({ run }: { run<T>(fn: () => Promise<T>): Promise<T> }) {
     setBusyId(s.id)
     try {
       await endMySession(s.id)
-      if (s.current) { await platform.auth.logout(); return }
+      if (s.current) { if (await beforeSignOut((t) => window.confirm(t))) await platform.auth.logout(); return }
       toast(`Signed out ${s.device}`, 'success')
       load()
     } catch (e) {

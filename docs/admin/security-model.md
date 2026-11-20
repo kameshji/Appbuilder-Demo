@@ -13,8 +13,11 @@ Appbuilder is a single-machine application. A Node.js server on the PC listens o
 email and password, and enforces table, row and column permissions on every data request. Data lives in PostgreSQL
 and in a workspace folder on the same PC. It protects well against *users of the apps* reading or changing what their
 role does not allow, and against *web pages in the user's browser* attacking the local server. It does **not** protect
-against someone who controls the PC or the database, has no encryption of data at rest, and has no TLS, multi-factor
-sign-in or single sign-on.
+against someone who controls the PC or the database, has no encryption of data at rest, and has no single sign-on. The
+built-in server speaks plain HTTP on `127.0.0.1` only; other computers and phones reach it only through an HTTPS reverse
+proxy (the installers' `--https lan` / `--https domain` option sets up Caddy, [Installation](installation.md#which-way-users-reach-it)).
+Two-step verification (TOTP or email codes) exists. The product has had no outside security review (see the
+[internal reviews](../internal/security-review-p2.md)); nothing here is a certification or a compliance statement.
 
 ## What is enforced where
 
@@ -203,7 +206,11 @@ also shows the location only to administrators (others see "Server database").
 - **Body limits.** JSON bodies: **2 MB** (`JSON_LIMIT_BYTES`), 413 above that. Raw uploads: **25 MB** by default; data files
   25 MB, app and table-from-CSV imports 25 MB, solution packages 40 MB. Attachment uploads are read up to 200 MB at the
   route and then refused if they exceed the column's limit (25 MB by default; see [Attachments](#attachments)). JSON requests must be `Content-Type: application/json` (415
-  otherwise). A request may take at most 10 minutes (`server/main.ts`).
+  otherwise). A request may take at most 10 minutes (`server/main.ts`). **The body is read only after the session and
+  the route's sign-in level are checked** (P2): a client without a session, or without the maker or administrator level
+  a route needs, is answered 401 / 403 before any of its body is buffered; the rest of a refused body is read and thrown
+  away for at most 5 seconds or 64 MB, then the connection is dropped (D37). Routes without a session (sign-in,
+  webhooks, view tokens, unsubscribe links) still read their (small) body first.
 - **Errors** never include stack traces, SQL or secrets: unexpected errors become "Internal server error." and are logged
   on the server.
 - Static files (the web app) are served without the Host check; they contain no data. Requests with `..`, hidden
@@ -220,7 +227,9 @@ also shows the location only to administrators (others see "Server database").
   cannot change, so it is refused (cross-site WebSocket hijacking). The session cookie (`SameSite=Strict`, `HttpOnly`) is
   then checked like on every request; an account that must change its password cannot connect.
 - **Every subscription is checked** against the user's access to the environment it names and to the table, app or scope;
-  the checks run again after every role, user or table change, and subscriptions that are no longer allowed end.
+  the checks run again after every role, user or table change, and subscriptions that are no longer allowed end. A check
+  that cannot be done (the database, an environment being restored) keeps the subscription and is repeated 5 seconds
+  later and then every minute until it succeeds (P2).
 - **Table messages never carry data**: no values, no hidden column names, and row ids only to people who may read every row
   of the table; everyone else gets a "table changed" signal and refetches through the normal, secured query.
 - **Ending a session ends its sockets at once**: signing out, changing the password, an administrator disabling or deleting
@@ -395,6 +404,39 @@ an administrator chooses a service account (audited).
 - No virus scanning. The declared file type is the client's word.
 - Unreferenced attachments (row or table gone) older than 1 hour are removed at server start (at most 5,000 per run).
 
+## Phones, PDFs, dashboards, templates and WhatsApp (Phase 2)
+
+Reviewed in [the Phase 2 security review](../internal/security-review-p2.md); tests `server/core/security-p2.test.ts`,
+`server/core/security-p2.integration.test.ts`, `src/phone/security-p2.test.ts`.
+
+- **Service worker** (`server/core/pwa.ts`): caches the application shell and the icons only; API answers are never
+  taken from its cache (only the icon and manifest paths are). An app's install manifest is answered only to people who
+  may run the app; everyone else gets the same 404 as for an app that does not exist.
+- **Offline store** (`src/phone/offline`): one IndexedDB database per person, values sealed with AES-256-GCM under a key
+  the server derives per person, device and epoch (`server/core/offline.ts`), kept in memory and `sessionStorage` only. In
+  clear on the device: outbox metadata (table, row id, times), draft keys, table names and sizes; kept answers are named by
+  a keyed hash, not by the request. Sign-out from the profile menu deletes the store; another person signing in on the
+  same page locks it (no answers, writes or replay with the new session). "Wipe phone and offline data" (the person or an
+  administrator) makes every key issued before useless. Offline writes are replayed exactly once (`Idempotency-Key`, per
+  person and environment) and checked by the server like any write.
+- **PDF and Word generation** (`server/core/print`): runs as the caller (person, flow run-as identity, each report or
+  snapshot recipient); hidden columns print blank, unreadable records are "not found". **A template an administrator
+  sets to run as a service account lets every signed-in person print every record of its table that the service account
+  reads** (audited per generation). Generated-file tokens are readable and claimable by their creator and administrators
+  only. Limits: 500 pages, 20,000 rows, 60 s, images 10 MB each, PNGs at most 40 megapixels, Word templates checked as
+  ZIPs (128 MB unpacked, 100x compression) before they are unpacked.
+- **Dashboards** (`server/core/dashboards`): every tile is a Query v2 plan run as the viewer (row and column security in
+  the statement); results are cached 20 s per person, row rule and visible columns. View tokens: one dashboard, its own
+  tiles compiled by the server, as a fixed account, re-checked on every request. Snapshots are computed per recipient, at
+  most once an hour; a recipient's "run now" at most once a minute.
+- **Templates** (`server/core/templates`): only the built-in catalogue (integrity: a manifest of SHA-256 digests); names
+  are rewritten through the formula parser; installs never overwrite existing tables; roles, run-as-system events and
+  deleting tables with data need an administrator (see [Secrets at rest](#secrets-at-rest) for secrets).
+- **WhatsApp** (`server/core/whatsapp`): a fixed Meta address; every send path checks a current opt-in; the HTTP
+  connector refuses every host of Meta's domains; webhook calls need Meta's signature over the raw body, each signature
+  once; numbers are kept in E.164 (`(0)` after the country code is dropped) and masked outside the admin pages; a flow may
+  record an opt-in (attributed to its identity) but never as "inbound keyword".
+
 ## Audit log
 
 Changes are recorded in `ab_audit`: who, when, what. Bulk deletes list the row ids (up to 1,000 per entry, the count is
@@ -457,6 +499,13 @@ beyond their role. Web pages the user visits are not trusted.
 | A crafted backup archive (path traversal, links, oversized members) | Only regular files are read, paths checked, members read into memory capped, every file checked against the manifest's SHA-256 |
 | A zip bomb uploaded as a workbook (data file, model import) | The ZIP directory is checked first: at most 256 MB unpacked, 200x compression, 10,000 parts, no ZIP64 |
 | Hostile DBML text freezing the designer | Lines over 4,000 characters skipped, texts over 2 MB refused |
+| Anyone who can reach the server making it buffer large request bodies | The session and the route's sign-in level are checked before the body is read; refused bodies are discarded for at most 5 s / 64 MB (P2) |
+| A second person on a shared phone reading or sending the first person's offline data | One encrypted store per person, key in the browser session only; locked as soon as another person signs in; sign-out from the profile menu and wipe delete it (P2) |
+| A photo or Word file built to exhaust the server's memory when printed | PNGs over 40 megapixels left out; Word templates' ZIP directory checked before unpacking (P2) |
+| Data in a PDF title or author name adding to the PDF's metadata | Info strings escaped by pdfkit; `<`, `>`, `&` replaced before pdfkit writes the XMP stream (P2) |
+| An ordinary user loading the server with dashboard snapshots | At most hourly per snapshot, "run now" by a recipient at most once a minute (P2) |
+| A flow sending WhatsApp messages without consent, or faking a person's START | One send path with the opt-in check; Meta's domains refused for HTTP connections; "inbound keyword" only from the signed webhook (P2) |
+| A person who lost access to a record or app still seeing who is on it | Live subscriptions re-checked after every security change and again until the check succeeds (P2) |
 
 **Not defended (by design or not yet built):**
 
@@ -465,7 +514,9 @@ beyond their role. Web pages the user visits are not trusted.
   change the code. Anyone with the database login can read and change all data, **and the audit log**.
 - **Other users of the same PC.** Every local account can reach `127.0.0.1:5174` and the sign-in page; during the first
   run, those who can read the server's console or log file can also complete the setup.
-- **The network.** No TLS: if the port were reachable, passwords and sessions would be visible. Do not expose it.
+- **The network.** The built-in server has no TLS: if its port were reachable, passwords and sessions would be visible.
+  Never expose port 5174 itself (no `APPBUILDER_HOST=0.0.0.0`, port forward or tunnel to it); reach Appbuilder from other
+  machines only through the installers' HTTPS option or your own TLS reverse proxy.
 - **Physical access** to the PC or to unencrypted backups. Use disk encryption (BitLocker) and protect backups.
 - **A compromised maker.** A maker can list and link every not-yet-linked table in a connected database and so read it,
   drop tables Appbuilder created, and change columns of writable linked tables.
@@ -477,13 +528,17 @@ beyond their role. Web pages the user visits are not trusted.
 
 ## Explicit limitations
 
-- Single machine; no network, multi-server or high-availability use.
-- No TLS by default on localhost, and none at all in the built-in server.
+- One server process on one machine; no multi-server, high-availability or multi-tenant use (one organisation per
+  install; the multi-tenant cloud of D46 does not exist yet). Network and internet access only through the HTTPS reverse
+  proxy the installers set up (`--https lan` / `--https domain`) or your own; with `--https domain` the sign-in page is
+  on the internet, so do the [hardening checklist](hardening-checklist.md) first and accept that there has been no
+  outside security review.
+- No TLS in the built-in server (it listens on `127.0.0.1` only).
 - No single sign-on and no passkeys (P3.5). Two-step verification is TOTP or email codes. Password reset by email needs
   the SMTP relay (Admin console > Email); without it administrators create one-time reset codes.
 - Login, second-step and reset counters are in memory (per server process, cleared by a restart).
 - **No rate limiting other than the sign-in, second-step, reset and invitation throttles, the API key limit, the
-  dashboard view token limits, the setup-code limit, SendNotification and the realtime connection limits**: other API calls are not limited; a
+  dashboard view token limits, a recipient's snapshot "run now", the WhatsApp webhook, the setup-code limit, SendNotification and the realtime connection limits**: other API calls are not limited; a
   signed-in user can send as many requests as the PC can handle. The per-email sign-in brake can be triggered by anyone
   who knows an email (see [Sign-in throttle](#sign-in-throttle)).
 - Row filters are checked on writes too: a new row must match the filter of a role that grants Create, and a changed
@@ -518,7 +573,14 @@ beyond their role. Web pages the user visits are not trusted.
 - Realtime state (subscriptions, presence, Studio locks) lives in the one server process. The Studio lock is a soft lock:
   without a live connection it cannot be checked (the Studio then says so and the last save wins). A "table changed"
   signal reveals to anyone who may read a table that something in it changed and when (not what).
-- In-app notifications cannot be recalled by the sender; notification email follows each person's choices (no WhatsApp yet).
+- In-app notifications cannot be recalled by the sender; notification email and WhatsApp follow each person's choices
+  (WhatsApp only with a current opt-in).
+- Phase 2 (details and the rest in [the Phase 2 review](../internal/security-review-p2.md#residual-risks-carried-into-the-security-model-page)): a print
+  template running as a service account prints any record of its table for any signed-in person; a maker's flow may
+  record WhatsApp opt-ins (attributed) and can so re-opt-in a number that wrote STOP; a stolen unlocked phone shows the
+  kept offline rows and drafts; dashboard results may be up to 20 s old after a sharing change; kiosk tokens sit in the
+  kiosk browser's address bar and history; a dashboard's definition (tables, columns, filter values) is readable by
+  everyone who may open it; Meta's Graph API by IP address is not refused for HTTP connections.
 - Formulas on the server: the regular-expression guard refuses nested repeats only (other super-linear patterns are not
   caught), and one native call (one regular expression, one sort) cannot be interrupted by the evaluation budget.
 - Webhooks: a slow request body holds a connection until the server's request timeout (10 minutes; behind Caddy, the
@@ -548,6 +610,7 @@ beyond their role. Web pages the user visits are not trusted.
 | Forced password change (`password_change_required`) | Tests: `hardening.test.ts` (router), `hardening.integration.test.ts`, `routes/meta/hardening.test.ts`; run in headless Chrome |
 | Per-email login backoff | Test: `hardening.test.ts` |
 | Phase 1 re-check: IPv4 inside IPv6, address encodings, userinfo and IDN tricks, header injection, prototype pollution, regular expressions with nested repeats, the evaluation budget, OpenAPI bombs; child-flow privilege escalation, drafts, owners, run-as, resubmit, locked production for flows and approval policies, bulk answers, approver races, delegation to the requester, trigger storms and the environment run limit, notification HTML escaping, webhook enumeration, OAuth secrets never answered or audited | Tests: `security-p1.test.ts`, `security-p1.integration.test.ts`; review: `docs/internal/security-review-p1.md` |
+| Phase 2 re-check: body read after the sign-in check, offline store locked for another person and keyed cache names, live re-check retried, PNG and Word bombs, XMP metadata, file-token waits, manifest oracle, snapshot frequency, WhatsApp number forms, reserved Meta hosts, the opt-in source a flow may claim | Tests: `security-p2.test.ts`, `security-p2.integration.test.ts`, `src/phone/security-p2.test.ts` (each failed before its fix); review: `docs/internal/security-review-p2.md` |
 | Phase 0 re-check: environment selection, Query v2 plan and cursor tampering, hidden-column inference, collaboration spoofing, system-table writes, outbound hosts | Tests: `security-p0.integration.test.ts`, `security-p0.test.ts`; review: `docs/internal/security-review-p0.md` |
 | Schedule policy, log retention, directory visibility, export environment data | Test: `phase-close.integration.test.ts` |
 | Re-link refused (also through a second connection), linked tables never dropped, columns only unmapped | Tests: `routes/meta/connections.test.ts`, `routes/meta/hardening.test.ts`, `hardening.integration.test.ts` (PostgreSQL) |

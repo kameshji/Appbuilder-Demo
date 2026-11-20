@@ -99,8 +99,12 @@ const PHONE = /^\+?[\d\s().-]{5,}$/
 
 export interface LookupOption { id: string; label: string }
 
-/** Validation message for a field, or null when fine. */
-export function validateField(col: ColumnDef, v: FieldVal | undefined, lookups: Record<string, LookupOption[]>): string | null {
+/**
+ * Validation message for a field, or null when fine. `lookups`: the rows a lookup may point at, when the caller holds
+ * them all; the Form does not (its picker searches the server, which checks the id), so a lookup is then only checked
+ * for being filled in.
+ */
+export function validateField(col: ColumnDef, v: FieldVal | undefined, lookups?: Record<string, LookupOption[]>): string | null {
   const name = col.displayName || col.name
   if (col.type === 'autonumber') return null
   const blank =
@@ -127,7 +131,8 @@ export function validateField(col: ColumnDef, v: FieldVal | undefined, lookups: 
     case 'choice':
       return (col.choices ?? []).includes(s) ? null : 'Pick one of the listed choices'
     case 'lookup':
-      return (lookups[col.name] ?? []).some((o) => o.id === s) ? null : 'Pick an existing record'
+      if (!lookups || !lookups[col.name]) return null
+      return lookups[col.name]!.some((o) => o.id === s) ? null : 'Pick an existing record'
     default:
       return null
   }

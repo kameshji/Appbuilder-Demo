@@ -32,6 +32,7 @@ import path from 'node:path'
 import http from 'node:http'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import pg from 'pg'
+import { chromePath, puppeteerCorePath } from './browser-env.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const E = process.env
@@ -48,7 +49,7 @@ const { createApp } = await import(pathToFileURL(path.join(root, 'server/core/ap
 const { serveStatic } = await import(pathToFileURL(path.join(root, 'server/core/static.ts')).href)
 const { runInEnvironment } = await import(pathToFileURL(path.join(root, 'server/core/env-context.ts')).href)
 const { setQuiet } = await import(pathToFileURL(path.join(root, 'server/core/util.ts')).href).catch(() => ({ setQuiet: null }))
-const { default: puppeteer } = await import(pathToFileURL(path.join(E.PUPPETEER_CORE || '/tmp/pgcheck/node_modules/puppeteer-core', 'lib/puppeteer/puppeteer-core.js')).href)
+const { default: puppeteer } = await import(pathToFileURL(path.join(puppeteerCorePath(root, E), 'lib/puppeteer/puppeteer-core.js')).href)
 if (setQuiet) setQuiet(true)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -184,18 +185,18 @@ async function approvalForm(title, approvers, timeoutDays) {
 /* ------------------------------------------------------------------ A. build by clicking */
 
 async function buildByClicking(appId) {
-  browser = await puppeteer.launch({ executablePath: E.CHROME_PATH || '/usr/bin/google-chrome', headless: 'new', args: ['--no-sandbox', '--window-size=1600,1000'] })
+  browser = await puppeteer.launch({ executablePath: chromePath(E), headless: 'new', args: ['--no-sandbox', '--window-size=1600,1000'] })
   page = await browser.newPage()
   await page.setViewport({ width: 1600, height: 1000 })
   page.on('dialog', (d) => d.accept())
   const errors = []
   page.on('pageerror', (e) => errors.push(e.message))
-  await page.goto(`${BASE}/#home`, { waitUntil: 'networkidle0' })
+  await page.goto(`${BASE}/#home`, { waitUntil: 'networkidle2' })
   await typeInto('input[type=email]', ADMIN.email)
   await typeInto('input[type=password]', ADMIN.password)
   await page.keyboard.press('Enter')
   await page.waitForSelector('nav', { timeout: 20000 })
-  await page.goto(`${BASE}/#flows`, { waitUntil: 'networkidle0' })
+  await page.goto(`${BASE}/#flows`, { waitUntil: 'networkidle2' })
   await waitFor(T('flows-walkthrough'))
   record('the Flows page shows the empty-state walkthrough', true)
   await click(T('new-flow'))
@@ -305,7 +306,7 @@ async function buildByClicking(appId) {
   // a request through an app's form, in a second tab
   const appPage = await browser.newPage()
   await appPage.setViewport({ width: 1280, height: 800 })
-  await appPage.goto(`${BASE}/#run-${appId}`, { waitUntil: 'networkidle0' })
+  await appPage.goto(`${BASE}/#run-${appId}`, { waitUntil: 'networkidle2' })
   await appPage.waitForSelector('label', { timeout: 20000 })
   await sleep(1500)
   const fill = async (label, value) => {
@@ -448,10 +449,10 @@ async function performance() {
   let count = 0
   const v = (l) => { for (const x of l ?? []) { count++; v(x.steps); v(x.then); v(x.else) } }
   v(flow.steps)
-  browser = await puppeteer.launch({ executablePath: E.CHROME_PATH || '/usr/bin/google-chrome', headless: 'new', args: ['--no-sandbox', '--window-size=1600,1000'] })
+  browser = await puppeteer.launch({ executablePath: chromePath(E), headless: 'new', args: ['--no-sandbox', '--window-size=1600,1000'] })
   page = await browser.newPage()
   await page.setViewport({ width: 1600, height: 1000 })
-  await page.goto(`${BASE}/#home`, { waitUntil: 'networkidle0' })
+  await page.goto(`${BASE}/#home`, { waitUntil: 'networkidle2' })
   await typeInto('input[type=email]', ADMIN.email)
   await typeInto('input[type=password]', ADMIN.password)
   await page.keyboard.press('Enter')

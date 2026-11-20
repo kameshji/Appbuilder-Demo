@@ -19,12 +19,21 @@ export interface PdfInput {
   meta: PdfMeta
 }
 
+/**
+ * P2 security re-check (finding P2-12): pdfkit copies the document information into the XMP metadata stream as raw XML
+ * (no escaping), so a title made from data ("{Customer}") or a person's name as author could add XML elements there.
+ * The markup characters are replaced by look-alikes (the Info dictionary itself is an escaped PDF string either way).
+ */
+export function metaText(s: string | undefined): string {
+  return (s ?? '').replace(/[<>&]/g, (c) => ({ '<': '‹', '>': '›', '&': '＆' })[c]!).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+}
+
 /** the PDF as a stream of bytes */
 export function pdfStream(inp: PdfInput): Readable {
   const doc = new PDFDocument({
     autoFirstPage: false, margin: 0, compress: true, pdfVersion: '1.7',
     info: {
-      Title: inp.meta.title ?? '', Author: inp.meta.author ?? '', Subject: inp.meta.subject ?? '', Keywords: inp.meta.keywords ?? '',
+      Title: metaText(inp.meta.title), Author: metaText(inp.meta.author), Subject: metaText(inp.meta.subject), Keywords: metaText(inp.meta.keywords),
       Creator: 'Appbuilder print templates', Producer: 'Appbuilder (pdfkit)', CreationDate: inp.meta.createdOn, ModDate: inp.meta.createdOn,
     },
     displayTitle: !!inp.meta.title,

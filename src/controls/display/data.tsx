@@ -15,6 +15,22 @@ import { queryMeta, rowCountText, useVirtualRows, viewMatches } from '../virtual
 import { useDevice } from '@/phone/env'
 import { useBoxWidth } from '@/phone/touch-hooks'
 import { cardMode, cardPlan, parseCardColumns } from '@/phone/touch-logic'
+import { lookupCell, lookupSort, lookupSortText } from '../lookups'
+import { lookupLabel, tableOfRows, useLabelVersion, useLookupRequests } from '../lookupLabels'
+
+/** a lookup column of a list: the target table and how it may be sorted */
+interface LookupInfo { target: string; sortable: boolean; reason?: string }
+
+/** a lookup cell: the target row's label; a neutral placeholder for a row the viewer cannot read; never the id */
+function LookupCellView({ target, value }: { target: string; value: FxValue | undefined }) {
+  const cell = lookupCell(value, typeof value === 'string' && value ? lookupLabel(target, value) : undefined)
+  if (cell.state === 'blank') return null
+  return (
+    <span data-lookup-state={cell.state} className={cn(cell.state !== 'label' && 'text-muted-foreground', cell.state === 'missing' && 'italic')} title={cell.state === 'missing' ? 'This record was deleted or you cannot see it.' : undefined}>
+      {cell.text}
+    </span>
+  )
+}
 
 /* ------------------------------------------------------------------ DataTable */
 
@@ -139,6 +155,25 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
     return kept.join(',')
   }, [colSpecRaw, items])
   const cols = useMemo(() => resolveColumns(items, colSpec, sourceTable(items)), [items, colSpec])
+  // lookup columns show the target row's label (resolved in batches, src/controls/lookupLabels.ts)
+  const labelsV = useLabelVersion()
+  const srcDef = useMemo(() => tableOfRows(items, meta?.table), [items, meta?.table])
+  const lookupCols = useMemo(() => {
+    const out = new Map<string, LookupInfo>()
+    for (const c of cols) {
+      const def = srcDef?.columns.find((x) => x.name === c.field)
+      if (!def || def.type !== 'lookup' || !def.lookupTable) continue
+      const distinct = meta ? 0 : new Set(items.map((r) => pick(r, c.field)).filter((v) => typeof v === 'string' && v !== '')).size
+      out.set(c.field, { target: def.lookupTable, ...lookupSort(!!meta, c.header, distinct) })
+    }
+    return out
+  }, [cols, srcDef, meta, items])
+  /** the text of a cell for a search or a sort held in the browser (a lookup: its label) */
+  const textOf = (c: Col, v: FxValue | undefined): string => {
+    const lk = lookupCols.get(c.field)
+    return lk ? lookupSortText(v, typeof v === 'string' && v ? lookupLabel(lk.target, v) : undefined) : cellText(v, c.kind)
+  }
+  const canSort = (c: Col) => (meta ? !!meta.columns[c.field] : true) && (lookupCols.get(c.field)?.sortable ?? true)
   const striped = toBool(props.Striped, false)
   const dense = toBool(props.Dense, false)
   const sortable = toBool(props.Sortable, true)
@@ -168,24 +203,27 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
     if (serverView) return items
     let r = items
     const q = query.trim().toLowerCase()
-    if (q) r = r.filter((rec) => cols.some((c) => cellText(pick(rec, c.field), c.kind).toLowerCase().includes(q)))
-    const sc = sortCol && sortDir ? cols.find((c) => c.field === sortCol) : undefined
+    if (q) r = r.filter((rec) => cols.some((c) => textOf(c, pick(rec, c.field)).toLowerCase().includes(q)))
+    const sc = sortCol && sortDir ? cols.find((c) => c.field === sortCol && canSort(c)) : undefined
+    const lk = sc ? lookupCols.get(sc.field) : undefined
     if (sc) {
       const dir = sortDir === 'desc' ? -1 : 1
       r = r
         .map((rec, i) => ({ rec, i }))
         .sort((a, b) => {
-          const va = pick(a.rec, sc.field)
-          const vb = pick(b.rec, sc.field)
+          const va = lk ? textOf(sc, pick(a.rec, sc.field)) : pick(a.rec, sc.field)
+          const vb = lk ? textOf(sc, pick(b.rec, sc.field)) : pick(b.rec, sc.field)
           const blankA = va == null || va === ''
           const blankB = vb == null || vb === ''
           if (blankA || blankB) return blankA === blankB ? a.i - b.i : blankA ? 1 : -1
-          return dir * compareValues(va, vb, sc.kind) || a.i - b.i
+          return dir * compareValues(va, vb, lk ? 'text' : sc.kind) || a.i - b.i
         })
         .map((x) => x.rec)
     }
     return r
-  }, [items, cols, query, sortCol, sortDir, serverView])
+    // labelsV: the labels a lookup search / sort reads changed
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, cols, query, sortCol, sortDir, serverView, lookupCols, labelsV])
 
   // the exact number of rows of the whole result (server count), or the rows we hold
   const totalRows = serverView ? (meta?.count ?? rows.length) : rows.length
@@ -220,6 +258,12 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
     onNearEnd: !cards && meta && pageSize === 0 && meta.hasMore ? () => void meta.loadMore() : undefined,
   })
   const shownRows = virtualOn ? pageRows.slice(win.start, win.end) : cards ? pageRows.slice(0, cardLimit) : pageRows
+  // labels of the lookups on screen (one batch per target table); a search or sort held in the browser needs them all
+  const needAll = !serverView && (query.trim() !== '' || (!!sortCol && lookupCols.has(sortCol)))
+  const labelRows = needAll ? items : shownRows
+  const labelReqs: { table: string; ids: (FxValue | undefined)[] }[] = []
+  for (const [field, lk] of lookupCols) labelReqs.push({ table: lk.target, ids: labelRows.map((r) => pick(r, field)) })
+  useLookupRequests(labelReqs)
   // a new sort or search starts at the top
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = 0
@@ -250,8 +294,8 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
 
   const onHeader = (c: Col) => {
     if (!sortable || design) return
-    // a query result sorts on the server: only columns of the table can be sorted
-    if (meta && !meta.columns[c.field]) return
+    // a query result sorts on the server: only columns of the table can be sorted, and never a lookup (it would sort by id)
+    if (!canSort(c)) return
     if (sortCol !== c.field || !sortDir) {
       setOutput('SortColumn', c.field)
       setOutput('SortOrder', 'Ascending')
@@ -343,7 +387,7 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
             onChange={(e) => setSort(e.target.value, sortDir === 'desc' ? 'desc' : 'asc')}
           >
             <option value="">Sort: none</option>
-            {cols.filter((c) => !meta || meta.columns[c.field]).map((c) => (
+            {cols.filter(canSort).map((c) => (
               <option key={c.field} value={c.field}>Sort by {c.header}</option>
             ))}
           </select>
@@ -367,6 +411,8 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
                 const attIds = c.kind === 'text' ? attachmentIds(v) : []
                 if (c.kind === 'boolean' && typeof v === 'boolean') return v ? <Check className="size-4 text-primary" aria-label="Yes" /> : <span className="text-muted-foreground/60" aria-label="No">No</span>
                 if (attIds.length > 0) return <AttachmentCell value={v} thumb={28} />
+                const lk = lookupCols.get(c.field)
+                if (lk) return <LookupCellView target={lk.target} value={v} />
                 return cellText(v, c.kind)
               }
               const blank = (c: Col) => {
@@ -423,23 +469,27 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
                 )}
                 {cols.map((c) => {
                   const active = sortCol === c.field && !!sortDir
+                  const sortHere = sortable && canSort(c)
+                  const noSort = sortable && !sortHere ? lookupCols.get(c.field)?.reason : undefined
                   return (
                     <th
                       key={c.field}
                       scope="col"
                       aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : undefined}
                       onClick={() => onHeader(c)}
+                      title={noSort}
+                      data-sortable={sortable ? String(sortHere) : undefined}
                       className={cn(
                         'sticky top-0 z-10 select-none whitespace-nowrap border-b bg-muted text-xs font-medium text-muted-foreground',
                         dense ? 'px-3 py-1.5' : 'px-3 py-2',
                         (c.kind === 'number') && 'text-right',
-                        sortable && 'cursor-pointer hover:text-foreground',
+                        sortHere && 'cursor-pointer hover:text-foreground',
                         active && 'text-foreground',
                       )}
                     >
                       <span className={cn('inline-flex items-center gap-1', c.kind === 'number' && 'flex-row-reverse')}>
                         {c.header}
-                        {sortable &&
+                        {sortHere &&
                           (active ? (
                             sortDir === 'asc' ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />
                           ) : (
@@ -476,17 +526,20 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
                     )}
                     {cols.map((c) => {
                       const v = pick(rec, c.field)
-                      const attIds = c.kind === 'text' ? attachmentIds(v) : []
+                      const lk = lookupCols.get(c.field)
+                      const attIds = c.kind === 'text' && !lk ? attachmentIds(v) : []
                       return (
                         <td
                           key={c.field}
-                          title={c.kind === 'boolean' || attIds.length ? undefined : cellText(v, c.kind)}
+                          title={c.kind === 'boolean' || attIds.length ? undefined : lk ? textOf(c, v) || undefined : cellText(v, c.kind)}
                           className={cn('max-w-xs overflow-hidden text-ellipsis whitespace-nowrap border-b', pad, c.kind === 'number' && 'text-right tabular-nums')}
                         >
                           {c.kind === 'boolean' && typeof v === 'boolean' ? (
                             v ? <Check className="size-4 text-primary" aria-label="Yes" /> : <span className="text-muted-foreground/50" aria-label="No">–</span>
                           ) : attIds.length > 0 ? (
                             <AttachmentCell value={v} thumb={dense ? 20 : 28} />
+                          ) : lk ? (
+                            <LookupCellView target={lk.target} value={v} />
                           ) : (
                             cellText(v, c.kind)
                           )}

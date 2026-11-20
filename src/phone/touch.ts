@@ -53,7 +53,7 @@ export const TOUCH_MATRIX: Record<string, TouchEntry> = {
   ColorPicker: W('Opens the popover; swatches are small (desktop sizing).'),
   Stepper: F('Touch area; a tap reaches the nearest of - and +.'),
   PinInput: W('48 px boxes.'),
-  Form: F('Image columns: Take photo (native camera), Use camera (in-page), photos resized to 1600 px and turned upright. Sticky save bar on phones: the Save/Cancel bar stays reachable above the keyboard. Choice and lookup fields still use the Radix select.'),
+  Form: F('Image columns: Take photo (native camera), Use camera (in-page), photos resized to 1600 px and turned upright. Sticky save bar on phones: the Save/Cancel bar stays reachable above the keyboard. Choice and lookup fields open the bottom sheet with search and 44 px rows (lookups search the server as you type); desktop keeps the Radix select for choices and a searchable popover for lookups.'),
   Timer: W('Not tapped by users.', false),
   BarcodeScanner: F('New: 48 px button, full-screen scanner with 48 px buttons.'),
   ScanInput: F('New: 48 px field and camera button; keyboard-wedge scanners.'),

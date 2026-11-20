@@ -190,6 +190,7 @@ async function checkBrowser() {
     p.stderr.on('data', (d) => { text += d })
     p.on('exit', (code) => resolve({ code, text }))
   })
+  if (r.code !== 0) console.log(r.text)
   const pass = (r.text.match(/^PASS/gm) || []).length
   const fail = (r.text.match(/^FAIL.*$/gm) || [])
   record(2, 'headless browser: portal grid and an app DataTable on the 1,000,000-row table', r.code === 0, `${pass} checks passed${fail.length ? `; ${fail.join(' | ')}` : ''}${r.code !== 0 && !pass ? `; ${r.text.trim().split('\n').slice(-3).join(' ')}` : ''}`)
@@ -208,11 +209,12 @@ async function checkNotDelegable(api) {
 async function checkDrill() {
   const r = await new Promise((resolve) => {
     let text = ''
-    const p = spawn(process.execPath, ['scripts/drill/restore-drill.mjs'], { cwd: root, env: { ...E, DRILL_DB_NAME: 'appbuilder_drill_exit', DRILL_PORT: String(PORT + 1) }, stdio: ['ignore', 'pipe', 'pipe'] })
+    const p = spawn(process.execPath, ['scripts/drill/restore-drill.mjs'], { cwd: root, env: { ...E, DRILL_DB_HOST: DB.host, DRILL_DB_PORT: String(DB.port), DRILL_DB_USER: DB.user, DRILL_DB_PASSWORD: DB.password, DRILL_MAINT_DB: MAINT, DRILL_DB_NAME: 'appbuilder_drill_exit', DRILL_PORT: String(PORT + 1) }, stdio: ['ignore', 'pipe', 'pipe'] })
     p.stdout.on('data', (d) => { text += d })
     p.stderr.on('data', (d) => { text += d })
     p.on('exit', (code) => resolve({ code, text }))
   })
+  if (r.code !== 0) console.log(r.text)
   const oks = (r.text.match(/ ok: /g) || []).length
   const last = r.text.trim().split('\n').filter(Boolean).slice(-1)[0] || ''
   record(4, 'backup, wipe, restore drill by script', r.code === 0, `${oks} drill steps ok; ${last.slice(0, 160)}`)
@@ -314,7 +316,10 @@ try {
 } finally {
   await stopServer()
   if (E.KEEP !== '1') {
-    await maint(`DROP DATABASE IF EXISTS "${DB.database}" WITH (FORCE)`).catch(() => {})
+    // a background worker (autovacuum after the bulk load) can make the first attempts fail with "permission denied to terminate process"
+    for (let i = 0; i < 15; i++) {
+      try { await maint(`DROP DATABASE IF EXISTS "${DB.database}" WITH (FORCE)`); break } catch (e) { if (i === 14) console.error(`could not drop ${DB.database}: ${e.message}`); await sleep(1000) }
+    }
     fs.rmSync(DIR, { recursive: true, force: true })
   }
 }

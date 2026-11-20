@@ -47,9 +47,12 @@ refuses any setting whose name contains url, base, host or endpoint. Tests repla
 `setGraphBaseForTests(url)` (the same kind of injection as `setLookupForTests`); nothing reads it from settings, the
 process environment or a request.
 
-**Meta's host is reserved.** `actions/http.ts` refuses `graph.facebook.com` (and wildcards that cover it, and
-`graph.whatsapp.com`) on HTTP connections when they are saved, and drops it from older connections' allow-lists at call
-time. Otherwise an HTTP connection with a token could send messages without the opt-in check.
+**Meta's hosts are reserved.** `actions/http.ts` refuses every host of `facebook.com`, `facebook.net`, `fb.com`,
+`fbcdn.net`, `fbsbx.com`, `whatsapp.com` and `whatsapp.net` (Meta serves the Graph API under more than one name, such as
+`b-graph.facebook.com`), and wildcards that cover one, on HTTP connections when they are saved, and drops them from older
+connections' allow-lists at call time. Otherwise an HTTP connection with a token could send messages without the opt-in
+check. Not covered: an IP address of Meta written as the host (with TLS verification on, its certificate does not match),
+and anyone who holds the access token outside Appbuilder.
 
 ## Actions
 
@@ -62,7 +65,7 @@ Generated reference: [connector actions](../reference/connector-actions.md) (run
 | `sendText` | external, not idempotent | Only inside the 24-hour window as this server knows it |
 | `listTemplates` | none | Reads every page of the account's templates (at most 1,000) |
 | `checkOptIn` | none | `optedIn`, `status`, `source`, `recordedOn`, masked number |
-| `recordOptIn` | none | `status`, `source` (form, import, inbound keyword; not administrator), `evidence` (at least 10 characters) |
+| `recordOptIn` | none | `status`, `source` (form, import; not administrator, and not inbound keyword, which only the webhook records when the person writes the keyword), `evidence` (at least 10 characters) |
 
 Template values may be text, numbers or formula records `{ Value }` (a flow's `["a", "b"]`). Meta's rules are checked
 before sending: no empty values, no new lines or tabs, at most four spaces in a row, at most 1,024 characters.

@@ -165,12 +165,12 @@ identity for snapshots.
 | `GET /dashboards/:id/snapshots` | anyone who can open the dashboard | `{ items: SnapshotInfo[] }`: mine, the ones I receive; all of them for the dashboard's editors |
 | `POST /dashboards/:id/snapshots` | anyone who can open the dashboard (others as recipients: makers, administrators) | `{ name?, schedule, recipients?: { userIds, teamIds }, range?: RangePreset, filters?, enabled? }` -> `SnapshotInfo` |
 | `PATCH /dashboards/snapshots/:sid`, `DELETE ...` | the snapshot's owner, administrators | same fields -> `SnapshotInfo` / `{ ok: true }` |
-| `POST /dashboards/snapshots/:sid/run` | owner / administrator: everyone; a recipient: their own copy | -> `{ jobId }` |
+| `POST /dashboards/snapshots/:sid/run` | owner / administrator: everyone; a recipient: their own copy, at most once a minute per snapshot (429 with `Retry-After`) | -> `{ jobId }` |
 | `GET /dashboards/snapshots/:sid/runs` | as the list (a recipient sees only their own line) | `{ items: [{ id, startedOn, finishedOn, status, trigger, message, recipients: [{ userId, status: 'sent' \| 'skipped' \| 'failed', mailId?, pages?, reason? }] }] }` |
 | `GET` / `POST /dashboards/snapshots/unsubscribe?t=` | the signed link of the email (no sign-in) | a small HTML page |
 
 `schedule` is the reports' shape: `{ frequency: 'hourly', minute }`, `daily` / `weekdays` (`time`), `weekly` (`time`, `weekday`),
-`monthly` (`time`, `day`), `cron`, `manual`, each with `timeZone`. `SnapshotInfo`: `{ id, dashboardId, name, ownerId, enabled, def: {
+`monthly` (`time`, `day`), `cron`, `manual`, each with `timeZone`; a snapshot runs at most once an hour (a `cron` that names more than one minute is refused, 422; any person who can open the dashboard may subscribe themselves, and each run makes a PDF per recipient). `SnapshotInfo`: `{ id, dashboardId, name, ownerId, enabled, def: {
 name, schedule, recipients, range?, filters?, optOut? }, scheduleText, nextRunAt, lastRun, createdOn, modifiedOn, canEdit }`. Audited:
 `dashboard.snapshot.create`, `.update`, `.delete`, `.run`; unsubscribes in the install log (`dashboard.snapshot.unsubscribe`).
 Deleting the dashboard deletes its snapshots, their schedules and runs.

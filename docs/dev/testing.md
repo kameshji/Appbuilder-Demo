@@ -1,6 +1,6 @@
 # Testing
 
-Tests run with **Vitest** (`npm test` runs `vitest run`). The configuration is in `/home/claude/appbuilder-demo/vite.config.ts`:
+Tests run with **Vitest** (`npm test` runs `vitest run`). The configuration is in `vite.config.ts` at the repository root:
 environment `node` (there is no DOM test environment, so React components are not rendered in unit tests) and these include
 globs:
 
@@ -29,6 +29,13 @@ src/**/*.test.ts   server/**/*.test.ts   scripts/**/*.test.ts
 | Security re-check (package M) | `server/core/security-p0.integration.test.ts`, `server/core/security-p0.test.ts` | Environment selection tampering, Query v2 plan and cursor tampering, hidden-column inference, collaboration spoofing, system-table writes, outbound host policy, crafted archives, zip bombs, DBML abuse, export escaping, API key reach (docs/internal/security-review-p0.md) | partly |
 | Security re-check of Phase 1 (package E) | `server/core/security-p1.test.ts`, `server/core/security-p1.integration.test.ts` | IPv4 inside IPv6 and other address encodings, userinfo / IDN / trailing-dot tricks, header injection, prototype pollution, regular expressions with nested repeats, the evaluation budget, OpenAPI alias bombs and remote `$ref`; child-flow escalation, drafts, test runs, owners, run-as, resubmit, locked production for flows and policies, bulk answers with required comments, two approvers at once, delegation to the requester, trigger storms and the environment run limit, notification HTML escaping, webhook enumeration, SMTP OAuth secrets (docs/internal/security-review-p1.md) | partly (`APPBUILDER_TEST_DB`) |
 | Phase 1 close (package E) | `src/approvals/definitionKit.test.ts`, `src/runtime/runflow.test.ts`, additions to `flows.integration.test.ts` (resubmit from a step), `flows-durability.integration.test.ts` (notify once), `approvals.integration.test.ts` (per-stage due dates, the visual step), `templates.test.ts` (dynamic content), `identity/smtp.test.ts` (XOAUTH2), `diagnostics/ops.integration.test.ts` (health alerts); `scripts/exit-check/p1.mjs` (the exit check, headless) | The nine gaps of the phase close | partly |
+| Backups (P0 package J, handles in P2 close) | `server/core/backup/backup.test.ts` (tar and encrypted container, COPY parsing, retention, and the **file handle** tests: every refused or damaged archive leaves no handle open, an archive handed to queued work is closed when the work cannot start), `backup.integration.test.ts`, `backup.large.integration.test.ts` (opt-in: `APPBUILDER_TEST_LARGE=1`, 1,000,000 rows and 500 MB of attachments, minutes and about 2.5 GB of temp space) | Backup now with both methods, verification, encryption, tampering, restore (new, in place, selected tables), browsing | integration: **yes** |
+| Phone (P2-A) | `src/phone/{phone,capture}.test.ts`, `src/phone/offline/outbox.test.ts`, `src/phone/scan/{decode1d,qr}.test.ts`, `server/core/pwa.test.ts`, `src/studio/phoneFrame.test.ts` | Signature and bottom-sheet logic, offline tables and form drafts, the outbox (idempotency keys, scripted failures, no duplicate), the 1D and QR decoders on generated images, the PWA manifest and icons, phone preview frames. The browser parts are `scripts/exit-check/p2-phone.mjs` | no |
+| Print and PDF (P2-B) | `server/core/print/{print,svgops}.test.ts`, `src/print/share.test.ts`, `server/core/print/print.integration.test.ts` | Our own PDF renderer (layout, pagination, Devanagari shaping against HarfBuzz, barcodes, determinism, a 50-page budget), charts in PDFs (golden text positions), sharing a file; templates end to end (security-trimmed generation, `GeneratePdf`, flow step `document.generate`, scheduled reports with PDFs, bulk jobs, Word templates) with a fake SMTP server. Barcode decoding in the unit tests needs poppler and zxing-cpp and is skipped when they are missing | integration: **yes** |
+| Dashboards and charts (P2-C) | `src/dashboards/{dashboards,editor,grid,kiosk,mtbf,screens}.test.ts`, `src/charts/charts.test.ts`, `server/core/dashboards/dashboards-wave2.test.ts`, `server/core/dashboards/{dashboards,dashboards-wave2,pins}.integration.test.ts` | Date presets, the measure builder through the reference executor, OEE and MTBF against hand computation, the tile editor's logic, the grid arithmetic, the kiosk page's token handling, drill-through; the batch endpoint under the viewer's rights, hidden columns, the cache, view tokens, snapshots, pins | integration: **yes** |
+| Auto apps and templates (P2-D) | `src/autoapp/generate.test.ts`, `src/templates/templates.test.ts`, `server/core/templates/catalogue.test.ts`, `server/core/templates/templates.integration.test.ts` | Apps generated from a table or model, the template package format, binding and formula rewrite, the safety rule, the built-in catalogue (sealed, manifest, signatures, release build ships every file); the four kinds installed through plan and install, name clashes, nothing existing changed | integration: **yes** |
+| WhatsApp (P2-E) | `server/core/whatsapp/whatsapp.test.ts`, `whatsapp.integration.test.ts` (fake Graph API in `mock-graph.ts`) | Phone numbers, the webhook signature, keywords, payloads, the refusal of Meta's host by the HTTP connector; opt-in, no send without it, a retried step sends once, status webhooks, STOP. Never contacts Meta | integration: **yes** |
+| Phase 2 exit checks | `scripts/exit-check/p2.mjs` and the scripts it runs (below) | The seven exit checks of `docs/plan/p2-spec.md`, headless | **yes** (they create their own) |
 | Licence classifier | `scripts/licences.test.ts` | The licence allow-list logic used by `npm run licences` and `npm run notices` (SPDX expressions, arrays, missing, exceptions, forbidden imports) | no |
 
 Test data: `server/routes/meta/fixtures.ts` is the legacy sample fixture; seed data is in `server/routes/meta/seed.ts` with
@@ -66,6 +73,15 @@ npx vitest run server/connectors/postgres  # connector + parity + transactions
 npx vitest run server/connectors/mysql     # the MySQL connector + its parity
 npx vitest run server/core                 # end-to-end over HTTP (also runs unit.test.ts)
 npx vitest run server/routes/meta          # metadata API (also runs the unit tests there)
+```
+
+On Windows (PowerShell), with a sandbox PostgreSQL on another port, for example 5435 (the ports in this document are examples; use
+the ones of your sandbox servers, and never the port of a real installation):
+
+```powershell
+$env:APPBUILDER_TEST_DB    = 'postgres://abdev:abdev-sandbox-only@127.0.0.1:5435/appbuilder_test'
+$env:APPBUILDER_TEST_MYSQL = 'mysql://abdev:abdev-sandbox-only@127.0.0.1:3307/appbuilder_test'
+npx vitest run server/core/backup
 ```
 
 (`abdev` / `abdev-sandbox-only` is the sandbox account used by the project's documentation; any account with the rights below
@@ -174,8 +190,7 @@ Reference pages that can come from the code are generated, and a test fails when
 
 - `npm run docs:gen` (which is `vitest run scripts/docs`) writes `docs/reference/formulas.md` and `docs/reference/ui-components.md` from
   `fx.functions()`, `fx.enums()` and the UI component registry, using the hand-maintained parts in
-  `/home/claude/appbuilder-demo/scripts/docs/formulas.ts` (function categories) and
-  `/home/claude/appbuilder-demo/scripts/docs/controls.ts` (one-line descriptions and notes). Write mode is on when `DOCS_WRITE=1` or the
+  `scripts/docs/formulas.ts` (function categories) and `scripts/docs/controls.ts` (one-line descriptions and notes). Write mode is on when `DOCS_WRITE=1` or the
   command is started through `npm run docs:gen`.
 - `npm test` runs `scripts/docs/generate.test.ts` in check mode: it fails with "`docs/reference/... is stale. Run npm run docs:gen`
   and commit the result" plus the first differing line, fails when a UI component has no description, and checks that generation is
@@ -194,10 +209,13 @@ Unit tests cannot show what a maker sees. Two kinds of browser checks are used:
 1. **Manual** (always): build (`npm run build`) or `npm run dev`, open the app, and exercise the changed screens in server mode
    and, if the change touches shared code, demo mode (open `dist/index.html` without the server). Check light and dark themes and the
    Studio in design and Preview.
-2. **Scripted with puppeteer** (optional): `/home/claude/appbuilder-demo/scripts/docs-shots/capture.mjs` drives a real server in a
+2. **Scripted with puppeteer** (optional): `scripts/docs-shots/capture.mjs` drives a real server in a
    headless Chrome to produce the documentation screenshots. **Puppeteer and Chrome are not dependencies of this repository** and are
-   not installed by `npm install`; the script imports `puppeteer-core` from `PUPPETEER_CORE` (default
-   `/tmp/pgcheck/node_modules/puppeteer-core`) and Chrome from `CHROME_PATH`. Its header explains the two sandbox servers it needs
+   not installed by `npm install`; the scripts import `puppeteer-core` from `PUPPETEER_CORE` (the folder `.../node_modules/puppeteer-core`;
+   install it once anywhere with `npm install puppeteer-core` and point the variable there) and start Chrome from `CHROME_PATH`.
+   The exit-check and benchmark scripts look in the usual places when the variables are unset (`scripts/exit-check/browser-env.mjs`);
+   the `docs-shots` scripts still default to the Linux paths of the original sandbox (`/tmp/pgcheck/...`, `/usr/bin/google-chrome`), so
+   set both variables for them. Its header explains the two sandbox servers it needs
    (one with a database, one for the setup wizard). Treat any puppeteer script you write as a developer tool in `scripts/`, with
    sandbox values only (a test email such as `admin@example.test`, an obviously fake password), never against real data, and never
    as a replacement for a unit test. `window.__ab` (store, ui, evaluator) is available in the page for assertions.
@@ -218,12 +236,72 @@ Unit tests cannot show what a maker sees. Two kinds of browser checks are used:
 
 ## Phase exit checks
 
-`node scripts/exit-check/p0.mjs` runs the automatable Phase 0 exit checks against a freshly started server on an empty
-database it creates (`appbuilder_exitcheck`, dropped afterwards): a million rows through the API with time limits, the
-headless browser check (`scripts/bench/browser-check.mjs`; needs `npm run build`, puppeteer-core and Chrome), the
-delegation error, the restore drill, reset + TOTP + sessions against `server/core/identity/fake-smtp.ts`, and a second
-environment. It prints a Markdown table (copied into `docs/plan/p0-spec.md`); `EXIT_SKIP=browser,drill` skips the slow
-parts. Sandbox values only.
+The exit checks of a phase (the numbered list in `docs/plan/pN-spec.md`) are developer scripts in `scripts/exit-check/`. Each starts
+its own server on an **empty database it creates and drops** (names starting with `appbuilder_exit...`), checks what a person
+would, prints PASS / FAIL lines and exits 1 when a check fails. Sandbox values only; none of them touches real data.
+
+| Script | What it runs | Needs |
+| --- | --- | --- |
+| `p0.mjs` | Phase 0: a million rows through the API with time limits, the headless browser check (`scripts/bench/browser-check.mjs`), the delegation error, the restore drill (`scripts/drill/restore-drill.mjs`), reset + TOTP + sessions against `server/core/identity/fake-smtp.ts`, a second environment. Prints the Markdown table that `docs/plan/p0-spec.md` records | `npm run build`, puppeteer-core, Chrome; about 2.5 minutes |
+| `p1.mjs` | Phase 1: the approvals and flows exit-check tests (vitest), `p1-designer.mjs` (a flow built by clicking only), approvals from inbox, bell and email link, a scheduled report, solutions with flows, restricted flows and run-as, the docs tests, the kill switch, the recycle bin | `npm run build`, puppeteer-core, Chrome; about 2 minutes |
+| `p2.mjs` | **All seven Phase 2 checks in one run** (below) | everything above; about 30 minutes and about 1 GB of database space at 1,000,000 rows (dropped afterwards) |
+| `p2-phone.mjs` (check 1) | The phone: Chrome with Android emulation, a fake camera playing a generated barcode and QR video, photo through `<input capture>`, the home-screen start address, offline toggling, a slow-3G profile and a flapping connection, the outbox without duplicates | build, puppeteer-core, Chrome |
+| `p2-pdf.mjs` (check 2) | A flow with a schedule trigger emails the daily OEE PDF; a template built by clicking; printing a record from an app (Print button, `Print`, `GeneratePdf` into a file column, the timeline's Document action) | build, puppeteer-core, Chrome; `pdftotext` (poppler) is optional and adds a text check of the PDFs |
+| `p2-dashboard.mjs` (check 3) | The built-in "Production overview" (7 tiles) on 1,000,000 production rows and 200,000 downtime rows for a user who may read only own rows: API timing of the batch endpoint cold and cached, the OEE tile against SQL over that user's rows, a headless browser timing from navigation to every tile drawn, cross-filter, arrow keys, a Pareto table view, the phone layout. **Needs a running server on an empty database** (its header has the commands; `p2.mjs` starts one) | build, puppeteer-core, Chrome, a running server and `PG_URL` |
+| `p2-tile-editor.mjs`, `p2-dashboard-layout.mjs` (check 3, supporting) | The visual tile editor and the dashboard layout, viewer roles, settings and drill-through, in demo mode from `dist/index.html` (no server); the tile editor also against a server when `BASE`, `ADMIN_EMAIL` and `ADMIN_PASSWORD` are set | build, puppeteer-core, Chrome |
+| `p2-dashboard-screens.mjs` (check 3, supporting) | View tokens, the kiosk page (what the server really received), email snapshots with PDFs, pins, settings, viewer roles, drill-through, against a real server with a fake SMTP server | build, puppeteer-core, Chrome; PyMuPDF (`python -m pip install pymupdf`, variable `PYTHON`) is optional and renders page 1 of the snapshot PDF |
+| `p2-autoapp.mjs` (check 4) | "Create app from table" for desktop and phone, edited in the Studio, a user without the Maker role, demo mode | build, puppeteer-core, Chrome |
+| `p2-templates.mjs` (check 5) | The four template kinds installed through the binding step and the plan screen; a blocked install; the environment before and after compared byte by byte | build, puppeteer-core, Chrome |
+| `p2-whatsapp.mjs` (check 6) | A template message from a flow to the mock Graph API, opt-in, no send without it, signed webhooks, STOP. No browser | a sandbox PostgreSQL only |
+
+**`p2.mjs`** runs the other scripts as child processes, one after the other (the timings are part of the evidence), saves each
+one's output and prints one table with the seven checks (check number, what, PASS / FAIL / PENDING / SKIP, evidence with counts and
+timings) and a second table with every script. Check 3 is `p2-dashboard.mjs` plus the three supporting scripts; the server it needs
+is started by `p2.mjs` itself on a free port with its own database. Check 7 runs `p0.mjs`, `p1.mjs`, the docs link, naming and
+generated-reference tests, and looks for `docs/internal/security-review-p2.md` (PENDING while the file does not exist). The exit
+code is 1 when anything fails, 3 when nothing failed but the security review is still pending, 0 otherwise.
+
+```powershell
+. .\.sandbox\env.ps1                  # this repository's Windows sandbox variables; any APPBUILDER_TEST_DB will do
+$env:PUPPETEER_CORE = "$PWD\.sandbox\s1\tools\node_modules\puppeteer-core"   # the folder of puppeteer-core
+$env:CHROME_PATH = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+$env:OUT = "$PWD\.sandbox\c3\p2-run"  # the children's output, screenshots, summary.md
+npm run build
+node scripts/exit-check/p2.mjs
+```
+
+```bash
+export APPBUILDER_TEST_DB='postgres://abdev:abdev-sandbox-only@127.0.0.1:5433/appbuilder_test'
+export PUPPETEER_CORE=$HOME/pgcheck/node_modules/puppeteer-core CHROME_PATH=/usr/bin/google-chrome OUT=/tmp/p2-run
+npm run build && node scripts/exit-check/p2.mjs
+```
+
+(The paths above are examples: `/home/claude/...`, `/tmp/pgcheck` and port 5433 in the older scripts' headers come from the
+original Linux sandbox. Use the folders and ports of your own sandbox, and never the port of a real installation.)
+
+Settings (the scripts agree on these names; every one is optional):
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `EXIT_DB_HOST`, `EXIT_DB_PORT`, `EXIT_DB_USER`, `EXIT_DB_PASSWORD` | the sandbox PostgreSQL; the role needs `CREATEDB`, no superuser | `p2.mjs`: the parts of `APPBUILDER_TEST_DB`. The other scripts: `127.0.0.1`, port `5433` (a few `5435`), `abdev`, `abdev-sandbox-only`; **set the port when your sandbox is elsewhere**, the default may be a real installation |
+| `EXIT_MAINT_DB` | an existing database to connect to for `CREATE` / `DROP DATABASE` | `appbuilder_test` |
+| `EXIT_DB_NAME`, `EXIT_PORT`, `EXIT_WORKSPACE` | database, port and workspace folder of one script (each has its own default; `p2.mjs` sets all three per script, ports from 5270 up) | per script |
+| `PUPPETEER_CORE`, `CHROME_PATH` | where puppeteer-core and Chrome are. `p0`, `p1`, `p1-designer`, `p2.mjs`, `p2-dashboard` and the bench script look in the usual places of Windows, macOS and Linux when unset; `p2-phone`, `p2-pdf`, `p2-dashboard-screens` and the `docs-shots` scripts still default to the Linux paths of the original machine, so set both variables | none |
+| `SHOTS`, `OUT` | where screenshots and received files go (`p2.mjs`: `OUT` is its own output folder and it gives each script a subfolder) | a temp folder; `p2-dashboard.mjs` falls back to `docs/images` when both are unset |
+| `EXIT_ROWS` | rows of the big tables in `p0.mjs` and `p2.mjs` (`ROWS` for `p2-dashboard.mjs`). A smaller number is fine to try a script out, but the browser part of `p0.mjs` expects exactly 1,000,000 | `1000000` |
+| `EXIT_SKIP` | comma list. `p0.mjs`: `browser`, `drill`. `p1.mjs`: `browser`, `designer`, `suites`. `p2.mjs`: the step names `phone`, `pdf`, `dashboard`, `tile-editor`, `dashboard-layout`, `dashboard-screens`, `autoapp`, `templates`, `whatsapp`, `p0`, `p1`, `docs`, `security-review`, or `check1` to `check7`, or the parts `p0-browser`, `p0-drill`, `p1-browser`, `p1-designer`, `p1-suites`, `dashboard-browser`. A skipped step is printed as SKIP, never as PASS | none |
+| `EXIT_ONLY` | `p2.mjs`: run only these steps (same names) | all |
+| `EXIT_RETRY=1` | `p2.mjs`: run a failed script once more; when it then passes, the evidence says it passed only on the second attempt (a flaky check should be seen, not hidden) | off |
+| `KEEP=1` | keep the databases (they are large) | dropped |
+| `EXIT_STEP_TIMEOUT_MIN` | `p2.mjs`: stop a step after this many minutes (only the process tree it started) | `40` |
+
+The restore drill (`scripts/drill/restore-drill.mjs`) reads `DRILL_DB_*` and falls back to the `EXIT_DB_*` variables. It uses the
+`pg_dump` and `pg_restore` that the product finds (`server/core/backup/pgtools.ts`).
+
+What these checks are **not**: they are not a real phone or iOS Safari (Chrome's phone emulation and a fake camera), not the real
+WhatsApp Cloud API (a mock of the Graph API; the shapes come from Meta's documentation and nothing was recorded from an account),
+not a real mail provider (a fake SMTP relay), and their timings come from a developer PC with a sandbox database (`fsync` may be
+off), so they are **not production numbers**. `docs/dev/phone-test-script.md` is the manual script for real phones.
 
 ## CI
 
@@ -249,10 +327,26 @@ service image).
 
 ## Known gaps
 
-- No component rendering tests and no end-to-end browser tests in the repository.
+- No component rendering tests in the repository, and no end-to-end browser tests inside `npm test`: the browser checks are the
+  exit-check and docs-shots scripts above, which need puppeteer-core and Chrome (not dependencies) and are not run in CI.
+- No real phone and no iOS Safari: the phone checks are Chrome's emulation with a fake camera; `docs/dev/phone-test-script.md` is
+  the manual script. Headless Chrome has no `BarcodeDetector` on desktop, so the scan goes through our own decoders; the native
+  detector is not exercised.
+- WhatsApp is tested against a mock of the Graph API only (shapes from Meta's documentation, nothing recorded from a real account);
+  the PDF tests need poppler and zxing-cpp for the barcode round trip and skip it without them; SMTP is a fake relay.
+- Exit-check timings come from a developer PC with a sandbox database; they are not production numbers and the million-row checks
+  are not run in CI. `scripts/bench/orgsec-bench.mjs` and `seed-million.mjs` are manual tools.
+- Several older scripts still carry Linux defaults in their headers or code (`/tmp/pgcheck`, `/usr/bin/google-chrome`, port 5433),
+  notably `scripts/docs-shots/*` and `p2-phone`, `p2-pdf`, `p2-dashboard-screens`: set `PUPPETEER_CORE` and `CHROME_PATH`. P0 and P1
+  exit checks use `networkidle2`, not `networkidle0`: since the service worker of the installable app, Chrome never reports an idle
+  network on a first visit (cause not investigated further).
 - Import-boundary rules (`architecture.md`) are not checked by a tool.
 - The integration tests run in CI against PostgreSQL 16 and (MySQL connector) MariaDB 10.11 only; other versions are tested by hand.
-- `scripts/docs/generate.test.ts` is matched by the `scripts/**/*.test.ts` glob; other scripts have no tests.
+- Node 24 and later turn a `FileHandle` that is closed by the garbage collector into an uncaught error (Vitest reports it as an
+  unhandled error and exits 1). Any code that opens a file with `fs.promises.open` must close the handle on every path; the backup
+  code is covered by the "file handles" tests, other code is not audited by a tool. CI runs Node 22.18, where the same mistake would only warn.
+- `scripts/docs/generate.test.ts` is matched by the `scripts/**/*.test.ts` glob; the other scripts have no tests, except
+  `scripts/docs-links.test.ts`, `naming.test.ts`, `licences.test.ts` and `scripts/install/manifest.test.ts`.
 
 ## The environments walkthrough (headless browser)
 

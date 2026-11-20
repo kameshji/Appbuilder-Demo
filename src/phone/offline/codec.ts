@@ -16,6 +16,11 @@ export interface Codec {
   open<T = unknown>(s: Sealed): Promise<T>
   sealBytes(bytes: ArrayBuffer): Promise<Sealed>
   openBytes(s: Sealed): Promise<ArrayBuffer>
+  /**
+   * a keyed name for a record key that would otherwise be stored in clear (P2 security re-check: the read cache was keyed
+   * by the request text, which holds search words and filter values): HMAC-SHA-256 under a subkey of the offline key
+   */
+  name(text: string): Promise<string>
 }
 
 const subtle = (): SubtleCrypto => {
@@ -60,6 +65,11 @@ export async function codecFor(keyB64Url: string): Promise<Codec> {
   const raw = fromBase64Url(keyB64Url)
   if (raw.length !== 32) throw new Error('The offline key must be 32 bytes.')
   const key = await subtle().importKey('raw', raw as BufferSource, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
+  // a separate subkey for names (never the encryption key itself): HMAC(offline key, label)
+  const parent = await subtle().importKey('raw', raw as BufferSource, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const sub = await subtle().sign('HMAC', parent, new TextEncoder().encode('appbuilder-offline-names-v1') as BufferSource)
+  const nameKey = await subtle().importKey('raw', sub, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  new Uint8Array(sub).fill(0)
   raw.fill(0)
   const enc = async (bytes: ArrayBuffer | Uint8Array): Promise<Sealed> => {
     const iv = randomIv()
@@ -72,5 +82,6 @@ export async function codecFor(keyB64Url: string): Promise<Codec> {
     open: async <T,>(s: Sealed) => decodeJson<T>(new TextDecoder().decode(await dec(s))),
     sealBytes: (bytes) => enc(bytes),
     openBytes: (s) => dec(s),
+    name: async (text) => toBase64Url(new Uint8Array(await subtle().sign('HMAC', nameKey, new TextEncoder().encode(text) as BufferSource))),
   }
 }

@@ -146,6 +146,8 @@ interface Conn {
   strikes: number
   chain: Promise<void>
   closed: boolean
+  /** the last re-check of a subscription could not be done (not a refusal): it is tried again (retryRechecks) */
+  recheckDue?: boolean
 }
 
 interface PresenceEntry { conn: Conn; state: PresenceState; since: string }
@@ -292,17 +294,38 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
     }
   }
 
+  /**
+   * P2 security re-check (finding P2-3): a re-check that could not be done (the database, an environment being restored)
+   * keeps the subscription, but it is tried again: 5 s later, then with every minute's sweep, until it succeeds. Before,
+   * it was tried again only at the next role, user or table change, so a person who had lost access could keep receiving
+   * presence (names of people on a record or app, "who is online") indefinitely.
+   */
+  let retryTimer: NodeJS.Timeout | null = null
+  const RECHECK_RETRY_MS = 5_000
+  function retryRechecks(): void {
+    if (retryTimer || closing) return
+    retryTimer = outside.runInAsyncScope(() => setTimeout(() => {
+      retryTimer = null
+      for (const c of conns.values()) if (c.recheckDue) enqueue(c, () => recheck(c))
+    }, RECHECK_RETRY_MS))
+    retryTimer.unref()
+  }
+
   /** drop subscriptions the user is no longer allowed */
   async function recheck(c: Conn): Promise<void> {
+    c.recheckDue = false
     for (const key of [...c.subs]) {
       const [env, topic] = splitKey(key)
       if (!env) continue
       try {
         await authorize(c, env, topic)
       } catch (e) {
-        // only a refusal ends a subscription; a failure to check (the database, a bug) must not look like lost access
+        // only a refusal ends a subscription; a failure to check (the database, a bug) must not look like lost access,
+        // but it is checked again soon (retryRechecks)
         if (!(e instanceof HttpError) || ![401, 403, 404].includes(e.status)) {
           log('warn', `live: could not re-check a subscription: ${errText(e)}`)
+          c.recheckDue = true
+          retryRechecks()
           continue
         }
         unsubscribeKey(c, key)
@@ -622,6 +645,8 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
           const s = await services.meta.sessions.get(c.sessionHash)
           if (!s || s.expiresOn.getTime() <= Date.now()) endUser(c.userId, 'expired', c.sessionHash)
         } catch { /* database unreachable: keep the socket */ }
+        // a subscription whose re-check could not be done is checked again (see retryRechecks)
+        if (c.recheckDue && !c.closed) await recheck(c)
       })
     }
   }, limits.sessionSweepMs)
@@ -846,6 +871,7 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
       clearInterval(heartbeat)
       clearInterval(sweep)
       if (recheckTimer) clearTimeout(recheckTimer)
+      if (retryTimer) clearTimeout(retryTimer)
       if (onlineTimer) clearTimeout(onlineTimer)
       for (const l of locks.values()) if (l.graceTimer) clearTimeout(l.graceTimer)
       services.security.invalidate = invalidateSecurity

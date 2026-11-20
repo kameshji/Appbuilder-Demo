@@ -2,6 +2,7 @@ import { deviceRecord, locationRecord, requestLocation } from '@/phone/device-fx
 import type { AppDef, ControlNode, FxDiagnostic, FxEngine, FxNamedFormula, FxRecord, FxScope, FxValue, PropMeta } from '@/contracts'
 import { createEngine, splitFormulas } from '@/fx'
 import { controls } from '@/controls'
+import { lookupRowDep } from '@/controls/lookupLabels'
 import { isRecord, walk } from './util'
 import { currentUserRecord, deletedRowsOf, isTable, queryDepsSince, recordById, sharedWithRows, tableRows } from './data'
 import { deriveList, evaluateDelegated, type DelegationInfo, type ListView } from './delegation'
@@ -729,6 +730,9 @@ export class Evaluator {
       // lookup columns (createdBy, owner, a lookup to Users ...): `.Field` reads the row the id points at
       recordById: (id) => {
         this.record('t:Users')
+        // a Gallery fetches the target rows of its lookups: re-run when that answer arrives or changes
+        const dep = lookupRowDep(id)
+        if (dep) this.record('q:' + dep)
         return recordById(id)
       },
     }

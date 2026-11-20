@@ -30,8 +30,9 @@ import pg from 'pg'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const E = process.env
-const DB = { host: E.DRILL_DB_HOST || '127.0.0.1', port: Number(E.DRILL_DB_PORT || 5433), user: E.DRILL_DB_USER || 'abdev', password: E.DRILL_DB_PASSWORD || 'abdev-sandbox-only', database: E.DRILL_DB_NAME || 'appbuilder_drill' }
-const MAINT = E.DRILL_MAINT_DB || 'appbuilder_test'
+// DRILL_DB_*, or the EXIT_DB_* of the exit checks (so one set of variables serves both), or the documented sandbox defaults
+const DB = { host: E.DRILL_DB_HOST || E.EXIT_DB_HOST || '127.0.0.1', port: Number(E.DRILL_DB_PORT || E.EXIT_DB_PORT || 5433), user: E.DRILL_DB_USER || E.EXIT_DB_USER || 'abdev', password: E.DRILL_DB_PASSWORD || E.EXIT_DB_PASSWORD || 'abdev-sandbox-only', database: E.DRILL_DB_NAME || 'appbuilder_drill' }
+const MAINT = E.DRILL_MAINT_DB || E.EXIT_MAINT_DB || 'appbuilder_test'
 const PORT = Number(E.DRILL_PORT || 5241)
 const DIR = E.DRILL_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'ab-drill-'))
 const ROWS = Number(E.DRILL_ROWS || 2000)
@@ -56,11 +57,13 @@ const freshDb = async () => { await maint(`DROP DATABASE IF EXISTS "${DB.databas
 const serverEnv = { ...E, APPBUILDER_DB_HOST: DB.host, APPBUILDER_DB_PORT: String(DB.port), APPBUILDER_DB_NAME: DB.database, APPBUILDER_DB_USER: DB.user, APPBUILDER_DB_PASSWORD: DB.password, APPBUILDER_WORKSPACE: WS, PORT: String(PORT), APPBUILDER_HOST: '127.0.0.1' }
 
 let server = null
+let serverOut = ''
 async function startServer() {
   let out = ''
+  serverOut = ''
   server = spawn(process.execPath, ['server/main.ts'], { cwd: root, env: serverEnv, stdio: ['ignore', 'pipe', 'pipe'] })
-  server.stdout.on('data', (d) => { out += d })
-  server.stderr.on('data', (d) => { out += d })
+  server.stdout.on('data', (d) => { out += d; serverOut += d })
+  server.stderr.on('data', (d) => { out += d; serverOut += d })
   for (let i = 0; i < 120; i++) {
     if (/is running at/.test(out)) break
     if (server.exitCode !== null) throw new Error(`the server stopped:\n${out}`)
@@ -83,7 +86,8 @@ async function api(method, p, body, o = {}) {
   const headers = { 'X-Appbuilder': '1', ...(cookie ? { Cookie: cookie } : {}), ...(o.env ? { 'X-Appbuilder-Environment': o.env } : {}) }
   let payload
   if (o.raw) { headers['Content-Type'] = o.type || 'application/octet-stream'; payload = o.raw } else if (body !== undefined) { headers['Content-Type'] = 'application/json'; payload = JSON.stringify(body) }
-  const res = await fetch(BASE + '/api/v1' + p, { method, headers, body: payload })
+  // a request that gets no answer for two minutes is a failure with a name, not a five-minute hang
+  const res = await fetch(BASE + '/api/v1' + p, { method, headers, body: payload, signal: AbortSignal.timeout(120_000) }).catch((e) => { throw new Error(`${method} ${p}: ${e.name === 'TimeoutError' ? 'no answer within 120 s' : `${e.message}${e.cause?.code ? ` (${e.cause.code})` : ''}`}`) })
   for (const c of res.headers.getSetCookie()) if (c.startsWith('ab_session=')) cookie = c.split(';')[0]
   const type = res.headers.get('content-type') || ''
   const data = type.includes('json') ? await res.json() : Buffer.from(await res.arrayBuffer())
@@ -204,6 +208,7 @@ try {
 } catch (e) {
   failed = true
   console.error(`\nDRILL FAILED: ${e.message}`)
+  console.error(`server exit code: ${server ? server.exitCode : 'stopped'}; last server output:\n${serverOut.split('\n').slice(-40).join('\n')}`)
 } finally {
   await stopServer()
   if (E.DRILL_KEEP !== '1') {

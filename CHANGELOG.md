@@ -4,7 +4,9 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 
 ## [Unreleased]
 
-Phase 2 (Reach), wave 1. Schema version 11.
+## [0.7.0] - 2026-11-20
+
+**Phase 2 "Reach" is done** (docs/plan/p2-spec.md, with the exit check results): phone apps with offline entry, print templates and PDFs, dashboards with TV screens and email snapshots, auto apps, the templates catalogue, the WhatsApp connector. Schema version 13. Verified on one developer PC and in CI; nothing was run on a real phone, against Meta's real API or on a hosted server, and there has been no outside security review (internal review: docs/internal/security-review-p2.md).
 
 ### Added
 - **Phone apps.** Apps designed at phone or tablet size run full width on phones and scroll vertically; safe areas and the on-screen keyboard are handled; small UI components get 44 px touch areas; open apps become a switcher at phone width. App cards have an "Open on a phone" QR code, and each app can be added to the home screen (web app manifest and a service worker that caches only the application shell). New UI components Barcode scanner and Scan input (the browser's barcode reader, or a built-in reader for EAN, Code 128, Code 39 and ITF; keyboard scanners). Form image fields gain Take photo. New functions `Device()`, `Location()`, `UpdateLocation()`. Apps marked "Works offline (entry)" keep creates, changes and photos made without a connection in an encrypted outbox and send them in order exactly once when the connection returns. Tested in Chrome's phone emulation only; the real-device script is `docs/dev/phone-test-script.md`.
@@ -27,11 +29,14 @@ Phase 2 (Reach), wave 1. Schema version 11.
 - **WhatsApp connector** (Meta WhatsApp Business Cloud API; schema version 13): send approved template messages and 24-hour-window replies from flows; nothing is sent to a number without a current opt-in (recorded with source, evidence and full history; STOP and START keywords, Hindi included). Signed webhook for delivery statuses and inbound messages, a message log for administrators, and WhatsApp as a notification channel. Tested against a mock built from Meta's documentation only: no real account has been used. Your business remains responsible for consent and template approval.
 - **QR codes on iPhone.** QR codes are scanned with the camera on browsers without a built-in reader, such as iPhone Safari, using the bundled open-source decoder jsQR (Apache-2.0). Data Matrix still needs a browser with a built-in reader or a handheld scanner. Adds about 130 kB (47 kB gzip) to the app file.
 
+- **Lookups work on tables of any size.** The Form's lookup field is a search box that asks the server as you type (a bottom sheet on touch, also for choice fields); DataTable, phone cards and Gallery templates (`ThisItem.Customer.Name`) show the record's name, fetched in batches as the viewer, never the id ("Not available" for records you cannot see). List search finds rows by a lookup's name; sorting by a lookup is shown as unavailable. Auto apps list lookup columns and use the new picker.
+
 ### Changed
 - Notifications (toasts) appear at the bottom centre, no longer the bottom right where they covered the buttons of side panels and tiles.
 
 ### Fixed
 - **Live updates stopped for everyone after a table, role or solution change.** The realtime hub re-checked subscriptions inside the finished transaction of the change, every check failed, and browsers lost their subscriptions (new tables then showed `Name isn't recognised` in the Studio until a reload). The re-check now runs outside the transaction, and only a real refusal ends a subscription. Present since 0.5.0.
+- Backup: archives handed to queued restore or verify jobs are closed when the job cannot start (a file handle left to the garbage collector is an error on Node 24 and later and could stop the server).
 - Chart legends that did not fit on one line dropped the remaining series (seen in a narrow PDF chart); they now wrap onto up to three lines.
 - The record timeline's **Document** button listed print templates of other tables when the timeline's Table property was blank; it now offers only templates of the record's table.
 - **Approvals and Dashboards no longer switch the shell to User mode when opened from the Dev menu.** Both pages are in both menus; they now stay in the mode you are in, and the mode switch still works from them.
@@ -42,9 +47,16 @@ Phase 2 (Reach), wave 1. Schema version 11.
 - **A request body over the size limit could end in a connection error instead of the "too large" message** (always on a Windows server, occasionally on Linux). After the 413 answer the server now reads and discards the rest of the upload for at most 5 seconds or 64 MB before dropping the connection.
 - Tests: four tests that only passed on Linux (a path built from a URL, the executable bit of an extracted file, single-word host names that Windows resolves slowly) now pass on Windows too.
 
+### Security
+- Request bodies are read only after the session and sign-in level are checked (no buffering of large bodies for anonymous clients); phone offline data of one person is locked as soon as another signs in on the same page, and kept answers are stored under keyed names instead of the request text; every sign-out path deletes the phone's offline data.
+- Print: PNGs over 40 megapixels are left out, Word templates are checked as ZIPs before unpacking, PDF metadata can no longer inject XMP elements, made-up file tokens answer within 10 s instead of 90 s.
+- Dashboards: snapshots run at most hourly and a recipient's "run now" at most once a minute; app install manifests answer 404 to people without access.
+- WhatsApp: "+cc (0)..." numbers normalise to one number, every host of Meta's domains is refused for HTTP connections, nobody but the webhook can record consent as "inbound keyword"; live subscriptions whose re-check failed are checked again until it succeeds.
+- Internal review of all Phase 2 surface: docs/internal/security-review-p2.md (12 findings, all fixed; internal only, no outside audit).
+
 ### Known gaps in this wave
 - Dashboards: drill-through opens an app, not a chosen screen; the kiosk page does not cycle ranges or pages; a kiosk address holds its token (browser history of the screen); the tile editor cannot edit row calculations, nested conditions or series styling.
-- Auto apps: lookup fields are a plain list, not searchable, and empty in server mode when the target table has more than 2,000 rows; lists leave lookups out; generated colours do not follow a dark app theme.
+- Auto apps: lists cannot be sorted by a lookup column; generated colours do not follow a dark app theme.
 - Templates: Linked mode is not offered for UI component and screen templates; uninstall, upgrade and Linked were tested through the API, not in a browser.
 - WhatsApp: unverified against Meta's real API (list in `docs/dev/whatsapp.md`); no SMS.
 - Phones: nothing is tested on real devices; Data Matrix needs a browser with a built-in reader; no cold-start offline (owner decision); no Android back-button handling for bottom sheets; the save bar moves when the offline strip appears.

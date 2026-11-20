@@ -10,10 +10,10 @@ import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { Readable } from 'node:stream'
 import {
-  ArchiveError, TarWriter, encryptedFileSink, isEncryptedFile, listTar, memberBuffer, memberStream, openReader, plainFileSink,
+  ArchiveError, TarWriter, encryptedFileSink, isEncryptedFile, listTar, memberBuffer, memberStream, openReader, plainFileSink, type OpenFile,
 } from './archive.ts'
 import { RestoreDataParser, parseCopyLine, readCopyLines, renameInSql, renameSchemaRefs, skipRestoreStatement, splitSql } from './dbdump.ts'
-import { CopyBlock } from './engine.ts'
+import { CopyBlock, closeAfter, openArchive } from './engine.ts'
 import { Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { decideRetention, localParts, type RetentionItem } from './retention.ts'
@@ -68,9 +68,13 @@ describe('tar container', () => {
     const bad = Buffer.from(buf)
     bad[10] ^= 0xff
     fs.writeFileSync(f + '.1', bad)
-    await expect(listTar(await openReader(f + '.1'))).rejects.toThrow(/bad member header/)
+    const r1 = await openReader(f + '.1')
+    await expect(listTar(r1)).rejects.toThrow(/bad member header/)
+    await r1.close()
     fs.writeFileSync(f + '.2', buf.subarray(0, 1024 + 512))
-    await expect(listTar(await openReader(f + '.2'))).rejects.toBeInstanceOf(ArchiveError)
+    const r2 = await openReader(f + '.2')
+    await expect(listTar(r2)).rejects.toBeInstanceOf(ArchiveError)
+    await r2.close()
   })
 })
 
@@ -110,10 +114,12 @@ describe('encrypted container', () => {
     fs.writeFileSync(f + '.flip', flip)
     const r = await openReader(f + '.flip', 'pass phrase 1')
     await expect(listTar(r).then(async (l) => { for (const e of l) await memberBuffer(r, e) })).rejects.toMatchObject({ kind: 'corrupt' })
+    await r.close()
     // truncated at a chunk boundary: the last chunk flag is missing
     fs.writeFileSync(f + '.cut', buf.subarray(0, 64 + 4112 * 20))
     const r2 = await openReader(f + '.cut', 'pass phrase 1')
     await expect(r2.read(r2.size - 10, 10)).rejects.toMatchObject({ kind: 'corrupt' })
+    await r2.close()
     // two chunks swapped
     const sw = Buffer.from(buf)
     const a = buf.subarray(64 + 4112 * 3, 64 + 4112 * 4)
@@ -123,6 +129,90 @@ describe('encrypted container', () => {
     fs.writeFileSync(f + '.swap', sw)
     const r3 = await openReader(f + '.swap', 'pass phrase 1')
     await expect(r3.read(4096 * 3, 10)).rejects.toMatchObject({ kind: 'corrupt' })
+    await r3.close()
+  })
+})
+
+/**
+ * A file handle that is not closed is closed by the garbage collector, which is an error since Node 24 (it can end the
+ * process). Every way of opening an archive that fails must leave no handle behind, and a reader that was opened and then
+ * failed while reading is closed by whoever opened it.
+ */
+describe('file handles', () => {
+  function countingOpen() {
+    const open = new Set<number>()
+    let opened = 0
+    const fn: OpenFile = async (file, flags) => {
+      const h = await fs.promises.open(file, flags)
+      const id = ++opened
+      open.add(id)
+      const close = h.close.bind(h)
+      h.close = async () => { open.delete(id); await close() }
+      return h
+    }
+    return { fn, open, opened: () => opened }
+  }
+
+  it('openReader closes its handle when it refuses a file', async () => {
+    const c = countingOpen()
+    const members: [string, Buffer][] = [['appbuilder-backup.json', Buffer.from('{}')], ['data', randomBytes(20_000)]]
+    const good = path.join(tmp, 'h-enc.abbak')
+    await writeArchive(good, members, 'right one', 4096)
+    const raw = fs.readFileSync(good)
+    const refused: [string, Buffer, string | undefined, string][] = [
+      ['h-nopass', raw, undefined, 'needs-passphrase'],
+      ['h-wrongpass', raw, 'wrong one', 'passphrase'],
+      ['h-cut', raw.subarray(0, 64 + 4112 + 5), 'right one', 'corrupt'],
+      ['h-newer', Buffer.concat([raw.subarray(0, 8), Buffer.from([9]), raw.subarray(9)]), 'right one', 'format'],
+      ['h-kdf', Buffer.concat([raw.subarray(0, 9), Buffer.from([40]), raw.subarray(10)]), 'right one', 'format'],
+    ]
+    for (const [name, bytes, pass, kind] of refused) {
+      const f = path.join(tmp, name)
+      fs.writeFileSync(f, bytes)
+      await expect(openReader(f, pass, { open: c.fn })).rejects.toMatchObject({ kind })
+    }
+    await expect(openReader(path.join(tmp, 'no-such-file'), undefined, { open: c.fn })).rejects.toThrow()
+    expect(c.opened()).toBe(refused.length)
+    expect([...c.open]).toEqual([])
+  })
+
+  it('openArchive closes its reader when the file is not a usable backup', async () => {
+    const c = countingOpen()
+    const junk = path.join(tmp, 'h-junk.abbak')
+    fs.writeFileSync(junk, randomBytes(3000))
+    await expect(openArchive(junk, null, { open: c.fn })).rejects.toThrow()
+    const nomarker = path.join(tmp, 'h-nomarker.abbak')
+    await writeArchive(nomarker, [['other', Buffer.from('x')]])
+    await expect(openArchive(nomarker, null, { open: c.fn })).rejects.toThrow(/not an Appbuilder backup/)
+    const wrongMarker = path.join(tmp, 'h-wrongmarker.abbak')
+    await writeArchive(wrongMarker, [['appbuilder-backup.json', Buffer.from('{"format":"x"}')], ['appbuilder-manifest.json', Buffer.from('{}')]])
+    await expect(openArchive(wrongMarker, null, { open: c.fn })).rejects.toThrow()
+    const enc = path.join(tmp, 'h-enc2.abbak')
+    await writeArchive(enc, [['appbuilder-backup.json', Buffer.from('{}')]], 'pp pp pp', 4096)
+    await expect(openArchive(enc, 'nope', { open: c.fn })).rejects.toMatchObject({ kind: 'passphrase' })
+    expect(c.opened()).toBe(4)
+    expect([...c.open]).toEqual([])
+  })
+
+  it('an archive handed to queued work is closed when the work can never start', async () => {
+    let closed = 0
+    const a = { close: async () => { closed++ } }
+    // the queue refuses the job (its lock connection failed): the work function never runs
+    closeAfter(a, Promise.reject(new Error('connect ECONNREFUSED')))
+    await new Promise((r) => setTimeout(r, 10))
+    expect(closed).toBe(1)
+    // work that ran closes the archive itself; a second close from here is harmless
+    closeAfter(a, Promise.resolve())
+    await new Promise((r) => setTimeout(r, 10))
+    expect(closed).toBe(1)
+  })
+
+  it('closing a reader twice is harmless', async () => {
+    const f = path.join(tmp, 'h-twice.abbak')
+    await writeArchive(f, [['a', Buffer.from('x')]])
+    const r = await openReader(f)
+    await r.close()
+    await r.close()
   })
 })
 

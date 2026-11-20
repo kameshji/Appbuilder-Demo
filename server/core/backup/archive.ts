@@ -180,6 +180,9 @@ async function readFully(fd: fs.promises.FileHandle, pos: number, len: number): 
   return off === len ? buf : buf.subarray(0, off)
 }
 
+/** how a file is opened for reading: injectable so a test can count the handles that are still open */
+export type OpenFile = (file: string, flags: 'r') => Promise<fs.promises.FileHandle>
+
 /** is this file in the encryption container? (reads 8 bytes) */
 export async function isEncryptedFile(file: string): Promise<boolean> {
   const fd = await fs.promises.open(file, 'r')
@@ -195,8 +198,8 @@ export async function isEncryptedFile(file: string): Promise<boolean> {
  * Opens an archive file for random access. Encrypted archives need the passphrase (ArchiveError 'needs-passphrase'
  * without one, 'passphrase' when it is wrong); the first chunk is checked at once.
  */
-export async function openReader(file: string, passphrase?: string | null): Promise<RandomReader> {
-  const fd = await fs.promises.open(file, 'r')
+export async function openReader(file: string, passphrase?: string | null, o: { open?: OpenFile } = {}): Promise<RandomReader> {
+  const fd = await (o.open ?? fs.promises.open)(file, 'r')
   try {
     const st = await fd.stat()
     const head = await readFully(fd, 0, Math.min(ENC_HEADER, st.size))
