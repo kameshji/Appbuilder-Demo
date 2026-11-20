@@ -117,7 +117,7 @@ Gross(net: Number): Number = net * (1 + TaxRate);
 
 ## Functions
 
-175 built-in functions. A signature in square brackets means the argument is optional; "..." means more of the same may follow. A function marked as behaviour works only in behaviour properties.
+181 built-in functions. A signature in square brackets means the argument is optional; "..." means more of the same may follow. A function marked as behaviour works only in behaviour properties.
 
 - [Logic and errors](#logic-and-errors) (16)
 - [Text](#text) (23)
@@ -125,9 +125,9 @@ Gross(net: Number): Number = net * (1 + TaxRate);
 - [Date and time](#date-and-time) (20)
 - [Table](#table) (26)
 - [Colour](#colour) (3)
-- [Behaviour](#behaviour) (40)
+- [Behaviour](#behaviour) (44)
 - [JSON and regular expressions](#json-and-regular-expressions) (5)
-- [Context and environment](#context-and-environment) (5)
+- [Context and environment](#context-and-environment) (7)
 - [Core data model](#core-data-model) (7)
 - [Other](#other) (2)
 
@@ -307,12 +307,15 @@ Functions with side effects. They work only in behaviour properties such as OnSe
 | `EditForm(Form)` | Switches a form to Edit mode. |
 | `Exit()` | Closes the running app. |
 | `Follow(record)` | Follows a record: you are notified of new comments about it. Asynchronous. |
+| `GenerateDocx(template [, record])` | Fills a Word print template (.docx) on the server and returns a file token at once, like GeneratePdf. There is no conversion of Word files to PDF. |
+| `GeneratePdf(template [, record])` | Makes the PDF of a print template on the server and returns a file token at once: put it in a file column with Patch, e.g. Patch(Inspections, ThisItem, {Report: GeneratePdf("Inspection report", ThisItem)}). The token is kept 24 hours. |
 | `Launch(url)` | Opens a web address. |
 | `Navigate(Screen)` | Goes to another screen. |
 | `NewForm(Form)` | Switches a form to New mode with empty fields. |
 | `NextNumber(sequence)` | The next number of a number sequence, formatted with its prefix and padding. Gap-free on the server in a column default (=NextNumber("Invoices")) or a before-event; in apps it works in demo mode only. |
 | `Notify(message [, NotificationType])` | Shows a message to the user. |
 | `Patch(collection, base, changes) or Patch(record, changes)` | Changes a record, or creates a new one when base is Defaults(collection). Returns the stored record. With a record as the first argument it only merges the records and returns the result. |
+| `Print(template [, record])` | Opens the PDF of a print template (server mode) in a new tab; on a phone it is shared or downloaded. record is the row to print (its template has a record source), like Print("Inspection report", Gallery1.Selected). The document is made on the server with your access. |
 | `Refresh(table)` | Reloads a table from storage. |
 | `Remove(collection, record [, record2, ...])` | Removes records from a collection. |
 | `RemoveIf(collection, condition)` | Removes every row where the condition is true. |
@@ -334,6 +337,7 @@ Functions with side effects. They work only in behaviour properties such as OnSe
 | `Untag(record, name)` | Takes a tag off a record. Asynchronous. |
 | `UpdateContext({ name: value, ... })` | Sets context variables for the current screen. |
 | `UpdateIf(collection, condition, changes)` | Changes every row where the condition is true. |
+| `UpdateLocation()` | Asks the device for a new position; Location() keeps the last one until the new one arrives. |
 | `ViewForm(Form)` | Switches a form to View mode. |
 
 ### JSON and regular expressions
@@ -354,8 +358,10 @@ Facts about the signed-in user, the address the app was opened with, and generat
 
 | Function | What it does |
 | --- | --- |
+| `Device()` | The device the app runs on: Kind ("Phone", "Tablet" or "Desktop"), Platform ("Android", "iOS" or "Other"), Touch, Online, Standalone (opened from the home screen), ScreenWidth, ScreenHeight and Orientation ("Portrait" or "Landscape"). |
 | `GUID([text])` | A new random unique id, or the GUID that the text spells. |
 | `Language()` | The language of the user, such as "en-US". |
+| `Location()` | The position of the device, asked once (the browser asks for permission the first time): Status ("Pending", "Ready", "Denied", "Unavailable" or "NeedsHttps"), Latitude, Longitude, Accuracy in metres, Altitude, Time and Message. Formulas update when the position arrives. |
 | `Param(name)` | A value passed to the app in the address, such as the id in #run-app?id=5. Blank when missing. |
 | `SharedWith(record)` | The people and teams a row is shared with: a table of Name, Email (blank for teams), Id, Type ("User" or "Team") and Access ("Read" or "Edit"). Empty while loading, for rows of tables without sharing and for rows you cannot read. |
 | `User()` | The signed-in user: a record with FullName, Email, Id, Roles, Department, DepartmentCode, Manager (a record with FullName, Email and Id), JobTitle and Teams (a table of Name, Code and Id). |
@@ -395,13 +401,13 @@ Used by: `Heading.Align`, `Label.Align`, `LinkButton.Align`, `RichText.Align`.
 
 ### AlignItems
 
-Used by: 88 properties on 80 UI components (for example `Accordion.AlignSelf`, `ActivityList.AlignSelf`, `Alert.AlignSelf`).
+Used by: 92 properties on 84 UI components (for example `Accordion.AlignSelf`, `ActivityList.AlignSelf`, `Alert.AlignSelf`).
 
 5 members: `Auto`, `Start`, `Center`, `End`, `Stretch`.
 
 ### Anchor
 
-Used by: 158 properties on 79 UI components (for example `Accordion.AnchorH`, `Accordion.AnchorV`, `ActivityList.AnchorH`).
+Used by: 166 properties on 83 UI components (for example `Accordion.AnchorH`, `Accordion.AnchorV`, `ActivityList.AnchorH`).
 
 5 members: `Start`, `End`, `Stretch`, `Center`, `Scale`.
 
@@ -439,7 +445,7 @@ Used by: 8 properties on 8 UI components (for example `Column.Fill`, `Container.
 
 Whether a UI component accepts input (Edit), only shows its value (View) or is greyed out (Disabled).
 
-Used by: 27 properties on 27 UI components (for example `Button.DisplayMode`, `Checkbox.DisplayMode`, `ColorPicker.DisplayMode`).
+Used by: 30 properties on 30 UI components (for example `BarcodeScanner.DisplayMode`, `Button.DisplayMode`, `Checkbox.DisplayMode`).
 
 3 members: `Edit`, `View`, `Disabled`.
 

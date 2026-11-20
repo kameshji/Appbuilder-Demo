@@ -125,7 +125,7 @@ describe.skipIf(!PG_URL)('job queue and kernel guarantees (PostgreSQL)', () => {
     const list = (await A().get('/admin/schedules')).data.items
     // the backup schedules (package J) are managed on the Backups page; they live in Default's schedules too, as do the
     // install-wide log retention schedules (package M)
-    expect(list.filter((x: any) => x.builtIn && !x.jobType.startsWith('backup.')).map((x: any) => x.jobType).sort()).toEqual(['actions.retention', 'approval.retention', 'attachments.sweep', 'audit.retention', 'collab.orphan-sweep', 'data.recycle-purge', 'flow.digest', 'flow.retention', 'identity.mail-log.retention', 'identity.signin-log.retention', 'notifications.delivery-retention', 'notifications.digest', 'ops.health_daily', 'ops.health_watch', 'ops.heartbeat', 'outbox.retention', 'rollup.reconcile'])
+    expect(list.filter((x: any) => x.builtIn && !x.jobType.startsWith('backup.')).map((x: any) => x.jobType).sort()).toEqual(['actions.retention', 'approval.retention', 'attachments.sweep', 'audit.retention', 'collab.orphan-sweep', 'data.recycle-purge', 'flow.digest', 'flow.retention', 'identity.mail-log.retention', 'identity.signin-log.retention', 'notifications.delivery-retention', 'notifications.digest', 'ops.health_daily', 'ops.health_watch', 'ops.heartbeat', 'outbox.retention', 'print.sweep', 'rollup.reconcile'])
     expect((await A().post('/admin/schedules', { name: 'bad', cron: '61 * * * *', jobType: 'test.noop' })).status).toBe(422)
   }, 60000)
 

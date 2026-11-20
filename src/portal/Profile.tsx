@@ -2,6 +2,7 @@
  * Who is signed in, as the shell shows it: the avatar circle, the avatar menu at the right end of the top bar
  * (Studio command bar too) and the Settings entry at the bottom of the sidebar.
  */
+import { beforeSignOut } from '@/phone/offline'
 import { useState } from 'react'
 import { Check, KeyRound, LogOut, Settings as Gear, UserRound, Users } from 'lucide-react'
 import { platform, usePlatform, type UserDef } from '@/platform'
@@ -79,6 +80,8 @@ export function ProfileAvatar() {
 
   const signOut = async () => {
     try {
+      // P2-A: the offline store and the service worker caches of this user are deleted (asks first if changes wait)
+      if (!(await beforeSignOut((t) => window.confirm(t)))) return
       await platform.auth.logout()
       toast('Signed out', 'info')
     } catch (e) {

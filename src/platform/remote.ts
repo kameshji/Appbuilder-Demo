@@ -9,6 +9,7 @@
  * still in flight; `rows` = confirmed with the ops replayed on top. Success folds the server's answer into
  * `confirmed`, failure just drops the op, so a rollback can never clobber a later write.
  */
+import { backoffMs, isIdempotentRead, isNetworkError, offlineHook, readKey } from './offline-hook'
 import { remoteCollab } from './remote-collab.ts'
 import { remoteRecycle, type RecycleBatch } from './recycle-api.ts'
 import type { AppDef, FxRecord, FxValue } from '@/contracts'
@@ -235,12 +236,29 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       body = '{}'
     }
     let res: Response
-    try {
-      res = await doFetch(url, { method, headers, body, credentials: 'same-origin', signal: o.signal })
-    } catch (e) {
-      if (o.signal?.aborted) throw e
-      throw new PlatformError('unavailable', 'Could not reach the server.')
+    // P2-A plant Wi-Fi: reads that change nothing are retried with backoff after a network failure or a 502-504
+    // (offline-hook.ts); writes are never retried here (the offline outbox replays them with idempotency keys)
+    const retries = isIdempotentRead(method, path) && !o.signal?.aborted ? 2 : 0
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await doFetch(url, { method, headers, body, credentials: 'same-origin', signal: o.signal })
+      } catch (e) {
+        if (o.signal?.aborted) throw e
+        const knownOffline = typeof navigator !== 'undefined' && navigator.onLine === false
+        if (attempt < retries && !knownOffline) {
+          await new Promise((r) => setTimeout(r, backoffMs(attempt + 1)))
+          continue
+        }
+        offlineHook()?.noteNetwork(false)
+        throw Object.assign(new PlatformError('unavailable', 'Could not reach the server.'), { network: true })
+      }
+      if (attempt < retries && (res.status === 502 || res.status === 503 || res.status === 504) && !o.signal?.aborted) {
+        await new Promise((r) => setTimeout(r, backoffMs(attempt + 1)))
+        continue
+      }
+      break
     }
+    offlineHook()?.noteNetwork(true)
     if (!res.ok) {
       let code: PlatformError['code'] | undefined
       let message: string | undefined
@@ -335,8 +353,25 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     for (const [k, v] of Object.entries(changes)) if (k in row) o[k] = v
     return o
   }
+  /** P2-A offline entry: answers over tables of offline apps are kept on the device; offline, the last one answers */
+  async function cachedRead<T>(path: string, table: string, body: unknown, run: () => Promise<T>): Promise<T> {
+    const h = offlineHook()
+    if (!h) return run()
+    const key = readKey(path, body)
+    try {
+      const res = await run()
+      h.storeAnswer(key, table, res)
+      return res
+    } catch (e) {
+      if (isNetworkError(e)) {
+        const hit = await h.cachedAnswer(key, table)
+        if (hit !== undefined) return hit as T
+      }
+      throw e
+    }
+  }
   const queries = new QueryCache({
-    post: (plan, signal) => call<QueryV2Response>('POST', '/query', { json: { plan }, signal }),
+    post: (plan, signal) => cachedRead('/query', plan.table, { plan }, () => call<QueryV2Response>('POST', '/query', { json: { plan }, signal })),
     toRows: (plan, rows) => {
       const e = findEntry(plan.table)
       return rowsFromWire(plan, rows, e ? typesOf(e.def) : {})
@@ -469,7 +504,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       try {
         for (let attempt = 0; ; attempt++) {
           const epoch = e.epoch
-          const res = await call<QueryResponse>('POST', `/data/${enc(name)}/query`, { json: { top: DEFAULT_ROW_CAP } })
+          const res = await cachedRead(`/data/${name}/query`, name, { top: DEFAULT_ROW_CAP }, () => call<QueryResponse>('POST', `/data/${enc(name)}/query`, { json: { top: DEFAULT_ROW_CAP } }))
           if (!isCurrent(e)) return
           if (e.epoch !== epoch && attempt < 2) continue // a write finished while we were reading: read again
           e.confirmed = res.rows.map((r) => rowFromJson(e.def, r))
@@ -749,12 +784,22 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     recompute(e)
     queries.opsChanged(def.name)
     setState({}, true)
+    // P2-A offline entry: offline (or behind an earlier queued write of this row) the outbox keeps the write
+    const queueCreate = () => offlineHook()!.queue({ kind: 'create', table: def.name, rowId: id, values: payload }, {
+      done: (res) => {
+        const saved = rowFromJson(e.def, (res as RowResponse).row)
+        settle(e, op, () => upsertConfirmed(e, saved), { kind: 'create', row: saved })
+      },
+      fail: (err) => rollback(e, op, 'create', [id], err),
+    })
     enqueue(async () => {
+      if (offlineHook()?.divert(def.name, id)) return queueCreate()
       try {
         const res = await call<RowResponse>('POST', `/data/${enc(def.name)}/rows`, { json: { values: payload } })
         const saved = rowFromJson(e.def, res.row)
         settle(e, op, () => upsertConfirmed(e, saved), { kind: 'create', row: saved })
       } catch (err) {
+        if (isNetworkError(err) && offlineHook()?.accepts(def.name)) return queueCreate()
         rollback(e, op, 'create', [id], err)
       }
     })
@@ -791,20 +836,30 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     queries.opsChanged(def.name)
     setState({}, true)
     const optimistic = e.rows.find((r) => r.id === id) ?? { ...existing!, ...typed, modifiedOn: op.at }
+    // a form started from a version of the row: a newer save by someone else answers 409 (the form offers reload / keep mine)
+    const ifModifiedOn = opts.ifVersion instanceof Date ? opts.ifVersion.toISOString() : typeof opts.ifVersion === 'string' && opts.ifVersion ? opts.ifVersion : undefined
+    const applySaved = (res: RowResponse) => {
+      const saved = rowFromJson(e.def, res.row)
+      settle(e, op, () => {
+        const i = e.confirmed.findIndex((r) => r.id === id)
+        if (i >= 0) {
+          e.confirmed = e.confirmed.slice()
+          e.confirmed[i] = saved
+        }
+      }, { kind: 'update', row: saved })
+    }
+    // P2-A offline entry (see insertRow): the version check travels with the queued change
+    const queueUpdate = () => offlineHook()!.queue({ kind: 'update', table: def.name, rowId: id, values: payload, ...(ifModifiedOn ? { ifModifiedOn } : {}) }, {
+      done: (res) => applySaved(res as RowResponse),
+      fail: (err) => rollback(e, op, 'update', [id], err),
+    })
     enqueue(async () => {
+      if (offlineHook()?.divert(def.name, id)) return queueUpdate()
       try {
-        // a form started from a version of the row: a newer save by someone else answers 409 (the form offers reload / keep mine)
-        const ifModifiedOn = opts.ifVersion instanceof Date ? opts.ifVersion.toISOString() : typeof opts.ifVersion === 'string' && opts.ifVersion ? opts.ifVersion : undefined
         const res = await call<RowResponse>('PATCH', `/data/${enc(def.name)}/rows/${enc(id)}`, { json: { changes: payload, ...(ifModifiedOn ? { ifModifiedOn } : {}) } })
-        const saved = rowFromJson(e.def, res.row)
-        settle(e, op, () => {
-          const i = e.confirmed.findIndex((r) => r.id === id)
-          if (i >= 0) {
-            e.confirmed = e.confirmed.slice()
-            e.confirmed[i] = saved
-          }
-        }, { kind: 'update', row: saved })
+        applySaved(res)
       } catch (err) {
+        if (isNetworkError(err) && offlineHook()?.accepts(def.name)) return queueUpdate()
         rollback(e, op, 'update', [id], err)
       }
     })
@@ -1090,11 +1145,24 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
   const attachmentsApi: PlatformApi['attachments'] = {
     async upload(tableName, column, rowId, file) {
       const e = findEntry(tableName)
-      const ref = await call<AttachmentRef>('POST', '/attachments', {
-        query: { table: e?.def.name ?? tableName, column, rowId, name: file.name },
-        raw: file,
-        contentType: file.type || 'application/octet-stream',
+      const table = e?.def.name ?? tableName
+      // P2-A offline entry: the file waits in the outbox (after the row it belongs to) and is sent when online
+      const queueUpload = () => new Promise<AttachmentRef>((resolve) => {
+        offlineHook()!.queue({ kind: 'upload', table, rowId, column, file, fileName: file.name }, { done: () => {}, fail: () => {} })
+        resolve({ id: `att_pending_${Date.now().toString(36)}`, fileName: file.name, mime: file.type || 'application/octet-stream', sizeBytes: file.size, url: '' })
       })
+      if (offlineHook()?.divert(table, rowId)) return queueUpload()
+      let ref: AttachmentRef
+      try {
+        ref = await call<AttachmentRef>('POST', '/attachments', {
+          query: { table, column, rowId, name: file.name },
+          raw: file,
+          contentType: file.type || 'application/octet-stream',
+        })
+      } catch (err) {
+        if (isNetworkError(err) && offlineHook()?.accepts(table)) return queueUpload()
+        throw err
+      }
       // the server links the attachment to the cell; mirror that in the cache (single: the id, multiple: appended to the JSON array)
       if (e && isCurrent(e)) {
         const col = findColumn(e.def, column)

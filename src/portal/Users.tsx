@@ -3,8 +3,9 @@
  * password, enable or disable them, assign roles; shows the sign-in state the server returns (no password yet, must
  * change the password an administrator set, last sign-in). Roles themselves stay under Security roles (#roles).
  */
+import { wipeDeviceData } from '@/phone/offline'
 import { useEffect, useState } from 'react'
-import { Ban, CircleCheck, Eye, Info, KeyRound, LogOut, Mail, MoreHorizontal, Pencil, Plus, ShieldCheck, ShieldOff, Trash2, Upload, UserRound, Users as UsersIcon } from 'lucide-react'
+import { Ban, CircleCheck, Eye, Info, KeyRound, LogOut, Mail, MoreHorizontal, Pencil, Plus, ShieldCheck, ShieldOff, Smartphone, Trash2, Upload, UserRound, Users as UsersIcon } from 'lucide-react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { SessionList } from './Identity'
 import {
@@ -260,6 +261,8 @@ export function UsersPanel() {
                           <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Sign-in actions for ${u.name}`} title="Sessions, reset code, two-step verification, invitation" data-testid={`signin-menu-${u.id}`}><MoreHorizontal /></Button></DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <DropdownMenuItem onSelect={() => setSessUser(u)} data-testid={`sessions-${u.id}`}><LogOut /> Sessions{idState?.users[u.id]?.sessions ? ` (${idState.users[u.id].sessions})` : ''}</DropdownMenuItem>
+                            {/* P2-A: a lost phone: its offline data can no longer be read or sent */}
+                            {!isMe(u) && <DropdownMenuItem onSelect={() => { if (window.confirm(`Wipe the phone and offline data of ${u.name}? Changes still waiting on their devices are lost.`)) wipeDeviceData(u.id).then(() => toast(`Offline data of ${u.name} wiped on every device`, 'success')).catch(fail) }} data-testid={`wipe-devices-${u.id}`}><Smartphone /> Wipe phone and offline data</DropdownMenuItem>}
                             {!isMe(u) && <DropdownMenuItem onSelect={() => { createResetCode(u.id).then((r) => setResetCode({ user: u, code: r.code, expiresOn: r.expiresOn })).catch(fail) }} data-testid={`reset-code-${u.id}`}><KeyRound /> Create one-time reset code</DropdownMenuItem>}
                             {!isMe(u) && idState?.users[u.id]?.mfa && <DropdownMenuItem onSelect={() => setMfaUser(u)} data-testid={`mfa-reset-${u.id}`}><ShieldOff /> Reset two-step verification</DropdownMenuItem>}
                             {!u.hasPassword && idState?.emailConfigured && <DropdownMenuSeparator />}

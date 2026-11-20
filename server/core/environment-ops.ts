@@ -143,7 +143,9 @@ const COPY_META = ['ab_roles', 'ab_role_tables', 'ab_tables', 'ab_apps', 'ab_sol
   // P1-A flows: definitions, versions, connection references, run grants (no runs); copies arrive turned off
   'ab_flows', 'ab_flow_versions', 'ab_flow_connections', 'ab_flow_run_grants',
   // P1-C approvals: policies and settings (never requests, pending or decided, nor delegations)
-  'ab_approval_policies', 'ab_approval_settings']
+  'ab_approval_policies', 'ab_approval_settings',
+  // P2-B print templates: templates (docx files included), their published versions and the letterhead (no generation log or files)
+  'ab_print_templates', 'ab_print_template_versions', 'ab_print_settings']
 const COPY_DATA_META = ['ab_data_files', 'ab_attachments', 'ab_counters', 'ab_shares']
 
 async function columnsOf(db: SqlDb, schema: string, table: string): Promise<string[]> {

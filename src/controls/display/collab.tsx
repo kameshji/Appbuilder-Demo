@@ -23,6 +23,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { cn } from '@/lib/utils'
 import { toBool, toNum, toText } from '../util'
 import { AvatarCircle } from './basics'
+import { GenerateDocumentButton } from '@/print/GenerateDocument'
 import { recordIdOf, usePeopleNames } from './people'
 
 /* ------------------------------------------------------------------ helpers */
@@ -339,6 +340,7 @@ function Composer({ rowId, table, onDone }: { rowId: string; table?: string; onD
       <div className="flex items-center gap-1.5">
         <Button size="sm" variant="ghost" className="h-8" onClick={() => setTask(task ?? { subject: '', due: '', assignee: null })}><Plus className="size-3.5" />Task</Button>
         <Button size="sm" variant="ghost" className="h-8" onClick={() => fileRef.current?.click()}><Paperclip className="size-3.5" />File</Button>
+        {platform.getState().mode === 'server' && <GenerateDocumentButton rowId={rowId} table={table} run={run} />}
         <input ref={fileRef} type="file" className="hidden" onChange={(e) => {
           const f = e.target.files?.[0]
           e.target.value = ''

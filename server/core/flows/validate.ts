@@ -475,6 +475,13 @@ export async function validateFlow(doc: { name?: unknown; description?: unknown;
         checkFx(id, 'attachments', s.attachments, lc, false)
         if (s.connection !== undefined) connRef(s, 'connection', s.connection, ['email'])
         break
+      case 'document.generate':
+        if (typeof s.template !== 'string' || !s.template.trim()) err(id, 'template', 'Choose the print template.')
+        checkFx(id, 'record', s.record, lc, false)
+        if (s.output !== undefined && !['file', 'record', 'documents'].includes(s.output)) err(id, 'output', 'output is file, record or documents.')
+        if ((s.output === 'record' || s.output === 'documents') && !s.record) err(id, 'record', 'Name the record the document is stored with.')
+        if (s.output === 'record' && (typeof s.column !== 'string' || !s.column)) err(id, 'column', 'Choose the file column of the record.')
+        break
       case 'action': {
         connRef(s, 'connection', s.connection)
         if (typeof s.action !== 'string' || !s.action) err(id, 'action', 'Choose the action.')

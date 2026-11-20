@@ -44,6 +44,7 @@ export const DESCRIPTIONS: Record<string, string> = {
   SegmentedControl: 'A row of joined buttons from a list of items, for picking one.',
   IconButton: 'A button that shows only an icon.',
   LinkButton: 'A button that looks like a text link.',
+  PrintButton: 'Prints a record with a print template: the PDF is made on the server and opens in a new tab (downloaded on a phone).',
   SplitButton: 'A button with a main action and a menu of related actions.',
   MenuButton: 'A button that opens a menu of items.',
   FileUpload: 'Lets the user choose one or more files.',
@@ -51,6 +52,8 @@ export const DESCRIPTIONS: Record<string, string> = {
   Stepper: 'A number box with minus and plus buttons.',
   PinInput: 'A row of boxes for a short code such as a PIN, with an optional mask.',
   Timer: 'A timer that runs for a set time and raises events when it starts and ends.',
+  BarcodeScanner: 'A button that opens the camera to scan a barcode or QR code; the code is in Value and OnScan runs.',
+  ScanInput: 'A text field for codes: a hardware (keyboard) scanner fills it and runs OnScan; the camera button scans with the camera.',
   // Display
   Label: 'Shows a piece of text.',
   Image: 'Shows a picture.',
@@ -97,6 +100,7 @@ export const DESCRIPTIONS: Record<string, string> = {
   // Charts
   Chart: 'A bar, line, area, pie or donut chart of a table.',
   Sparkline: 'A tiny chart without axes, to show a trend inside a row or a card.',
+  Visual: 'Every chart kind of dashboards (bar, line, area, combo, pie, donut, scatter, heat map, gauge, bullet, KPI, funnel, Pareto, histogram, timeline) from a table, with tooltips, keyboard navigation, a legend that hides series and OnSelect with the clicked row.',
 }
 
 /** Extra notes per control type. Statements come from docs/internal/notes and the registry flags. */
@@ -112,6 +116,8 @@ export const NOTES: Record<string, string[]> = {
   ],
   NavMenu: ['`SelectedScreen` carries the screen text of the selected row. Write `Navigate(...)` in `OnSelect` to go there.'],
   Gallery: ['`Layout` is text: `"Vertical"`, `"Horizontal"` or `"Grid"` (it is not the `Layout` enum). Vertical rows are as wide as the gallery and `TemplateHeight` tall; horizontal rows are `TemplateWidth` x `TemplateHeight`; a grid uses `Columns`.'],
+  BarcodeScanner: ['QR codes and Data Matrix need a browser with a built-in barcode reader (Chrome on Android). Elsewhere the scanner reads EAN-13/8, Code 128, Code 39 and ITF itself. `Continuous` keeps the camera open for stock counts: OnScan runs for each code (the same code again after 2 seconds). The camera needs HTTPS (see the administrator guide on phones on a LAN).'],
+  ScanInput: ['A burst of keys ending with Enter, faster than a person types, counts as a scan: Value becomes the code and OnScan runs. Typing by hand runs OnChange (and OnScan when you press Enter).'],
   Timer: ['The timer never runs while you design; it runs in preview and in the running app. `Start` is edge-triggered (it acts when it becomes true); `AutoStart` starts it when the screen appears.'],
   Dialog: ['Close button, a click on the backdrop (when `CloseOnBackdrop` is true) and the Escape key run `OnClose`. Your `OnClose` formula should set the variable that `Open` reads to false.'],
   Sheet: ['Close button, a click on the backdrop (when `CloseOnBackdrop` is true) and the Escape key run `OnClose`. Your `OnClose` formula should set the variable that `Open` reads to false. `Side` chooses the edge: left and right sheets are `Width` wide and full height; top and bottom sheets are `Height` tall and full width.'],

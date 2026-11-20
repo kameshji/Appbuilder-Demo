@@ -5,7 +5,8 @@
  * (package D) must give the same rows, in the same order, for every plan.
  */
 import type { FxRecord, FxValue } from '../../contracts.ts'
-import type { AggregateV2, ColumnKind, CompareOpV2, ConditionV2, NumExprV2, QueryLiteral, QueryPlan, SortKeyV2, TableSchemaInfo } from '../../platform/query.ts'
+import type { AggregateV2, ColumnKind, CompareOpV2, ConditionV2, MeasureV2, NumExprV2, QueryLiteral, QueryPlan, SortKeyV2, TableSchemaInfo } from '../../platform/query.ts'
+import { bucketOutputKind as bucketKind, bucketValue } from './buckets.ts'
 import { roundHalfAway } from '../functions/format.ts'
 import { decodeCursor, encodeCursor, sortKeyValue, compareKeys, type KeyValue } from './cursor.ts'
 
@@ -224,56 +225,116 @@ function groupKey(kind: ColumnKind, v: FxValue): string {
   }
 }
 
-function aggregate(rows: FxRecord[], a: AggregateV2, schema: TableSchemaInfo): FxRecord[] {
-  const groups = new Map<string, FxRecord[]>()
-  if (a.groupBy.length === 0) groups.set('', rows)
-  else {
-    const kinds = a.groupBy.map((c) => kindOf(schema, c))
-    for (const r of rows) {
-      const key = a.groupBy.map((c, i) => groupKey(kinds[i]!, cell(r, c))).join('|')
-      let g = groups.get(key)
-      if (!g) { g = []; groups.set(key, g) }
-      g.push(r)
-    }
-  }
-  const out: FxRecord[] = []
-  for (const items of groups.values()) {
-    const o: FxRecord = {}
-    for (const c of a.groupBy) o[a.as?.[c] ?? c] = cell(items[0]!, c)
-    for (const m of a.measures) {
-      if (m.fn === 'count') {
-        o[m.name] = m.filter ? items.filter((r) => evaluateConditionV2(m.filter!, r, schema)).length : items.length
-        continue
-      }
-      let nums: number[]
-      if (m.expr !== undefined) {
-        if (m.col !== undefined) throw new PlanError('a measure has a column or an expression, not both')
-        nums = items.map((r) => evaluateNumExpr(m.expr!, r, schema))
-      } else {
-        if (m.col === undefined || kindOf(schema, m.col) !== 'number') throw new PlanError(`${m.fn} needs a number column`)
-        nums = items.map((r) => cell(r, m.col!)).filter((v): v is number => typeof v === 'number')
-      }
-      switch (m.fn) {
-        case 'sum': o[m.name] = nums.reduce((x, y) => x + y, 0); break
-        case 'avg': o[m.name] = nums.length ? nums.reduce((x, y) => x + y, 0) / nums.length : null; break
-        case 'min': o[m.name] = nums.length ? Math.min(...nums) : 0; break
-        case 'max': o[m.name] = nums.length ? Math.max(...nums) : 0; break
-      }
-    }
-    out.push(o)
-  }
-  if (a.sort?.length) {
-    const outKind = (col: string): ColumnKind => {
-      const g = a.groupBy.find((c) => (a.as?.[c] ?? c) === col)
-      if (g !== undefined) return kindOf(schema, g)
-      if (a.measures.some((m) => m.name === col)) return 'number'
-      throw new PlanError(`unknown aggregate column ${col}`)
-    }
-    const sorted = out.map((r, i) => ({ r, i, k: keysOf(r, a.sort!, outKind) }))
-    sorted.sort((x, y) => compareKeys(x.k, y.k, a.sort!.map((s) => s.dir)) || x.i - y.i)
-    return sorted.map((x) => x.r)
+/** one group key of an aggregate: a column, or a date bucket over a column (P2-C) */
+interface GroupSpec { out: string; kind: ColumnKind; value(r: FxRecord): FxValue }
+
+function groupSpecs(a: AggregateV2, schema: TableSchemaInfo): GroupSpec[] {
+  const out: GroupSpec[] = a.groupBy.map((c) => ({ out: a.as?.[c] ?? c, kind: kindOf(schema, c), value: (r: FxRecord) => cell(r, c) }))
+  for (const b of a.buckets ?? []) {
+    const k = kindOf(schema, b.col)
+    if (k !== 'date' && k !== 'datetime') throw new PlanError(`${b.col} is not a date column`)
+    if (b.unit === 'hour' && k !== 'datetime') throw new PlanError('hour buckets need a date and time column')
+    out.push({ out: b.name, kind: bucketKind(b.unit), value: (r: FxRecord) => bucketValue(cell(r, b.col), k, b) })
   }
   return out
+}
+
+function measureValue(m: MeasureV2, items: FxRecord[], schema: TableSchemaInfo): FxValue {
+  if (m.fn === 'count') return m.filter ? items.filter((r) => evaluateConditionV2(m.filter!, r, schema)).length : items.length
+  if (m.fn === 'countDistinct') {
+    if (m.col === undefined) throw new PlanError('countDistinct needs a column')
+    const k = kindOf(schema, m.col)
+    if (k === 'other') throw new PlanError(`${m.col} can't be counted`)
+    const seen = new Set<string>()
+    for (const r of items) {
+      const v = cell(r, m.col)
+      if (!isNullCell(v)) seen.add(groupKey(k, v))
+    }
+    return seen.size
+  }
+  let nums: number[]
+  if (m.expr !== undefined) {
+    if (m.col !== undefined) throw new PlanError('a measure has a column or an expression, not both')
+    nums = items.map((r) => evaluateNumExpr(m.expr!, r, schema))
+  } else {
+    if (m.col === undefined || kindOf(schema, m.col) !== 'number') throw new PlanError(`${m.fn} needs a number column`)
+    nums = items.map((r) => cell(r, m.col!)).filter((v): v is number => typeof v === 'number')
+  }
+  switch (m.fn) {
+    case 'sum': return nums.reduce((x, y) => x + y, 0)
+    case 'avg': return nums.length ? nums.reduce((x, y) => x + y, 0) / nums.length : null
+    case 'min': return nums.length ? Math.min(...nums) : 0
+    default: return nums.length ? Math.max(...nums) : 0
+  }
+}
+
+function aggregate(rows: FxRecord[], a: AggregateV2, schema: TableSchemaInfo): FxRecord[] {
+  const specs = groupSpecs(a, schema)
+  const byKey = a.groupOrder === 'key'
+  const groups = new Map<string, { items: FxRecord[]; vals: FxValue[] }>()
+  if (specs.length === 0) groups.set('', { items: rows, vals: [] })
+  else {
+    for (const r of rows) {
+      const vals = specs.map((g) => g.value(r))
+      const key = vals.map((v, i) => groupKey(specs[i]!.kind, v)).join('|')
+      let g = groups.get(key)
+      if (!g) { g = { items: [], vals }; groups.set(key, g) }
+      else if (byKey) {
+        // 'key' order: a text group's value is its smallest spelling (code point order)
+        vals.forEach((v, i) => { if (specs[i]!.kind === 'text' && typeof v === 'string' && typeof g!.vals[i] === 'string' && v < (g!.vals[i] as string)) g!.vals[i] = v })
+      }
+      g.items.push(r)
+    }
+  }
+  let list: { o: FxRecord; items: FxRecord[]; key: string }[] = []
+  for (const [key, g] of groups) {
+    const o: FxRecord = {}
+    specs.forEach((sp, i) => { o[sp.out] = g.vals[i]! })
+    for (const m of a.measures) o[m.name] = measureValue(m, g.items, schema)
+    list.push({ o, items: g.items, key })
+  }
+  const outKind = (col: string): ColumnKind => {
+    const g = specs.find((x) => x.out === col)
+    if (g !== undefined) return g.kind
+    if (a.measures.some((m) => m.name === col)) return 'number'
+    throw new PlanError(`unknown aggregate column ${col}`)
+  }
+  const sortKeys: SortKeyV2[] = [...(a.sort ?? [])]
+  if (sortKeys.length || byKey) {
+    const dirs = sortKeys.map((s) => s.dir)
+    const keyed = list.map((x, i) => ({ x, i, k: keysOf(x.o, sortKeys, outKind), g: byKey ? specs.map((sp) => sortKeyValue(sp.kind, x.o[sp.out] ?? null)) : [] }))
+    keyed.sort((p, q) => {
+      const d = compareKeys(p.k, q.k, dirs)
+      if (d !== 0) return d
+      if (byKey) {
+        // then every group key ascending; a NULL group before the group whose normalised key it ties with ('' / 0 / false)
+        for (let j = 0; j < specs.length; j++) {
+          const e = compareKeys([p.g[j]!], [q.g[j]!], ['asc'])
+          if (e !== 0) return e
+          const pn = isNullCell(p.x.o[specs[j]!.out]) ? 0 : 1
+          const qn = isNullCell(q.x.o[specs[j]!.out]) ? 0 : 1
+          if (pn !== qn) return pn - qn
+        }
+      }
+      return p.i - q.i
+    })
+    list = keyed.map((y) => y.x)
+  }
+  if (a.top) {
+    const n = Math.max(0, Math.trunc(a.top.n))
+    const kept = list.slice(0, n)
+    const rest = list.slice(n)
+    const out = kept.map((x) => x.o)
+    if (a.top.others !== undefined && rest.length) {
+      if (specs.length !== 1 || specs[0]!.kind !== 'text' || a.buckets?.length) throw new PlanError('top with others needs exactly one text group column')
+      const items = rest.flatMap((x) => x.items)
+      const o: FxRecord = { [specs[0]!.out]: a.top.others }
+      for (const m of a.measures) o[m.name] = measureValue(m, items, schema)
+      out.push(o)
+    }
+    return out
+  }
+  return list.map((x) => x.o)
 }
 
 /* ------------------------------------------------------------------ the plan */

@@ -7,6 +7,7 @@
  * line on what is coming and when (phases of docs/plan/master-plan.md). Client preferences live in ONE store,
  * src/platform/preferences.ts.
  */
+import { wipeDeviceData } from '@/phone/offline'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   ArrowLeft, Bell, Check, Database, Download, ExternalLink, FileText, Info, KeyRound, Languages, LogOut, MessagesSquare, Monitor, Moon,
@@ -590,6 +591,7 @@ function DataSection() {
   const { toast } = useToast()
   const mode = usePlatform((s) => s.mode)
   const [confirm, setConfirm] = useState(false)
+  const [wipe, setWipe] = useState(false)
   const keys = localDataKeys()
   return (
     <>
@@ -604,7 +606,26 @@ function DataSection() {
         >
           <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => setConfirm(true)} data-testid="clear-local-data"><Trash2 /> Clear</Button>
         </Row>
+        {mode === 'server' && (
+          <Row
+            title="Wipe phone and offline data"
+            description="For a lost or shared phone: every device you used for apps that work offline discards its saved changes and cached screens the next time it connects (changes not yet sent are lost), and this browser's copy is deleted now. You stay signed in here."
+            testId="setting-wipe-devices"
+          >
+            <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => setWipe(true)} data-testid="wipe-devices"><Trash2 /> Wipe</Button>
+          </Row>
+        )}
       </Group>
+      <ConfirmDialog
+        open={wipe}
+        onOpenChange={setWipe}
+        title="Wipe phone and offline data?"
+        description="Changes that are still waiting to be sent on any of your devices are lost. This cannot be undone."
+        confirmLabel="Wipe"
+        onConfirm={() => {
+          wipeDeviceData().then(() => toast('Offline data wiped on every device', 'success'), (e: unknown) => toast(e instanceof Error ? e.message : String(e), 'error'))
+        }}
+      />
       <Group title="AI" testId="settings-ai">
         <Row title="Share data with AI features" soon="Choose whether agents may send your data to an AI provider (off, an approved provider, or a local model). Arrives with P4 Agents; nothing is sent anywhere today." testId="setting-ai">
           <Switch disabled aria-label="Share data with AI features" tabIndex={-1} />

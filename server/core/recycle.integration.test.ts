@@ -503,8 +503,9 @@ describe.skipIf(!PG_URL)(PG_URL ? 'recycle bin (PostgreSQL)' : `recycle bin (Pos
     await h.q(`DROP TABLE env_default.ab_delete_effects, env_default.ab_delete_batches`)
     await h.q(`UPDATE ab.environments SET schema_version = 9 WHERE id = 'default'`)
     const { migrateEnvironmentSchema, SCHEMA_VERSION } = await import('./meta-store.ts')
-    expect(SCHEMA_VERSION).toBe(10)
-    expect(await migrateEnvironmentSchema(h.app.services.state.db!, { id: 'default', schema: 'env_default' })).toEqual({ from: 9, to: 10 })
+    // P2-B made it 11 (print templates, an independent step); the version 10 step still runs from 9
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(10)
+    expect(await migrateEnvironmentSchema(h.app.services.state.db!, { id: 'default', schema: 'env_default' })).toEqual({ from: 9, to: SCHEMA_VERSION })
     expect((await h.q<{ n: number }>(`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'env_default' AND table_name IN ('ab_delete_batches', 'ab_delete_effects')`))[0].n).toBe(2)
     const def = (await h.q<{ def: Record<string, unknown> }>(`SELECT def FROM env_default.ab_tables WHERE id = $1`, [old.id]))[0].def
     expect([def.recycleDays, def.recycleBin]).toEqual([undefined, undefined])

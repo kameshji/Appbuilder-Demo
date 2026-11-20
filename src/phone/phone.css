@@ -1,0 +1,73 @@
+/*
+ * Phone and touch rules (P2 package A, docs/dev/phone.md). Imported once by src/main.tsx after index.css.
+ * `html.touch` is set by src/phone/env.ts on touch-first devices; `html.touch-preview` by the Studio's touch-mode
+ * preview. `[data-run-surface]` is the running app's area (src/runtime/RunSurface.tsx).
+ */
+
+/* the page is exactly the dynamic viewport: the address bar and (Android, interactive-widget=resizes-content) the
+   keyboard shrink it, so nothing sits under them */
+@supports (height: 100dvh) {
+  html, body, #root { height: 100dvh; }
+}
+/* opened from the home screen with viewport-fit=cover: keep content out of the notch and the gesture bar */
+#root {
+  box-sizing: border-box;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
+html.touch { -webkit-tap-highlight-color: transparent; }
+/* the page itself never bounces or pull-refreshes (an app has its own pull to refresh: PullToRefresh.tsx) */
+html.touch body { overscroll-behavior: none; }
+/* no double-tap zoom (and no 300 ms click delay) on anything you tap; pinch zoom stays available */
+html.touch :is(button, a, input, select, textarea, label, summary, [role=button], [role=tab], [role=option], [role=checkbox],
+  [role=switch], [role=radio], [role=slider], [role=menuitem], [role=gridcell], [data-node-id]) {
+  touch-action: manipulation;
+}
+
+/* iOS Safari zooms into a focused field whose text is under 16 px and stays zoomed: fields use 16 px on iOS */
+html.ios :is(input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]), select, textarea) {
+  font-size: max(16px, 1em) !important;
+}
+
+/* ---------------------------------------------------------------- hit targets (at least 44 x 44 px) */
+
+/* a UI component smaller than 44 px gets an invisible touch area around it (RenderNode sets data-hit; a tap on the area
+   is forwarded to the component by src/phone/hit.ts). The wrapper is its own stacking context and the area sits at
+   z-index -1 inside it: below the component itself (taps on the component reach it directly) and below any neighbouring
+   UI component drawn later (a neighbour still wins a tap on itself). */
+:is(html.touch, html.touch-preview) [data-run-surface] [data-hit] { isolation: isolate; }
+:is(html.touch, html.touch-preview) [data-run-surface] [data-hit]::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  top: min(0px, calc((100% - 44px) / 2));
+  bottom: min(0px, calc((100% - 44px) / 2));
+  left: min(0px, calc((100% - 44px) / 2));
+  right: min(0px, calc((100% - 44px) / 2));
+}
+/* small targets inside UI components (slider thumbs, star ratings, close buttons, steppers) */
+:is(html.touch, html.touch-preview) [data-run-surface] :is([role=slider], [data-touch-target]) { position: relative; }
+:is(html.touch, html.touch-preview) [data-run-surface] :is([role=slider], [data-touch-target])::after {
+  content: '';
+  position: absolute;
+  top: min(-4px, calc((100% - 44px) / 2));
+  bottom: min(-4px, calc((100% - 44px) / 2));
+  left: min(-4px, calc((100% - 44px) / 2));
+  right: min(-4px, calc((100% - 44px) / 2));
+}
+/* tab lists and segmented rows scroll sideways instead of squeezing */
+:is(html.touch, html.touch-preview) [data-run-surface] [role=tablist] { overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; }
+:is(html.touch, html.touch-preview) [data-run-surface] [role=tablist]::-webkit-scrollbar { display: none; }
+:is(html.touch, html.touch-preview) [data-run-surface] [role=tablist] > * { flex-shrink: 0; }
+/* no hover-only affordances on touch: things that appear on hover are always visible */
+:is(html.touch, html.touch-preview) [data-hover-reveal] { opacity: 1 !important; }
+
+/* ---------------------------------------------------------------- bottom sheets (src/phone/BottomSheet.tsx) */
+
+.ab-sheet-enter { animation: ab-sheet-up 180ms ease-out; }
+@keyframes ab-sheet-up { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.ab-sheet-pad-bottom { padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)); }
+
+/* ---------------------------------------------------------------- swipe actions (Gallery SwipeActions) */
+[data-swipe-row] { touch-action: pan-y; }

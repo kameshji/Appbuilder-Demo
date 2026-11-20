@@ -322,7 +322,7 @@ export type PlanChange = 'new' | 'changed' | 'unchanged' | 'removed'
 export interface PlanColumnChange { name: string; change: 'added' | 'removed' | 'type' | 'changed'; from?: string; to?: string; destructive?: boolean }
 export interface PlanItem {
   /** event: a table event or validation rule (package G) */
-  kind: 'app' | 'table' | 'role' | 'connection' | 'file' | 'event' | 'flow' | 'approvalPolicy'
+  kind: 'app' | 'table' | 'role' | 'connection' | 'file' | 'event' | 'flow' | 'approvalPolicy' | 'printTemplate'
   id: string
   name: string
   change: PlanChange

@@ -71,6 +71,18 @@ function rowIdOf(c: CallCtx, i: number, fn: string): string {
   return id
 }
 
+/** the record of Print / GeneratePdf: a row (its id) or an id as text */
+function printRowId(c: CallCtx, i: number, fn: string): string {
+  const v = c.value(i)
+  if (typeof v === 'string' && v.trim()) return v.trim()
+  if (isRecord(v)) {
+    const id = typeof v.__id === 'string' ? v.__id : typeof v.id === 'string' ? v.id : ''
+    if (id) return id
+    return c.fail(i, `${fn} needs a saved row (this record has no id)`)
+  }
+  return c.fail(i, `${fn} needs a row, like ${fn}("Inspection report", Gallery1.Selected)`)
+}
+
 /** a user or team argument: email, id or team code as text, or a record with Email / Id / Code */
 function principalOf(c: CallCtx, i: number, fn: string): string {
   const v = c.value(i)
@@ -223,6 +235,28 @@ export const behaviourFns: FnDef[] = [
     const result = typeof opt.Result === 'string' && opt.Result.trim() ? opt.Result.trim() : 'FlowResult'
     if (!c.host!.runFlow) return c.fail(null, 'Flows run on the server: RunFlow is not available here (demo mode).', true)
     return c.host!.runFlow(name, (inputs ?? {}) as FxRecord, { wait, timeoutSeconds: timeout, result })
+  }, 'behaviour'),
+  def('Print', 'Print(template [, record])', 'Opens the PDF of a print template (server mode) in a new tab; on a phone it is shared or downloaded. record is the row to print (its template has a record source), like Print("Inspection report", Gallery1.Selected). The document is made on the server with your access.', 1, 2, (c) => {
+    const t = c.text(0).trim()
+    if (!t) return c.fail(0, 'Name the print template')
+    const id = c.argc > 1 && c.value(1) !== null ? printRowId(c, 1, 'Print') : null
+    if (!c.host!.print) return c.fail(null, 'Print templates are made on the server: Print is not available here (demo mode).', true)
+    c.host!.print(t, id)
+    return null
+  }, 'behaviour'),
+  def('GeneratePdf', 'GeneratePdf(template [, record])', 'Makes the PDF of a print template on the server and returns a file token at once: put it in a file column with Patch, e.g. Patch(Inspections, ThisItem, {Report: GeneratePdf("Inspection report", ThisItem)}). The token is kept 24 hours.', 1, 2, (c) => {
+    const t = c.text(0).trim()
+    if (!t) return c.fail(0, 'Name the print template')
+    const id = c.argc > 1 && c.value(1) !== null ? printRowId(c, 1, 'GeneratePdf') : null
+    if (!c.host!.generateFile) return c.fail(null, 'Print templates are made on the server: GeneratePdf is not available here (demo mode).', true)
+    return c.host!.generateFile('pdf', t, id)
+  }, 'behaviour'),
+  def('GenerateDocx', 'GenerateDocx(template [, record])', 'Fills a Word print template (.docx) on the server and returns a file token at once, like GeneratePdf. There is no conversion of Word files to PDF.', 1, 2, (c) => {
+    const t = c.text(0).trim()
+    if (!t) return c.fail(0, 'Name the print template')
+    const id = c.argc > 1 && c.value(1) !== null ? printRowId(c, 1, 'GenerateDocx') : null
+    if (!c.host!.generateFile) return c.fail(null, 'Print templates are made on the server: GenerateDocx is not available here (demo mode).', true)
+    return c.host!.generateFile('docx', t, id)
   }, 'behaviour'),
   def('Navigate', 'Navigate(Screen)', 'Goes to another screen.', 1, 2, (c) => {
     c.host!.navigate(c.nameOf(0))

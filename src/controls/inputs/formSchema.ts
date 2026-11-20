@@ -72,8 +72,11 @@ function fromRowValue(col: ColumnDef, v: FxValue | undefined): FieldVal {
 /** Initial field values for a (re)load. */
 export function initialValues(cols: ColumnDef[], mode: FormModeName, item: FxRecord | null): FormValues {
   const out: FormValues = {}
+  // P2-A: in New mode an Item that is not a row (no id, such as {Code: ScanInput1.Value}) gives starting values
+  const starting = mode === 'New' && item && item.__id == null && item.id == null ? item : null
   for (const c of cols) {
-    out[c.name] = mode === 'New' || !item ? literalDefault(c) : fromRowValue(c, item[c.name])
+    if (starting && c.name in starting && starting[c.name] != null && starting[c.name] !== '') out[c.name] = fromRowValue(c, starting[c.name])
+    else out[c.name] = mode === 'New' || !item ? literalDefault(c) : fromRowValue(c, item[c.name])
   }
   return out
 }

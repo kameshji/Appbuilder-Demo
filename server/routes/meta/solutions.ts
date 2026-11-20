@@ -7,6 +7,7 @@ import type { ConnectorKind, RoleDef, SolutionComponentKind, SolutionDef, TableD
 import type { ConnectionRecord, Ctx, Router, Services } from '../../core/contracts.ts'
 import { exportFlows } from '../../core/flows/alm.ts'
 import { exportApprovalPolicies } from '../../core/approvals/alm.ts'
+import { exportPrintTemplates } from '../../core/print/alm.ts'
 import { readDataFile } from '../../connectors/files/index.ts'
 import {
   IDENT, bodyObj, clone, conflict, invalid, isObj, me, notFound, optString, reqString, toIdentifier, toYaml, uniqueIdentifier, uniqueLabel,
@@ -26,7 +27,7 @@ import type { CoreServices } from '../../core/services.ts'
 import { userContextFor } from '../../core/auth.ts'
 import { runInEnvironment } from '../../core/env-context.ts'
 
-const KINDS: SolutionComponentKind[] = ['app', 'table', 'role', 'connection', 'file', 'flow', 'approvalPolicy']
+const KINDS: SolutionComponentKind[] = ['app', 'table', 'role', 'connection', 'file', 'flow', 'approvalPolicy', 'printTemplate']
 const MAX_FILE_BYTES = 25 * 1024 * 1024
 
 /** P1-A: the flow options of an import (connection mapping, which new flows arrive turned on) */
@@ -61,6 +62,7 @@ async function componentExists(s: Services, kind: SolutionComponentKind, id: str
     case 'file': return !!(await s.meta.files.get(id))
     case 'flow': return !!(await (s as unknown as { flows?: { store: { get(id: string): Promise<unknown> } } }).flows?.store.get(id))
     case 'approvalPolicy': return !!(await (s as unknown as { approvals?: { policy(id: string): Promise<{ id: string } | null> } }).approvals?.policy(id))?.id
+    case 'printTemplate': return !!(await (s as unknown as { print?: { raw(id: string): Promise<{ id: unknown } | null> } }).print?.raw(id))
   }
 }
 
@@ -274,6 +276,8 @@ export async function exportSolutionPackage(s: Services, ctx: Ctx, id: string, i
     flows: await exportFlows(s, ofKind('flow')),
     // P1-C: approval policies (people by email; requests never travel)
     approvalPolicies: await exportApprovalPolicies(s, ofKind('approvalPolicy')),
+    // P2-B: print templates (published document, Word file; never the generation log)
+    printTemplates: await exportPrintTemplates(s, ofKind('printTemplate')),
   })
 }
 

@@ -44,6 +44,9 @@
   --ring: oklch(0.68 0.16 277);
   --canvas: oklch(0.155 0.01 265);
 }
+/* P2-C chart palette (src/charts/palette.ts cssVariables; a test keeps them equal) */
+:root { --viz-0: #4f46e5; --viz-1: #0891b2; --viz-2: #d97706; --viz-3: #db2777; --viz-4: #059669; --viz-5: #7c3aed; --viz-6: #64748b; --viz-7: #ea580c; --viz-text: #0f172a; --viz-muted: #64748b; --viz-grid: #e2e8f0; --viz-axis: #cbd5e1; --viz-bg: #ffffff; --viz-track: #eef2f7; --viz-good: #16a34a; --viz-warn: #d97706; --viz-bad: #dc2626; }
+.dark { --viz-0: #818cf8; --viz-1: #22d3ee; --viz-2: #fbbf24; --viz-3: #f472b6; --viz-4: #34d399; --viz-5: #a78bfa; --viz-6: #94a3b8; --viz-7: #fb923c; --viz-text: #f1f5f9; --viz-muted: #94a3b8; --viz-grid: #334155; --viz-axis: #475569; --viz-bg: #1e2433; --viz-track: #2a3142; --viz-good: #4ade80; --viz-warn: #fbbf24; --viz-bad: #f87171; }
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

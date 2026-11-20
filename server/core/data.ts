@@ -18,7 +18,7 @@ import { DEFAULT_CONNECTION_ID } from './connections.ts'
 import type { FxRecord } from '../../src/contracts.ts'
 import type { ColumnKind, QueryPlan, QueryV2Response, TableSchemaInfo } from '../../src/platform/query.ts'
 import {
-  QUERY_FALLBACK_ROW_CAP, QUERY_MAX_GROUPS, QUERY_MAX_UNPAGED_ROWS, QUERY_TIMEOUT_MS, columnKind,
+  QUERY_FALLBACK_ROW_CAP, QUERY_MAX_GROUPS, QUERY_MAX_UNPAGED_ROWS, QUERY_TIMEOUT_MS, bucketKind, columnKind,
 } from '../../src/platform/query.ts'
 import { checkPlan } from '../../src/fx/query/validate.ts'
 import { lastWriterOf, noteLocalWrite } from './live/changes.ts'
@@ -158,6 +158,12 @@ export interface RecycleApi {
   restore(ctx: UserContext | null, table: TableDef, input: { batch?: string; rowId?: string }): Promise<RestoreResult>
   recycle: import('./recycle.ts').Recycle
 }
+
+/** P2-B: claims a generated file token (gen_...) for an attachment cell; returns the new attachment id (print/files.ts) */
+type GeneratedClaimer = (ctx: UserContext, def: TableDef, col: ColumnDef, rowId: string, token: string) => Promise<string>
+let generatedClaimer: GeneratedClaimer | null = null
+export const GENERATED_TOKEN_RE = /^gen_[A-Za-z0-9]{24}$/
+export function setGeneratedFileClaimer(fn: GeneratedClaimer | null): void { generatedClaimer = fn }
 
 export function createDataService(deps: DataDeps): DataService & RecycleApi & { internals: DataInternals } {
   const meta = () => deps.meta()
@@ -373,10 +379,17 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     }
   }
 
-  async function checkAttachments(def: TableDef, col: ColumnDef, v: Cell, rowId: string, previous: string[]) {
-    if (col.type !== 'file' && col.type !== 'image') return
+  async function checkAttachments(def: TableDef, col: ColumnDef, v0: Cell, rowId: string, previous: string[], ctx?: UserContext | null): Promise<Cell> {
+    if (col.type !== 'file' && col.type !== 'image') return v0
+    let v = v0
+    // P2-B: a generated file (GeneratePdf, print templates) given as its token becomes an attachment of this cell
+    if (generatedClaimer && ctx && attachmentIds(v).some((x) => GENERATED_TOKEN_RE.test(x))) {
+      const mapped: string[] = []
+      for (const x of attachmentIds(v)) mapped.push(GENERATED_TOKEN_RE.test(x) ? await generatedClaimer(ctx, def, col, rowId, x) : x)
+      v = col.multiple ? JSON.stringify(mapped) : (mapped[0] ?? null)
+    }
     const ids = attachmentIds(v).filter((x) => !previous.includes(x))
-    if (!ids.length) return
+    if (!ids.length) return v
     const recs = await meta().attachments.many(ids)
     for (const id of ids) {
       const a = recs.find((r) => r.id === id)
@@ -384,6 +397,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
         throw new HttpError(422, 'invalid', `${col.displayName || col.name}: "${id.slice(0, 64)}" is not an attachment of this row and column (upload files through /api/v1/attachments).`, col.name)
       }
     }
+    return v
   }
 
   function writableColumn(ctx: UserContext | null, def: TableDef, col: ColumnDef) {
@@ -522,7 +536,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
       if (col.type === 'lookup' && v !== null && v !== '' && String(v) === id && col.lookupTable?.toLowerCase() === def.name.toLowerCase()) {
         throw new HttpError(422, 'invalid', `${col.displayName || col.name}: a row cannot be its own parent.`, col.name)
       }
-      if (ctx) await checkAttachments(def, col, v, id, [])
+      if (ctx && (col.type === 'file' || col.type === 'image')) raw[col.name] = await checkAttachments(def, col, v, id, [], ctx)
     }
     return raw
   }
@@ -620,8 +634,9 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
       if (col.type === 'lookup') await checkNoCycle(def, col, v, id)
       if (col.type === 'file' || col.type === 'image') {
         const before = attachmentIds(existing[col.name])
-        if (ctx) await checkAttachments(def, col, v, id, before)
-        const after = new Set(attachmentIds(v))
+        const v2 = ctx ? await checkAttachments(def, col, v, id, before, ctx) : v
+        if (v2 !== v) raw[name] = v2
+        const after = new Set(attachmentIds(v2))
         for (const b of before) if (!after.has(b)) removed.push(b)
       }
     }
@@ -1037,7 +1052,8 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
       const a = plan.aggregate!
       const types = new Map<string, ColumnDef['type']>()
       for (const g of a.groupBy) types.set(a.as?.[g] ?? g, cols.find((c) => c.name === g)?.type ?? 'text')
-      for (const m of a.measures) types.set(m.name, m.fn === 'count' ? 'number' : 'decimal')
+      for (const b of a.buckets ?? []) types.set(b.name, bucketKind(b.unit) === 'date' ? 'date' : 'number')
+      for (const m of a.measures) types.set(m.name, m.fn === 'count' || m.fn === 'countDistinct' ? 'number' : 'decimal')
       if (res.rows.length > QUERY_MAX_GROUPS) throw new HttpError(422, 'invalid', `This grouping produces more than ${QUERY_MAX_GROUPS.toLocaleString('en-US')} groups. Filter the rows first, or group by fewer distinct values.`)
       out.rows = res.rows.map((r) => {
         const o: Record<string, QueryValue> = {}
@@ -1062,7 +1078,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     return out
   }
 
-  async function queryV2(ctx: UserContext | null, table: TableDef, input: unknown): Promise<QueryV2Response> {
+  async function queryV2(ctx: UserContext | null, table: TableDef, input: unknown, opts: { timeoutMs?: number } = {}): Promise<QueryV2Response> {
     const def = physical(table)
     let plan: QueryPlan
     let referenced: Set<string>
@@ -1116,7 +1132,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
       if (related) throw new HttpError(422, 'invalid', 'Conditions through a lookup column (Lookup.Column) need a table in a database connection.')
       return fallbackV2(connector, def, plan, rowFilter, visible)
     }
-    const raw = await connector.queryV2(def, { plan, rowFilter, ...(related ? { related } : {}), visible, maxUnpagedRows: QUERY_MAX_UNPAGED_ROWS, maxGroups: QUERY_MAX_GROUPS, timeoutMs: queryTimeoutMs })
+    const raw = await connector.queryV2(def, { plan, rowFilter, ...(related ? { related } : {}), visible, maxUnpagedRows: QUERY_MAX_UNPAGED_ROWS, maxGroups: QUERY_MAX_GROUPS, timeoutMs: opts.timeoutMs !== undefined ? Math.max(500, Math.min(queryTimeoutMs, opts.timeoutMs)) : queryTimeoutMs })
     const types = new Map(raw.columns.map((c) => [c.name, c.type]))
     const out: QueryV2Response = {
       rows: raw.rows.map((r) => {

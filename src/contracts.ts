@@ -45,6 +45,12 @@ export interface AppDef {
   theme?: { mode?: 'light' | 'dark'; primary?: string; radius?: number; font?: string }
   /** table names (platform tables) this app uses as data sources */
   dataSources?: string[]
+  /**
+   * P2-A "Works offline (entry)": on phones, creates, updates and photo uploads made without a connection wait in an
+   * encrypted outbox on the device and are sent when it returns; screens visited keep their last data (docs/dev/phone.md).
+   * Absent or false: the app needs a connection (as before).
+   */
+  offline?: { entry?: boolean }
   /** App-level formulas: OnStart */
   appProps: Record<string, Formula>
   /** nodes with type 'Screen' */
@@ -144,6 +150,13 @@ export interface FxHost {
    * returns its id at once (chosen here, so a retry does not ask twice); the request is made asynchronously.
    */
   requestApproval?(input: { id: string; policy?: string; approvers?: string[]; record: string; title: string; details: string; fields: FxRecord }): string
+  /**
+   * P2-B print templates (server mode): Print(template [, record]) opens the PDF of the published template in a new tab
+   * (phones: share or download); GeneratePdf / GenerateDocx return a file token at once (chosen here) that attachment
+   * columns accept in Patch; the file is generated on the server in the background. Failures are notified.
+   */
+  print?(template: string, recordId: string | null): void
+  generateFile?(kind: 'pdf' | 'docx', template: string, recordId: string | null): string
   /** Restore(row or batch) (recycle bin, docs/dev/recycle-bin.md): asynchronous; failures are notified */
   restore?(what: { rowId?: string; table?: string; batch?: string }): void
 }

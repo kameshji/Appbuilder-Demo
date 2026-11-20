@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { platform } from '@/platform'
-import { ArrowRight, Boxes, Cable, ClipboardCheck, CircleAlert, FileSpreadsheet, Info, LayoutGrid, Rocket, ShieldCheck, Table2, TriangleAlert, Workflow, Zap, type LucideIcon } from 'lucide-react'
+import { ArrowRight, Boxes, Cable, ClipboardCheck, CircleAlert, FileSpreadsheet, Info, LayoutGrid, Printer, Rocket, ShieldCheck, Table2, TriangleAlert, Workflow, Zap, type LucideIcon } from 'lucide-react'
 import { ENVIRONMENT_TYPE_LABEL, usePlatform, type SolutionDef } from '@/platform'
 import type { PlanItem, SolutionPlan } from '@/platform/http'
 import { cn } from '@/lib/utils'
@@ -19,8 +19,8 @@ import { TypeBadge } from './EnvironmentPicker'
 import { Field, errMsg, useToast } from './kit'
 import { deploy, planDeploy, type PlanChoices } from './environmentApi'
 
-const KIND_ICON: Record<PlanItem['kind'], LucideIcon> = { app: LayoutGrid, table: Table2, role: ShieldCheck, connection: Cable, file: FileSpreadsheet, event: Zap, flow: Workflow, approvalPolicy: ClipboardCheck }
-const KIND_LABEL: Record<PlanItem['kind'], string> = { app: 'App', table: 'Table', role: 'Role', connection: 'Connection', file: 'Data file', event: 'Table event', flow: 'Flow', approvalPolicy: 'Approval policy' }
+const KIND_ICON: Record<PlanItem['kind'], LucideIcon> = { app: LayoutGrid, table: Table2, role: ShieldCheck, connection: Cable, file: FileSpreadsheet, event: Zap, flow: Workflow, approvalPolicy: ClipboardCheck, printTemplate: Printer }
+const KIND_LABEL: Record<PlanItem['kind'], string> = { app: 'App', table: 'Table', role: 'Role', connection: 'Connection', file: 'Data file', event: 'Table event', flow: 'Flow', approvalPolicy: 'Approval policy', printTemplate: 'Print template' }
 const CHANGE_STYLE: Record<PlanItem['change'], string> = {
   new: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
   changed: 'bg-sky-500/15 text-sky-700 dark:text-sky-300',

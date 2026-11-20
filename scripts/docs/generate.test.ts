@@ -18,6 +18,7 @@ import { buildFormulasPage } from './formulas'
 import { buildFlowsPage } from './flows'
 import { buildActionsPage } from './actions'
 import { buildApprovalsPage } from './approvals'
+import { buildPrintPage } from './print'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const WRITE = process.env.DOCS_WRITE === '1' || process.env.npm_lifecycle_event === 'docs:gen'
@@ -98,6 +99,12 @@ describe('generated reference docs', () => {
     const { text } = buildApprovalsPage()
     expect(text).toContain('`quorum`')
     writeOrCheck('docs/reference/approvals.md', text)
+  })
+
+  it('docs/reference/print-templates.md matches the print template catalogue (blocks, names, functions, limits)', () => {
+    const { text } = buildPrintPage()
+    expect(text).toContain('`keyValue`')
+    writeOrCheck('docs/reference/print-templates.md', text)
   })
 
   it('generation is deterministic', () => {

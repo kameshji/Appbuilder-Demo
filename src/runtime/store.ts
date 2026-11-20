@@ -90,7 +90,7 @@ export interface StudioState {
   setProp(id: string, prop: string, formula: string, coalesceKey?: string): void
   setAppName(name: string): void
   setAppProp(name: string, formula: string): void
-  setAppSettings(patch: Partial<Pick<AppDef, 'name' | 'width' | 'height' | 'scaleMode' | 'theme'>>): void
+  setAppSettings(patch: Partial<Pick<AppDef, 'name' | 'width' | 'height' | 'scaleMode' | 'theme' | 'offline'>>): void
   addDataSource(name: string): void
   removeDataSource(name: string): void
   setGeometry(changes: GeomChange[]): void
@@ -434,6 +434,7 @@ export function createAppStore(opts: { run?: boolean } = {}) {
           if (patch.height !== undefined) app.height = patch.height
           if (patch.scaleMode !== undefined) app.scaleMode = patch.scaleMode
           if (patch.theme !== undefined) app.theme = { ...(app.theme ?? {}), ...patch.theme }
+          if (patch.offline !== undefined) app.offline = { ...(app.offline ?? {}), ...patch.offline }
         }, 'settings')
       },
 

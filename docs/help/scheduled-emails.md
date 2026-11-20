@@ -39,4 +39,6 @@ manages the report (your administrator or the maker of your app) to add you agai
 
 ## PDF reports
 
-Reports by email are tables and CSV files. PDF reports are planned, not available yet.
+A report can also attach a **PDF**: either a printable table of the same rows, or a designed document (for example the
+daily production summary) made from a print template, with your own access like the rest of the email. See
+[printing and PDFs](printing.md).

@@ -627,3 +627,22 @@ engine (system reads and administrators would bypass it); restoring by row only 
 table rebuilds its indexes (1,000,000 rows: 17 s); deleted rows take space until purged.
 
 **Status.** Accepted, 19 Nov 2026.
+
+
+## D32. Phone = installable web app with an encrypted, session-keyed offline outbox (P2 package A, Nov 2026)
+
+**Decision.** Phone apps are the same web app, installable through server-generated manifests and a service worker that caches only the application shell and never API data (navigations to `/api/` always go to the server). Offline entry is opt-in per app: creates, updates and uploads go to an ordered IndexedDB outbox encrypted with AES-GCM under a key the server derives per user, device and epoch; the browser holds the key in memory and sessionStorage only; a wipe raises the epoch. Replay is exactly once through `Idempotency-Key`; conflicts use the row version; server rules always win. Barcode scanning uses the browser's reader where present and our own 1D decoder otherwise.
+
+**Consequences.** No cold-start offline; no offline deletes, approvals or flows; QR codes need a browser with a built-in reader. Details: `docs/dev/phone.md`.
+
+## D33. Print templates: own block model and layout engine on pdfkit/fontkit, generation as the caller (P2 package B, Nov 2026)
+
+**Decision.** Templates are a fixed block model, not HTML/CSS; our own engine lays them out and pdfkit writes the PDF; shaping is fontkit's, verified identical to HarfBuzz on Devanagari test strings; fonts are bundled Noto Sans and Noto Sans Devanagari (SIL OFL, accepted for fonts only). Generation reads as the caller (person, flow identity, report recipient); hidden columns print blank with a warning. Word output uses the free docxtemplater core; there is no .docx-to-PDF conversion. No headless browser in the install.
+
+**Consequences.** Layout is limited to the block catalogue; other scripts need more fonts; PDF charts duplicate the dashboard renderer until an SVG-to-PDF step exists. Details: `docs/dev/pdf.md`.
+
+## D34. Dashboards: one chart geometry, tiles as Query v2 aggregate plans run as the viewer (P2 package C, Nov 2026)
+
+**Decision.** One pure-TypeScript chart geometry serves the screen and standalone SVG. Each tile is one or more Query v2 aggregate plans run as the viewer through a per-dashboard batch endpoint; comparisons, targets and computed measures are extra plans plus arithmetic over aggregated rows, never a second security model. Results are cached for 20 seconds per user, keyed by the viewer's row predicate and visible columns, and dropped on table change.
+
+**Consequences.** A sharing change on a single row can take up to 20 seconds to show on a dashboard. Details: `docs/dev/dashboards.md`.

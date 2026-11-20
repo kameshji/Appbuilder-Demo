@@ -15,6 +15,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 import { ConfirmDialog, Empty, Field, PageHeader, Panel, Segmented, fmtRelative, useToast } from './kit'
 import { useCaps } from './security'
+import { printApi } from '@/print/api'
 import { reportsApi, type ReportDef, type ReportInfo, type ReportRun, type ReportSchedule } from './actionsApi'
 
 const sel = 'h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30'
@@ -80,6 +81,10 @@ function ReportDialog({ report, onClose, onSaved }: { report: ReportInfo | 'new'
   const [teamIds, setTeamIds] = useState<string[]>(d?.recipients.teamIds ?? [])
   const [inlineRows, setInlineRows] = useState(String(d?.inlineRows ?? 20))
   const [onEmpty, setOnEmpty] = useState<'skip' | 'send'>(d?.onEmpty ?? 'skip')
+  // P2-B: attach a PDF (automatic layout or a print template with a query, formula or no source)
+  const [pdf, setPdf] = useState<string>(d?.pdf ? (d.pdf.mode === 'auto' ? 'auto' : d.pdf.template) : '')
+  const [pdfTemplates, setPdfTemplates] = useState<{ id: string; name: string }[]>([])
+  useEffect(() => { printApi.list().then((r) => setPdfTemplates(r.items.filter((t) => t.status === 'published' && t.kind === 'pdf').map((t) => ({ id: t.id, name: t.name })))).catch(() => {}) }, [])
   const [serviceAccount, setServiceAccount] = useState(d && typeof d.runAs === 'object' ? d.runAs.serviceAccount : '')
   const [preview, setPreview] = useState<{ columns: { name: string; label: string }[]; rows: Record<string, unknown>[]; total: number } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -91,7 +96,7 @@ function ReportDialog({ report, onClose, onSaved }: { report: ReportInfo | 'new'
   const def = (): Partial<ReportDef> => ({
     name: name.trim(), description: description.trim() || undefined,
     source: kind === 'table' ? { kind: 'table', tableId, plan: table ? buildPlan(table, builder) : {}, builder } : { kind: 'formula', formula },
-    schedule, recipients: { userIds, teamIds }, inlineRows: Number(inlineRows) || 0, csvRows: 5000, onEmpty,
+    schedule, recipients: { userIds, teamIds }, inlineRows: Number(inlineRows) || 0, csvRows: 5000, onEmpty, pdf: pdf === 'auto' ? { mode: 'auto' } : pdf ? { mode: 'template', template: pdf } : null,
     runAs: serviceAccount ? { serviceAccount } : 'recipient',
   })
   const doPreview = async () => {
@@ -242,6 +247,12 @@ function ReportDialog({ report, onClose, onSaved }: { report: ReportInfo | 'new'
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Rows in the email body" hint="All rows are in the CSV file (up to 5,000)"><Input inputMode="numeric" value={inlineRows} onChange={(e) => setInlineRows(e.target.value.replace(/[^0-9]/g, ''))} /></Field>
+            <Field label="Attach a PDF" hint="A printable table of the rows, or a print template (made with each recipient's access)">
+              <select className={sel} value={pdf} onChange={(e) => setPdf(e.target.value)} data-testid="report-pdf">
+                <option value="">No PDF</option><option value="auto">The rows as a printable table</option>
+                {pdfTemplates.map((t) => <option key={t.id} value={t.id}>Print template: {t.name}</option>)}
+              </select>
+            </Field>
             <Field label="When there are no rows"><Segmented label="Empty result" value={onEmpty} onChange={setOnEmpty} options={[{ value: 'skip', label: 'Send nothing' }, { value: 'send', label: 'Send anyway' }]} /></Field>
           </div>
           {caps.isAdmin && (

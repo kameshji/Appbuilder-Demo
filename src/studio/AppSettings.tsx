@@ -50,6 +50,7 @@ function SettingsBody({ app }: { app: AppDef }) {
   const [radius, setRadius] = useState(String(app.theme?.radius ?? 8))
   const [formulas, setFormulas] = useState(app.appProps.Formulas ?? '')
   const [onStart, setOnStart] = useState((app.appProps.OnStart ?? '=false').replace(/^=/, ''))
+  const [offline, setOffline] = useState(!!app.offline?.entry)
   useEffect(() => setName(app.name), [app.name])
 
   const cw = size.w
@@ -67,6 +68,7 @@ function SettingsBody({ app }: { app: AppDef }) {
       height: Math.round(ch),
       scaleMode: scale,
       theme: { mode, primary: primary || undefined, radius: Number.isFinite(Number(radius)) ? Number(radius) : undefined },
+      ...(offline !== !!app.offline?.entry ? { offline: { entry: offline } } : {}),
     })
     if (formulas !== (app.appProps.Formulas ?? '')) st.setAppProp('Formulas', formulas)
     const os = '=' + onStart
@@ -122,6 +124,17 @@ function SettingsBody({ app }: { app: AppDef }) {
           <span className="text-xs font-medium">Corner radius</span>
           <Input value={radius} onChange={(e) => setRadius(e.target.value)} className="h-8 w-20 tabular-nums" />
         </div>
+        <label className="flex items-start gap-2.5">
+          <input type="checkbox" className="mt-0.5 size-4" checked={offline} onChange={(e) => setOffline(e.target.checked)} data-testid="settings-offline" />
+          <span className="space-y-0.5">
+            <span className="block text-xs font-medium">Works offline (entry)</span>
+            <span className="block text-[11px] text-muted-foreground">
+              On phones with a weak connection: new rows, changes and photos are kept on the device (encrypted) and sent in order when the
+              connection returns; screens show the last data loaded. Deleting, approvals and flows still need a connection. Server rules always
+              apply when the changes arrive. See Guide &gt; Phone apps.
+            </span>
+          </span>
+        </label>
         <label className="block space-y-1">
           <span className="text-xs font-medium">App.OnStart</span>
           <Input value={onStart} onChange={(e) => setOnStart(e.target.value)} className="h-8 font-mono text-xs" spellCheck={false} />

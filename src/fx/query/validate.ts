@@ -7,9 +7,10 @@
  * column-level security checks: a hidden column may not be selected, filtered, sorted, searched, grouped or aggregated.
  */
 import type {
-  AggregateV2, ColumnKind, CompareOpV2, ConditionV2, MeasureV2, NumExprV2, QueryLiteral, QueryPlan, SortKeyV2, TableSchemaInfo,
+  AggregateV2, BucketV2, ColumnKind, CompareOpV2, ConditionV2, MeasureV2, NumExprV2, QueryLiteral, QueryPlan, SortKeyV2, TableSchemaInfo,
 } from '../../platform/query.ts'
 import { PlanError } from './reference.ts'
+import { bucketOutputKind, isTimeZone } from './buckets.ts'
 
 const MAX_NODES = 2000
 const MAX_DEPTH = 32
@@ -20,7 +21,10 @@ const MAX_MEASURES = 50
 const MAX_SEARCH_COLUMNS = 50
 const MAX_TEXT = 4000
 const CMP = new Set<CompareOpV2>(['eq', 'ne', 'lt', 'le', 'gt', 'ge'])
-const MEASURE = new Set(['sum', 'avg', 'min', 'max', 'count'])
+const MEASURE = new Set(['sum', 'avg', 'min', 'max', 'count', 'countDistinct'])
+const UNITS = new Set(['day', 'week', 'month', 'quarter', 'year', 'fiscalQuarter', 'fiscalYear', 'weekday', 'hour'])
+const MAX_BUCKETS = 4
+const MAX_TOP = 5000
 const EXPR2 = new Set(['add', 'sub', 'mul', 'div'])
 const EXPR1 = new Set(['neg', 'abs'])
 const ROUND = new Set(['round', 'roundUp', 'roundDown'])
@@ -219,6 +223,11 @@ class Checker {
       const r: MeasureV2 = { name: m.name, fn: m.fn as MeasureV2['fn'] }
       if (m.fn === 'count') {
         if (m.col !== undefined || m.expr !== undefined) bad('count takes no column')
+      } else if (m.fn === 'countDistinct') {
+        if (m.expr !== undefined) bad('countDistinct counts the values of a column, not of a calculation')
+        const kind = this.kind(m.col, 'countDistinct')
+        if (kind === 'other') bad(`Can't count the values of ${String(m.col)}`)
+        r.col = m.col as string
       } else if (m.expr !== undefined) {
         if (m.col !== undefined) bad('A measure takes a column or a calculation, not both')
         r.expr = this.expr(m.expr, 1)
@@ -235,6 +244,51 @@ class Checker {
     })
     const agg: AggregateV2 = { groupBy, measures }
     if (Object.keys(as).length) agg.as = as
+    if (a.buckets !== undefined) {
+      if (!Array.isArray(a.buckets) || a.buckets.length > MAX_BUCKETS) bad(`aggregate.buckets takes at most ${MAX_BUCKETS} buckets`)
+      if (groupBy.length + (a.buckets as unknown[]).length > MAX_GROUP) bad(`An aggregate groups by at most ${MAX_GROUP} keys`)
+      agg.buckets = (a.buckets as unknown[]).map((b) => {
+        if (!isObj(b) || typeof b.name !== 'string' || !b.name || b.name.length > 64) return bad('Each bucket needs a name')
+        if (typeof b.unit !== 'string' || !UNITS.has(b.unit)) bad(`Unknown date bucket "${String(b.unit).slice(0, 20)}"`)
+        const kind = this.kind(b.col, 'bucket')
+        if (kind !== 'date' && kind !== 'datetime') bad(`Buckets need a date column; ${String(b.col)} isn't one`)
+        if (b.unit === 'hour' && kind !== 'datetime') bad('Hour buckets need a date and time column')
+        if (out.has(b.name)) bad(`Duplicate output column ${b.name}`)
+        const unit = b.unit as BucketV2['unit']
+        out.set(b.name, bucketOutputKind(unit))
+        const r: BucketV2 = { name: b.name, col: b.col as string, unit }
+        if (b.fiscalYearStart !== undefined) {
+          if (typeof b.fiscalYearStart !== 'number' || !Number.isInteger(b.fiscalYearStart) || b.fiscalYearStart < 1 || b.fiscalYearStart > 12) bad('fiscalYearStart is a month, 1 to 12')
+          r.fiscalYearStart = b.fiscalYearStart as number
+        }
+        if (b.weekStart !== undefined) {
+          if (b.weekStart !== 1 && b.weekStart !== 7) bad('weekStart is 1 (Monday) or 7 (Sunday)')
+          r.weekStart = b.weekStart as 1 | 7
+        }
+        if (b.timeZone !== undefined) {
+          if (!isTimeZone(b.timeZone)) bad('timeZone must be a time zone name such as Asia/Kolkata')
+          r.timeZone = b.timeZone as string
+        }
+        return r
+      })
+      for (const m of measures) if (agg.buckets.some((b) => b.name === m.name)) bad(`Duplicate output column ${m.name}`)
+    }
+    if (a.groupOrder !== undefined) {
+      if (a.groupOrder !== 'first' && a.groupOrder !== 'key') bad('groupOrder is "first" or "key"')
+      if (a.groupOrder === 'key') agg.groupOrder = 'key'
+    }
+    if (a.top !== undefined) {
+      const t = a.top as Record<string, unknown>
+      if (!isObj(t) || typeof t.n !== 'number' || !Number.isInteger(t.n) || t.n < 0 || t.n > MAX_TOP) bad(`top is { n: 0 to ${MAX_TOP}, others? }`)
+      if (agg.groupOrder !== 'key') bad('top needs groupOrder "key"')
+      agg.top = { n: (t as { n: number }).n }
+      if (t.others !== undefined) {
+        if (typeof t.others !== 'string' || t.others.length > 200) bad('top.others is the label of the other groups')
+        const keys = groupBy.length + (agg.buckets?.length ?? 0)
+        if (keys !== 1 || groupBy.length !== 1 || out.get(as[groupBy[0]!] ?? groupBy[0]!) !== 'text') bad('Others needs exactly one text group column')
+        agg.top.others = t.others as string
+      }
+    }
     if (a.sort !== undefined) agg.sort = this.sortKeys(a.sort, (c) => out.get(c), 'aggregate.sort')
     return { agg, out }
   }
@@ -306,6 +360,7 @@ export function checkPlan(input: unknown, schema: TableSchemaInfo, tableName: st
 export function aggregateOutputKinds(a: AggregateV2, schema: TableSchemaInfo): Map<string, ColumnKind> {
   const out = new Map<string, ColumnKind>()
   for (const g of a.groupBy) out.set(a.as?.[g] ?? g, schema.columns[g] ?? 'other')
+  for (const b of a.buckets ?? []) out.set(b.name, bucketOutputKind(b.unit))
   for (const m of a.measures) out.set(m.name, 'number')
   return out
 }

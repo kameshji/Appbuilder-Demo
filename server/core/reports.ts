@@ -59,6 +59,8 @@ export interface ReportDef {
   inlineRows: number
   csvRows: number
   onEmpty: 'skip' | 'send'
+  /** P2-B: a PDF attached to every email: the automatic table layout of the report's rows, or a print template (query, formula or no source) generated as the recipient */
+  pdf?: { mode: 'auto' } | { mode: 'template'; template: string }
   /** people who unsubscribed with the link in the email */
   optOut?: string[]
 }
@@ -265,6 +267,21 @@ export function createReports(services: CoreServices, delivery: DeliveryService)
     return (await db().query<Record<string, unknown>>(`SELECT * FROM ${T('ab_report_subscriptions')} WHERE id = $1`, [id]))[0] ?? null
   }
 
+  /** P2-B: the PDF option of a report */
+  async function checkPdf(raw: unknown): Promise<{ pdf?: ReportDef['pdf'] }> {
+    if (raw === undefined || raw === null || raw === false) return {}
+    if (isObj(raw) && raw.mode === 'auto') return { pdf: { mode: 'auto' } }
+    if (isObj(raw) && raw.mode === 'template' && typeof raw.template === 'string' && raw.template) {
+      const print = services.print
+      if (!print) throw invalid('Print templates are not available on this server.', 'pdf')
+      const t = await print.get(raw.template, null)
+      if (!t) throw invalid(`There is no print template "${raw.template}".`, 'pdf.template')
+      if ((t.published ?? t.doc).source.kind === 'record') throw invalid('A report can attach a template with a query, a formula or no source; this one prints one record.', 'pdf.template')
+      return { pdf: { mode: 'template', template: t.id } }
+    }
+    throw invalid('pdf is {mode: "auto"} or {mode: "template", template}.', 'pdf')
+  }
+
   /** validates a definition for `who`; returns the cleaned definition */
   async function check(raw: unknown, who: UserContext, prev?: ReportDef): Promise<ReportDef> {
     const o = isObj(raw) ? raw : {}
@@ -311,6 +328,7 @@ export function createReports(services: CoreServices, delivery: DeliveryService)
       source, runAs, schedule, recipients: { userIds, teamIds },
       inlineRows: int(o.inlineRows ?? prev?.inlineRows, 20, 0, REPORT_MAX_INLINE_ROWS), csvRows: int(o.csvRows ?? prev?.csvRows, 5000, 0, REPORT_MAX_CSV_ROWS),
       onEmpty: (o.onEmpty ?? prev?.onEmpty) === 'send' ? 'send' : 'skip',
+      ...(await checkPdf(o.pdf === undefined ? prev?.pdf : o.pdf)),
       ...(prev?.optOut?.length ? { optOut: prev.optOut.filter((x) => userIds.includes(x) || teamIds.length > 0) } : {}),
     }
     // a dry run as the editor: the plan or formula must work (the editor must be able to read the table)
@@ -396,6 +414,14 @@ export function createReports(services: CoreServices, delivery: DeliveryService)
         const text = [def.name, '', countText, '', data.columns.map((c) => c.label).join(' | '), ...inline.map((r2) => data.columns.map((c) => cellText(r2[c.name])).join(' | ')), '', ...(link ? [`Open: ${link}`] : []), ...(unsub ? [`Unsubscribe: ${unsub}`] : [])].join('\n')
         const csvRows = data.rows.slice(0, def.csvRows)
         const attachments = def.csvRows && data.rows.length ? [{ fileName: `${def.name.replace(/[^A-Za-z0-9 _-]+/g, '').trim().slice(0, 60) || 'report'}-${when.slice(0, 10)}.csv`, contentType: 'text/csv', content: Buffer.from(toCsv(data.columns, csvRows), 'utf8') }] : []
+        if (def.pdf && services.print) {
+          // P2-B: the PDF, as the same identity as the data of this email
+          const who = shared ? shared.who : (await userCtx(uid))!
+          const g = def.pdf.mode === 'template'
+            ? await services.print.generate(def.pdf.template, undefined, who, { source: `report:${reportId}`, fixedIdentity: true })
+            : await services.print.generate(null, undefined, who, { source: `report:${reportId}`, fixedIdentity: true, presetDoc: autoReportDoc(def, data), presetRows: data.rows.slice(0, Math.max(def.csvRows, def.inlineRows, 1)), presetName: def.name })
+          attachments.push({ fileName: g.fileName, contentType: 'application/pdf', content: Buffer.from(g.bytes) })
+        }
         const m = await mail.send({
           to: u.email, subject: `${brand.installName}: ${def.name} (${when.slice(0, 10)})`, text, html, attachments, template: 'report', userId: uid,
           ...(unsub ? { headers: { 'List-Unsubscribe': `<${unsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } } : {}),
@@ -501,6 +527,29 @@ export function createReports(services: CoreServices, delivery: DeliveryService)
 }
 
 export type Reports = ReturnType<typeof createReports>
+
+/** P2-B: the automatic PDF layout of a report: a title, the row count and the rows as a table (landscape beyond 6 columns) */
+export function autoReportDoc(def: ReportDef, data: ReportResult): import('../../src/platform/print.ts').PrintTemplateDoc {
+  const ident = (n: string) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(n) ? n : `'${n.replace(/'/g, "''")}'`)
+  const numeric = (n: string) => data.rows.slice(0, 50).some((r) => typeof r[n] === 'number') && data.rows.slice(0, 50).every((r) => r[n] === null || r[n] === undefined || typeof r[n] === 'number')
+  const cols = data.columns.slice(0, 14)
+  const esc = (t: string) => t.replace(/[{}]/g, (c) => c + c)
+  return {
+    version: 1,
+    page: { size: 'A4', orientation: cols.length > 6 ? 'landscape' : 'portrait', margins: { top: 14, right: 12, bottom: 14, left: 12 } },
+    source: { kind: 'none' },
+    styles: { fontSize: 9, color: '#1e293b', accent: '#4f46e5', headingColor: '#0f172a', tableStyle: 'zebra' },
+    header: { blocks: [], letterhead: 'first' },
+    footer: { blocks: [], pageNumbers: true, left: `${esc(def.name)} · {FormatDate(Now(), "dd-MM-yyyy HH:mm")}` },
+    fileName: `${esc(def.name)} {FormatDate(Now(), "yyyy-MM-dd")}`,
+    body: [
+      { id: 'h', kind: 'heading', level: 1, text: esc(def.name) },
+      ...(def.description ? [{ id: 'd', kind: 'text' as const, text: esc(def.description), color: '#475569' }] : []),
+      { id: 'n', kind: 'text', text: `${data.total} row${data.total === 1 ? '' : 's'}${data.truncated ? ` (the first ${data.rows.length} are printed)` : ''}`, size: 8, color: '#64748b' },
+      { id: 't', kind: 'table', rows: 'Rows', fontSize: cols.length > 8 ? 7 : 8, columns: cols.map((c) => ({ header: c.label, value: `ThisItem.${ident(c.name)}`, ...(numeric(c.name) ? { format: 'number' as const, align: 'right' as const } : {}) })) },
+    ],
+  }
+}
 
 export function reportRoutes(router: ApiRouter, services: CoreServices, reports: Reports): void {
   const audit = async (ctx: Ctx, action: string, details: unknown) => {

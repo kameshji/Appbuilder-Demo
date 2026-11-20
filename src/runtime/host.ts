@@ -1,6 +1,7 @@
 import type { AppDef, ControlNode, FxHost, FxRecord, FxValue } from '@/contracts'
 import { Evaluator, ROOT_CTX, enumName, type Env, type NodeCtx, type RuntimeView } from './evaluator'
 import { uid, isRecord } from './util'
+import { printCall, generateFileCall, newFileToken } from '@/print/runtime'
 import { changeShare, collabAction, requestApprovalCall, restoreCall, runFlowCall, sendNotification, currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableRows, tables } from './data'
 import { pendingFilesOf } from './attachments'
 import { finishSubmit } from './submit'
@@ -446,6 +447,17 @@ function beginRun(input: RunInput): Run {
     restore(what) {
       if (input.dryData) return
       restoreCall(what)
+    },
+    // P2-B print templates
+    print(template, recordId) {
+      if (input.dryData) return
+      void printCall(template, recordId)
+    },
+    generateFile(kind, template, recordId) {
+      const token = newFileToken()
+      if (input.dryData) return token
+      void generateFileCall(kind, template, recordId, token)
+      return token
     },
   }
 

@@ -89,6 +89,8 @@ export interface ReportDef {
   inlineRows: number
   csvRows: number
   onEmpty: 'skip' | 'send'
+  /** P2-B: a PDF attached to every email (automatic table layout, or a print template) */
+  pdf?: { mode: 'auto' } | { mode: 'template'; template: string } | null
 }
 export interface ReportInfo { id: string; name: string; ownerId: string; ownerName?: string; enabled: boolean; def: ReportDef; scheduleText: string; nextRunAt: string | null; lastRun?: { id: string; startedOn: string; status: string; message: string | null } | null; canEdit: boolean }
 export interface ReportRun { id: string; startedOn: string; finishedOn: string | null; status: string; trigger: string; message: string | null; recipients: { userId: string; status: string; rows?: number; reason?: string }[] }

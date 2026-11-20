@@ -56,9 +56,10 @@ function activeNav(route: PortalRoute): string {
   if (route.page === 'table') return 'tables'
   if (route.page === 'solution') return 'solutions'
   if (route.page === 'flow') return 'flows'
+  if (route.page === 'printtemplate') return 'printtemplates'
   if (route.page === 'soon') return `soon-${route.id}`
   // built-in User mode pages light up their menu entry (#u-approvals -> Approvals); app tabs keep "My apps"
-  if (route.page === 'u') return 'id' in route ? ({ approvals: 'approvals', tasks: 'tasks', mentions: 'mentions', reports: 'myreports' } as Record<string, string>)[route.id] ?? 'u' : 'u'
+  if (route.page === 'u') return 'id' in route ? ({ approvals: 'approvals', tasks: 'tasks', mentions: 'mentions', reports: 'myreports', dashboards: 'dashboards' } as Record<string, string>)[route.id] ?? 'u' : 'u'
   if (route.page === 'admin') return 'admin'
   return route.page
 }
@@ -66,12 +67,12 @@ function activeNav(route: PortalRoute): string {
 /** may the signed-in user open this page? (UX only; the server enforces) */
 export function pageAllowed(page: PortalRoute['page'], caps: { isAdmin: boolean; isMaker: boolean }): boolean {
   if (page === 'roles' || page === 'admin') return caps.isAdmin
-  if (['tables', 'table', 'datafiles', 'solutions', 'solution', 'connections', 'datamodel', 'flows', 'flow'].includes(page)) return caps.isMaker
+  if (['tables', 'table', 'datafiles', 'solutions', 'solution', 'connections', 'datamodel', 'flows', 'flow', 'printtemplates', 'printtemplate'].includes(page)) return caps.isMaker
   return true
 }
 
 /** pages that belong to Dev mode (the maker portal) */
-export const DEV_PAGES: ReadonlySet<PortalRoute['page']> = new Set(['home', 'apps', 'tables', 'table', 'datafiles', 'roles', 'solutions', 'solution', 'connections', 'studio', 'admin', 'datamodel', 'reports', 'flows', 'flow'])
+export const DEV_PAGES: ReadonlySet<PortalRoute['page']> = new Set(['home', 'apps', 'tables', 'table', 'datafiles', 'roles', 'solutions', 'solution', 'connections', 'studio', 'admin', 'datamodel', 'reports', 'flows', 'flow', 'printtemplates', 'printtemplate'])
 
 const allowedEntry = (m: ModuleEntry, caps: { isAdmin: boolean; isMaker: boolean }) => !m.need || (m.need === 'admin' ? caps.isAdmin : caps.isMaker)
 

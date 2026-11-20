@@ -12,6 +12,7 @@ import type { AttachmentResolveResponse } from '../../src/platform/http.ts'
 import type { ApiRouter } from './router.ts'
 import type { CoreServices } from './services.ts'
 import { tableParam } from './data-routes.ts'
+import { idempotencyKeyOf, idempotentWrite } from './offline.ts'
 import { attachmentIds } from './values.ts'
 import { errText, log } from './util.ts'
 
@@ -162,7 +163,8 @@ export function attachmentRoutes(router: ApiRouter, services: CoreServices): voi
     if (bytes.length > limit) throw new HttpError(413, 'invalid', tooBig, col.name)
     if (!bytes.length) throw new HttpError(422, 'invalid', 'The file is empty.')
 
-    return withRowLock(`${def.id}:${rowId}`, async () => {
+    // P2-A offline outbox: a retried upload with the same Idempotency-Key returns the first attachment (offline.ts)
+    const upload = (): Promise<AttachmentRef> => withRowLock(`${def.id}:${rowId}`, async () => {
       const row = await services.data.internals.findRow(def, rowId, user.rowPredicate(def, 'update'))
       if (!row) {
         const readable = await services.data.internals.findRow(def, rowId, user.rowPredicate(def, 'read'))
@@ -201,6 +203,9 @@ export function attachmentRoutes(router: ApiRouter, services: CoreServices): voi
       await services.collab?.attachmentAdded(rec).catch((e) => services.collab?.log('attachment link', e))
       return services.attachments.toRef(rec)
     })
+    const idemKey = idempotencyKeyOf(ctx)
+    if (idemKey) return idempotentWrite(services, user, idemKey, def.id, 'upload', upload)
+    return upload()
   }, { auth: 'user', raw: true, streamBody: true, maxBodyMB: ROUTE_MAX_MB })
 
   router.add('POST', '/attachments/resolve', async (ctx): Promise<AttachmentResolveResponse> => {

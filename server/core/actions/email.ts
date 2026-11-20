@@ -99,17 +99,27 @@ export function createEmailProvider(): ActionProvider {
           const chunks: Buffer[] = []
           for await (const c of services.attachments.open(rec.storageKey) as AsyncIterable<Buffer>) chunks.push(Buffer.from(c))
           f = { fileName: typeof a.fileName === 'string' && a.fileName ? a.fileName : rec.fileName, contentType: rec.mime || 'application/octet-stream', content: Buffer.concat(chunks) }
+        } else if (typeof a.fileToken === 'string' && a.fileToken) {
+          // P2-B: a generated document (print templates: GeneratePdf, the flow step document.generate), its creator only
+          const print = (services as { print?: { fileFor(t: string, who: unknown): Promise<{ row: Record<string, unknown>; bytes: Buffer }> } }).print
+          if (!print) throw new OutboundError('unavailable', 'Generated documents are not available on this server.')
+          const g = await print.fileFor(a.fileToken, call.identity ?? null).catch((e: Error) => { throw new OutboundError('denied', `The generated file was not found or may not be sent by ${call.identity ? call.identity.user.name : 'the system'}: ${e.message}`) })
+          if (g.bytes.length > MAX_ATTACHMENT_BYTES) throw new OutboundError('too_large', `"${String(g.row.file_name)}" is larger than ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB.`)
+          f = { fileName: typeof a.fileName === 'string' && a.fileName ? a.fileName : String(g.row.file_name), contentType: String(g.row.mime || 'application/pdf'), content: g.bytes }
         } else if (typeof a.text === 'string' || typeof a.base64 === 'string') {
           if (typeof a.fileName !== 'string' || !a.fileName.trim()) throw new OutboundError('invalid_input', 'A generated attachment needs a file name.')
           const content = typeof a.text === 'string' ? Buffer.from(a.text, 'utf8') : Buffer.from(String(a.base64), 'base64')
           f = { fileName: a.fileName, contentType: typeof a.contentType === 'string' && a.contentType ? a.contentType : typeof a.text === 'string' ? 'text/plain; charset=utf-8' : 'application/octet-stream', content }
-        } else throw new OutboundError('invalid_input', 'An attachment needs an attachmentId, or a fileName with text or base64 content.')
+        } else throw new OutboundError('invalid_input', 'An attachment needs an attachmentId, a fileToken (a generated document), or a fileName with text or base64 content.')
         total += f.content.length
         if (total > MAX_ATTACHMENT_BYTES) throw new OutboundError('too_large', `Attachments may be ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB in all.`)
         files.push({ ...f, fileName: safeFileName(f.fileName), contentType: f.contentType.split(';')[0].trim() || 'application/octet-stream' })
       }
-      const html = typeof inputs.html === 'string' && inputs.html.trim() ? sanitizeRichText(inputs.html, 500_000) : undefined
-      const text = typeof inputs.text === 'string' && inputs.text ? inputs.text : html ? richTextToPlain(html) : ''
+      // the flow step email passes `body` (P2-B fix: the action refused it as an unknown input): HTML when it has tags, else text
+      const bodyIn = typeof inputs.body === 'string' && inputs.body && inputs.html === undefined && inputs.text === undefined ? inputs.body : ''
+      const htmlIn = typeof inputs.html === 'string' ? inputs.html : /<[a-z][^>]*>/i.test(bodyIn) ? bodyIn : ''
+      const html = htmlIn.trim() ? sanitizeRichText(htmlIn, 500_000) : undefined
+      const text = typeof inputs.text === 'string' && inputs.text ? inputs.text : bodyIn && !html ? bodyIn : html ? richTextToPlain(html) : ''
       const replyTo = (inputs.replyTo as string | undefined) || connection.settings?.replyTo || undefined
       const base = {
         subject: String(inputs.subject), text, html: html ? emailShell(html) : undefined, replyTo,

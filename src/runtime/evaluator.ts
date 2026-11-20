@@ -1,3 +1,4 @@
+import { deviceRecord, locationRecord, requestLocation } from '@/phone/device-fx'
 import type { AppDef, ControlNode, FxDiagnostic, FxEngine, FxNamedFormula, FxRecord, FxScope, FxValue, PropMeta } from '@/contracts'
 import { createEngine, splitFormulas } from '@/fx'
 import { controls } from '@/controls'
@@ -783,6 +784,19 @@ export class Evaluator {
       if (!isTable(table)) return undefined
       this.record('q:del:' + table.toLowerCase())
       return deletedRowsOf(table)
+    }
+    // P2-A device functions (src/phone/device-fx.ts): re-evaluated when the device or the position changes
+    if (name === 'Device()') {
+      this.record('q:device')
+      return deviceRecord()
+    }
+    if (name === 'Location()') {
+      this.record('q:location')
+      return locationRecord()
+    }
+    if (name === 'Location():update') {
+      requestLocation()
+      return true
     }
     if (name.startsWith('Param:')) {
       try {

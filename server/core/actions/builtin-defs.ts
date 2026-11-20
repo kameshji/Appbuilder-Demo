@@ -62,6 +62,7 @@ export const SEND_ACTION: ActionDef = {
       subject: { type: 'string', minLength: 1, maxLength: 300, title: 'Subject' },
       text: { type: 'string', maxLength: 200_000, title: 'Text', 'x-ui': 'textarea', description: 'Plain text body (made from the HTML when left out).' },
       html: { type: 'string', maxLength: 500_000, title: 'HTML', 'x-ui': 'textarea', description: 'Rich body; scripts, styles and event handlers are removed.' },
+      body: { type: 'string', maxLength: 500_000, title: 'Body', 'x-ui': 'textarea', description: 'The flow step email sends this: HTML when it has tags, else text (used when text and html are absent).' },
       replyTo: { type: 'string', format: 'email', title: 'Reply-to' },
       attachments: {
         type: 'array', maxItems: MAX_ATTACHMENTS, title: 'Attachments',
@@ -69,6 +70,7 @@ export const SEND_ACTION: ActionDef = {
           type: 'object', additionalProperties: false,
           properties: {
             attachmentId: { type: 'string', maxLength: 100, description: 'A file in an attachment column (the run-as identity must be able to open it).' },
+            fileToken: { type: 'string', maxLength: 40, description: 'A generated document (print templates): the token from GeneratePdf or the step document.generate.' },
             fileName: { type: 'string', maxLength: 150 },
             contentType: { type: 'string', maxLength: 100 },
             text: { type: 'string', description: 'Generated file content as text (for example CSV).' },

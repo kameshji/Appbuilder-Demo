@@ -43,6 +43,7 @@ export function stepSummary(s: Step): string {
     case 'approval': return a.approvers ? `Ask ${clip(a.approvers, 30)}` : a.policy ? `Policy ${clip(a.policy, 28)}` : 'Approval'
     case 'notify': return a.to ? `To ${clip(a.to, 34)}` : 'Notify'
     case 'email': return a.to ? `To ${clip(a.to, 34)}` : 'Send an email'
+    case 'document.generate': return a.template ? `${clip(a.template, 30)} (${a.output ?? 'file'})` : 'Generate a document'
     case 'http': return `${a.method ?? 'GET'} ${clip(a.url, 30)}`
     case 'action': return a.action ? `${a.connection}: ${a.action}` : 'Connector action'
     case 'callFlow': return a.flow ? `Run ${clip(a.flow)}` : 'Run a child flow'

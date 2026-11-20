@@ -3,6 +3,7 @@
  * when the platform is unavailable (stub, tests, storage failure): reads return empty values and
  * writes throw a PlatformError the host turns into a formula failure.
  */
+import { setDeviceNotifier } from '@/phone/device-fx'
 import type { FxRecord, FxValue } from '@/contracts'
 import { platform, PlatformError, userRecord, type ColumnDef, type DataErrorEvent, type Row, type TableDef, type WorkspaceState } from '@/platform'
 import { CODE_MESSAGES } from '@/platform/errorMessages'
@@ -244,6 +245,9 @@ function bumpQueryDeps(deps: string[]) {
   for (const l of [...qListeners]) l()
 }
 
+// P2-A: Device() and Location() changes re-run only the formulas that read them
+setDeviceNotifier((deps) => bumpQueryDeps(deps))
+
 /** SharedWith(record): the cached shares of a row; the first call loads them (formulas re-evaluate on arrival) */
 export function sharedWithRows(rowId: string): FxRecord[] {
   const hit = sharedWith.get(rowId)
@@ -279,6 +283,11 @@ export function subscribeShareErrors(fn: (message: string) => void): () => void 
   return () => {
     shareErrorListeners.delete(fn)
   }
+}
+
+/** a behaviour function that finishes later failed (P2-B Print / GeneratePdf use it): shown like Share failures */
+export function notifyAsyncError(message: string): void {
+  for (const l of [...shareErrorListeners]) l(message)
 }
 
 /** Share / Unshare from formulas: run, then refresh the row's SharedWith; failures go to the listeners */

@@ -38,13 +38,13 @@ Every UI component except a screen has these 10 properties. They are not repeate
 ## UI components by category
 
 - [Layout](#layout): [Screen](#screen), [Container](#container), [Row](#row), [Column](#column), [Grid](#grid), [Card](#card), [Scroll area](#scroll-area), [Divider](#divider), [Spacer](#spacer), [Dialog](#dialog), [Sheet](#sheet), [Accordion](#accordion)
-- [Input](#input): [Button](#button), [Text input](#text-input), [Checkbox](#checkbox), [Toggle](#toggle), [Dropdown](#dropdown), [Text area](#text-area), [Number input](#number-input), [Password input](#password-input), [Search box](#search-box), [Radio group](#radio-group), [Combo box](#combo-box), [Person picker](#person-picker), [Tag input](#tag-input), [Date picker](#date-picker), [Date range picker](#date-range-picker), [Time picker](#time-picker), [Slider](#slider), [Range slider](#range-slider), [Rating](#rating), [Toggle group](#toggle-group), [Segmented control](#segmented-control), [Icon button](#icon-button), [Link button](#link-button), [Split button](#split-button), [Menu button](#menu-button), [File upload](#file-upload), [Color picker](#color-picker), [Stepper](#stepper), [PIN input](#pin-input), [Timer](#timer)
+- [Input](#input): [Button](#button), [Text input](#text-input), [Checkbox](#checkbox), [Toggle](#toggle), [Dropdown](#dropdown), [Text area](#text-area), [Number input](#number-input), [Password input](#password-input), [Search box](#search-box), [Radio group](#radio-group), [Combo box](#combo-box), [Person picker](#person-picker), [Tag input](#tag-input), [Date picker](#date-picker), [Date range picker](#date-range-picker), [Time picker](#time-picker), [Slider](#slider), [Range slider](#range-slider), [Rating](#rating), [Toggle group](#toggle-group), [Segmented control](#segmented-control), [Icon button](#icon-button), [Link button](#link-button), [Split button](#split-button), [Menu button](#menu-button), [File upload](#file-upload), [Color picker](#color-picker), [Stepper](#stepper), [PIN input](#pin-input), [Timer](#timer), [Barcode scanner](#barcode-scanner), [Scan input](#scan-input), [Print button](#print-button)
 - [Display](#display): [Label](#label), [Image](#image), [Rectangle](#rectangle), [Heading](#heading), [Rich text](#rich-text), [Badge](#badge), [Avatar](#avatar), [Avatar group](#avatar-group), [Icon](#icon), [Shape](#shape), [Tag list](#tag-list), [Stat card](#stat-card), [Timeline](#timeline)
 - [Data](#data): [Gallery](#gallery), [Form](#form), [Data table](#data-table), [List](#list), [Calendar](#calendar), [Record timeline](#record-timeline), [Activity list](#activity-list), [Approvals panel](#approvals-panel)
 - [Navigation](#navigation): [Tabs](#tabs), [Breadcrumb](#breadcrumb), [Pagination](#pagination), [Nav menu](#nav-menu), [Top bar](#top-bar), [Steps](#steps)
 - [Feedback](#feedback): [Progress](#progress), [Circular progress](#circular-progress), [Spinner](#spinner), [Skeleton](#skeleton), [Alert](#alert), [Empty state](#empty-state)
 - [Media](#media): [Video](#video), [Audio](#audio), [Animated icon](#animated-icon)
-- [Charts](#charts): [Chart](#chart), [Sparkline](#sparkline)
+- [Charts](#charts): [Chart](#chart), [Sparkline](#sparkline), [Visual](#visual)
 
 ## Layout
 
@@ -1039,6 +1039,76 @@ Type: `Timer` · default size 120 x 32 · main property: `OnTimerEnd`
 
 - The timer never runs while you design; it runs in preview and in the running app. `Start` is edge-triggered (it acts when it becomes true); `AutoStart` starts it when the screen appears.
 
+### Barcode scanner
+
+A button that opens the camera to scan a barcode or QR code; the code is in Value and OnScan runs.
+
+Type: `BarcodeScanner` · default size 160 x 48 · main property: `OnScan` · also has `DisplayMode`
+
+| Property | Kind | Group | Default | Level |
+| --- | --- | --- | --- | --- |
+| `Text` | text | Content | `="Scan"` | Simple |
+| `Formats` | text | Behaviour | `="All"` | Simple |
+| `Continuous` | boolean | Behaviour | `=false` | Simple |
+| `OnScan` | action | Behaviour | `=false` | Simple |
+| `Size` | number | Style | `=15` | Simple |
+
+**Outputs**
+
+| Output | Initial value |
+| --- | --- |
+| `Value` | `""` |
+| `Format` | `""` |
+| `ScanCount` | `0` |
+
+**Events:** `OnScan`.
+
+- QR codes and Data Matrix need a browser with a built-in barcode reader (Chrome on Android). Elsewhere the scanner reads EAN-13/8, Code 128, Code 39 and ITF itself. `Continuous` keeps the camera open for stock counts: OnScan runs for each code (the same code again after 2 seconds). The camera needs HTTPS (see the administrator guide on phones on a LAN).
+
+### Scan input
+
+A text field for codes: a hardware (keyboard) scanner fills it and runs OnScan; the camera button scans with the camera.
+
+Type: `ScanInput` · default size 280 x 48 · main property: `OnScan` · also has `DisplayMode`
+
+| Property | Shown as | Kind | Group | Default | Level |
+| --- | --- | --- | --- | --- | --- |
+| `Default` |  | text | Content | `=""` | Simple |
+| `Placeholder` |  | text | Content | `="Scan or type a code"` | Simple |
+| `ShowCamera` | Camera button | boolean | Behaviour | `=true` | Simple |
+| `Formats` |  | text | Behaviour | `="All"` | Simple |
+| `OnScan` |  | action | Behaviour | `=false` | Simple |
+| `OnChange` |  | action | Behaviour | `=false` | Simple |
+| `Size` |  | number | Style | `=15` | Simple |
+
+**Outputs**
+
+| Output | Initial value |
+| --- | --- |
+| `Value` | `""` |
+| `ScanCount` | `0` |
+
+**Events:** `OnScan`, `OnChange`.
+
+- A burst of keys ending with Enter, faster than a person types, counts as a scan: Value becomes the code and OnScan runs. Typing by hand runs OnChange (and OnScan when you press Enter).
+
+### Print button
+
+Prints a record with a print template: the PDF is made on the server and opens in a new tab (downloaded on a phone).
+
+Type: `PrintButton` · default size 120 x 40 · main property: `Template` · also has `DisplayMode`
+
+| Property | Kind | Group | Default | Level |
+| --- | --- | --- | --- | --- |
+| `Text` | text | Content | `="Print"` | Simple |
+| `Template` | text | Data | `=""` | Simple |
+| `Record` | record | Data | `=Blank()` | Advanced |
+| `OnSelect` | action | Behaviour | `=false` | Simple |
+| `Size` | number | Style | `=14` | Simple |
+| `Radius` | number | Style | `=8` | Simple |
+
+**Events:** `OnSelect`.
+
 ## Display
 
 ### Label
@@ -1850,3 +1920,34 @@ Type: `Sparkline` · default size 160 x 48 · main property: `Items`
 | `ShowDot` | boolean | Style | `=true` | Advanced |  |
 
 **Events:** none.
+
+### Visual
+
+Every chart kind of dashboards (bar, line, area, combo, pie, donut, scatter, heat map, gauge, bullet, KPI, funnel, Pareto, histogram, timeline) from a table, with tooltips, keyboard navigation, a legend that hides series and OnSelect with the clicked row.
+
+Type: `Visual` · default size 520 x 320 · main property: `Items`
+
+| Property | Kind | Group | Default | Level |
+| --- | --- | --- | --- | --- |
+| `Items` | table | Data | `=Table({Line: "Press 1", Good: 420, Scrap: 12}, {Line: "Press 2", Good: 380, Scrap: 30}, {Line: "Press 3", Good: 455, Scrap: 8}, {Line: "Press 4", Good: 300, Scrap: 41})` | Simple |
+| `Kind` | text | Style | `="Bar"` | Simple |
+| `CategoryField` | text | Data | `=""` | Simple |
+| `ValueFields` | text | Data | `=""` | Simple |
+| `Title` | text | Content | `=""` | Simple |
+| `Stack` | text | Style | `="None"` | Advanced |
+| `Horizontal` | boolean | Style | `=false` | Advanced |
+| `NumberFormat` | text | Style | `="Number"` | Advanced |
+| `Target` | any | Data | `=Blank()` | Advanced |
+| `Min` | any | Data | `=Blank()` | Advanced |
+| `Max` | any | Data | `=Blank()` | Advanced |
+| `ShowLegend` | boolean | Style | `=true` | Simple |
+| `ShowGrid` | boolean | Style | `=true` | Advanced |
+| `OnSelect` | action | Behaviour | `=false` | Simple |
+
+**Outputs**
+
+| Output | Initial value |
+| --- | --- |
+| `Selected` | blank |
+
+**Events:** `OnSelect`.

@@ -139,6 +139,11 @@ that the flow tables exist (`ab_flows`, `ab_flow_versions`, `ab_flow_runs`, `ab_
 changed: tables keep final deletes until a maker turns their recycle bin on (then `enableRecycleSql` adds the columns and
 rebuilds the partial indexes of that table). A server of version 9 refuses a version 10 schema (downgrade guard).
 
+**10 to 11, print templates** (P2 package B; independent environment step `upgradeEnvironmentTo11Print`,
+`server/core/print/ddl.ts`): `ab_print_templates`, `ab_print_template_versions`, `ab_print_runs`, `ab_print_files` and
+`ab_print_settings` come from `environmentDdl`; the step checks they exist. Nothing existing changes. See
+[pdf.md](pdf.md#schema-version-11-independent-step).
+
 ## Types and conventions
 
 | Kind of value | PostgreSQL type | Notes |
@@ -432,6 +437,16 @@ created on first use). Losing the key makes stored secrets unreadable; there is 
 | `size_bytes` | `bigint NOT NULL` | |
 | `created_by` | `text` | |
 | `created_on` | `timestamptz NOT NULL` | index `ab_ix_attachments_created` (orphan sweep) |
+
+### Print templates (P2 package B, version 11)
+
+| Table | Key columns | Notes |
+| --- | --- | --- |
+| `ab_print_templates` | `id`, `name` (unique, case-insensitive), `kind` (`pdf`, `docx`), `table_name`, `doc` jsonb (draft), `published` jsonb, `version`, `run_as` jsonb, `docx` bytea, `docx_name`, `built_in`, `owner_id`, `solution_id`, `created_*`, `modified_*` | The draft and the published document |
+| `ab_print_template_versions` | (`template_id`, `version`), `doc`, `docx`, `saved_by`, `saved_on`, `note` | Every publish |
+| `ab_print_runs` | `id`, `template_id`, `version`, `kind` (`single`, `preview`, `bulk`), `status`, `user_id`, `run_as`, `record_ids`, `pages`, `bytes`, `ms`, `warnings`, `error`, `progress`, `file_token`, `source`, `started_on`, `finished_on` | The generation log (90 days) |
+| `ab_print_files` | `token`, `storage_key`, `file_name`, `mime`, `size_bytes`, `sha256`, `pages`, `state` (`pending`, `ready`, `failed`), `run_id`, `created_by`, `created_on`, `expires_on` | Generated files (24 hours); bytes in the attachment store |
+| `ab_print_settings` | `k`, `v` jsonb | `settings`: letterhead, grouping, date format, currency, time zone, limits |
 
 ### `ab_counters`
 

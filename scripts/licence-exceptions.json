@@ -1,1 +1,4 @@
-{ "exceptions": [] }
+{ "exceptions": [
+  { "name": "png-js", "versions": "2.0.0", "reason": "PNG decoder used by pdfkit (P2 package B, print templates). package.json declares no licence, but the LICENSE file shipped in the package is the plain MIT licence (Copyright (c) 2017 Devon Govett), same author and licence as pdfkit and fontkit; read 2026-11-19. Pinned to 2.0.0 so a new version is checked again.",
+    "approvedBy": "P2 package B (read by the implementing agent; owner to confirm at phase close)" }
+] }

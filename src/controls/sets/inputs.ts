@@ -24,6 +24,7 @@ import { PinInput } from '../inputs/PinInput'
 import { Form } from '../inputs/Form'
 import { Timer } from '../inputs/Timer'
 import { PersonPicker, TagInput } from '../display/collab'
+import { BarcodeScanner, ScanInput } from '../inputs/Scan'
 
 /** Insert-pane order (SPEC2 section 3, Inputs agent). */
 export const inputControls: ControlType[] = [
@@ -53,4 +54,7 @@ export const inputControls: ControlType[] = [
   PinInput,
   Form,
   Timer,
+  // P2-A phone: scanning
+  BarcodeScanner,
+  ScanInput,
 ]

@@ -127,6 +127,17 @@ function main() {
     else if (c.status !== 'allowed') devOther.push(`${id}: ${c.expression} (${c.reason})`)
   }
 
+  // P2-B: bundled font files (not npm packages) must sit next to an SIL Open Font License 1.1 text. OFL is accepted for
+  // fonts only (it allows embedding in documents and bundling with software; the fonts may not be sold on their own)
+  const fontDir = join(ROOT, 'server', 'core', 'print', 'fonts')
+  if (existsSync(fontDir)) {
+    const files = readdirSync(fontDir)
+    const ofl = files.filter((f) => /^OFL.*\.txt$/.test(f)).some((f) => /SIL OPEN FONT LICENSE Version 1\.1/i.test(readFileSync(join(fontDir, f), 'utf8')))
+    const fonts = files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f))
+    if (fonts.length && !ofl) failures.push(`server/core/print/fonts: ${fonts.length} font file(s) without an SIL Open Font License 1.1 text next to them`)
+    else if (fonts.length) notes.push(`server/core/print/fonts: ${fonts.length} font files under the SIL Open Font License 1.1 (fonts only; texts bundled)`)
+  }
+
   for (const e of exceptions) if (!usedExceptions.has(e)) notes.push(`exception for ${e.name} ${e.versions} is not used by any production package; remove it`)
 
   console.log(`Licence check: ${prod.packages.length} production packages (${ALLOWED.length} allowed licences), ${devOnly.length} dev-only packages.`)

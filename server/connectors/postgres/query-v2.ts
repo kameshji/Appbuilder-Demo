@@ -15,7 +15,8 @@
  */
 import type { ColumnDef, ColumnType, TableDef } from '../../../src/platform/contracts.ts'
 import type { Condition } from '../../../src/platform/http.ts'
-import type { CompareOpV2, ConditionV2, MeasureV2, NumExprV2, QueryPlan, SortKeyV2 } from '../../../src/platform/query.ts'
+import type { BucketV2, CompareOpV2, ConditionV2, MeasureV2, NumExprV2, QueryPlan, SortKeyV2 } from '../../../src/platform/query.ts'
+import { bucketKind } from '../../../src/platform/query.ts'
 import { decodeCursor, CursorError, type DecodedCursor } from '../../../src/fx/query/cursor.ts'
 import { HttpError } from '../../core/contracts.ts'
 import { Params, allColumns, buildWhere, fold, kindOf, naturalTerms, quoteId, sortKeyExpr, tableId } from './sql.ts'
@@ -446,6 +447,10 @@ export class V2Builder {
 
   measureSql(m: MeasureV2, ref: (c: ColumnDef) => string): string {
     if (m.fn === 'count') return m.filter ? `(count(*) FILTER (WHERE ${this.cond(m.filter)}))::int` : 'count(*)::int'
+    if (m.fn === 'countDistinct') {
+      const c = this.cols.get(m.col!)
+      return `(count(DISTINCT ${kindOf(c.type) === 'text' ? fold(this.d, ref(c)) : ref(c)}))::int`
+    }
     const v = m.expr !== undefined ? this.expr(m.expr) : ref(this.cols.get(m.col!))
     switch (m.fn) {
       case 'sum': return `(COALESCE(sum(${v}), 0))::double precision`
@@ -453,6 +458,108 @@ export class V2Builder {
       case 'min': return `(COALESCE(min(${v}), 0))::double precision`
       default: return `(COALESCE(max(${v}), 0))::double precision`
     }
+  }
+
+  /**
+   * P2-C date bucket of a date / datetime column (docs/dev/query-v2.md 6b): the bucket's first calendar day as a SQL
+   * date, or the weekday (1 Monday .. 7 Sunday) / hour as an int. Datetime columns take their calendar date in the
+   * bucket's time zone. Every number is validated (checkPlan) before it is written into the statement.
+   */
+  bucketSql(b: BucketV2, ref?: string): string {
+    const col = this.cols.get(b.col)
+    const q = ref ?? quoteId(col.name)
+    const local = kindOf(col.type) === 'datetime' ? `(${q} AT TIME ZONE ${this.p.add(b.timeZone ?? 'UTC', 'text')})` : null
+    const d = local ? `(${local})::date` : `${q}`
+    const fy = Math.trunc(b.fiscalYearStart ?? 4)
+    if (!Number.isInteger(fy) || fy < 1 || fy > 12) bad('fiscalYearStart is a month, 1 to 12')
+    const shift = `make_interval(months => ${fy - 1})`
+    switch (b.unit) {
+      case 'day': return d
+      case 'week': return b.weekStart === 7 ? `(${d} - extract(dow FROM ${d})::int)` : `(${d} - (extract(isodow FROM ${d})::int - 1))`
+      case 'month': return `(date_trunc('month', ${d}))::date`
+      case 'quarter': return `(date_trunc('quarter', ${d}))::date`
+      case 'year': return `(date_trunc('year', ${d}))::date`
+      case 'fiscalYear': return `(date_trunc('year', ${d} - ${shift}) + ${shift})::date`
+      case 'fiscalQuarter': return `(date_trunc('quarter', ${d} - ${shift}) + ${shift})::date`
+      case 'weekday': return `(extract(isodow FROM ${d}))::int`
+      case 'hour': return local ? `(extract(hour FROM ${local}))::int` : bad('Hour buckets need a date and time column')
+    }
+  }
+
+  /** a pseudo column for a bucket output (sort keys and value conversion) */
+  bucketCol(b: BucketV2): ColumnDef {
+    return { name: b.name, displayName: b.name, type: bucketKind(b.unit) === 'date' ? 'date' : 'number' }
+  }
+
+  /**
+   * P2-C groupOrder 'key': ONE pass `GROUP BY` the group keys (text folded, buckets computed) with the measures; text
+   * group values are min(col COLLATE "C") (the smallest spelling); the order is aggregate.sort, then every group key
+   * ascending (normalised, a NULL group first among ties). No first-row lookup, so no join back to the rows. `top`
+   * keeps the first n groups; `top.others` adds one row with the measures over every other row (NOT EXISTS against the
+   * kept keys, NULL-safe), only when there is such a row.
+   */
+  aggregateByKey(plan: QueryPlan, o: V2Options, W: string): V2Statement {
+    const a = plan.aggregate!
+    const t = tableId(this.d, this.def)
+    const sort = plan.sort ?? []
+    const qc = (c: ColumnDef) => quoteId(c.name)
+    // the rows the measures run over: the table (no alias: row filters' correlated semi-joins name it), or the taken subset
+    const srcFrom = plan.take ? `(SELECT * FROM ${t} WHERE ${W} ORDER BY ${this.orderTerms(sort, plan.take.from === 'end').join(', ')} LIMIT ${plan.take.n}) AS s` : `${t}`
+    const srcWhere = plan.take ? 'TRUE' : W
+    interface G { out: string; key: string; value: string; col: ColumnDef; text: boolean }
+    const groups: G[] = []
+    for (const g of a.groupBy) {
+      const c = this.cols.get(g)
+      const text = kindOf(c.type) === 'text'
+      groups.push({ out: a.as?.[c.name] ?? c.name, key: text ? fold(this.d, qc(c)) : qc(c), value: text ? `min(${qc(c)} COLLATE "C")` : '', col: c, text })
+    }
+    for (const b of a.buckets ?? []) groups.push({ out: b.name, key: this.bucketSql(b), value: '', col: this.bucketCol(b), text: false })
+    const measures = a.measures.map((m, i) => `${this.measureSql(m, qc)} AS "__m${i}"`)
+    const inner = [
+      ...groups.map((g, i) => `${g.key} AS "__g${i}"`),
+      ...groups.flatMap((g, i) => (g.text ? [`${g.value} AS "__v${i}"`] : [])),
+      ...(measures.length ? measures : [groups.length ? '1 AS "__one"' : 'count(*) AS "__one"']),
+    ]
+    const gsql = `SELECT ${inner.join(', ')} FROM ${srcFrom} WHERE ${srcWhere}${groups.length ? ` GROUP BY ${groups.map((_, i) => i + 1).join(', ')}` : ''}`
+    const columns: V2OutColumn[] = []
+    const outSel: string[] = []
+    groups.forEach((g, i) => {
+      outSel.push(`${g.text ? `"__v${i}"` : `"__g${i}"`} AS ${quoteId(g.out)}`)
+      columns.push({ name: g.out, type: g.col.type })
+    })
+    a.measures.forEach((m, i) => {
+      outSel.push(`"__m${i}" AS ${quoteId(m.name)}`)
+      columns.push({ name: m.name, type: m.fn === 'count' || m.fn === 'countDistinct' ? 'number' : 'decimal' })
+    })
+    const outKey = (name: string): string => {
+      const gi = groups.findIndex((g) => g.out === name)
+      if (gi >= 0) return this.key(groups[gi]!.col, groups[gi]!.text ? `"__v${gi}"` : `"__g${gi}"`)
+      return `COALESCE("__m${a.measures.findIndex((m) => m.name === name)}", 0)`
+    }
+    const order = [
+      ...(a.sort ?? []).map((k) => `${outKey(k.col)} ${k.dir === 'asc' ? 'ASC' : 'DESC'}`),
+      ...groups.flatMap((g, i) => [`${this.key(g.col, g.text ? `"__v${i}"` : `"__g${i}"`)} ASC`, `("__g${i}" IS NOT NULL) ASC`]),
+    ]
+    const orderSql = order.length ? ` ORDER BY ${order.join(', ')}` : ''
+    const limit = a.top ? Math.min(a.top.n, o.maxGroups + 1) : o.maxGroups + 1
+    if (!a.top || a.top.others === undefined) {
+      const sql = `WITH "__g" AS (${gsql}) SELECT ${outSel.join(', ')} FROM "__g"${orderSql} LIMIT ${limit}`
+      return { sql, params: this.p.list, kind: 'aggregate', columns: this.selectOut(plan, columns), withCount: false, cursorKeys: 0, unpagedLimit: o.maxGroups }
+    }
+    // top n + others: the kept groups in order, then one row over every other input row
+    const g0 = groups[0]!
+    const label = this.p.add(a.top.others, 'text')
+    const keyOnRow = g0.key
+    const othersMeasures = a.measures.map((m) => this.measureSql(m, qc))
+    const othersSel = [`${label} AS ${quoteId(g0.out)}`, ...othersMeasures.map((x, i) => `${x} AS ${quoteId(a.measures[i]!.name)}`), '1 AS "__o"', '0::bigint AS "__r"']
+    const keptSel = [...outSel, '0 AS "__o"', `row_number() OVER (${orderSql.trim()}) AS "__r"`]
+    const sql = `WITH "__g" AS (${gsql}), "__k" AS (SELECT * FROM "__g"${orderSql} LIMIT ${limit})
+      SELECT ${[quoteId(g0.out), ...a.measures.map((m) => quoteId(m.name))].join(', ')} FROM (
+        SELECT ${keptSel.join(', ')} FROM "__k"
+        UNION ALL
+        SELECT ${othersSel.join(', ')} FROM ${srcFrom} WHERE ${srcWhere} AND NOT EXISTS (SELECT 1 FROM "__k" WHERE "__k"."__g0" IS NOT DISTINCT FROM ${keyOnRow}) HAVING count(*) > 0
+      ) AS "__x" ORDER BY "__o", "__r"`
+    return { sql, params: this.p.list, kind: 'aggregate', columns: this.selectOut(plan, columns), withCount: false, cursorKeys: 0, unpagedLimit: o.maxGroups + 1 }
   }
 
   aggregate(plan: QueryPlan, o: V2Options): V2Statement {
@@ -465,10 +572,12 @@ export class V2Builder {
     let src = `${t} WHERE ${W}`
     if (plan.take) src = `(SELECT * FROM ${t} WHERE ${W} ORDER BY ${this.orderTerms(sort, plan.take.from === 'end').join(', ')} LIMIT ${plan.take.n}) AS s`
     const columns: V2OutColumn[] = []
-    if (a.groupBy.length && !plan.take && !sort.length && this.hasCreatedOn && this.hasId) return this.aggregateNatural(plan, o, W, columns)
+    if (a.groupOrder === 'key') return this.aggregateByKey(plan, o, W)
+    const buckets = a.buckets ?? []
+    if (a.groupBy.length && !buckets.length && !plan.take && !sort.length && this.hasCreatedOn && this.hasId) return this.aggregateNatural(plan, o, W, columns)
     const measures = a.measures.map((m) => `${this.measureSql(m, qc)} AS ${quoteId(m.name)}`)
-    if (!a.groupBy.length) {
-      for (const m of a.measures) columns.push({ name: m.name, type: m.fn === 'count' ? 'number' : 'decimal' })
+    if (!a.groupBy.length && !buckets.length) {
+      for (const m of a.measures) columns.push({ name: m.name, type: m.fn === 'count' || m.fn === 'countDistinct' ? 'number' : 'decimal' })
       const sql = `SELECT ${measures.length ? measures.join(', ') : '1 AS "__one"'} FROM ${src}`
       return { sql, params: this.p.list, kind: 'aggregate', columns: this.selectOut(plan, columns), withCount: false, cursorKeys: 0 }
     }
@@ -482,20 +591,27 @@ export class V2Builder {
       : `SELECT *, row_number() OVER (ORDER BY ${order}) AS "__rn" FROM ${t} WHERE ${W}`
     void need
     const gkeys = groupCols.map((c, i) => `${kindOf(c.type) === 'text' ? fold(this.d, qc(c)) : qc(c)} AS "__g${i}"`)
-    const gsql = `SELECT ${[...gkeys, 'min("__rn") AS "__first"', ...measures].join(', ')} FROM s GROUP BY ${groupCols.map((_, i) => i + 1).join(', ')}`
+    buckets.forEach((b, i) => gkeys.push(`${this.bucketSql(b)} AS "__b${i}"`))
+    const gsql = `SELECT ${[...gkeys, 'min("__rn") AS "__first"', ...measures].join(', ')} FROM s GROUP BY ${gkeys.map((_, i) => i + 1).join(', ')}`
     const outSel: string[] = []
     groupCols.forEach((c) => {
       const name = a.as?.[c.name] ?? c.name
       outSel.push(`f.${qc(c)} AS ${quoteId(name)}`)
       columns.push({ name, type: c.type })
     })
+    buckets.forEach((b, i) => {
+      outSel.push(`g."__b${i}" AS ${quoteId(b.name)}`)
+      columns.push({ name: b.name, type: this.bucketCol(b).type })
+    })
     for (const m of a.measures) {
       outSel.push(`g.${quoteId(m.name)}`)
-      columns.push({ name: m.name, type: m.fn === 'count' ? 'number' : 'decimal' })
+      columns.push({ name: m.name, type: m.fn === 'count' || m.fn === 'countDistinct' ? 'number' : 'decimal' })
     }
     const outKind = (name: string): string => {
       const gi = groupCols.findIndex((c) => (a.as?.[c.name] ?? c.name) === name)
       if (gi >= 0) return this.key(groupCols[gi]!, `f.${qc(groupCols[gi]!)}`)
+      const bi = buckets.findIndex((b) => b.name === name)
+      if (bi >= 0) return this.key(this.bucketCol(buckets[bi]!), `g."__b${bi}"`)
       return `COALESCE(g.${quoteId(name)}, 0)`
     }
     const aggOrder = [...(a.sort ?? []).map((k) => `${outKind(k.col)} ${k.dir === 'asc' ? 'ASC' : 'DESC'}`), 'g."__first" ASC'].join(', ')
@@ -542,7 +658,7 @@ export class V2Builder {
     })
     a.measures.forEach((m, i) => {
       outSel.push(`f."__m${i}" AS ${quoteId(m.name)}`)
-      columns.push({ name: m.name, type: m.fn === 'count' ? 'number' : 'decimal' })
+      columns.push({ name: m.name, type: m.fn === 'count' || m.fn === 'countDistinct' ? 'number' : 'decimal' })
     })
     const outKind = (name: string): string => {
       const gi = groupCols.findIndex((c) => (a.as?.[c.name] ?? c.name) === name)

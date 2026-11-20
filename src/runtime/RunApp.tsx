@@ -13,6 +13,8 @@ import { openChannel, type Channel } from './channel'
 import { errorMessage } from './data'
 import { AppLiveBar } from './presence'
 import { UndoDelete } from './UndoDelete'
+import { registerOfflineApp } from '@/phone/offline'
+import { setAppManifest } from '@/phone/pwa'
 
 /**
  * `#run-<id>`: the player. Without a Studio it runs the saved app. When the Studio of the same app
@@ -48,6 +50,13 @@ function Player({ appId, embedded, onBack }: { appId: string; embedded: boolean;
   const loadedId = useAppStore((s) => s.appId)
   const exited = useAppStore((s) => s.runtime.exited)
   const [connected, setConnected] = useState(false)
+  // P2-A "Works offline (entry)": the app's tables use the offline outbox and read cache while it is open
+  const offlineEntry = useAppStore((s) => loadState === 'ready' && s.appId === appId && !!s.app.offline?.entry)
+  const sources = useAppStore((s) => s.app.dataSources)
+  useEffect(() => (offlineEntry ? registerOfflineApp(appId, sources ?? []) : undefined), [offlineEntry, appId, sources])
+  useEffect(() => {
+    if (!embedded) setAppManifest(appId)
+  }, [embedded, appId])
   const [denied, setDenied] = useState(false)
   const channel = useRef<Channel | null>(null)
 

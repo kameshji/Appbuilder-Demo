@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Boxes, Cable, LayoutGrid, Plus, Rocket, Save, ShieldCheck, Table2, Trash2, Upload, Workflow, X, type LucideIcon } from 'lucide-react'
+import { ArrowLeft, Boxes, Cable, LayoutGrid, Plus, Printer, Rocket, Save, ShieldCheck, Table2, Trash2, Upload, Workflow, X, type LucideIcon } from 'lucide-react'
 import { flowsApi } from '@/flows/api'
+import { printApi } from '@/print/api'
 import { platform, usePlatform, type SolutionComponentKind, type SolutionDef } from '@/platform'
 import { go } from '@/router'
 import { Button } from '@/components/ui/button'
@@ -20,6 +21,8 @@ const KINDS: { kind: SolutionComponentKind; label: string; icon: LucideIcon; rou
   { kind: 'connection', label: 'Connection references', icon: Cable },
   // P1 flows (server mode only)
   { kind: 'flow', label: 'Flows', icon: Workflow },
+  // P2-B print templates (server mode only)
+  { kind: 'printTemplate', label: 'Print templates', icon: Printer },
 ]
 
 /** flows of the environment for the component picker (server mode) */
@@ -33,14 +36,27 @@ function useFlowNames(server: boolean): { id: string; name: string }[] {
   return list
 }
 
+/** print templates for the component picker (server mode) */
+let printNames: { id: string; name: string }[] = []
+function usePrintNames(server: boolean): { id: string; name: string }[] {
+  const [list, setList] = useState(printNames)
+  useEffect(() => {
+    if (!server) return
+    printApi.list().then((r) => { printNames = r.items.map((t) => ({ id: t.id, name: t.name })); setList(printNames) }).catch(() => {})
+  }, [server])
+  return list
+}
+
 function useComponentCatalog() {
   const apps = usePlatform((s) => s.apps)
   const tables = usePlatform((s) => s.tables)
   const roles = usePlatform((s) => s.roles)
   const connections = usePlatform((s) => s.connections)
   const flows = useFlowNames(useCaps().server)
+  const prints = usePrintNames(useCaps().server)
   const items = (kind: SolutionComponentKind): { id: string; name: string }[] =>
     kind === 'flow' ? flows
+      : kind === 'printTemplate' ? prints
       : kind === 'app' ? apps.map((a) => ({ id: a.id, name: a.name }))
       : kind === 'table' ? tables.map((t) => ({ id: t.id, name: t.displayName }))
         : kind === 'role' ? roles.map((r) => ({ id: r.id, name: r.name }))
@@ -245,7 +261,7 @@ export function SolutionDetail({ solutionId }: { solutionId: string }) {
         </Panel>
 
         <div className="grid gap-4" data-testid="solution-components">
-          {KINDS.filter((k) => k.kind !== 'flow' || caps.server).map((k) => {
+          {KINDS.filter((k) => (k.kind !== 'flow' && k.kind !== 'printTemplate') || caps.server).map((k) => {
             const comps = solution.components.filter((c) => c.kind === k.kind)
             return (
               <Panel key={k.kind} data-testid={`solution-kind-${k.kind}`}>

@@ -90,6 +90,21 @@ if (missing.length > 0) {
     }
   }
 
+  // P2-B: fonts bundled with the print engine (not npm packages): SIL Open Font License 1.1, texts next to the files
+  const fontDir = join(ROOT, 'server', 'core', 'print', 'fonts')
+  let fontFiles = []
+  try { fontFiles = readdirSync(fontDir).sort() } catch { fontFiles = [] }
+  if (fontFiles.length) {
+    out.push('## Bundled fonts', '', 'The print engine (server/core/print/fonts) embeds subsets of these fonts in the PDFs it makes, which the SIL Open Font License 1.1 allows:', '')
+    for (const f of fontFiles.filter((x) => x.endsWith('.ttf'))) out.push(`- ${f}`)
+    out.push('')
+    for (const f of fontFiles.filter((x) => /^OFL.*\.txt$/.test(x))) {
+      const text = readFileSync(join(fontDir, f), 'utf8').replace(/\r\n?/g, '\n').trimEnd()
+      const fence = fenceFor(text)
+      out.push(`### ${f}`, '', `${fence}text`, text, fence, '')
+    }
+  }
+
   writeFileSync(OUT, out.join('\n') + '\n')
   console.log(`${entries.length} production packages, ${review.length} need review. Wrote ${OUT}`)
 }

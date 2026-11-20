@@ -51,6 +51,8 @@ export const BUILTIN_SCHEDULES: BuiltinSchedule[] = [
   { id: 'sched_collab_sweep', name: 'Collaboration orphan sweep', description: 'Removes comments, activities, follows, tags and file links about records deleted outside Appbuilder (and about tables that are gone).', cron: '47 3 * * *', jobType: 'collab.orphan-sweep', payload: {}, enabled: true },
   { id: 'sched_rollup_reconcile', name: 'Rollup reconcile', description: 'Recomputes every rollup column from its rows, repairing anything a missed or failed update left behind.', cron: '7 * * * *', jobType: ROLLUP_RECONCILE_JOB, payload: {}, enabled: true },
   // recycle bin (docs/dev/recycle-bin.md): the job type is registered by services.ts (registerRecycleJobs)
+  // P2-B print templates: generated files older than 24 hours (the job type is registered by print/service.ts)
+  { id: 'sched_print_sweep', name: 'Generated documents cleanup', description: 'Deletes generated PDF, Word and zip files (print templates) older than 24 hours that no record kept, and generation log entries older than 90 days.', cron: '43 * * * *', jobType: 'print.sweep', payload: {}, enabled: true },
   { id: 'sched_recycle_purge', name: 'Recycle bin purge', description: 'Deletes for good the rows whose time in a table\'s recycle bin has run out, with their attachment files.', cron: '23 * * * *', jobType: 'data.recycle-purge', payload: { batches: 50 }, enabled: true },
 ]
 

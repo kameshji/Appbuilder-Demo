@@ -141,6 +141,10 @@ network except the sandbox database, and must not depend on the clock or random 
 4. Our own source (`src/`, `server/`, `scripts/`, test files excluded) imports from a path containing `/ee/` or `/enterprise/`, or from
    `@univerjs-pro`.
 
+5. Font files bundled in `server/core/print/fonts/` (P2-B print templates; not npm packages) have no SIL Open Font License 1.1
+   text next to them. OFL 1.1 is accepted **for fonts only**: it allows embedding in documents and bundling with software
+   (the fonts may not be sold on their own); `npm run notices` lists them with the licence text.
+
 Development dependencies are **reported, never failed**, because they are not shipped. AGPL dev tools and do-not-embed names get a
 warning: keep them separate, unmodified tools and never bundle or import them into the product.
 

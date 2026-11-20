@@ -32,6 +32,7 @@ Every step also takes `id`, `name`, `description`, `runAfter` (`[{ step, when: [
   - [Delay](#delay)
   - [Notify](#notify)
   - [Send an email](#send-an-email)
+  - [Generate a document](#generate-a-document)
   - [Connector action](#connector-action)
   - [HTTP request](#http-request)
   - [Run a child flow](#run-a-child-flow)
@@ -356,6 +357,28 @@ Every step also takes `id`, `name`, `description`, `runAfter` (`[{ step, when: [
 
 ```json
 {"id":"del","name":"RemoveDraft","kind":"data.delete","table":"Drafts","rowId":"Steps.Draft.Output.id"}
+```
+
+### Generate a document
+
+`kind: "document.generate"` (Data). Makes a PDF (or Word file) from a print template as the run-as identity: for a record, or from the template's own query. Keep it as a file (attach it to an email with {fileToken: Steps.<name>.Output.FileToken}), put it in a file column of the record, or store it in the record's Documents.
+
+| Field | Type | Required | What it is |
+| --- | --- | --- | --- |
+| `template` | text | yes | The print template (name or id); its published version is used. |
+| `record` | Fx |  | The record id (templates with a record source), e.g. Trigger.Record.id. |
+| `output` | file \| record \| documents |  | file (default): only the generated file; record: into the file column `column` of the record; documents: a Documents entry about the record. |
+| `column` | text |  | output record: the file column. |
+| `numberSequence` | text |  | output documents: the number sequence that numbers the document. |
+
+**Output:** { FileToken, FileName, Pages, Warnings, AttachmentId?, DocumentId? }
+
+**Guarantee:** At least once: a retry makes the same file again under the same token (key run:step); a retry after the record was changed adds the file again.
+
+**Default retry:** none
+
+```json
+{"id":"pdf","name":"DailyPdf","kind":"document.generate","template":"Daily production and OEE summary","output":"file"}
 ```
 
 ### Start and wait for an approval

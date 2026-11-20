@@ -152,12 +152,13 @@ export type NumExprV2 =
  */
 export interface SortKeyV2 { col: string; dir: 'asc' | 'desc' }
 
-export type MeasureFn = 'sum' | 'avg' | 'min' | 'max' | 'count'
+export type MeasureFn = 'sum' | 'avg' | 'min' | 'max' | 'count' | 'countDistinct'
 
 /**
  * An aggregate measure. sum/avg/min/max: over the non-NULL values of a number column of the group.
  * Empty input (no non-NULL value): sum 0, min 0, max 0, avg NULL. count: number of rows of the group (with
- * `filter`: rows where the filter is true; `col` unused).
+ * `filter`: rows where the filter is true; `col` unused). countDistinct (P2-C): the number of different non-NULL values
+ * of `col` (any kind but `other`) in the group, by the group-key rules (text ignoring case, dates by value).
  */
 export interface MeasureV2 {
   name: string
@@ -171,6 +172,34 @@ export interface MeasureV2 {
   expr?: NumExprV2
   filter?: ConditionV2
 }
+
+/**
+ * P2-C date bucketing: a computed group key over a date or datetime column (docs/dev/query-v2.md section 6b).
+ * Date units give the first calendar day of the bucket (output kind `date`): day, week (starting `weekStart`), month,
+ * quarter, year, fiscalQuarter and fiscalYear (the year starting on the 1st of `fiscalYearStart`). `weekday` (1 Monday
+ * .. 7 Sunday) and `hour` (0-23, datetime columns only) are numbers. A datetime column is bucketed by its calendar date
+ * (and hour) in `timeZone` (an IANA name, default UTC); a date column is a calendar date already. NULL cells form the
+ * NULL group.
+ */
+export type DateBucketUnit = 'day' | 'week' | 'month' | 'quarter' | 'year' | 'fiscalQuarter' | 'fiscalYear' | 'weekday' | 'hour'
+export const DATE_BUCKET_UNITS: DateBucketUnit[] = ['day', 'week', 'month', 'quarter', 'year', 'fiscalQuarter', 'fiscalYear', 'weekday', 'hour']
+
+export interface BucketV2 {
+  /** output column name (must not clash with group columns or measures) */
+  name: string
+  /** a date or datetime column */
+  col: string
+  unit: DateBucketUnit
+  /** first month of the fiscal year, 1-12 (fiscalQuarter, fiscalYear); default 4 (April, India) */
+  fiscalYearStart?: number
+  /** first day of a week: 1 Monday (ISO, default) or 7 Sunday */
+  weekStart?: 1 | 7
+  /** IANA time zone for datetime columns (default "UTC") */
+  timeZone?: string
+}
+
+/** output kind of a bucket */
+export const bucketKind = (unit: DateBucketUnit): 'date' | 'number' => (unit === 'weekday' || unit === 'hour' ? 'number' : 'date')
 
 export interface AggregateV2 {
   /**
@@ -188,6 +217,21 @@ export interface AggregateV2 {
   sort?: SortKeyV2[]
   /** rename of a single group column in the output (Distinct produces `Value`) */
   as?: Record<string, string>
+  /** P2-C: computed group keys (date bucketing), grouped after the groupBy columns */
+  buckets?: BucketV2[]
+  /**
+   * P2-C: 'first' (default) is the formula engine's rule above (group values and order from each group's first row).
+   * 'key': groups are ordered by `sort`, then by every group key ascending (normalised as in section 5, a NULL group
+   * before the group whose key it ties with); a text group's value is its smallest spelling in code point order. Dashboards
+   * use 'key': it needs no first-row lookup, so the database aggregates in one pass.
+   */
+  groupOrder?: 'first' | 'key'
+  /**
+   * P2-C: keep the first `n` output groups (after the order above). With `others`, one more row follows (only when some
+   * input row is not in those groups): the measures over every input row outside them, with `others` as the value of
+   * the single group column, which must be a text column. Exact for every measure (avg, countDistinct included).
+   */
+  top?: { n: number; others?: string }
 }
 
 /**

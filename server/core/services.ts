@@ -143,6 +143,8 @@ export type CoreServices = Services & {
   flows: Flows
   /** approvals (P1 package C): requests, routing, answers, delegation, escalation (approvals/service.ts); set by createApp */
   approvals?: import('./approvals/service.ts').Approvals
+  /** print templates (P2 package B): templates, generation, generated files (print/service.ts); set by createApp */
+  print?: import('./print/service.ts').PrintService
   connections: ReturnType<typeof createConnectionManager>
   /** test + connect + migrate the default store; persist=true seals the password into server.json */
   configureDatabase(settings: DatabaseSettings, password: string, opts: { createDatabase?: boolean; persist: boolean }): Promise<void>
@@ -258,7 +260,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   // flows (P1 package A): job types, the outbox consumer for table triggers, the wait sweeper
   const flows = createFlows({
     db: () => state.db, meta: getMeta, data: () => data, forUser: (u) => security.forUser(u), kernel,
-    notifications: () => services.notifications, actions: () => services.actions, log: (level, msg) => log(level, msg),
+    notifications: () => services.notifications, actions: () => services.actions, print: () => services.print, log: (level, msg) => log(level, msg),
   })
 
   /** every environment's conn_default points at the system database (its tables live in that environment's schema) */

@@ -796,6 +796,32 @@ A request someone may not see answers 404 like a missing one.
 **Request ids.** Every API answer has the header `X-Request-Id` (the client's `X-Request-Id` when well-formed, else a new
 one); error bodies carry it as `error.requestId`. The UI shows it as "Reference: ..." in error messages.
 
+## Print templates
+
+P2 package B (`server/core/print/routes.ts`; design in [pdf.md](pdf.md)). Types in `src/platform/print.ts`. Generation
+reads as the caller (or the template's service account); a record the caller cannot read answers 404.
+
+| Route | Level | Body / answer |
+| --- | --- | --- |
+| `GET /print/catalog` | user | `{ blocks, functions, builtins, limits, empty }` |
+| `GET /print/settings`, `PUT /print/settings` | user / administrator | `{ settings: PrintSettings }` |
+| `GET /print/templates?table=` | user (non-makers: published only) | `{ items: PrintTemplateInfo[] }` |
+| `POST /print/templates` | maker (design) | `{ name, description?, kind?, doc, runAs?, docxBase64?, docxFileName?, publish? }` -> `{ template }`; 422 with the path of the first problem |
+| `POST /print/builtins` | maker (design) | `{ key, table?, name?, publish? }` -> `{ template }` |
+| `GET /print/templates/:id` | user | `{ template: PrintTemplateFull }` (non-makers: the published document) |
+| `PUT /print/templates/:id` | owner, makers for built-ins, administrators (design) | `{ name?, description?, doc?, runAs?, docxBase64?, publish?, note? }` |
+| `DELETE /print/templates/:id`, `POST .../publish`, `GET .../versions`, `POST .../restore { version }`, `POST .../copy { name }` | maker (design, except versions) | |
+| `POST /print/templates/:id/preview` | maker | `{ recordId?, doc? }` -> the PDF; headers `X-Print-Pages`, `X-Print-Warnings` (URI-encoded JSON), `X-Print-Run`, `X-Print-Token` |
+| `GET /print/templates/:id/pdf?recordId=&download=1` | user | the published template's PDF (or .docx); header `X-Print-Token` |
+| `POST /print/generate` | user | `{ template, recordId?, token? }` -> `{ file: GeneratedFile }` (`token`, `fileName`, `mime`, `sizeBytes`, `url`, `pages`, `warnings`, `runId`) |
+| `POST /print/templates/:id/documents` | user | `{ recordId, numberSequence? }` -> `{ documentId, attachmentId, name, file }` |
+| `POST /print/bulk` | user | `{ template, recordIds, mode: zip \| merged }` -> `{ runId, jobId }` |
+| `GET /print/runs?templateId=`, `GET /print/runs/:id` | user (makers: all; others: their own) | `{ items: PrintRunInfo[] }`, `{ run }` |
+| `GET /print/files/:token?download=1` | the creator, administrators | the file |
+
+A `gen_...` token written into a file or image column (insert or update) becomes an attachment of that cell; another
+person's token is refused with 422. The email action's attachments accept `{ fileToken }`.
+
 ## Notifications (user)
 
 The signed-in user's in-app notifications (install-wide; usable without an environment unless noted). Items:

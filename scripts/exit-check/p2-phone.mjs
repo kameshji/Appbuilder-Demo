@@ -1,0 +1,570 @@
+#!/usr/bin/env node
+/**
+ * Phase 2 exit check 1 (docs/plan/p2-spec.md), as far as a sandbox can prove it: "a supervisor logs production from an
+ * Android phone browser on a plant Wi-Fi: opens the app from the home screen icon, scans a barcode or QR code, takes a
+ * photo, saves; a save made while the connection is down is kept and sent when it returns, with a visible status and no
+ * duplicate." DEVELOPER TOOL (sandbox values only), not part of the product. Re-runnable.
+ *
+ *   npx vite build    (the server serves dist/)
+ *   node scripts/exit-check/p2-phone.mjs
+ *
+ * What is real and what is emulated (say it in every report):
+ *  - The browser is headless Chrome with mobile emulation (Android Chrome user agent, touch, DPR 3, 360x800 and
+ *    412x915). It is NOT a real phone, NOT iOS Safari. docs/dev/phone-test-script.md is the manual script for real phones.
+ *  - The camera is Chrome's fake capture device playing a generated Y4M video that shows a Code 128 barcode
+ *    ("LOT-4711"): getUserMedia, the video element and frame grabbing are real. Headless Chrome on Linux has no
+ *    BarcodeDetector, so the scan goes through our own 1D decoder (src/phone/scan/decode1d.ts). QR codes need the
+ *    browser's BarcodeDetector and are NOT tested here.
+ *  - "Take photo" on a phone opens the native camera through <input capture>; here the file is handed to that input
+ *    (a generated 3000x2000 JPEG), then resized in the page (real canvas pipeline).
+ *  - The plant Wi-Fi is Chrome's network emulation: offline toggling, a slow-3G profile and a flapping connection.
+ *  - The home screen icon: the per-app manifest is fetched and checked and the app is opened at its start_url
+ *    (/?app=<id>); the installation prompt itself cannot be shown headless.
+ *
+ * Settings: EXIT_DB_* as the other exit checks (database appbuilder_exit_phone, dropped at the end unless KEEP=1),
+ * EXIT_PORT (5263), PUPPETEER_CORE, CHROME_PATH, SHOTS (folder for screenshots).
+ */
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import http from 'node:http'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import pg from 'pg'
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
+const E = process.env
+const DB = { host: E.EXIT_DB_HOST || '127.0.0.1', port: Number(E.EXIT_DB_PORT || 5433), user: E.EXIT_DB_USER || 'abdev', password: E.EXIT_DB_PASSWORD || 'abdev-sandbox-only', database: E.EXIT_DB_NAME || 'appbuilder_exit_phone' }
+const MAINT = E.EXIT_MAINT_DB || 'appbuilder_test'
+const PORT = Number(E.EXIT_PORT || 5263)
+const BASE = `http://127.0.0.1:${PORT}`
+const SHOTS = E.SHOTS || ''
+const ADMIN = { name: 'Sam Supervisor', email: 'sam@example.test', password: 'Exit-Example-Pass-2026' }
+if (!/^appbuilder_exit/.test(DB.database)) { console.error('The exit-check database name must start with appbuilder_exit (it is dropped).'); process.exit(2) }
+const DIST = path.join(root, 'dist')
+if (!fs.existsSync(path.join(DIST, 'index.html'))) { console.error('Build the app first (npx vite build).'); process.exit(2) }
+
+const { createApp } = await import(pathToFileURL(path.join(root, 'server/core/app.ts')).href)
+const { serveStatic } = await import(pathToFileURL(path.join(root, 'server/core/static.ts')).href)
+const { setQuiet } = await import(pathToFileURL(path.join(root, 'server/core/util.ts')).href).catch(() => ({ setQuiet: null }))
+const { default: puppeteer } = await import(pathToFileURL(path.join(E.PUPPETEER_CORE || '/tmp/pgcheck/node_modules/puppeteer-core', 'lib/puppeteer/puppeteer-core.js')).href)
+if (setQuiet) setQuiet(true)
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const t0 = Date.now()
+const log = (m) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)} s] ${m}`)
+const results = []
+const record = (name, ok, evidence = '') => { results.push({ name, ok, evidence }); log(`${ok ? 'PASS' : 'FAIL'} ${name}${evidence ? `: ${evidence}` : ''}`) }
+const check = (cond, name, evidence) => { record(name, !!cond, evidence); if (!cond) throw new Error(`check failed: ${name} ${evidence ?? ''}`) }
+
+async function maint(sql) { const c = new pg.Client({ ...DB, database: MAINT }); await c.connect(); try { await c.query(sql) } finally { await c.end() } }
+async function q(sql, params = []) { const c = new pg.Client(DB); await c.connect(); try { return (await c.query(sql, params)).rows } finally { await c.end() } }
+
+/* ------------------------------------------------------------------ server */
+
+const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'ab-exit-phone-'))
+let app = null
+let server = null
+async function start() {
+  app = await createApp({ env: {}, config: { workspaceDir: WORK, distDir: DIST }, printSetupCode: false, jobs: false })
+  server = http.createServer((req, res) => { app.handle(req, res).then((h) => { if (!h) serveStatic(DIST, req, res) }, () => { if (!res.headersSent) res.writeHead(500); res.end() }) })
+  server.on('upgrade', (req, socket, head) => { if (!app.handleUpgrade(req, socket, head)) socket.destroy() })
+  await new Promise((r) => server.listen(PORT, '127.0.0.1', r))
+}
+async function stop() {
+  if (server) { server.closeAllConnections?.(); await new Promise((r) => server.close(() => r())) }
+  if (app) await app.close()
+  server = null
+  app = null
+}
+let cookie = ''
+async function api(method, p, body, headers = {}) {
+  const res = await fetch(BASE + '/api/v1' + p, { method, headers: { 'X-Appbuilder': '1', 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}), ...headers }, body: body === undefined ? undefined : JSON.stringify(body) })
+  for (const c of res.headers.getSetCookie?.() ?? []) { const [pair] = c.split(';'); if (pair.startsWith('ab_session=')) cookie = pair }
+  const data = (res.headers.get('content-type') ?? '').includes('json') ? await res.json() : Buffer.from(await res.arrayBuffer())
+  return { status: res.status, data, headers: res.headers }
+}
+const must = (r, what) => { if (r.status < 200 || r.status > 299) throw new Error(`${what}: ${r.status} ${JSON.stringify(r.data).slice(0, 300)}`); return r.data }
+
+/* ------------------------------------------------------------------ the fake camera: a Code 128 barcode in a Y4M video */
+
+const C128 = ['212222', '222122', '222221', '121223', '121322', '131222', '122213', '122312', '132212', '221213', '221312', '231212', '112232', '122132', '122231', '113222', '123122', '123221', '223211', '221132', '221231', '213212', '223112', '312131', '311222', '321122', '321221', '312212', '322112', '322211', '212123', '212321', '232121', '111323', '131123', '131321', '112313', '132113', '132311', '211313', '231113', '231311', '112133', '112331', '132131', '113123', '113321', '133121', '313121', '211331', '231131', '213113', '213311', '213131', '311123', '311321', '331121', '312113', '312311', '332111', '314111', '221411', '431111', '111224', '111422', '121124', '121421', '141122', '141221', '112214', '112412', '122114', '122411', '142112', '142211', '241211', '221114', '413111', '241112', '134111', '111242', '121142', '121241', '114212', '124112', '124211', '411212', '421112', '421211', '212141', '214121', '412121', '111143', '111341', '131141', '114113', '114311', '411113', '411311', '113141', '114131', '311141', '411131', '211412', '211214', '211232']
+function code128Modules(text) {
+  const vals = [104, ...[...text].map((c) => c.charCodeAt(0) - 32)]
+  let s = vals[0]
+  for (let i = 1; i < vals.length; i++) s += vals[i] * i
+  vals.push(s % 103)
+  const widths = [...vals.map((v) => C128[v]).join(''), ...'2331112'].map(Number)
+  const out = []
+  widths.forEach((w, i) => { for (let k = 0; k < w; k++) out.push(i % 2 === 0 ? 1 : 0) })
+  return out
+}
+function makeY4m(file, text) {
+  const W = 640, H = 480, px = 4
+  const mods = code128Modules(text)
+  const x0 = Math.floor((W - mods.length * px) / 2)
+  const y = Buffer.alloc(W * H, 235)
+  for (let r = 140; r < 340; r++) for (let m = 0; m < mods.length; m++) if (mods[m]) y.fill(20, r * W + x0 + m * px, r * W + x0 + (m + 1) * px)
+  const uv = Buffer.alloc((W / 2) * (H / 2), 128)
+  const frame = Buffer.concat([Buffer.from('FRAME\n'), y, uv, uv])
+  const frames = []
+  for (let i = 0; i < 10; i++) frames.push(frame)
+  fs.writeFileSync(file, Buffer.concat([Buffer.from(`YUV4MPEG2 W${W} H${H} F10:1 Ip A1:1 C420jpeg\n`), ...frames]))
+}
+
+/* ------------------------------------------------------------------ browser helpers */
+
+let browser = null
+let page = null
+const T = (id) => `[data-testid="${id}"]`
+async function shot(name) { if (SHOTS) { fs.mkdirSync(SHOTS, { recursive: true }); await page.screenshot({ path: path.join(SHOTS, name) }) } }
+async function waitFor(sel, timeout = 20000) { return page.waitForSelector(sel, { visible: true, timeout }) }
+async function tap(sel) { const el = await waitFor(sel); await el.tap() }
+const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36'
+async function phone(width = 360, height = 800) {
+  await page.setUserAgent(ANDROID_UA)
+  await page.setViewport({ width, height, deviceScaleFactor: 3, isMobile: true, hasTouch: true })
+}
+async function noHorizontalOverflow(label) {
+  const r = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
+  record(`${label}: no sideways scrolling at ${r.cw} px`, r.sw <= r.cw + 1, `scrollWidth ${r.sw}, width ${r.cw}`)
+}
+async function setNetwork(kind) {
+  // puppeteer's own CDP session (a detached session would drop the emulation)
+  if (kind === 'offline') {
+    await page.emulateNetworkConditions(null)
+    await page.setOfflineMode(true)
+  } else if (kind === 'slow3g') {
+    await page.setOfflineMode(false)
+    await page.emulateNetworkConditions({ download: (500 * 1024) / 8, upload: (500 * 1024) / 8, latency: 400 })
+  } else {
+    await page.setOfflineMode(false)
+    await page.emulateNetworkConditions(null)
+  }
+}
+async function rows() { return q(`SELECT * FROM env_default.${PHYS}`) }
+let PHYS = ''
+
+/* ------------------------------------------------------------------ the checks */
+
+async function setupData() {
+  const t = must(await api('POST', '/tables', {
+    displayName: 'Production', name: 'Production', columns: [
+      { displayName: 'Line', name: 'Line', type: 'text', required: true },
+      { displayName: 'Qty', name: 'Qty', type: 'number' },
+      { displayName: 'Code', name: 'Code', type: 'text' },
+      { displayName: 'Photo', name: 'Photo', type: 'image' },
+    ],
+  }), 'create Production')
+  PHYS = t.source
+  const created = must(await api('POST', '/apps', { name: 'Production log', width: 360, height: 800 }), 'create app')
+  const def = must(await api('GET', `/apps/${created.id}`), 'get app').definition
+  def.dataSources = ['Production']
+  def.offline = { entry: true }
+  const kids = def.screens[0].children
+  kids.push({ id: 'n_scan', name: 'ScanCode', type: 'ScanInput', props: { X: '=16', Y: '=12', Width: '=328', Height: '=48', AnchorH: '=Anchor.Stretch' }, children: [] })
+  kids.push({ id: 'n_scans', name: 'LblScans', type: 'Label', props: { X: '=16', Y: '=64', Width: '=328', Height: '=24', Text: '="Scans: " & ScanCode.ScanCount & " " & ScanCode.Value' }, children: [] })
+  kids.push({ id: 'n_dev', name: 'LblDevice', type: 'Label', props: { X: '=16', Y: '=88', Width: '=328', Height: '=24', Text: '=Device().Kind & "|" & Device().Touch & "|" & Device().Online' }, children: [] })
+  kids.push({ id: 'n_tiny', name: 'TinyCheck', type: 'Checkbox', props: { X: '=16', Y: '=114', Width: '=160', Height: '=24' }, children: [] })
+  kids.push({ id: 'n_form', name: 'ProdForm', type: 'Form', props: { X: '=16', Y: '=144', Width: '=328', Height: '=620', DataSource: '="Production"', Mode: '=FormMode.New', Fields: '="Line,Qty,Code,Photo"', Columns: '=1', Item: '={Code: ScanCode.Value}', OnSuccess: '=Reset(ScanCode)' }, children: [] })
+  must(await api('PUT', `/apps/${created.id}`, { definition: def }), 'save app')
+  return created.id
+}
+
+async function signIn() {
+  await page.goto(BASE + '/', { waitUntil: 'networkidle2' })
+  await waitFor(T('login-form'))
+  await noHorizontalOverflow('sign-in screen')
+  await shot('01-sign-in.png')
+  await page.type(T('login-email'), ADMIN.email)
+  await page.type(`${T('login-password')} input, input${T('login-password')}`, ADMIN.password).catch(async () => page.type('#login-password', ADMIN.password))
+  await tap(T('login-submit'))
+  await page.waitForFunction(() => !document.querySelector('[data-testid="login-form"]'), { timeout: 20000 })
+}
+
+async function checkPwa(appId) {
+  const m = await page.evaluate(async () => (await fetch('/api/v1/pwa/manifest.webmanifest')).json())
+  check(m.display === 'standalone' && m.icons?.some((i) => i.sizes === '512x512' && i.purpose === 'maskable'), 'install manifest: standalone, 192/512 icons incl. maskable', `${m.name}, ${m.icons.length} icons`)
+  const am = await page.evaluate(async (id) => (await fetch(`/api/v1/pwa/apps/${id}/manifest.webmanifest`, { credentials: 'same-origin' })).json(), appId)
+  check(am.name === 'Production log' && am.start_url === `/?app=${appId}` && am.id === `/?app=${appId}`, 'per-app manifest: name, start_url and id of the app', `${am.name} ${am.start_url}`)
+  const icon = await api('GET', am.icons[1].src.replace('/api/v1', ''))
+  const png = icon.data
+  check(icon.status === 200 && png.subarray(1, 4).toString() === 'PNG' && png.readUInt32BE(16) === 512, 'app icon is a 512 px PNG in the app colour with its initials', `${png.length} bytes`)
+  const sw = await page.evaluate(async () => {
+    const reg = await navigator.serviceWorker.getRegistration('/')
+    return { scope: reg?.scope, active: !!reg?.active }
+  })
+  check(sw.active && sw.scope === `${BASE}/`, 'service worker registered with scope /', JSON.stringify(sw))
+  const apiCached = await page.evaluate(async () => {
+    const out = []
+    for (const k of await caches.keys()) {
+      const c = await caches.open(k)
+      for (const r of await c.keys()) out.push(new URL(r.url).pathname)
+    }
+    return out
+  })
+  check(apiCached.length > 0 && apiCached.every((p) => p === '/' || p.startsWith('/api/v1/pwa/')), 'the service worker cache holds the shell and PWA files only (no data)', apiCached.join(', '))
+}
+
+async function openFromHomeScreen(appId) {
+  await page.goto(`${BASE}/?app=${appId}`, { waitUntil: 'networkidle2' })
+  await page.waitForFunction((id) => location.hash === `#u-${id}`, { timeout: 15000 }, appId)
+  await waitFor(`${T(`tab-pane-${appId}`)} [data-run-surface]`)
+  const info = await page.evaluate((id) => {
+    const pane = document.querySelector(`[data-testid="tab-pane-${id}"]`)
+    const s = pane.querySelector('[data-run-surface]')
+    return { surface: s.getAttribute('data-run-surface'), size: pane.querySelector('[data-run-size]')?.getAttribute('data-run-size'), touch: document.documentElement.classList.contains('touch'), coarse: matchMedia('(pointer: coarse)').matches, controller: !!navigator.serviceWorker.controller }
+  }, appId)
+  check(info.surface === 'fluid' && info.size?.startsWith('360x'), 'opened from the start address (/?app=): the app runs fluid at the phone width', JSON.stringify(info))
+  check(info.touch && info.coarse, 'touch device detected (pointer: coarse in emulation)', JSON.stringify(info))
+  const dev = await page.$eval(`${T('control-LblDevice')}`, (e) => e.textContent)
+  check(/Phone\|true\|true/.test(dev), 'Device() reports Phone, touch, online', dev)
+  await noHorizontalOverflow('app screen')
+  await shot('02-app.png')
+}
+
+async function scanWithCamera() {
+  await tap(T('scan-input-camera'))
+  await waitFor(T('scanner-sheet'))
+  await shot('03-scanner.png')
+  const got = await page.waitForFunction(() => document.querySelector('[data-testid="scan-input"]')?.value === 'LOT-4711', { timeout: 20000 }).then(() => true, () => false)
+  const native = await page.evaluate(() => 'BarcodeDetector' in window)
+  check(got, `camera scan fills the field with the Code 128 code (${native ? 'native BarcodeDetector' : 'our 1D decoder: no BarcodeDetector in this Chrome'})`, 'LOT-4711')
+  check(!(await page.$(T('scanner-sheet'))), 'one-shot scan closes the camera', '')
+  const label = await page.$eval(T('control-LblScans'), (e) => e.textContent)
+  check(/Scans: 1 LOT-4711/.test(label), 'OnScan / ScanCount / Value outputs', label)
+}
+
+async function keyboardWedge() {
+  const input = await waitFor(T('scan-input'))
+  await input.focus()
+  await input.evaluate((e) => e.select())
+  await page.keyboard.press('Backspace')
+  await page.keyboard.type('WEDGE-77', { delay: 4 })
+  await page.keyboard.press('Enter')
+  await sleep(200)
+  const label = await page.$eval(T('control-LblScans'), (e) => e.textContent)
+  check(/Scans: 2 WEDGE-77/.test(label), 'keyboard-wedge burst ending with Enter counts as a scan', label)
+  // typing by hand (slow) is not a scan
+  await input.focus()
+  await input.evaluate((e) => e.select())
+  await page.keyboard.press('Backspace')
+  await page.keyboard.type('ab', { delay: 150 })
+  const label2 = await page.$eval(T('control-LblScans'), (e) => e.textContent)
+  check(/Scans: 2 ab/.test(label2), 'slow typing is not a scan', label2)
+  // back to the camera code for the save
+  await input.focus()
+  await input.evaluate((e) => e.select())
+  await page.keyboard.press('Backspace')
+  await page.keyboard.type('LOT-4711', { delay: 3 })
+  await page.keyboard.press('Enter')
+}
+
+async function touchArea() {
+  // the 24 px Checkbox: a tap 9 px below its box (inside the 44 px area) toggles it
+  const box = await page.$eval(T('control-TinyCheck'), (e) => { const r = e.getBoundingClientRect(); return { x: r.left + 12, y: r.bottom + 9 } })
+  const before = await page.$eval(`${T('control-TinyCheck')} [role=checkbox], ${T('control-TinyCheck')} input`, (e) => e.getAttribute('aria-checked') ?? String(e.checked))
+  await page.touchscreen.tap(box.x, box.y)
+  await sleep(150)
+  const after = await page.$eval(`${T('control-TinyCheck')} [role=checkbox], ${T('control-TinyCheck')} input`, (e) => e.getAttribute('aria-checked') ?? String(e.checked))
+  check(before !== after, 'a tap just outside a 24 px checkbox (inside its 44 px touch area) toggles it', `${before} -> ${after}`)
+}
+
+async function fillForm(line, qty) {
+  const sel = (n) => `${T('control-ProdForm')} [id$="-${n}"]`
+  await page.$eval(sel('Line'), (e) => e.scrollIntoView({ block: 'center' }))
+  for (const [n, v] of [['Line', line], ['Qty', String(qty)]]) {
+    await page.focus(sel(n))
+    await page.$eval(sel(n), (e) => e.select())
+    await page.keyboard.press('Backspace')
+    await page.keyboard.type(v)
+  }
+}
+
+/** a 3000 x 2000 JPEG made in the page, handed to the Take photo input (the native camera on a real phone) */
+async function takePhoto() {
+  await waitFor(T('attachment-take-photo-Photo'))
+  const sizes = await page.evaluate(async () => {
+    const c = document.createElement('canvas')
+    c.width = 3000
+    c.height = 2000
+    const g = c.getContext('2d')
+    for (let i = 0; i < 300; i++) { g.fillStyle = `hsl(${i * 7},70%,${30 + (i % 40)}%)`; g.fillRect((i * 97) % 3000, (i * 53) % 2000, 400, 300) }
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.95))
+    const file = new File([blob], 'IMG_0001.jpg', { type: 'image/jpeg' })
+    const input = document.querySelector('[data-testid="attachment-capture-Photo"]')
+    const dt = new DataTransfer()
+    dt.items.add(file)
+    input.files = dt.files
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    return { original: file.size }
+  })
+  await waitFor(T('attachment-pending'))
+  return sizes.original
+}
+
+function jpegSize(buf) {
+  let i = 2
+  while (i < buf.length) {
+    const m = buf.readUInt16BE(i)
+    if (m >= 0xffc0 && m <= 0xffc3) return { h: buf.readUInt16BE(i + 5), w: buf.readUInt16BE(i + 7) }
+    i += 2 + buf.readUInt16BE(i + 2)
+  }
+  return null
+}
+
+async function offlineSave(appId) {
+  await fillForm('Line 3', 120)
+  const original = await takePhoto()
+  log(`photo: original ${original} bytes`)
+  await setNetwork('offline')
+  await shot('04-before-offline-save.png')
+  await page.$eval(`${T('control-ProdForm')} ${T('form-save')}`, (e) => e.scrollIntoView({ block: 'center' }))
+  await tap(`${T('control-ProdForm')} ${T('form-save')}`)
+  await waitFor(T('offline-banner'))
+  await page.waitForFunction(() => document.querySelector('[data-testid="outbox-count"]')?.textContent === '2', { timeout: 15000 })
+  await shot('05-offline-waiting.png')
+  check((await rows()).length === 0, 'offline: nothing reached the server', '')
+  check(true, 'offline: "You\'re offline" and "2 waiting to send" (the row and its photo) are shown', '')
+  await tap(T('outbox-button'))
+  await waitFor(T('outbox-panel'))
+  const items = await page.$$eval(T('outbox-item'), (els) => els.map((e) => e.getAttribute('data-status')))
+  check(items.length === 2 && items.every((s) => s === 'waiting'), 'outbox panel lists both items as waiting', items.join(','))
+  await shot('06-outbox-panel.png')
+  await page.keyboard.press('Escape')
+  // flapping Wi-Fi: on for 300 ms is not enough for the probe; then back for good
+  await setNetwork('online')
+  await page.waitForFunction(() => !document.querySelector('[data-testid="outbox-count"]'), { timeout: 45000 })
+  const r = await rows()
+  check(r.length === 1 && r[0].Code === 'LOT-4711' && Number(r[0].Qty) === 120 && r[0].Line === 'Line 3', 'back online: the row is sent exactly once with the scanned code', JSON.stringify(r.map((x) => ({ Line: x.Line, Qty: x.Qty, Code: x.Code }))))
+  const att = await q(`SELECT * FROM ab_attachments WHERE row_id = $1`, [r[0].id]).catch(() => q(`SELECT * FROM env_default.ab_attachments WHERE row_id = $1`, [r[0].id]))
+  check(att.length === 1 && r[0].Photo === att[0].id, 'the photo is uploaded once and linked to the row', `${att.length} attachment(s)`)
+  const file = must(await api('GET', `/attachments/${att[0].id}`), 'download photo')
+  const dim = jpegSize(file)
+  check(dim && Math.max(dim.w, dim.h) === 1600 && file.length < original, 'photo resized in the browser to 1600 px and smaller than the original', `${dim?.w}x${dim?.h}, ${file.length} of ${original} bytes`)
+  await shot('07-sent.png')
+  return r[0].id
+}
+
+async function restartWhileOffline(appId) {
+  await fillForm('Line 4', 7)
+  await setNetwork('offline')
+  await tap(`${T('control-ProdForm')} ${T('form-save')}`)
+  await sleep(1500)
+  await page.waitForFunction(() => document.querySelector('[data-testid="outbox-count"]')?.textContent === '1', { timeout: 15000 })
+  // the phone closes the browser tab / reloads while offline
+  await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
+  await waitFor(T('offline-start'))
+  check(true, 'cold start offline: the "No connection" page (not demo mode); the shell came from the service worker', '')
+  await shot('08-cold-start-offline.png')
+  check((await rows()).length === 1, 'the queued row is still not on the server', '')
+  await setNetwork('online')
+  await page.goto(`${BASE}/?app=${appId}`, { waitUntil: 'networkidle2' })
+  await page.waitForFunction(async () => {
+    const dbs = await indexedDB.databases()
+    return dbs.some((d) => d.name?.startsWith('appbuilder-offline-'))
+  }, { timeout: 15000 })
+  for (let i = 0; i < 60 && (await rows()).length < 2; i++) await sleep(500)
+  const r = await rows()
+  check(r.length === 2 && r.filter((x) => x.Line === 'Line 4').length === 1, 'after the restart the waiting row is sent once', `${r.length} rows`)
+}
+
+async function slowNetwork(appId) {
+  await setNetwork('slow3g')
+  const s = Date.now()
+  await page.goto(`${BASE}/?app=${appId}`, { waitUntil: 'domcontentloaded' })
+  await waitFor(`${T(`tab-pane-${appId}`)} [data-run-surface]`, 60000)
+  const openMs = Date.now() - s
+  await fillForm('Line 5', 9)
+  await tap(`${T('control-ProdForm')} ${T('form-save')}`)
+  for (let i = 0; i < 60 && (await rows()).length < 3; i++) await sleep(500)
+  check((await rows()).length === 3, 'slow 3G (400 ms latency, 500 kbit/s): the app opens from the cached shell and a save arrives', `opened in ${openMs} ms`)
+  await setNetwork('online')
+}
+
+async function serverIdempotency() {
+  const key = 'exit-check-idem-0001'
+  const id = '7d1f4b1e-0000-4000-8000-00000000e001'
+  const a = await api('POST', '/data/Production/rows', { values: { id, Line: 'Idem', Qty: 1 } }, { 'Idempotency-Key': key })
+  const b = await api('POST', '/data/Production/rows', { values: { id, Line: 'Idem', Qty: 1 } }, { 'Idempotency-Key': key })
+  const n = (await q(`SELECT count(*)::int AS n FROM env_default.${PHYS} WHERE "Line" = 'Idem'`))[0].n
+  check(a.status === 200 && b.status === 200 && b.data.replayed === true && n === 1, 'server: a create retried with the same Idempotency-Key is answered once (replayed, one row)', `${a.status}/${b.status} replayed=${b.data.replayed} rows=${n}`)
+  const bad = await api('POST', '/data/Production/rows', { values: { Qty: 1 } }, { 'Idempotency-Key': 'exit-check-idem-0002' })
+  const fixed = await api('POST', '/data/Production/rows', { values: { Line: 'Fixed', Qty: 1 } }, { 'Idempotency-Key': 'exit-check-idem-0002' })
+  check(bad.status === 422 && fixed.status === 200, 'server: a refused write releases its key (fix and resend works)', `${bad.status} then ${fixed.status}`)
+}
+
+async function shellAtPhoneWidth() {
+  await page.goto(`${BASE}/#u`, { waitUntil: 'networkidle2' })
+  await waitFor(T('page-my-apps'))
+  await noHorizontalOverflow('User mode: My apps')
+  const a2hs = await page.$eval(T('add-to-home'), (e) => e.textContent).catch(() => '')
+  check(/Home screen/.test(a2hs) && /menu|Install/.test(a2hs), 'My apps on an Android phone shows the Add to Home screen help (Chrome offered its install prompt: ' + /Install$/.test(a2hs.trim()) + ')', a2hs.slice(0, 120))
+  const sw = await page.evaluate(() => ({ switcher: !!document.querySelector('[data-testid="tab-switcher"]')?.getClientRects().length, strip: !!document.querySelector('[data-testid="tab-strip"]')?.getClientRects().length }))
+  check(sw.switcher && !sw.strip, 'phone width: open apps are a switcher, not a tab strip', JSON.stringify(sw))
+  await tap('[data-testid^="open-on-phone-"]')
+  await waitFor(T('open-on-phone-dialog'))
+  const qr = await page.$eval(`${T('open-on-phone-dialog')} svg path`, (p) => p.getAttribute('d').length)
+  check(qr > 500, '"Open on a phone" shows a QR code of the app address', `${qr} path chars`)
+  await shot('10-open-on-phone.png')
+  await page.keyboard.press('Escape')
+  await page.goto(`${BASE}/#u-approvals`, { waitUntil: 'networkidle2' })
+  await sleep(800)
+  await noHorizontalOverflow('User mode: Approvals')
+  await page.goto(`${BASE}/#u-tasks`, { waitUntil: 'networkidle2' })
+  await sleep(800)
+  await noHorizontalOverflow('User mode: Tasks')
+}
+
+async function updateFlow(appId) {
+  await page.goto(`${BASE}/?app=${appId}`, { waitUntil: 'networkidle2' })
+  const v1 = await page.evaluate(() => new Promise((r) => { const ch = new MessageChannel(); ch.port1.onmessage = (e) => r(e.data.version); navigator.serviceWorker.controller.postMessage({ type: 'version' }, [ch.port2]) }))
+  // a new build: the served index.html changes (size and time)
+  const file = path.join(DIST, 'index.html')
+  const original = fs.readFileSync(file)
+  try {
+    fs.writeFileSync(file, Buffer.concat([original, Buffer.from('\n<!-- exit-check rebuild -->\n')]))
+    await page.evaluate(async () => { const reg = await navigator.serviceWorker.getRegistration('/'); await reg.update() })
+    await waitFor(T('update-banner'), 30000)
+    const stillOld = await page.evaluate(() => new Promise((r) => { const ch = new MessageChannel(); ch.port1.onmessage = (e) => r(e.data.version); navigator.serviceWorker.controller.postMessage({ type: 'version' }, [ch.port2]) }))
+    check(stillOld === v1, 'a new build waits: the page keeps its version until the user reloads', `${v1}`)
+    await shot('09-update.png')
+    await Promise.all([page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }), tap(T('update-reload'))])
+    const v2 = await page.evaluate(() => new Promise((r) => { const ch = new MessageChannel(); ch.port1.onmessage = (e) => r(e.data.version); navigator.serviceWorker.controller.postMessage({ type: 'version' }, [ch.port2]) }))
+    check(v2 && v2 !== v1, '"New version available — Reload" switches to the new build', `${v1} -> ${v2}`)
+    const waitingCount = await page.evaluate(async () => {
+      const db = await indexedDB.databases()
+      return db.filter((d) => d.name?.startsWith('appbuilder-offline-')).length
+    })
+    check(waitingCount === 1, 'the offline store survives the service worker update', '')
+  } finally {
+    fs.writeFileSync(file, original)
+  }
+}
+
+async function signOutClears() {
+  await page.evaluate(() => { window.confirm = () => true })
+  await page.goto(`${BASE}/#u`, { waitUntil: 'networkidle2' })
+  const before = await page.evaluate(async () => ({ dbs: (await indexedDB.databases()).filter((d) => d.name?.startsWith('appbuilder-offline-')).length, caches: (await caches.keys()).length }))
+  await tap(T('avatar-menu'))
+  await tap(T('menu-sign-out'))
+  await waitFor(T('login-form'))
+  await sleep(500)
+  const after = await page.evaluate(async () => ({ dbs: (await indexedDB.databases()).filter((d) => d.name?.startsWith('appbuilder-offline-')).length, caches: (await caches.keys()).filter((k) => k.startsWith('ab-')).length, key: Object.keys(sessionStorage).filter((k) => k.startsWith('appbuilder-offline-key')).length }))
+  check(before.dbs === 1 && after.dbs === 0 && after.caches === 0 && after.key === 0, 'sign-out deletes the offline store, the session key and the service worker caches', `${JSON.stringify(before)} -> ${JSON.stringify(after)}`)
+}
+
+async function wipe() {
+  const k1 = must(await api('POST', '/offline/key', { deviceId: 'exitdevice01' }), 'key')
+  const k1b = must(await api('POST', '/offline/key', { deviceId: 'exitdevice01' }), 'key again')
+  must(await api('POST', '/offline/wipe', {}), 'wipe')
+  const k2 = must(await api('POST', '/offline/key', { deviceId: 'exitdevice01' }), 'key after wipe')
+  check(k1.key === k1b.key && k2.key !== k1.key && k2.epoch === k1.epoch + 1, 'wipe device data: the key is stable per device until a wipe changes it', `epoch ${k1.epoch} -> ${k2.epoch}`)
+}
+
+/** every UI component at its default size on the phone: measure the touch area of the interactive ones */
+async function touchAudit() {
+  const reg = await page.evaluate(() => window.__abRegistry ?? null)
+  void reg
+  const created = must(await api('POST', '/apps', { name: 'Touch audit', width: 412, height: 915 }), 'audit app')
+  const def = must(await api('GET', `/apps/${created.id}`), 'get audit app').definition
+  const { TOUCH_MATRIX } = await import(pathToFileURL(path.join(root, 'src/phone/touch.ts')).href)
+  const types = Object.entries(TOUCH_MATRIX).filter(([t, e]) => e.interactive && !['Screen', 'Gallery', 'Form', 'Dialog', 'Sheet', 'Chart', 'Visual', 'Timer', 'Video', 'Audio', 'ScrollArea', 'FileUpload', 'Calendar', 'ApprovalsPanel', 'NavMenu', 'TopBar', 'Steps', 'List', 'DataTable', 'Accordion', 'RadioGroup', 'EmptyState', 'TagList'].includes(t)).map(([t]) => t)
+  let y = 8
+  def.screens[0].children = types.map((t, i) => {
+    const node = { id: `n_a${i}`, name: `A_${t}`, type: t, props: { X: '=24', Y: `=${y}` }, children: [] }
+    if (t === 'Icon' || t === 'AnimatedIcon') node.props.OnSelect = '=Notify("x")'
+    y += 64
+    return node
+  })
+  def.height = Math.max(915, y + 40)
+  must(await api('PUT', `/apps/${created.id}`, { definition: def }), 'save audit app')
+  await page.goto(`${BASE}/#u-${created.id}`, { waitUntil: 'networkidle2' })
+  await waitFor(`${T(`tab-pane-${created.id}`)} [data-run-surface]`)
+  await sleep(1500)
+  const res = await page.evaluate((list) => {
+    const out = []
+    for (const t of list) {
+      const w = document.querySelector(`[data-testid="control-A_${t}"]`)
+      if (!w) { out.push({ t, ok: false, why: 'not rendered' }); continue }
+      w.scrollIntoView({ block: 'center' })
+      const r = w.getBoundingClientRect()
+      const cx = r.left + r.width / 2
+      const cy = r.top + r.height / 2
+      const probes = [[cx, cy - 21], [cx, cy + 21], [Math.min(r.left + 21, cx), cy], [Math.max(r.right - 21, cx), cy]]
+      const hits = probes.map(([x, yy]) => { const el = document.elementFromPoint(x, yy); return !!el && (el === w || w.contains(el)) })
+      out.push({ t, ok: hits.every(Boolean), w: Math.round(r.width), h: Math.round(r.height), hit: w.hasAttribute('data-hit') })
+    }
+    return out
+  }, types)
+  const bad = res.filter((r) => !r.ok)
+  check(bad.length === 0, `touch audit: ${res.length} interactive UI components have a 44 x 44 px touch area at their default size`, bad.length ? JSON.stringify(bad) : `${res.filter((r) => r.hit).length} needed the extended area`)
+  fs.writeFileSync(path.join(WORK, 'touch-audit.json'), JSON.stringify(res, null, 1))
+  return res
+}
+
+/* ------------------------------------------------------------------ main */
+
+const consoleLines = []
+let failed = false
+try {
+  await maint(`DROP DATABASE IF EXISTS "${DB.database}"`)
+  await start()
+  const setupCode = app.services.setupCode.current() ?? ''
+  must(await api('POST', '/setup/database', { setupCode, host: DB.host, port: DB.port, database: DB.database, user: DB.user, password: DB.password, createDatabase: true }), 'setup database')
+  must(await api('POST', '/setup/admin', { setupCode, ...ADMIN }), 'setup admin')
+  cookie = ''
+  must(await api('POST', '/auth/login', { email: ADMIN.email, password: ADMIN.password }), 'login')
+  const appId = await setupData()
+  const y4m = path.join(WORK, 'barcode.y4m')
+  makeY4m(y4m, 'LOT-4711')
+  browser = await puppeteer.launch({
+    executablePath: E.CHROME_PATH || '/usr/bin/google-chrome', headless: 'new',
+    args: ['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-video-capture=${y4m}`],
+  })
+  const ctx = browser.defaultBrowserContext()
+  await ctx.overridePermissions(BASE, ['camera', 'geolocation'])
+  page = await browser.newPage()
+  page.on('dialog', (d) => d.accept())
+  page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warn') consoleLines.push(`${m.type()}: ${m.text()}`.slice(0, 300)) })
+  page.on('pageerror', (e) => consoleLines.push(`pageerror: ${e.message}`.slice(0, 300)))
+  await phone(360, 800)
+  log('A. sign-in at 360 px, the PWA')
+  await signIn()
+  await page.goto(`${BASE}/#u`, { waitUntil: 'networkidle2' })
+  await page.waitForFunction(() => !!navigator.serviceWorker.controller, { timeout: 20000 }).catch(() => {})
+  if (!(await page.evaluate(() => !!navigator.serviceWorker.controller))) await page.reload({ waitUntil: 'networkidle2' })
+  await checkPwa(appId)
+  log('B. open from the home screen, scan, photo, save offline')
+  await openFromHomeScreen(appId)
+  await scanWithCamera()
+  await keyboardWedge()
+  await touchArea()
+  await offlineSave(appId)
+  log('C. restart while offline, slow network, idempotency, update flow')
+  await restartWhileOffline(appId)
+  await slowNetwork(appId)
+  await serverIdempotency()
+  await updateFlow(appId)
+  log('D. the shell at phone widths, touch audit, sign-out, wipe')
+  await shellAtPhoneWidth()
+  await phone(412, 915)
+  await shellAtPhoneWidth()
+  await touchAudit()
+  await phone(360, 800)
+  await signOutClears()
+  await wipe()
+} catch (e) {
+  failed = true
+  console.error(e)
+  console.error('last browser console lines:\n' + consoleLines.slice(-15).join('\n'))
+  if (page) console.error('page state: ' + JSON.stringify(await page.evaluate(() => ({ online: navigator.onLine, bar: document.querySelector('[data-testid="connection-bar"]')?.textContent ?? null, toasts: [...document.querySelectorAll('[role=status],[role=alert]')].map((e) => e.textContent).slice(0, 5), hash: location.hash })).catch(() => 'n/a')))
+  if (page) await shot('zz-failure.png').catch(() => {})
+} finally {
+  if (browser) await browser.close().catch(() => {})
+  await stop().catch(() => {})
+  if (!E.KEEP) await maint(`DROP DATABASE IF EXISTS "${DB.database}"`).catch(() => {})
+}
+const bad = results.filter((r) => !r.ok)
+console.log(`\n${results.length - bad.length}/${results.length} checks passed${failed || bad.length ? ' - P2 EXIT CHECK 1 (PHONE) FAILED' : ' - P2 EXIT CHECK 1 (PHONE) PASSED'} (${((Date.now() - t0) / 1000).toFixed(0)} s)`)
+console.log('Emulated in headless Chrome only: real Android and iOS devices are NOT tested here (docs/dev/phone-test-script.md).')
+process.exit(failed || bad.length ? 1 : 0)

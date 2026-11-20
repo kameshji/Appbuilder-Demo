@@ -8,7 +8,7 @@
  */
 import {
   Activity, Archive, AtSign, Bot, CalendarClock, CheckSquare, ClipboardCheck, FileText, Folder, Globe, LayoutDashboard, LayoutTemplate, Mail, MessagesSquare, Network,
-  ScrollText, ShieldHalf, StickyNote, Workflow, type LucideIcon,
+  Printer, ScrollText, ShieldHalf, StickyNote, Workflow, type LucideIcon,
 } from 'lucide-react'
 import type { Route } from '@/router'
 
@@ -76,11 +76,19 @@ export const MODULES: readonly ModuleEntry[] = [
     ],
   },
   {
-    key: 'dashboards', label: 'Dashboards', icon: LayoutDashboard, modes: ['dev', 'user'], status: 'soon', phase: 'P2',
+    key: 'dashboards', label: 'Dashboards', icon: LayoutDashboard, modes: ['dev', 'user'], status: 'live', route: { page: 'u', id: 'dashboards' }, phase: 'P2',
     tagline: 'Charts and KPIs over your tables, trimmed to what each viewer may see.',
     details: [
-      'Build dashboards from chart UI components on top of server-side aggregates; share them as pages or chat cards.',
-      'An OData feed for people who prefer Excel or Power BI.',
+      'Tiles (KPIs, gauges, trends, bars, Pareto, tables) over server-side aggregates, one request per refresh, live when the data changes.',
+      'Date ranges with the fiscal year, filters and cross-filtering; a manufacturing template with OEE.',
+    ],
+  },
+  {
+    key: 'printtemplates', label: 'Print templates', icon: Printer, modes: ['dev'], status: 'live', route: { page: 'printtemplates' }, phase: 'P2', need: 'maker',
+    tagline: 'PDF documents from records and queries, with your letterhead.',
+    details: [
+      'Design pages with headings, rich text, tables with totals and groups, photos, charts, barcodes and QR codes, signature lines; Hindi text is shaped correctly.',
+      'Print from apps (Print, GeneratePdf, a Print button), store PDFs with the record, generate in flows and attach to emails and scheduled reports; Word templates too.',
     ],
   },
   {

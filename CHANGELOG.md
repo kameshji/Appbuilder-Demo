@@ -4,6 +4,22 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 
 ## [Unreleased]
 
+Phase 2 (Reach), wave 1. Schema version 11.
+
+### Added
+- **Phone apps.** Apps designed at phone or tablet size run full width on phones and scroll vertically; safe areas and the on-screen keyboard are handled; small UI components get 44 px touch areas; open apps become a switcher at phone width. App cards have an "Open on a phone" QR code, and each app can be added to the home screen (web app manifest and a service worker that caches only the application shell). New UI components Barcode scanner and Scan input (the browser's barcode reader, or a built-in reader for EAN, Code 128, Code 39 and ITF; keyboard scanners). Form image fields gain Take photo. New functions `Device()`, `Location()`, `UpdateLocation()`. Apps marked "Works offline (entry)" keep creates, changes and photos made without a connection in an encrypted outbox and send them in order exactly once when the connection returns. Tested in Chrome's phone emulation only; the real-device script is `docs/dev/phone-test-script.md`.
+- **Print templates and PDF.** Dev mode > Print templates designs PDF documents from a record, a query or a formula (tables with totals and groups, repeated sections, approval history, photos, charts, Code 128 and QR codes, letterhead, "Page X of Y", Indian or international number formats, Hindi shaped correctly). Documents are generated on the server with the access of whoever prints. Apps get `Print`, `GeneratePdf`, `GenerateDocx` and a Print button; flows get "Generate a document"; scheduled reports can attach a PDF; bulk generation; six built-in templates; Word (.docx) templates without PDF conversion.
+- **Dashboards.** Live in Dev and User mode: KPI tiles, OEE gauge, trends, bars, Pareto and tables computed in the database as the viewer, one request per refresh, cached briefly and refreshed live. Date ranges follow the environment's fiscal year, week start, time zone and shifts. A Production overview template with OEE, scrap, first-pass yield, downtime Pareto, MTTR and schedule adherence comes with labelled sample data. A new Visual UI component brings every chart kind to apps. Query v2 gains count distinct, date buckets, key-ordered grouping and top N with Others.
+
+### Fixed
+- The flow email step sent a field the Email action refused.
+- The service worker answered navigations to `/api/` addresses (PDF previews, attachments opened in a tab, the unsubscribe page) with the app shell.
+
+### Known gaps in this wave
+- Dashboards: no visual tile query editor, no drag-and-drop layout, no TV mode, no email snapshot, not yet in solutions.
+- Phones: dropdowns, date pickers and dialogs are not phone-style; no card layout for data tables; QR scanning needs a browser with a built-in reader; no cold-start offline.
+- PDFs use their own small chart renderer, separate from the dashboard charts.
+
 ## [0.6.0] - 2026-11-19
 
 **Phase 1 "Automation" is done** (docs/plan/p1-spec.md, with the exit check results). In one paragraph: Appbuilder now

@@ -210,6 +210,10 @@ or `openssl x509 -noout -fingerprint -sha256 -in appbuilder-local-ca.crt`). Anyo
 certificates your PCs trust: it lives in Caddy's data folder, which only SYSTEM/Administrators/Caddy (Windows) or root and
 `caddy` (Linux) can read.
 
+**Phones** trust it the same way (Android: install it as a CA certificate; iPhone: install the profile, then turn on
+full trust): step by step in [Phones on the local network](phones.md). Phones need HTTPS for the camera, scanning,
+working offline and Add to Home screen.
+
 ### A domain name
 
 With `-Https Domain` / `--https domain`, Caddy obtains and renews a Let's Encrypt certificate itself. Before installing:

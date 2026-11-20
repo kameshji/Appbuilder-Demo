@@ -8,6 +8,7 @@ import type { FxRecord, FxValue } from '../contracts.ts'
 import type { ColumnType } from './contracts.ts'
 import type { QueryValue } from './http.ts'
 import type { QueryPlan } from './query.ts'
+import { bucketKind } from './query.ts'
 
 function parseDay(s: string): Date | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s)
@@ -49,6 +50,7 @@ export function resultTypes(plan: QueryPlan, tableTypes: Record<string, ColumnTy
   if (!plan.aggregate) return tableTypes
   const out: Record<string, ColumnType> = {}
   for (const g of plan.aggregate.groupBy) out[plan.aggregate.as?.[g] ?? g] = tableTypes[g] ?? 'text'
+  for (const b of plan.aggregate.buckets ?? []) out[b.name] = bucketKind(b.unit) === 'date' ? 'date' : 'number'
   for (const m of plan.aggregate.measures) out[m.name] = 'decimal'
   return out
 }

@@ -97,6 +97,8 @@ export type StepConfig =
   | { kind: 'delay'; minutes?: number; until?: Fx }
   | { kind: 'notify'; to: Fx; title: Fx; body: Fx; link?: Fx; channels: ('inApp' | 'email')[] }
   | { kind: 'email'; to: Fx; cc?: Fx; subject: Fx; body: Fx; attachments?: Fx; connection?: string }
+  /** P2-B: a document from a print template; output: the file only (a token), stored in an attachment column of the record, or in the record's Documents */
+  | { kind: 'document.generate'; template: string; record?: Fx; output?: 'file' | 'record' | 'documents'; column?: string; numberSequence?: string }
   | { kind: 'action'; connection: string; action: string; inputs: Record<string, Fx> }
   | { kind: 'http'; method: string; url: Fx; headers?: Record<string, Fx>; body?: Fx; auth?: string }
   | { kind: 'callFlow'; flow: string; inputs?: Record<string, Fx> }
@@ -396,6 +398,12 @@ export const STEP_KINDS: readonly StepKindDoc[] = [
     fields: [{ name: 'to', type: 'Fx', required: true, doc: 'Addresses or users.' }, { name: 'cc', type: 'Fx', doc: 'Copies.' }, { name: 'subject', type: 'Fx', required: true, doc: 'Subject.' }, { name: 'body', type: 'Fx', required: true, doc: 'Text or HTML.' }, { name: 'attachments', type: 'Fx', doc: 'Attachment ids.' }, { name: 'connection', type: 'connection reference', doc: 'Refinement: which email connection.' }],
     output: 'what the email action returns', guarantee: 'At least once, with the idempotency key run:step:attempt-free (the actions service replays a stored result instead of sending again).', defaultRetry: 'exponential, 4 attempts, on retryable errors',
     example: { id: 'mail', name: 'MailRequester', kind: 'email', to: 'Trigger.Record.RequesterEmail', subject: '"Approved"', body: '"Your purchase was approved."' },
+  },
+  {
+    kind: 'document.generate', group: 'Data', title: 'Generate a document', summary: 'Makes a PDF (or Word file) from a print template as the run-as identity: for a record, or from the template\'s own query. Keep it as a file (attach it to an email with {fileToken: Steps.<name>.Output.FileToken}), put it in a file column of the record, or store it in the record\'s Documents.',
+    fields: [{ name: 'template', type: 'text', required: true, doc: 'The print template (name or id); its published version is used.' }, { name: 'record', type: 'Fx', doc: 'The record id (templates with a record source), e.g. Trigger.Record.id.' }, { name: 'output', type: 'file | record | documents', doc: 'file (default): only the generated file; record: into the file column `column` of the record; documents: a Documents entry about the record.' }, { name: 'column', type: 'text', doc: 'output record: the file column.' }, { name: 'numberSequence', type: 'text', doc: 'output documents: the number sequence that numbers the document.' }],
+    output: '{ FileToken, FileName, Pages, Warnings, AttachmentId?, DocumentId? }', guarantee: 'At least once: a retry makes the same file again under the same token (key run:step); a retry after the record was changed adds the file again.', defaultRetry: 'none',
+    example: { id: 'pdf', name: 'DailyPdf', kind: 'document.generate', template: 'Daily production and OEE summary', output: 'file' },
   },
   {
     kind: 'action', group: 'Integration', title: 'Connector action', summary: 'Calls an action of a connection attached to the flow.',

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Loader2, TriangleAlert } from 'lucide-react'
 import { platform } from '@/platform'
 import { AuthGate, Portal } from '@/portal'
@@ -8,18 +8,28 @@ import { errorMessage } from '@/runtime/data'
 import { RunApp } from '@/runtime/RunApp'
 import { ChatWindow } from '@/chat/ChatWindow'
 import { startPreferenceEffects } from '@/portal/theme'
+import { ConnectionBar } from '@/phone/ConnectionBar'
+import { OfflineStart, offlineAtStart, rememberServerMode } from '@/phone/OfflineStart'
 
 export default function App() {
-  const [state, setState] = useState<{ phase: 'loading' | 'ready' | 'error'; error?: string }>({ phase: 'loading' })
+  const [state, setState] = useState<{ phase: 'loading' | 'ready' | 'error' | 'offline'; error?: string }>({ phase: 'loading' })
   const route = useRoute()
 
   useEffect(() => startPreferenceEffects(), [])
 
   useEffect(() => {
     let alive = true
-    platform
-      .init()
+    // P2-A: a browser that used the server before must not fall back to demo mode just because it is offline now
+    offlineAtStart()
+      .then((off) => {
+        if (off) {
+          if (alive) setState({ phase: 'offline' })
+          return new Promise<never>(() => {})
+        }
+        return platform.init()
+      })
       .then(() => {
+        rememberServerMode(platform.getState().mode)
         linkPlatform()
         if (alive) setState({ phase: 'ready' })
       })
@@ -38,6 +48,7 @@ export default function App() {
       </div>
     )
   }
+  if (state.phase === 'offline') return <OfflineStart />
   if (state.phase === 'error') {
     return (
       <div className="grid h-full place-items-center bg-background">
@@ -52,7 +63,17 @@ export default function App() {
   // server mode needs a session for every page (the debug run window shares the cookie); demo mode passes through.
   // The standalone player and the chat pop-out are windows of their own; everything else (Dev mode, User mode with
   // its app tabs, the Studio) lives in the shell, so app tabs stay mounted while you build.
-  if (route.page === 'run') return <AuthGate><RunApp key={route.id} appId={route.id} /></AuthGate>
+  // P2-A: the connection strip is in the page flow under everything (it never covers an app's buttons)
+  if (route.page === 'run') return <AuthGate><WithStrip><RunApp key={route.id} appId={route.id} /></WithStrip></AuthGate>
   if (route.page === 'chat') return <AuthGate><ChatWindow /></AuthGate>
-  return <AuthGate><Portal route={route} /></AuthGate>
+  return <AuthGate><WithStrip><Portal route={route} /></WithStrip></AuthGate>
+}
+
+function WithStrip({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="relative min-h-0 flex-1">{children}</div>
+      <ConnectionBar />
+    </div>
+  )
 }

@@ -79,6 +79,7 @@ Idempotent: no. Side effect: external (a flow must pass an idempotency key; a re
 | `html` | string |  | Rich body; scripts, styles and event handlers are removed. |
 | `replyTo` | string (email) |  | Reply-to |
 | `attachments` | list of object |  | Attachments |
+| `body` | string |  | The flow step email sends this: HTML when it has tags, else text (used when text and html are absent). |
 
 **Outputs**
 

@@ -48,6 +48,8 @@ export interface FlowsDeps {
   kernel: Kernel
   notifications(): NotificationService | undefined
   actions(): ActionsService | undefined
+  /** P2-B print templates (the step document.generate) */
+  print?(): import('../print/service.ts').PrintService | undefined
   log(level: 'info' | 'warn' | 'error', msg: string): void
 }
 
@@ -58,7 +60,7 @@ export function createFlows(deps: FlowsDeps) {
   let approvals: ApprovalsService | null = null
   const engine = createFlowEngine({
     db: deps.db, meta: deps.meta, data: deps.data, forUser: deps.forUser, jobs: deps.kernel.jobs, store,
-    notifications: deps.notifications, actions: deps.actions, approvals: () => approvals, log: deps.log,
+    notifications: deps.notifications, actions: deps.actions, approvals: () => approvals, print: deps.print, log: deps.log,
   })
   const jobs = deps.kernel.jobs
   const db = (): SqlDb => {

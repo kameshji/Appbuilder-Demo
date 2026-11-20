@@ -9,6 +9,7 @@ import type { Ctx, UserContext } from './contracts.ts'
 import type { DataFileDef, TableDef } from '../../src/platform/contracts.ts'
 import type { QueryResponse, RowResponse, WorkspaceResponse } from '../../src/platform/http.ts'
 import type { QueryV2Response } from '../../src/platform/query.ts'
+import { idempotencyKeyOf, idempotentWrite } from './offline.ts'
 import type { ApiRouter } from './router.ts'
 import type { CoreServices } from './services.ts'
 import { hasAnyTableAccess } from './security.ts'
@@ -66,6 +67,9 @@ export function dataRoutes(router: ApiRouter, services: CoreServices): void {
     const t = await tableParam(services, ctx.params.table)
     ensureTableVisible(ctx.user!, t)
     const b = body(ctx)
+    // P2-A offline outbox: a retry with the same Idempotency-Key gets the first answer and writes nothing (offline.ts)
+    const key = idempotencyKeyOf(ctx)
+    if (key) return idempotentWrite(services, ctx.user!, key, t.id, 'create', async () => ({ row: await services.data.insert(ctx.user!, t, (b.values ?? {}) as never) }))
     return { row: await services.data.insert(ctx.user!, t, (b.values ?? {}) as never) }
   }, { auth: 'user' })
 
@@ -75,6 +79,8 @@ export function dataRoutes(router: ApiRouter, services: CoreServices): void {
     const b = body(ctx)
     // ifModifiedOn: optimistic concurrency (a stale save answers 409 with the current row)
     const opts = b.ifModifiedOn !== undefined && b.ifModifiedOn !== null ? { ifModifiedOn: b.ifModifiedOn as string } : undefined
+    const key = idempotencyKeyOf(ctx)
+    if (key) return idempotentWrite(services, ctx.user!, key, t.id, 'update', async () => ({ row: await services.data.update(ctx.user!, t, ctx.params.id, (b.changes ?? {}) as never, opts) }))
     return { row: await services.data.update(ctx.user!, t, ctx.params.id, (b.changes ?? {}) as never, opts) }
   }, { auth: 'user' })
 

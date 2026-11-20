@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, Paperclip, Upload, X } from 'lucide-react'
+import { Camera, FileText, Loader2, Paperclip, Upload, X } from 'lucide-react'
 import type { ColumnDef } from '@/platform/contracts'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import {
   attachmentIds, attachmentUrl, fileProblem, formatAttachmentCell, formatBytes, looksLikeImage, useAttachmentRefs,
 } from '@/runtime/attachments'
+import { preparePhoto } from '@/phone/image'
+import { CameraSheet, cameraAvailable } from '@/phone/CameraSheet'
+import { useDevice } from '@/phone/env'
 
 /** accepted MIME patterns of the column; image columns default to images only */
 export function acceptList(col: ColumnDef): string[] {
@@ -44,15 +47,25 @@ export function AttachmentField({ col, id, existing, pending, invalid, onExistin
   const [problem, setProblem] = useState('')
   const accept = acceptList(col)
 
-  const take = (list: FileList | null) => {
+  const capture = useRef<HTMLInputElement>(null)
+  const [camera, setCamera] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const device = useDevice()
+  const photos = col.type === 'image' || accept.some((a) => a.startsWith('image/'))
+
+  // P2-A: photos are turned upright and scaled to at most 1600 px (src/phone/image.ts) before they are kept
+  const take = async (list: FileList | File[] | null) => {
     if (!list || list.length === 0) return
+    setBusy(true)
     const bad: string[] = []
     const ok: File[] = []
-    for (const f of Array.from(list)) {
+    for (const raw of Array.from(list)) {
+      const f = raw.type.startsWith('image/') ? await preparePhoto(raw) : raw
       const p = fileProblem(f, { accept, maxSizeMB: col.maxSizeMB })
       if (p) bad.push(p)
       else ok.push(f)
     }
+    setBusy(false)
     setProblem(bad.join('; '))
     if (ok.length) onPendingChange(multiple ? [...pending, ...ok] : ok.slice(0, 1))
     onTouch()
@@ -111,13 +124,51 @@ export function AttachmentField({ col, id, existing, pending, invalid, onExistin
         accept={accept.length ? accept.join(',') : undefined}
         data-testid={`attachment-input-${col.name}`}
         onChange={(e) => {
-          take(e.target.files)
+          const files = e.target.files ? Array.from(e.target.files) : null
           e.target.value = ''
+          void take(files)
         }}
       />
-      <Button type="button" variant="outline" size="xs" onClick={() => input.current?.click()}>
-        <Upload /> {full ? 'Replace' : multiple ? 'Add files' : col.type === 'image' ? 'Choose image' : 'Choose file'}
-      </Button>
+      {photos && (
+        <input
+          ref={capture}
+          type="file"
+          hidden
+          accept="image/*"
+          capture="environment"
+          data-testid={`attachment-capture-${col.name}`}
+          onChange={(e) => {
+            const files = e.target.files ? Array.from(e.target.files) : null
+            e.target.value = ''
+            void take(files)
+          }}
+        />
+      )}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {photos && device.touch && (
+          <Button type="button" size="xs" className="min-h-9" onClick={() => capture.current?.click()} data-testid={`attachment-take-photo-${col.name}`}>
+            <Camera /> Take photo
+          </Button>
+        )}
+        {photos && !device.touch && cameraAvailable() && (
+          <Button type="button" variant="outline" size="xs" onClick={() => setCamera(true)} data-testid={`attachment-camera-${col.name}`}>
+            <Camera /> Use camera
+          </Button>
+        )}
+        <Button type="button" variant="outline" size="xs" className={device.touch ? 'min-h-9' : undefined} onClick={() => input.current?.click()}>
+          <Upload /> {full ? 'Replace' : multiple ? 'Add files' : col.type === 'image' ? 'Choose image' : 'Choose file'}
+        </Button>
+        {busy && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Preparing the photo" />}
+      </div>
+      {camera && (
+        <CameraSheet
+          onClose={() => setCamera(false)}
+          onPhoto={(f) => {
+            setCamera(false)
+            void take([f])
+          }}
+        />
+      )}
       {col.maxSizeMB ? <span className="ml-2 text-[11px] text-muted-foreground">max {col.maxSizeMB} MB</span> : null}
       {problem !== '' && (
         <p className="text-xs text-destructive" role="alert">

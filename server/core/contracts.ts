@@ -564,7 +564,8 @@ export interface SecurityEngine {
 export interface DataService {
   query(ctx: UserContext | null, table: TableDef, q: Query): Promise<{ rows: Record<string, QueryValue>[]; total?: number; truncated: boolean }>
   /** Query v2 (POST /api/v1/query): RBAC, row filters and column security applied inside the one statement */
-  queryV2(ctx: UserContext | null, table: TableDef, plan: unknown): Promise<QueryV2Response>
+  /** opts.timeoutMs (P2-C dashboards): a shorter statement timeout than the server's default for this query */
+  queryV2(ctx: UserContext | null, table: TableDef, plan: unknown, opts?: { timeoutMs?: number }): Promise<QueryV2Response>
   insert(ctx: UserContext | null, table: TableDef, values: Record<string, QueryValue>): Promise<Record<string, QueryValue>>
   /**
    * opts.ifModifiedOn (optimistic concurrency): the row's modifiedOn the caller last saw (ISO time); when the row changed

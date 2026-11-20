@@ -309,6 +309,40 @@ by natural order ascending. `Sort(Sort(T, A), B)` = keys `[B, A]`.
   differ in the last digits from the engine's floating-point sum (`0.1 + 0.2`). Return `double precision` for measures; a PostgreSQL parity run
   should compare measures with a small relative tolerance (1e-9).
 
+### 6b. Dashboard extensions (P2 package C)
+
+Four additions to `AggregateV2` / `MeasureV2` for dashboards (`src/platform/query.ts`). All are validated by `checkPlan`, executed by the
+reference executor (`src/fx/query/reference.ts`, calendar arithmetic in `src/fx/query/buckets.ts`) and built into the same single statement by
+the PostgreSQL builder (`server/connectors/postgres/query-v2.ts`). The translator does not produce them (no formula maps to them); the
+dashboards' measure builder does (`src/dashboards/measures.ts`, [dashboards.md](dashboards.md)).
+
+| Extension | Plan | Meaning | PostgreSQL |
+| --- | --- | --- | --- |
+| Count distinct | `{ name, fn: 'countDistinct', col }` | number of different non-NULL values of `col` (any kind but `other`) in the group, by the group-key rules: text ignoring case, dates by value. No `expr`, no `filter` | `count(DISTINCT fold(col))` for text, `count(DISTINCT col)` otherwise |
+| Date buckets | `aggregate.buckets: [{ name, col, unit, fiscalYearStart?, weekStart?, timeZone? }]` (at most 4; groups after `groupBy`) | a computed group key over a date / datetime column. `day`, `week` (Monday, or Sunday with `weekStart: 7`), `month`, `quarter`, `year`, `fiscalQuarter`, `fiscalYear` (the year starting on the 1st of `fiscalYearStart`, default 4 = April): the bucket's first calendar day, output kind `date`; `weekday` (1 Monday .. 7 Sunday) and `hour` (0-23, datetime only): numbers. A datetime column is bucketed by its calendar date (and hour) in `timeZone` (IANA, default UTC); NULL cells form the NULL group | `d = (col AT TIME ZONE $tz)::date` (datetime) or `col`; `date_trunc('month' / 'quarter' / 'year', d)`, `d - (isodow - 1)`, fiscal units as `date_trunc(unit, d - make_interval(months => s - 1)) + make_interval(months => s - 1)`; `extract(isodow / hour ...)` |
+| Group order "key" | `aggregate.groupOrder: 'key'` | groups ordered by `aggregate.sort`, then by every group key ascending (normalised as in section 5; per key, a NULL group before the group whose key it ties with, e.g. NULL before `''`); a text group's output value is its smallest spelling in code point order (not the first row's) | one pass `GROUP BY` the keys with `min(col COLLATE "C")` for text values; no first-row lookup, no `row_number()`, no join back to the rows |
+| Top N with others | `aggregate.top: { n, others? }` (needs `groupOrder: 'key'`, `n` 0..5000) | keep the first `n` output groups; with `others`, one more row (only when some input row is outside them) whose single group column (a text column; exactly one group key) holds the label and whose measures are computed over every input row outside the kept groups: exact for avg and count distinct too | `WITH g AS (...), k AS (g ORDER BY ... LIMIT n)` then `UNION ALL` one aggregate over the rows with `NOT EXISTS (k WHERE k.key IS NOT DISTINCT FROM key(row))`, `HAVING count(*) > 0` |
+
+`count: true` on an aggregate counts output rows (others row included). Output kinds of a bucket: `bucketKind(unit)`; the wire carries
+dates as `YYYY-MM-DD` (the browser makes them local midnight, `rowsFromWire`). Period comparison, running totals, computed measures (ratio
+of sums), targets and gap filling are NOT plan features: the measure builder runs a second (comparison) or third (targets) plan and does the
+arithmetic over the aggregated rows (documented in [dashboards.md](dashboards.md#the-measure-builder)).
+
+**Parity** (`server/connectors/postgres/query-v2-aggregates.integration.test.ts`): the corpus `src/fx/query/testdata-agg.ts` (seed 20261119,
+285 plans: every measure set with and without groups in both group orders, every bucket unit over date and datetime columns with fiscal
+starts 1/4/7/10, Monday and Sunday weeks, time zones UTC, Asia/Kolkata, America/Los_Angeles and Pacific/Chatham, two-bucket heat maps, top
+N 0..50 with and without others, filters and `take` before the aggregate, an empty input) over 280 rows with NULLs, `''`, case variants and
+ties: PostgreSQL returns the reference executor's rows in the same order for every plan, with the process in UTC, Asia/Kolkata,
+America/Los_Angeles and Pacific/Chatham (0 mismatches). The same test checks that a "key" aggregate's statement has no `row_number`,
+`DISTINCT ON` or join. Unit cases: `src/fx/query/aggregates.test.ts`. Security over HTTP (own-row scope, row rules, no access, hidden
+columns in count distinct and group keys): `server/core/dashboards/dashboards.integration.test.ts`.
+
+**Scale** (`scripts/exit-check/p2-dashboard.mjs`, same sandbox as section 15): 1,000,000 production rows, a restricted user who reads
+only their own rows (100,000 rows in all, about 4,750 in the current month), the seven-tile "Production overview" dashboard as ten
+"key" aggregate plans with buckets, expressions, comparisons and a Pareto, one batch: median 478-619 ms cold (no cache), 7-8 ms cached; each
+production-log plan about 160 ms (the owner and the date-range indexes; no index matches both). See
+[../admin/dashboards.md](../admin/dashboards.md#performance).
+
 ## 7. Search
 
 `search: { text, columns }` keeps rows where **any** listed text column contains `text` ignoring case; NULL cells never match;

@@ -14,7 +14,7 @@ describe('module registry', () => {
     }
   })
   it('lists the planned Dev and User mode modules', () => {
-    expect(modulesFor('dev').map((m) => m.key)).toEqual(['datamodel', 'flows', 'approvals', 'dashboards', 'reports', 'agents', 'sites', 'admin', 'templates'])
+    expect(modulesFor('dev').map((m) => m.key)).toEqual(['datamodel', 'flows', 'approvals', 'dashboards', 'printtemplates', 'reports', 'agents', 'sites', 'admin', 'templates'])
     expect(modulesFor('user').map((m) => m.key)).toEqual(['approvals', 'dashboards', 'tasks', 'mentions', 'myreports', 'notes', 'chat', 'files', 'documents', 'mail'])
   })
   it('Tasks and Mentions are live built-in User mode pages (core data model)', () => {
@@ -36,7 +36,9 @@ describe('module registry', () => {
   it('planned modules route to their placeholder; live ones to their route', () => {
     // Flows is real (P1 package A)
     expect(moduleRoute(moduleByKey('flows')!)).toEqual({ page: 'flows' })
-    expect(moduleRoute(moduleByKey('dashboards')!)).toEqual({ page: 'soon', id: 'dashboards' })
-    expect(moduleRoute({ ...moduleByKey('dashboards')!, status: 'live', route: { page: 'apps' } })).toEqual({ page: 'apps' })
+    // Dashboards is real (P2 package C): a built-in page in both modes
+    expect(moduleRoute(moduleByKey('dashboards')!)).toEqual({ page: 'u', id: 'dashboards' })
+    expect(moduleRoute(moduleByKey('agents')!)).toEqual({ page: 'soon', id: 'agents' })
+    expect(moduleRoute({ ...moduleByKey('agents')!, status: 'live', route: { page: 'apps' } })).toEqual({ page: 'apps' })
   })
 })

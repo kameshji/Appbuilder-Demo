@@ -6,6 +6,7 @@ import { evaluatorOf } from './store'
 import { useAppStore, useAppStoreApi } from './context'
 import { useUi } from './ui'
 import { placeStyle, themeOf } from './layout'
+import { wantsHitArea } from '@/phone/touch'
 
 export type RenderMode = 'design' | 'run'
 
@@ -149,6 +150,8 @@ export const RenderNode = memo(function RenderNode({ node, ctx, mode, ev, pk, pd
   }
 
   const tooltip = !design && typeof p.Tooltip === 'string' && p.Tooltip ? p.Tooltip : undefined
+  // P2-A: an interactive UI component smaller than 44 px gets an invisible touch area on touch devices (phone.css)
+  const hit = !design && visible && wantsHitArea(node.type) && (g.w < 44 || g.h < 44)
   const errorList = Object.entries(ne.errors)
   const Render = def.render
   return (
@@ -159,6 +162,7 @@ export const RenderNode = memo(function RenderNode({ node, ctx, mode, ev, pk, pd
       data-node-type={node.type}
       data-container={def.isContainer ? '1' : undefined}
       data-flow={pk !== 'manual' ? pk : undefined}
+      data-hit={hit ? '1' : undefined}
       title={tooltip}
       style={style}
     >

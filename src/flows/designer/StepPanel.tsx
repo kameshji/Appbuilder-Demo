@@ -25,6 +25,7 @@ import { refFor } from './StepPicker'
 import { textOf, textFx } from './literal'
 import { overlayOf, fmtDuration, type StepOverlay } from './overlay'
 import { StatusBadge } from '../RunViews'
+import { printApi } from '@/print/api'
 
 type AnyStep = Step & Record<string, unknown>
 
@@ -268,9 +269,10 @@ function KindForm({ s, set }: { s: AnyStep; set(p: Record<string, unknown>, key?
         <PeoplePicker stepId={s.id} field="cc" label="Cc" value={s.cc as string} onChange={(v) => set({ cc: v || undefined }, `${s.id}:cc`)} testId="email-cc" />
         {fx('subject', 'Subject', { required: true })}
         <RichBody stepId={s.id} value={s.body as string} onChange={(v) => set({ body: v }, `${s.id}:body`)} />
-        {fx('attachments', 'Attachments (attachment ids)', { formulaOnly: true })}
+        {fx('attachments', 'Attachments (attachment ids, or {fileToken: Steps.<name>.Output.FileToken} for a generated document)', { formulaOnly: true })}
       </Section>
     )
+    case 'document.generate': return <DocumentForm s={s} set={set} fx={fx} ro={ro} />
     case 'http': return <HttpForm s={s} set={set} />
     case 'action': return <ActionForm s={s} set={set} />
     case 'callFlow': return <CallFlowForm s={s} set={set} />
@@ -623,5 +625,40 @@ function AdvancedForm({ s, set }: { s: AnyStep; set(p: Record<string, unknown>, 
       </Section>
       <Section title="Identity"><p className="text-[11px] text-muted-foreground">Step id <code className="font-mono">{s.id}</code> (run after and run history use it). Formulas read it as <code className="font-mono">Steps.{s.name}</code>.</p></Section>
     </>
+  )
+}
+
+/** P2-B: the step document.generate (print templates) */
+function DocumentForm({ s, set, fx, ro }: { s: Record<string, unknown> & { id: string }; set(p: Record<string, unknown>, key?: string): void; fx(field: string, label: string, o?: Record<string, unknown>): React.ReactNode; ro: boolean }) {
+  const [list, setList] = useState<{ id: string; name: string; table: string | null }[]>([])
+  useEffect(() => { printApi.list().then((r) => setList(r.items.filter((t) => t.status === 'published').map((t) => ({ id: t.id, name: t.name, table: t.table })))).catch(() => {}) }, [])
+  const output = (s.output as string) ?? 'file'
+  return (
+    <Section title="Generate a document" hint="A PDF (or Word file) from a print template, made as the flow's run-as identity.">
+      <Labeled label="Print template">
+        <select className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm" disabled={ro} value={(s.template as string) ?? ''} onChange={(e) => set({ template: e.target.value })} data-testid="f-template">
+          <option value="">Choose...</option>
+          {list.map((t) => <option key={t.id} value={t.name}>{t.name}{t.table ? ` (${t.table})` : ''}</option>)}
+        </select>
+        <FieldError stepId={s.id} field="template" />
+      </Labeled>
+      {fx('record', 'Record (id), for templates of one record', { formulaOnly: true })}
+      <Labeled label="Output">
+        <select className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm" disabled={ro} value={output} onChange={(e) => set({ output: e.target.value === 'file' ? undefined : e.target.value })} data-testid="f-output">
+          <option value="file">Only the file (for an email)</option><option value="record">Into a file column of the record</option><option value="documents">Into the record's Documents</option>
+        </select>
+      </Labeled>
+      {output === 'record' && (
+        <Labeled label="File column">
+          <input className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm" disabled={ro} value={(s.column as string) ?? ''} onChange={(e) => set({ column: e.target.value || undefined })} data-testid="f-column" />
+          <FieldError stepId={s.id} field="column" />
+        </Labeled>
+      )}
+      {output === 'documents' && (
+        <Labeled label="Number sequence (optional)">
+          <input className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm" disabled={ro} value={(s.numberSequence as string) ?? ''} onChange={(e) => set({ numberSequence: e.target.value || undefined })} />
+        </Labeled>
+      )}
+    </Section>
   )
 }

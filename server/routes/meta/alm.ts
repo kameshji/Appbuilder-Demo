@@ -40,6 +40,7 @@ import { assertAdminRemains } from './security.ts'
 import { installPkgFiles, readPkgFiles } from './solutions.ts'
 import { afterApplyFlows, applyFlows, planFlows, readPkgFlows, type FlowPlanOps, type PkgFlow } from '../../core/flows/alm.ts'
 import { applyApprovalPolicies, planApprovalPolicies, readPkgApprovalPolicies, type ApprovalPolicyOps, type PkgApprovalPolicy } from '../../core/approvals/alm.ts'
+import { applyPrintTemplates, planPrintTemplates, readPkgPrintTemplates, type PrintTemplateOps, type PkgPrintTemplate } from '../../core/print/alm.ts'
 import type { PkgFile } from './solutions.ts'
 
 /* ------------------------------------------------------------------ package */
@@ -58,6 +59,8 @@ export interface SolutionPkg {
   flows?: PkgFlow[]
   /** P1-C approval policies; undefined: an older package (the solution's policies are left alone) */
   approvalPolicies?: PkgApprovalPolicy[]
+  /** P2-B */
+  printTemplates?: PkgPrintTemplate[]
   /** sha256 of the package content (without exportedOn) */
   hash: string
 }
@@ -112,7 +115,7 @@ export function readSolutionPkg(text: unknown, s: Services): SolutionPkg | null 
       version: typeof head.version === 'string' && VERSION_RE.test(head.version) ? head.version : '1.0.0',
       ...(typeof head.description === 'string' && head.description ? { description: head.description } : {}),
     },
-    apps, tables, roles, connections, files: readPkgFiles(doc.files), flows: readPkgFlows(doc.flows), approvalPolicies: readPkgApprovalPolicies(doc.approvalPolicies),
+    apps, tables, roles, connections, files: readPkgFiles(doc.files), flows: readPkgFlows(doc.flows), approvalPolicies: readPkgApprovalPolicies(doc.approvalPolicies), printTemplates: readPkgPrintTemplates(doc.printTemplates),
     // the content, not the text: two exports of the same solution differ only in exportedOn
     hash: createHash('sha256').update(JSON.stringify({ ...doc, exportedOn: null })).digest('hex'),
   }
@@ -183,6 +186,7 @@ interface Ops {
   flowOps?: FlowPlanOps
   /** P1-C: approval policies to create, change, remove */
   approvalOps?: ApprovalPolicyOps
+  printOps?: PrintTemplateOps
 }
 
 export interface PlanResult { plan: SolutionPlan; ops: Ops }
@@ -450,6 +454,13 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
   warnings.push(...ap.warnings)
   if (ap.matched) matched = true
   ops.approvalOps = ap.ops
+  // print templates (P2-B)
+  const pp = await planPrintTemplates(s, user, pkg.printTemplates, old.filter((x) => x.kind === 'printTemplate').map((x) => x.id))
+  items.push(...pp.items)
+  problems.push(...pp.problems)
+  warnings.push(...pp.warnings)
+  if (pp.matched) matched = true
+  ops.printOps = pp.ops
 
   const planMode: SolutionPlan['mode'] = matched ? 'upgrade' : 'install'
   if (planMode === 'upgrade' && !canAdmin) problems.push('Upgrading a solution in place changes existing apps, tables and roles: only administrators of this environment can do it.')
@@ -770,6 +781,10 @@ export async function applySolution(s: Services, ctx: Ctx, pkg: SolutionPkg, res
       if (ops.approvalOps) await applyApprovalPolicies(s, u.user.id, ops.approvalOps, pkg.head.id)
       if (pkg.approvalPolicies) for (const p of pkg.approvalPolicies) components.push({ kind: 'approvalPolicy', id: p.id })
       else for (const c of ops.existingSolution?.components ?? []) if (c.kind === 'approvalPolicy') components.push(c)
+      // print templates (P2-B)
+      if (ops.printOps) await applyPrintTemplates(s, u.user.id, ops.printOps, pkg.head.id)
+      if (pkg.printTemplates) for (const p of pkg.printTemplates) components.push({ kind: 'printTemplate', id: p.id })
+      else for (const c of ops.existingSolution?.components ?? []) if (c.kind === 'printTemplate') components.push(c)
 
       const sols = await s.meta.solutions.list()
       const prev = ops.existingSolution

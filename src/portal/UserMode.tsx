@@ -7,6 +7,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { RunApp } from '@/runtime/RunApp'
 import { deviceOf } from '@/runtime/sizes'
 import { go } from '@/router'
+import { setAppManifest } from '@/phone/pwa'
+import { OpenOnPhone } from '@/phone/QrCode'
+import { AddToHome } from '@/phone/AddToHome'
 import { Empty, PageHeader, fmtRelative, useToast } from './kit'
 import { matches, useSearch } from './Shell'
 import { canRun, closeAppTab, openAppTab, openAppWindow, useWorkspace } from './workspace'
@@ -104,9 +107,12 @@ function AppTile({ app }: { app: AppMeta }) {
           <div className="mt-0.5 truncate text-xs text-muted-foreground">{app.description || `Updated ${fmtRelative(app.modifiedOn)}`}</div>
         </div>
         <Button size="xs" onClick={() => openAppTab(app.id)}><Play className="fill-current" /> Open</Button>
-        <Button size="icon-sm" variant="ghost" title="Open in new window" aria-label={`Open ${app.name} in new window`} data-testid={`launcher-window-${app.id}`} onClick={() => inWindow(app.id)}>
-          <ExternalLink />
-        </Button>
+        <span className="hidden md:inline-flex">
+          <Button size="icon-sm" variant="ghost" title="Open in new window" aria-label={`Open ${app.name} in new window`} data-testid={`launcher-window-${app.id}`} onClick={() => inWindow(app.id)}>
+            <ExternalLink />
+          </Button>
+        </span>
+        <OpenOnPhone appId={app.id} appName={app.name} />
       </div>
     </div>
   )
@@ -122,6 +128,7 @@ export function MyApps() {
   return (
     <div data-testid="page-my-apps">
       <PageHeader icon={LayoutGrid} title="My apps" subtitle={`${apps.length} ${apps.length === 1 ? 'app' : 'apps'} you can use`} />
+      <AddToHome />
       {apps.length === 0 ? (
         <Empty icon={LayoutGrid} title="No apps for you yet" description="Apps appear here when an administrator adds them to one of your security roles." />
       ) : (
@@ -182,7 +189,9 @@ export function TabStrip({ activeId }: { activeId: string | null }) {
   const apps = usePlatform((s) => s.apps)
   const inWindow = useOpenInWindow()
   return (
-    <div role="tablist" aria-label="Open apps" data-testid="tab-strip" className="flex h-10 shrink-0 items-end gap-1 overflow-x-auto border-b border-border bg-muted/50 px-2 pt-1.5">
+    <>
+    <PhoneTabSwitcher activeId={activeId} />
+    <div role="tablist" aria-label="Open apps" data-testid="tab-strip" className="hidden h-10 shrink-0 items-end gap-1 overflow-x-auto border-b border-border bg-muted/50 px-2 pt-1.5 md:flex">
       <button
         type="button"
         role="tab"
@@ -261,6 +270,62 @@ export function TabStrip({ activeId }: { activeId: string | null }) {
         )
       })}
     </div>
+    </>
+  )
+}
+
+/**
+ * P2-A phones (below md): the tab strip becomes one row with a switcher: the shown app's name opens a list of the open
+ * apps (and My apps), each with a close button. The apps stay mounted as with tabs.
+ */
+function PhoneTabSwitcher({ activeId }: { activeId: string | null }) {
+  const tabs = useWorkspace((s) => s.tabs)
+  const apps = usePlatform((s) => s.apps)
+  const current = activeId ? apps.find((a) => a.id === activeId) : null
+  if (tabs.length === 0 && !activeId) return null
+  return (
+    <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border bg-muted/50 px-2 md:hidden" data-testid="tab-switcher">
+      <Button variant="ghost" size="sm" className="h-9 px-2" onClick={() => go({ page: 'u' })} aria-label="My apps" data-testid="tab-switcher-home">
+        <LayoutGrid />
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm" className="h-9 min-w-0 flex-1 justify-between" data-testid="tab-switcher-button">
+            <span className="flex min-w-0 items-center gap-1.5">
+              {current ? <DeviceIcon app={current} className="size-4 shrink-0" /> : <LayoutGrid className="size-4 shrink-0" />}
+              <span className="truncate">{current?.name ?? 'My apps'}</span>
+            </span>
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">{tabs.length} open <ChevronDown className="size-3.5" /></span>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-[min(20rem,calc(100vw-1rem))]">
+          <DropdownMenuItem className="min-h-11" onSelect={() => go({ page: 'u' })}><LayoutGrid /> My apps</DropdownMenuItem>
+          {tabs.map((id) => {
+            const app = apps.find((a) => a.id === id)
+            const name = app?.name ?? 'App'
+            return (
+              <DropdownMenuItem key={id} className="min-h-11" onSelect={() => go({ page: 'u', id })} data-testid={`tab-switcher-item-${id}`}>
+                {app ? <DeviceIcon app={app} className="size-4" /> : <AppWindow className="size-4" />}
+                <span className="min-w-0 flex-1 truncate">{name}</span>
+                <button
+                  type="button"
+                  aria-label={`Close ${name}`}
+                  className="grid size-9 place-items-center rounded hover:bg-muted"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    closeAppTab(id, activeId)
+                  }}
+                >
+                  <X className="size-4" />
+                </button>
+              </DropdownMenuItem>
+            )
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   )
 }
 
@@ -270,6 +335,8 @@ export function TabStrip({ activeId }: { activeId: string | null }) {
  */
 export function AppTabPanes({ activeId }: { activeId: string | null }) {
   const tabs = useWorkspace((s) => s.tabs)
+  // P2-A: "Add to Home screen" while an app is shown adds that app (its own manifest)
+  useEffect(() => setAppManifest(activeId), [activeId])
   return (
     <>
       {tabs.map((id) => (

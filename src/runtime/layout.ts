@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react'
 import type { AppDef } from '@/contracts'
 import type { Geom, LayoutKind } from './evaluator'
+import { deviceOf } from './sizes'
 
 /** How the parent lays out a child: kind + the parent's children-box size at design resolution. */
 export interface ParentLayout { kind: LayoutKind; dw: number; dh: number; alignItems: string }
@@ -136,4 +137,32 @@ export function surfaceSize(app: AppDef, area: { w: number; h: number }): { w: n
   }
   const scale = Math.min(1, aw / w, ah / h)
   return { w: Math.round(w), h: Math.round(h), scale }
+}
+
+/* ------------------------------------------------------------------ phones and tablets (P2 package A) */
+
+/**
+ * The layout rule for a phone- or tablet-size app on a touch device (docs/dev/phone.md "Layout rule"):
+ *  - width: 1:1 and fluid. The screen is as wide as the device; the design width is the minimum breakpoint, so a
+ *    device narrower than the design scales the screen down to fit (never a horizontal scroll), a wider one (a large
+ *    phone, landscape) stretches it: controls follow their horizontal anchors (Stretch / End / Center / Scale).
+ *  - height: at least the design height and at least the device height. Taller content scrolls vertically; a device
+ *    taller than the design grows the screen, so bottom-anchored controls stay at the bottom.
+ * Returns the screen size, the scale and whether the area must scroll vertically.
+ */
+export function fluidSurface(app: Pick<AppDef, 'width' | 'height'>, area: { w: number; h: number }): { w: number; h: number; scale: number; scroll: boolean } {
+  const aw = Math.max(1, area.w)
+  const ah = Math.max(1, area.h)
+  const minW = Math.max(MIN_PW, Math.min(app.width, 1400))
+  const w = Math.max(minW, Math.round(aw))
+  const scale = Math.min(1, aw / w)
+  const h = Math.max(app.height, Math.round(ah / scale))
+  return { w, h, scale, scroll: h * scale > ah + 1 }
+}
+
+/** does the fluid rule apply? A phone or tablet design (sizes.ts deviceOf) on a touch device or in an area under 600 px wide */
+export function usesFluidLayout(app: Pick<AppDef, 'width' | 'height' | 'scaleMode'>, area: { w: number; h: number }, touch: boolean): boolean {
+  if (app.scaleMode === 'fit') return false
+  if (deviceOf(app.width, app.height) === 'Desktop') return false
+  return touch || area.w < 600
 }

@@ -23,6 +23,7 @@ import { ComingSoon } from './ComingSoon'
 import { MentionsPage, TasksPage } from './TasksPage'
 import { ApprovalsPage } from '@/approvals/ApprovalsPage'
 import { ReportsPage } from './Reports'
+import { PrintTemplatesPage } from '@/print/PrintTemplatesPage'
 import { AdminConsole } from './Admin'
 import { DataModel } from './model/DataModel'
 import { FlowsPage } from '@/flows/FlowsPage'
@@ -32,6 +33,7 @@ import { referenceOf, rememberErrorReference } from '@/platform/errorMessages'
 import { useChatDock } from '@/chat/dock'
 import { MyApps, useTabSync } from './UserMode'
 import { moduleByKey, type ShellMode } from './modules'
+import { DashboardsPage } from './dashboards/DashboardsPage'
 import { useCaps } from './security'
 import { readMode, useUserKey, useWorkspace, useWorkspaceKey, writeMode } from './workspace'
 
@@ -54,6 +56,8 @@ function DevPage({ route }: { route: PortalRoute }) {
     case 'flows': return <FlowsPage />
     case 'flow': return <FlowsPage flowId={route.id} />
     case 'reports': return <ReportsPage />
+    case 'printtemplates': return <PrintTemplatesPage />
+    case 'printtemplate': return <PrintTemplatesPage id={route.id} />
     default: return <Home />
   }
 }
@@ -152,7 +156,7 @@ function Frame({ route }: { route: Route }) {
   }, [routed, route, user, canDev])
 
   // built-in User mode pages of the core data model (P0-N): #u-tasks, #u-mentions (not app tabs)
-  const builtin = routed === 'user' && route.page === 'u' && 'id' in route && (route.id === 'tasks' || route.id === 'mentions' || route.id === 'reports' || route.id === 'approvals') ? route.id : null
+  const builtin = routed === 'user' && route.page === 'u' && 'id' in route && (route.id === 'tasks' || route.id === 'mentions' || route.id === 'reports' || route.id === 'approvals' || route.id === 'dashboards') ? route.id : null
   const activeTab = routed === 'user' && route.page === 'u' && 'id' in route && !builtin ? route.id : null
   useTabSync(activeTab)
 
@@ -171,6 +175,7 @@ function Frame({ route }: { route: Route }) {
   else if (builtin === 'mentions') page = <MentionsPage />
   else if (builtin === 'reports') page = <ReportsPage />
   else if (builtin === 'approvals') page = <ApprovalsPage />
+  else if (builtin === 'dashboards') page = <DashboardsPage />
   else if (routed === 'user') page = <MyApps />
   else page = <DevPage route={route} />
 

@@ -3,7 +3,7 @@
  * of the kinds; this adds how a maker finds them). Recently used kinds are kept per user in localStorage.
  */
 import {
-  Bell, Box, Braces, Calculator, CircleStop, Clock, Database, FilePlus2, FileSearch, FileX2, GitBranch, Globe, Hourglass, ListTree,
+  Bell, Box, Braces, Calculator, CircleStop, Clock, Database, FilePlus2, FileText, FileSearch, FileX2, GitBranch, Globe, Hourglass, ListTree,
   Mail, PencilLine, Plug, Repeat, Repeat1, Reply, Rows3, ShieldCheck, Split, Variable, Webhook, Workflow, Zap, type LucideIcon,
 } from 'lucide-react'
 
@@ -26,6 +26,7 @@ export const KINDS: Record<string, KindInfo> = {
   'data.update': { short: 'UpdateRow', group: 'Data', title: 'Update a row', blurb: 'Change columns of a row.', icon: PencilLine, tone: 'text-sky-600 bg-sky-500/10' },
   'data.delete': { short: 'DeleteRow', group: 'Data', title: 'Delete a row', blurb: 'Delete a row of a table.', icon: FileX2, tone: 'text-sky-600 bg-sky-500/10' },
   compose: { short: 'Compose', group: 'Data', title: 'Compose', blurb: 'Calculate a value once and use it in later steps.', icon: Calculator, tone: 'text-sky-600 bg-sky-500/10' },
+  'document.generate': { short: 'GenerateDocument', group: 'Data', title: 'Generate a document', blurb: 'Make a PDF from a print template: keep it for an email, put it in a file column, or store it in the record\'s Documents.', icon: FileText, tone: 'text-sky-600 bg-sky-500/10' },
   setVariable: { short: 'SetVariable', group: 'Data', title: 'Set variable', blurb: 'Change a variable of the flow (declare it in the flow settings).', icon: Variable, tone: 'text-sky-600 bg-sky-500/10' },
   approval: { short: 'Approval', group: 'Approvals', title: 'Start and wait for an approval', blurb: 'Ask people to approve or reject; the run waits for the answer.', icon: ShieldCheck, tone: 'text-emerald-600 bg-emerald-500/10' },
   notify: { short: 'Notify', group: 'Notifications', title: 'Notify', blurb: 'Send a notification to people (the bell, and email if you want).', icon: Bell, tone: 'text-amber-600 bg-amber-500/10' },

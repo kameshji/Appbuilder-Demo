@@ -58,7 +58,7 @@ export const TIMEOUT_JOB = 'flow.timeout'
 
 const DATA_KINDS = new Set(['data.get', 'data.list', 'data.create', 'data.update', 'data.delete'])
 const WRITE_KINDS = new Set(['data.create', 'data.update', 'data.delete'])
-const EXTERNAL_KINDS = new Set(['http', 'action', 'email', 'notify'])
+const EXTERNAL_KINDS = new Set(['http', 'action', 'email', 'notify', 'document.generate'])
 const SUSPEND_KINDS = new Set(['delay', 'approval', 'callFlow', 'waitForCallback'])
 
 export interface EngineDeps {
@@ -71,6 +71,8 @@ export interface EngineDeps {
   notifications(): NotificationService | undefined
   actions(): ActionsService | undefined
   approvals(): ApprovalsService | null
+  /** P2-B print templates (the step document.generate) */
+  print?(): import('../print/service.ts').PrintService | undefined
   log(level: 'info' | 'warn' | 'error', msg: string): void
 }
 
@@ -1022,6 +1024,37 @@ export function createFlowEngine(deps: EngineDeps) {
         const o = (r.output ?? {}) as { status?: number; headers?: unknown; body?: unknown }
         const output = { Status: o.status ?? 0, Headers: jsonToFx(o.headers ?? {}), Body: jsonToFx(o.body ?? null) }
         return { output: toStored(output as FxValue), input: inputs }
+      }
+      case 'document.generate': {
+        // P2-B: print templates, as the run-as identity; the token comes from the idempotency key (a retry overwrites it)
+        const print = deps.print?.()
+        if (!print) throw new StepError('Generating documents is not available on this server.', false, 'unavailable')
+        if (!c.ident) throw new StepError('The flow has no identity to generate the document as.', true)
+        const recordId = s.record ? rowIdOf(await fx(c, s.record, 'record')) : null
+        const output = s.output ?? 'file'
+        const input = { template: s.template, record: recordId, output, ...(s.column ? { column: s.column } : {}) }
+        if (c.run.dryRun) return { output: { FileToken: null, FileName: `${s.template}.pdf`, Pages: 0, Warnings: [], Simulated: true }, input }
+        const token = `gen_${createHash('sha256').update(idem).digest('base64').replace(/[^A-Za-z0-9]/g, '').slice(0, 24).padEnd(24, 'x')}`
+        try {
+          if (output === 'documents') {
+            if (!recordId) throw new StepError('record is blank.', true)
+            const d = await print.toDocuments(s.template, recordId, c.ident, { source: `flow:${c.run.flowId}`, fixedIdentity: true, ...(s.numberSequence ? { numberSequence: s.numberSequence } : {}) })
+            return { output: { FileToken: d.file.token, FileName: d.name, Pages: d.file.pages, Warnings: d.file.warnings, DocumentId: d.documentId, AttachmentId: d.attachmentId }, input }
+          }
+          const g = await print.generate(s.template, recordId ?? undefined, c.ident, { source: `flow:${c.run.flowId}`, fixedIdentity: true, token })
+          const out: Record<string, unknown> = { FileToken: g.token, FileName: g.fileName, Pages: g.pages, Warnings: g.warnings }
+          if (output === 'record') {
+            if (!recordId) throw new StepError('record is blank.', true)
+            const t = await print.tableOfTemplate(s.template)
+            const updated = await runWithWork({ chain: [...c.run.chain, `flow:${c.run.flowId}:${recordId}`].slice(-32) }, () => deps.data().update(c.ident, t, recordId, { [String(s.column)]: g.token })) as Record<string, unknown>
+            out.AttachmentId = updated[String(s.column)] ?? null
+          }
+          return { output: toStored(jsonToFx(out)), input }
+        } catch (e) {
+          if (e instanceof StepError) throw e
+          const st = (e as { status?: number }).status
+          throw new StepError((e as Error).message, typeof st === 'number' && st >= 400 && st < 500)
+        }
       }
       default:
         throw new StepError(`The step kind ${s.kind} cannot run here.`, true)

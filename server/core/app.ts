@@ -34,6 +34,11 @@ import { wireActions } from './actions/wiring.ts'
 import { flowRoutes } from './flows/routes.ts'
 import { createApprovals } from './approvals/service.ts'
 import { approvalRoutes } from './approvals/routes.ts'
+import { createPrintService } from './print/service.ts'
+import { printRoutes } from './print/routes.ts'
+import { dashboardRoutes } from './dashboards/routes.ts'
+import { pwaRoutes } from './pwa.ts'
+import { offlineRoutes } from './offline.ts'
 
 export interface AppServer {
   services: CoreServices
@@ -99,6 +104,9 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   // identity basics (package I): second step, reset, invitations, sessions, email relay, policy, API keys
   identityRoutes(router, services)
   dataRoutes(router, services)
+  // P2-A phone: web app manifests, icons, the service worker; offline store keys and device wipe
+  pwaRoutes(router, services)
+  offlineRoutes(router, services)
   attachmentRoutes(router, services)
   metaRoutes(router, services)
   kernelRoutes(router, services)
@@ -121,6 +129,12 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   const approvals = createApprovals(services)
   services.approvals = approvals
   approvalRoutes(router, services, () => approvals)
+  // P2-B: print templates (PDF and Word output, letterhead, generated files, bulk jobs)
+  const print = createPrintService(services)
+  services.print = print
+  printRoutes(router, services, () => print)
+  // P2-C: dashboards (definitions, settings, the batch query endpoint)
+  dashboardRoutes(router, services)
   if (opts.boot !== false) {
     await services.boot()
     if (services.ready()) {
