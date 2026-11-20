@@ -631,6 +631,12 @@ A table created through the API on the default connection becomes the physical t
 with `_2`, `_3`. Identifiers: `^[A-Za-z_][A-Za-z0-9_]{0,62}$`, always double-quoted (so `createdOn` keeps its case). **Any name
 starting with `ab_` is refused** (403): the metadata tables are not reachable through a connector, and `listSourceTables` hides them.
 
+**Balance tables** (P3 package P, [balances.md](balances.md)): a data table whose `def.balance` names its movements table is
+an ordinary data table; the platform inserts and updates its rows inside the movement's transaction. The declaration lives in
+`ab_tables.def`, so package P added **no schema version step** (`SCHEMA_VERSION` stays where it was); its locks are
+transaction-scoped advisory locks `pg_advisory_xact_lock(hashtext('ab.balance:<schema>:<table id>'), hashtext(<key>))` plus
+row locks, and leave nothing behind.
+
 ### System columns (every table)
 
 | Column | Type | Notes |

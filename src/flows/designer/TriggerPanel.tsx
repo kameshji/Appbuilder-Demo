@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Check, Copy, KeyRound, Plus, RotateCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { platform, usePlatform } from '@/platform'
 import type { InputDef, Trigger, TriggerTypeDoc } from '@/platform/flows'
 import { errMsg, fmtDate } from '@/portal/kit'
 import { flowsApi, type WebhookInfo } from '../api'
@@ -28,6 +29,7 @@ const DEFAULTS: Record<string, AnyTrigger> = {
   schedule: { type: 'schedule', cron: '0 8 * * 1-5', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' } as AnyTrigger,
   manual: { type: 'manual', inputs: [], from: 'any' } as AnyTrigger,
   webhook: { type: 'webhook' } as AnyTrigger,
+  formSubmitted: { type: 'formSubmitted', app: '', form: '', on: ['create', 'update'] } as AnyTrigger,
 }
 
 export function triggerTitle(t: Trigger | undefined, docs: TriggerTypeDoc[]): string {
@@ -41,6 +43,7 @@ export function triggerSummary(t: Trigger | undefined): string {
     case 'schedule': return a.cron ? `cron ${a.cron} (${a.timeZone})` : a.everyMinutes ? `every ${a.everyMinutes} min` : 'Set the schedule'
     case 'manual': return `${(a.inputs as InputDef[] ?? []).length} input${(a.inputs as InputDef[] ?? []).length === 1 ? '' : 's'} · from ${a.from === 'any' ? 'apps and the portal' : a.from}`
     case 'webhook': return 'A signed web request'
+    case 'formSubmitted': return a.form ? `${a.form as string} submitted${a.app ? '' : ' (choose an app)'}` : 'Choose an app and a form'
     default: return ''
   }
 }
@@ -81,9 +84,66 @@ export function TriggerPanel() {
         {t?.type === 'schedule' && <ScheduleTrigger t={t} />}
         {t?.type === 'manual' && <ManualTrigger t={t} />}
         {t?.type === 'webhook' && <WebhookTrigger t={t} />}
-        {t && !['table', 'schedule', 'manual', 'webhook'].includes(t.type) && <GenericTrigger t={t} doc={data.catalog?.triggers.find((d) => d.type === t.type)} />}
+        {t?.type === 'formSubmitted' && <FormSubmittedTrigger t={t} />}
+        {t && !['table', 'schedule', 'manual', 'webhook', 'formSubmitted'].includes(t.type) && <GenericTrigger t={t} doc={data.catalog?.triggers.find((d) => d.type === t.type)} />}
       </div>
     </div>
+  )
+}
+
+/** formSubmitted: pick the app (stored by id) and one of its Forms; which saves count (new rows, changes) */
+function FormSubmittedTrigger({ t }: { t: AnyTrigger }) {
+  const ro = useDesigner((s) => s.readOnly)
+  const apps = usePlatform((s) => s.apps)
+  const appId = (t.app as string) ?? ''
+  const [forms, setForms] = useState<string[] | null>(null)
+  useEffect(() => {
+    setForms(null)
+    if (!appId) return
+    let alive = true
+    void platform.apps.load(appId).then((def) => {
+      if (!alive) return
+      const out: string[] = []
+      const walk = (n: { type: string; name: string; children?: unknown[] }): void => {
+        if (n.type === 'Form') out.push(n.name)
+        for (const c of (n.children ?? []) as { type: string; name: string; children?: unknown[] }[]) walk(c)
+      }
+      for (const sc of def?.screens ?? []) walk(sc as never)
+      setForms(out)
+    }, () => { if (alive) setForms([]) })
+    return () => { alive = false }
+  }, [appId])
+  const form = (t.form as string) ?? ''
+  const on = (t.on as string[] | undefined) ?? ['create', 'update']
+  return (
+    <>
+      <Section title="App and form" hint="Runs for the person who submits, after the save went through (also for a submit saved offline, once it is sent).">
+        <Labeled label="App">
+          <select className={inputCls} disabled={ro} value={appId} data-testid="trigger-form-app" onChange={(e) => setTrigger((x) => ({ ...x, app: e.target.value, form: '' }))}>
+            <option value="">Choose an app</option>
+            {apps.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            {appId && !apps.some((a) => a.id === appId) && <option value={appId}>{appId} (not found)</option>}
+          </select>
+        </Labeled>
+        <FieldError stepId="trigger" field="app" />
+        <Labeled label="Form">
+          <select className={inputCls} disabled={ro || !appId} value={form} data-testid="trigger-form-form" onChange={(e) => setTrigger((x) => ({ ...x, form: e.target.value }))}>
+            <option value="">{forms === null && appId ? 'Loading...' : 'Choose a form'}</option>
+            {(forms ?? []).map((f) => <option key={f} value={f}>{f}</option>)}
+            {form && forms && !forms.includes(form) && <option value={form}>{form} (not in this app)</option>}
+          </select>
+        </Labeled>
+        <FieldError stepId="trigger" field="form" />
+      </Section>
+      <Section title="Which saves">
+        <div className="flex gap-3 text-xs">
+          {(['create', 'update'] as const).map((o) => (
+            <label key={o} className="flex items-center gap-1"><input type="checkbox" disabled={ro} checked={on.includes(o)} data-testid={`trigger-form-on-${o}`} onChange={(e) => setTrigger((x) => ({ ...x, on: e.target.checked ? [...on, o] : on.filter((y) => y !== o) }) as AnyTrigger)} />{o === 'create' ? 'New records' : 'Changed records'}</label>
+          ))}
+        </div>
+        <FieldError stepId="trigger" field="on" />
+      </Section>
+    </>
   )
 }
 

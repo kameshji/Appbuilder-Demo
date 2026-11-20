@@ -6,6 +6,7 @@
 import { isSystemTableId } from '../../../src/platform/system-tables.ts'
 import { sanitizeReporting, sanitizeUniqueTogether } from '../../core/model/packages.ts'
 import { normalizeComputed } from '../../core/table-events.ts'
+import { sanitizeBalance } from '../../core/balances/engine.ts'
 import * as yaml from 'js-yaml'
 import Papa from 'papaparse'
 import type { ColumnDef, ColumnType, RoleDef, TableDef } from '../../../src/platform/contracts.ts'
@@ -307,6 +308,9 @@ export function sanitizeTableDef(raw: unknown, now: string): TableDef {
   }
   const pairs = sanitizeUniqueTogether(raw.uniqueTogether, names)
   if (pairs) def.uniqueTogether = pairs
+  // P3-P synchronous balance (docs/dev/balances.md): validated shape; the names are checked when movements are written
+  const balance = sanitizeBalance(raw.balance)
+  if (balance) def.balance = balance
   return def
 }
 

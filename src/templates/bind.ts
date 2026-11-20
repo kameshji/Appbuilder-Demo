@@ -321,12 +321,20 @@ export function createdTable(r: ResolvedSlot, resolution: Resolution, now: strin
     if (ev.field) ev.field = resolution.tokens.get(ev.field) ?? ev.field
     events.push(ev)
   }
+  // P3-P: a synchronous balance names the movements table and the columns by token (docs/dev/balances.md)
+  let balance: TableDef['balance']
+  if (s.create?.balance) {
+    const b = bindJson(s.create.balance, resolution.tokens)
+    balance = b.value as TableDef['balance']
+    problems.push(...b.problems.map((p) => `${s.label} balance: ${p}`))
+  }
   const primary = s.create?.primaryColumn ?? cols.find((c) => c.type === 'text' || c.type === 'autonumber')?.name ?? cols[0]?.name ?? 'id'
   return {
     def: {
       name: r.tableName ?? s.create?.name ?? s.id, displayName: r.displayName || s.create?.displayName || s.label, primaryColumn: primary,
       ...(s.create?.description ? { description: s.create.description } : {}),
       ...(s.create?.uniqueTogether?.length ? { uniqueTogether: s.create.uniqueTogether.map((u) => [...u]) } : {}),
+      ...(balance ? { balance } : {}),
       columns: [...systemColumnDefs(), ...cols], createdOn: now, modifiedOn: now,
     },
     events, problems, lookups,

@@ -290,14 +290,14 @@ cross-filter applied; undo inside the editor.
 ## Layout, viewer roles, settings screen and drill-through (client)
 
 - **Layout.** The grid is 12 columns, 80 px rows, 12 px gap, stored in `tile.layout {x,y,w,h}`. `src/dashboards/grid.ts` is pure (no DOM): `layoutModeFor(width)` gives phone under 640, tablet under 1024, otherwise grid, from the width of the grid area (not the window); `place()` lets the moved tile win and pushes the others down; `compact()` closes gaps; `stepItem()` pushes without compacting; `deriveColumns()` builds the 6-column tablet layout (never stored). The page uses pointer events with `setPointerCapture`; arrow keys on the grip move, Shift+arrows resize.
-- **Drill-through.** `TileDef.drill?: { appId, params?: { name, field }[] }` (at most 8), validated strictly by `checkDashboardDef`. `src/dashboards/drill.ts` builds `#u-<appId>?name=value`; the app reads values with `Param("name")`. There is no address for a screen. A tile uses drill or cross-filter, not both.
+- **Drill-through.** `TileDef.drill?: { appId, screen?, params?: { name, field }[] }` (at most 8 params), validated strictly by `checkDashboardDef` (`screen`: 1 to 80 characters, no control characters; a param may not be named `screen`, that word belongs to the address). `src/dashboards/drill.ts` builds `#u-<appId>?screen=<name>&name=value`; the app reads values with `Param("name")`. A tile uses drill or cross-filter, not both.
+- **Drill to a screen (P3-D).** `src/runtime/startparams.ts` (pure: `parseStartHash`, `findStartScreen` by id, then exact name, then case-insensitive name, and `startPlan`) is applied by `RunApp.tsx` when the app has loaded and on every `hashchange` while it is open. An app that is already open is not closed any more (`portal/dashboards/drillTo.ts` only sets the address, first resetting the bar when it is identical): when values are passed it starts again (so `OnStart` sees them), then navigates to the screen. An unknown screen opens the start screen (and says so in a notice). `Param()` is now a tracked dependency of the evaluator (`q:params`, invalidated when `location.search + location.hash` differ), otherwise a label that read `Param()` kept its old text after the address changed. The tile editor has a **Screen** picker (`tile-editor-drill-screen`, loaded from the app; a name that is no longer in the app is flagged). Tests: `drill-screen.test.ts`, `startparams.test.ts`; browser: `p2-dashboard-screens.mjs` part 8.
 - **Viewer roles.** Saved with `PATCH /dashboards/:id`; the server refuses unknown role ids, so the client cleans them (`src/dashboards/access.ts`).
 - **Settings screen.** `GET/PUT /dashboards/settings`. The server drops invalid values silently, so `src/dashboards/settings.ts` validates first. A shift past midnight is stored as end < start. Demo mode keeps settings in `localStorage`.
 - **Tests.** `src/dashboards/grid.test.ts`, `screens.test.ts`; browser: `scripts/exit-check/p2-dashboard-layout.mjs` (demo mode) and, against a
   real server, `scripts/exit-check/p2-dashboard-screens.mjs` (settings saved and reloaded, read only for a non-administrator and PUT 403,
   viewer roles saved and a user without the role getting 404, a drill-through chosen in the tile editor kept by the server's
-  `checkDashboardDef` and a bad parameter name refused with 422). Nothing had to be fixed for these on a real server.
-- **Not done.** Choosing a screen for drill-through.
+  `checkDashboardDef` and a bad parameter name refused with 422; P3-D: a row opening an app on a named screen with its value, also with the app already open, an unknown screen falling back to the start screen, kiosk cycling). Nothing had to be fixed for these on a real server.
 
 ## Screens of the second wave (client)
 
@@ -319,8 +319,18 @@ minute or two so a re-enabled screen recovers; offline, 429 (honouring `Retry-Af
 retry with backoff (10 s doubling to 2 min); `online` and `visibilitychange` ask at once. Tiles are `Tile` with `bare` (no table view,
 export, drill-through or pin, no pointer interaction); rows grow to fill the screen height; the cursor hides after 3 s. The service worker
 gives the page the cached shell like any navigation and never answers `/api/` (except icons and manifests), and it ignores POSTs. Not done:
-cycling through ranges or pages, choosing a range or filter on the screen (the dashboard's own range is always used), a theme parameter
-(the page follows the browser's light / dark preference).
+choosing a filter on the screen, a theme parameter (the page follows the browser's light / dark preference).
+
+**Cycling (P3-D).** `#u-kiosk?t=<token>&every=30&ranges=today,last7&pages=2`: every `every` seconds (5 to 3600, default 30 when ranges or pages are
+given) the screen goes to the next step of ranges x pages (pages inner). Nothing is new on the server: a range is one of the presets the
+query route already accepts (`POST /dashboards/kiosk/query { dashboardId, range }`, validated there as before; at most 12), and a "page" is
+a set of whole tile bands cut on the screen (`splitPages`, at most 12, y rebased), so the token still reads one dashboard. The settings are in
+the fragment, not in the token, and are chosen in the Screens dialog ("Cycling (optional)"), which builds the address. No settings, no
+cycling. `src/dashboards/kiosk.ts` is pure (`cycleFromHash`, `cycleQuery`, `cycleSteps`, `cycleAt(steps, startMs, everyMs, nowMs, available)`);
+`cycleAt` skips steps whose data has not been loaded, so a network drop keeps cycling through what the screen already holds (the small
+note stays). The page keeps one cache entry per range; the rate limit (120 per minute per token) is not at risk because a range is
+fetched once per refresh interval. Tests: `kiosk-cycle.test.ts` (fake clock); browser: `p2-dashboard-screens.mjs` part 9 (Date.now and
+timers 20 times faster in that page).
 
 **Email snapshots** (`Snapshots.tsx`, the dashboard's "Email" button, anyone who can open the dashboard; server mode only). List
 (schedule text, next run, last run), create / edit (name, schedule, recipients, date range preset or the dashboard's own, the dashboard's

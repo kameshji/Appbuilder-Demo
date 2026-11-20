@@ -21,6 +21,7 @@ import { createHealthAlerts, type HealthAlerts } from './diagnostics/health-aler
 import { createSecurityEngine } from './security.ts'
 import { createConnectionManager, DEFAULT_CONNECTION_ID, FILES_CONNECTION_ID } from './connections.ts'
 import { createDataService } from './data.ts'
+import { createBalances } from './balances/engine.ts'
 import { createRecycleStore, registerRecycleJobs } from './recycle.ts'
 import { createAttachmentStore } from './attachment-store.ts'
 import { envDatabase, readServerJson, writeServerJson } from './config.ts'
@@ -232,7 +233,8 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   const connections = createConnectionManager(getMeta, env)
   const attachments = createAttachmentStore(() => environments.dirs(currentEnvironment().id).attachments, () => currentEnvironment().id)
   const recycleStore = createRecycleStore(() => state.db)
-  const data = createDataService({ meta: getMeta, connections, attachments, log: env.log, hooks: () => (state.db ? kernel.hooks : null), system: () => (state.db ? collab.hooks : null), recycle: () => (state.db ? recycleStore : null) })
+  const balances = createBalances({ db: () => state.db })
+  const data = createDataService({ meta: getMeta, connections, attachments, log: env.log, hooks: () => (state.db ? kernel.hooks : null), system: () => (state.db ? collab.hooks : null), recycle: () => (state.db ? recycleStore : null), balances: () => (state.db ? balances : null) })
   const kernel = createKernel({
     db: () => state.db,
     listenSettings: () => (state.settings ? { settings: state.settings, password: state.password ?? '' } : null),

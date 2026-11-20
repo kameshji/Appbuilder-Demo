@@ -278,11 +278,11 @@ async function send(r: SendRequest): Promise<SendResult> {
   let init: RequestInit
   if (item.kind === 'create') {
     url = `/api/v1/data/${t}/rows`
-    init = { method: 'POST', body: JSON.stringify({ values: body.values ?? {} }) }
+    init = { method: 'POST', body: JSON.stringify({ values: body.values ?? {}, ...(body.form ? { form: body.form } : {}) }) }
     headers['Content-Type'] = 'application/json'
   } else if (item.kind === 'update') {
     url = `/api/v1/data/${t}/rows/${encodeURIComponent(item.rowId)}`
-    init = { method: 'PATCH', body: JSON.stringify({ changes: body.values ?? {}, ...(body.ifModifiedOn ? { ifModifiedOn: body.ifModifiedOn } : {}) }) }
+    init = { method: 'PATCH', body: JSON.stringify({ changes: body.values ?? {}, ...(body.ifModifiedOn ? { ifModifiedOn: body.ifModifiedOn } : {}), ...(body.form ? { form: body.form } : {}) }) }
     headers['Content-Type'] = 'application/json'
   } else {
     const q = new URLSearchParams({ table: item.table, column: body.column ?? '', rowId: item.rowId, name: body.fileName ?? 'file' })
@@ -675,7 +675,7 @@ const hook: OfflineHook = {
     note(`queue ${w.kind} ${w.table}`)
     const label = w.kind === 'create' ? `New row in ${w.table}` : w.kind === 'update' ? `Change to a row of ${w.table}` : `File ${w.fileName ?? ''} for ${w.table}`
     s.outbox
-      .add({ kind: w.kind, table: w.table, rowId: w.rowId, environmentId: getRequestEnvironment(), values: w.values, ifModifiedOn: w.ifModifiedOn, column: w.column, file: w.file, fileName: w.fileName, label }, cb)
+      .add({ kind: w.kind, table: w.table, rowId: w.rowId, environmentId: getRequestEnvironment(), values: w.values, ifModifiedOn: w.ifModifiedOn, column: w.column, file: w.file, fileName: w.fileName, label, ...(w.form ? { form: w.form } : {}) }, cb)
       .then(() => {
         useOffline.setState({ notice: { id: ++noticeId, text: 'Saved on this device. It will be sent when the connection returns.' } })
         if (useConnectivity.getState().status === 'online') void replay()

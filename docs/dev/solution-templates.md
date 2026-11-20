@@ -99,7 +99,21 @@ Every table is a **slot** (format 1, [templates.md](templates.md) "Package forma
   the dependency must have it (raise the dependency's version).
 - Column defaults that start with `=` are formulas and are bound like any formula (number sequences: section 6).
 - Formula columns (`computed.kind: formula`) and rollups (`computed.kind: rollup`, its `table`, `via`, `column` as
-  tokens) are recomputed by the platform's jobs.
+  tokens) are recomputed by the platform's jobs. A rollup on a parent over its own child lines (an order total over its
+  lines) makes the two tables point at each other, and an uninstall that deletes tables then cannot find an order to
+  drop them in: keep totals in print templates and flows (`Sum(Filter(...))`) until that is fixed.
+- **A synchronous balance** (P3 package P, [balances.md](balances.md)): a slot whose rows are the running sum of the
+  rows of another slot, kept in the same transaction and never below the floor (stock on hand). Declare it on the
+  balance slot's `create`, every name as a token:
+  ```json
+  "create": { "name": "StockBalances", "displayName": "Stock on hand", "primaryColumn": "Item", "uniqueTogether": [["Item", "Location"]],
+    "balance": { "movements": "Slot_StockMovements", "quantity": "Slot_StockMovements_Quantity", "column": "Slot_StockBalances_OnHand",
+      "keys": [{ "column": "Slot_StockBalances_Item", "from": "Slot_StockMovements_Item" }, { "column": "Slot_StockBalances_Location", "from": "Slot_StockMovements_Location" }],
+      "floor": 0, "label": "Stock" } }
+  ```
+  Never put SAMPLE or reference rows into the balance slot (the platform creates its rows) and do not mark its columns
+  required. Before-events of the movements slot see `New` as the client sent it: two events do not see each other's
+  `SetField` values.
 
 ## 4. Tokens: how a pack names tables, columns and its own components
 

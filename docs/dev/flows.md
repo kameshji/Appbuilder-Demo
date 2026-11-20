@@ -147,6 +147,7 @@ and call `services.flows.sweep()`.
 | schedule | an `ab_schedules` row `flow_<flowId>` (job `flow.schedule`) exists exactly while the flow is enabled; each slot is enqueued once by the kernel's scheduler | trigger key `sched:<flow>:<slot>` |
 | manual | `POST /flows/:id/run`, `POST /flows/run` (by name), `RunFlow()` in apps | a client-chosen `runId` (trigger key `manual:<runId>`) makes the call idempotent |
 | webhook | package D's verified route calls `services.flows.triggerWebhook(env, flowId, payload)` | trigger key `hook:<flow>:<deliveryId>` |
+| formSubmitted | the router's after-commit listener (`router.onMutation`, `flows/routes.ts`) calls `services.flows.triggerFormSubmitted` for a committed `POST /data/:table/rows` or `PATCH /data/:table/rows/:id` whose body carries `form: { app, form }` | trigger key `form:<flow>:<user>:<Idempotency-Key>` (a write without a key gets a fresh one) |
 
 **Table triggers in detail.** `on` filters operations, `columns` filters updates (one of them changed), `condition` is
 evaluated on the **after-image** of that change (the row as stored now, with the columns the change wrote as it wrote
@@ -155,6 +156,29 @@ from the outbox snapshot); reads in the condition run as the run-as identity, bu
 records a failed run (never silently dropped). Deleted rows: the delete snapshot (every column). Restored rows (recycle bin): operation `restore`, only for triggers whose `on` lists it (off by default), `Trigger.Old` blank. **Coalescing**
 (`coalesce: true`): while a run of the same record is still queued (not started), a later change replaces its trigger
 payload instead of adding a run.
+
+**The formSubmitted trigger (P3-D).** `{ type: 'formSubmitted', app, form, on?: ['create','update'] }` (`app`: the app's id, a name also matches; `form`: the
+Form UI component's name). It runs **for the submitter**, so the flow-identity rules apply as for a table trigger (run as owner, the
+triggering user or a service account; a flow that runs as the triggering user has one).
+
+*Trust model.* The client only **claims** a submit: a running app puts `form: { app, form }` into the row write it already makes
+(`runtime/host.ts submitForm` wraps the table call in `withFormSubmit`; `platform/remote.ts` adds the claim to the POST / PATCH body and
+to the offline outbox item, so a replay carries it). Nothing starts from the claim itself. `triggerFormSubmitted` runs only after the server
+**committed** a single-row 2xx write (it is called from `router.onMutation`, so a refused or rolled back write never reaches it; no
+route and no job type were added, `data.ts` is untouched), and then checks, from the server's own state: the person may run the claimed
+app (`canRunApp`); the app has a Form of that exact name; that Form's `DataSource` (a literal `="Table"`; when computed, any table of the app's
+`dataSources`) is the table that was written; the flow names that app and form and lists the operation. The run's trigger data is the row
+**re-read from the database** (`Trigger.Record`, plus `Operation`, `Table`, `App`, `Screen`, `Form`, `SubmittedOn`, `User`), never anything the client
+sent. A forged claim therefore only ever starts a flow for a write the person was allowed to make anyway, into the form's own table.
+The kill switch and the per-flow and per-environment run limits apply as for every trigger. Flows with this trigger arrive **off** in a
+solution (as every flow); import validates app and form against the target.
+
+*Exactly once.* The trigger key contains the write's `Idempotency-Key` (the offline outbox sends `<item id>.<revision>`), so a retry or
+a replay finds the run it made (`createRun` returns `created: false`). A write without a key (a direct call) gets a fresh key: nothing
+retries it. *Residual windows:* a server crash between the commit and the listener on a write **without** a key loses the trigger (a keyed
+write is protected: the client retries and the stored answer is returned, and the listener runs again for it); and, as for table triggers,
+the trigger data holds columns the submitter may not read (the flow runs with its run-as identity).
+Tests: `form-submitted.integration.test.ts` (real server and engine) and `scripts/exit-check/p3-misc.mjs` (browser, offline replay).
 
 **Concurrency** (`settings.concurrency`): `parallel`; `singleton` (one run of the flow at a time, the others wait in order);
 `perRecord` (one run per record at a time, in outbox order: changes of one record are processed in the order they were
@@ -405,7 +429,7 @@ about 0.26 s; opening a step's panel about 50 ms; adding a step about 0.3 s; und
 
 ## Not done yet
 
-The trigger `formSubmitted` (reserved); per-record ordering across several dispatching servers. Designer: no real-time
+Per-record ordering across several dispatching servers. Designer: no real-time
 co-editing (a soft lock instead); "run again from this step" runs from the failed step anywhere, or from a completed
 **top-level** step (not from inside a container); the visual diff is an outline, not a second canvas; marquee selection is
 not there (Ctrl/Shift + click instead).

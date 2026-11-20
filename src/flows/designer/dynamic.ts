@@ -168,6 +168,14 @@ export function triggerTokens(doc: FlowDoc, ctx: DynContext): DynToken[] {
       ...(tr.sample !== undefined ? sampleTokens(g, 'Trigger.Body', tr.sample, 'Body') : []),
       { group: g, label: 'Query', insert: 'Trigger.Query', type: 'record' }, { group: g, label: 'Headers', insert: 'Trigger.Headers', type: 'record' }, { group: g, label: 'Received on', insert: 'Trigger.ReceivedOn', type: 'date' },
     ]
+    case 'formSubmitted': return [
+      { group: g, label: 'Submitted record', insert: 'Trigger.Record', type: 'record' },
+      { group: g, label: 'Operation', insert: 'Trigger.Operation', type: 'text', doc: 'create or update' },
+      { group: g, label: 'Table', insert: 'Trigger.Table', type: 'text' }, { group: g, label: 'App', insert: 'Trigger.App', type: 'text' },
+      { group: g, label: 'Screen', insert: 'Trigger.Screen', type: 'text' }, { group: g, label: 'Form', insert: 'Trigger.Form', type: 'text' },
+      { group: g, label: 'Submitted on', insert: 'Trigger.SubmittedOn', type: 'date' },
+      { group: g, label: 'Submitted by: name', insert: 'Trigger.User.FullName', type: 'text' }, { group: g, label: 'Submitted by: email', insert: 'Trigger.User.Email', type: 'text' },
+    ]
     case 'approvalDecided': return [
       ...([['Id', 'Request id', 'text'], ['Title', 'Title', 'text'], ['Status', 'Status', 'text'], ['Outcome', 'Outcome', 'text'], ['RequestedBy', 'Requested by (user id)', 'text'],
         ['RequestedByEmail', 'Requested by: email', 'text'], ['Policy', 'Policy', 'text'], ['RegardingTable', 'Regarding table', 'text'], ['RegardingId', 'Regarding row id', 'text'],

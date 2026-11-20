@@ -657,6 +657,21 @@ function DrillEditor({ tile, apps, up }: { tile: TileDef; apps: AppMeta[]; up(f:
     if (next.length) n.params = next; else delete n.params
     return setDrill(t, n)
   })
+  // the screens of the chosen app (loaded from the saved definition; null while loading or when it cannot be read)
+  const appId = d?.appId ?? ''
+  const [screens, setScreens] = useState<{ id: string; name: string }[] | null>(null)
+  useEffect(() => {
+    setScreens(null)
+    if (!appId) return
+    let alive = true
+    void platform.apps.load(appId).then((def) => { if (alive) setScreens(def ? def.screens.map((s) => ({ id: s.id, name: s.name })) : null) }, () => { if (alive) setScreens(null) })
+    return () => { alive = false }
+  }, [appId])
+  const setScreen = (name: string) => up((t) => {
+    const n: TileDrill = { ...t.drill! }
+    if (name) n.screen = name; else delete n.screen
+    return setDrill(t, n)
+  })
   return (
     <Section title="When someone clicks" hint="A click on a point of a chart or a row of a table can open an app. A tile without points (a KPI, a gauge) gets an Open button instead.">
       <Check checked={!!d} testId="tile-editor-drill" onChange={(on) => up((t) => {
@@ -669,9 +684,17 @@ function DrillEditor({ tile, apps, up }: { tile: TileDef; apps: AppMeta[]; up(f:
       {d && (
         <div className="grid gap-3 pl-6">
           <Labeled label="App">
-            <select className={cn(sel, 'w-fit max-w-full')} value={d.appId} data-testid="tile-editor-drill-app" onChange={(e) => up((t) => setDrill(t, { ...t.drill!, appId: e.target.value }))}>
+            <select className={cn(sel, 'w-fit max-w-full')} value={d.appId} data-testid="tile-editor-drill-app" onChange={(e) => up((t) => { const n: TileDrill = { ...t.drill!, appId: e.target.value }; delete n.screen; return setDrill(t, n) })}>
               {!app && <option value={d.appId}>{d.appId ? `${d.appId} (not found or not allowed)` : 'Choose an app…'}</option>}
               {apps.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </Labeled>
+          <Labeled label="Screen">
+            <select className={cn(sel, 'w-fit max-w-full')} value={d.screen ?? ''} data-testid="tile-editor-drill-screen" aria-label="Screen to open"
+              onChange={(e) => setScreen(e.target.value)}>
+              <option value="">The app's start screen</option>
+              {d.screen && !(screens ?? []).some((s) => s.name === d.screen) && <option value={d.screen}>{d.screen}{screens ? ' (not in this app)' : ''}</option>}
+              {(screens ?? []).map((s) => <option key={s.id} value={s.name}>{s.name}</option>)}
             </select>
           </Labeled>
           <div className="grid gap-1.5" data-testid="tile-editor-drill-params">
@@ -694,8 +717,8 @@ function DrillEditor({ tile, apps, up }: { tile: TileDef; apps: AppMeta[]; up(f:
               onClick={() => { const used = new Set(params.map((x) => x.field)); const f = fields.find((x) => !used.has(x.field)) ?? fields[0]!; setParams([...params, { name: paramNameOf(f.field), field: f.field }]) }}><Plus /> Pass another value</Button></div>
           </div>
           <p className="text-xs text-muted-foreground" data-testid="tile-editor-drill-summary">
-            {describeDrill(d, app?.name ?? (d.appId || 'the app'), labelOf)} The app starts with those values only when it is opened from here; inside the app, read each with Param("name") (for example in a screen's start formula).
-            Opening a particular screen from an address is not possible.
+            {describeDrill(d, app?.name ?? (d.appId || 'the app'), labelOf)} The app reads each value with Param("name") (for example in the start formula of the app); when the app is already open it starts again with the new values.
+            A screen that has since been renamed or deleted opens the start screen instead.
           </p>
         </div>
       )}

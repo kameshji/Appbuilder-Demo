@@ -26,6 +26,11 @@
  *  7. pins: pin two tiles, the launcher's "My dashboard", reload, reorder, unpin, a removed tile shows "No longer
  *     available" with Remove; the Dev home shows pins too.
  *
+ *  8. P3-D: a tile drills to a NAMED SCREEN of an app with a clicked value (also while the app is already open), an unknown
+ *     screen falls back to the start screen; the screen picker is in the tile editor;
+ *  9. P3-D: kiosk cycling on a fake-fast clock (Date.now and timers run 20 times faster in that page only): two date ranges
+ *     x two pages, and the cycling goes on through a network drop (cached steps) and recovers.
+ *
  * Settings: EXIT_DB_HOST (127.0.0.1), EXIT_DB_PORT (5435), EXIT_DB_USER (abdev), EXIT_DB_PASSWORD (abdev-sandbox-only),
  * EXIT_DB_NAME (ab_s7), EXIT_MAINT_DB (appbuilder_test), EXIT_PORT (5187), EXIT_WORKSPACE (a new temp folder),
  * PUPPETEER_CORE, CHROME_PATH, SHOTS (screenshots and the received PDF), PYTHON (python, for the PDF page image).
@@ -262,6 +267,8 @@ try {
   await click(pa, T('tile-editor-drill'))
   await waitFor(pa, T('tile-editor-drill-app'))
   await pa.select(T('tile-editor-drill-app'), appRec.id)
+  await waitFor(pa, T('tile-editor-drill-screen'))
+  check((await pa.$$eval(`${T('tile-editor-drill-screen')} option`, (o) => o.length)) >= 2, "drill-through: the tile editor has a screen picker (the app's start screen, then its screens)")
   await click(pa, T('tile-editor-apply'))
   await pa.waitForFunction(() => !document.querySelector('[data-testid="tile-editor"]'), { timeout: 15000 }).catch(() => undefined)
   await click(pa, T('dashboard-save'))
@@ -481,6 +488,100 @@ try {
   await tilesReady(pa, 1, '[data-testid="pinned-tiles"]')
   await shot(pa, 'pins-dev-home.png')
   record('pins: the Dev home shows "My dashboard"', true)
+
+  /* ---------------------------------------------------------------- 8. drill-through to a named screen (P3-D) */
+  log('8. drill-through to a screen')
+  const appDef = (await api(admin, 'GET', `/apps/${appRec.id}`)).definition
+  const label = (id, name, text) => ({ id, name, type: 'Label', props: { X: '=20', Y: '=20', Width: '=600', Height: '=40', Text: text }, children: [] })
+  appDef.screens[0].children = [label('n_home', 'HomeLabel', '="Home screen"')]
+  appDef.screens.push({ ...appDef.screens[0], id: 's_detail', name: 'Detail', children: [label('n_mach', 'MachineLabel', '="Machine: " & Param("machine")')] })
+  await api(admin, 'PUT', `/apps/${appRec.id}`, { definition: appDef })
+  const cur8 = await api(admin, 'GET', `/dashboards/${dash.id}`)
+  await api(admin, 'PATCH', `/dashboards/${dash.id}`, { def: { ...cur8.def, tiles: cur8.def.tiles.map((t) => (t.id === 'machines' ? { ...t, drill: { appId: appRec.id, screen: 'Detail', params: [{ name: 'machine', field: 'Machine' }] } } : t)) } })
+  const labelIs = (id, text) => pa.waitForFunction((app, id, text) => document.querySelector(`[data-testid="tab-pane-${app}"] [data-testid="control-${id}"]`)?.textContent?.trim() === text, { timeout: 30000 }, appRec.id, id, text).catch(async (e) => { throw new Error(`${e.message}; the pane shows ${JSON.stringify(await pa.$eval(`[data-testid="tab-pane-${appRec.id}"]`, (n) => n.innerText.slice(0, 120)).catch(() => null))} at ${await pa.evaluate(() => location.hash)}`) })
+  await pa.goto(`${BASE}/#u-dashboards?d=${dash.id}`, { waitUntil: 'domcontentloaded' })
+  await tilesReady(pa, 5)
+  const rowNames = await pa.$$eval(`${T('tile-machines')} tbody tr`, (r) => r.map((x) => x.querySelector('td')?.innerText.trim()))
+  check(rowNames.length >= 2 && rowNames[1] !== rowNames[0], 'screen drill: the table has at least two machines to click', rowNames.join(', '))
+  await pa.click(`${T('tile-machines')} tbody tr:nth-child(1)`)
+  await labelIs('MachineLabel', `Machine: ${rowNames[0]}`)
+  check(/#u-[^?]+\?screen=Detail&machine=/.test(await pa.evaluate(() => location.hash)), 'screen drill: clicking a row opens the app on its named screen; the address carries screen= and the clicked value', await pa.evaluate(() => location.hash))
+  record('screen drill: the screen shows the clicked value', true, `Machine: ${rowNames[0]}`)
+  // the app is open now (in its tab): another click changes the value in the SAME running app (no close and reopen)
+  await pa.evaluate((app) => { document.querySelector(`[data-testid="tab-pane-${app}"]`).__marker = 'same-pane' }, appRec.id)
+  await pa.goto(`${BASE}/#u-dashboards?d=${dash.id}`, { waitUntil: 'domcontentloaded' })
+  await tilesReady(pa, 5)
+  await pa.click(`${T('tile-machines')} tbody tr:nth-child(2)`)
+  await labelIs('MachineLabel', `Machine: ${rowNames[1]}`)
+  record('screen drill: with the app already open another click shows the new value', true, `Machine: ${rowNames[1]}`)
+  // an unknown screen opens the start screen
+  await pa.evaluate((app) => { location.hash = `#u-${app}?screen=Nope` }, appRec.id)
+  await pa.waitForFunction((app) => { const e = document.querySelector(`[data-testid="tab-pane-${app}"] [data-testid="control-HomeLabel"]`); return !!e && e.getBoundingClientRect().width > 0 }, { timeout: 20000 }, appRec.id)
+  record('screen drill: an unknown screen name opens the start screen', true)
+  await shot(pa, 'screen-drill-fallback.png')
+  // a link opened fresh goes straight to the screen
+  const pf = await newPage(ctxA)
+  await pf.goto(`${BASE}/#u-${appRec.id}?screen=Detail&machine=Press+9`, { waitUntil: 'domcontentloaded' })
+  await pf.waitForFunction((app) => document.querySelector(`[data-testid="tab-pane-${app}"] [data-testid="control-MachineLabel"]`)?.textContent?.trim() === 'Machine: Press 9', { timeout: 30000 }, appRec.id)
+  record('screen drill: a link opened fresh goes straight to the screen with its value', true, 'Machine: Press 9')
+  await pf.close()
+
+  /* ---------------------------------------------------------------- 9. kiosk cycling (P3-D) */
+  log('9. kiosk cycling')
+  const made = await api(admin, 'POST', `/dashboards/${dash.id}/tokens`, { label: 'Cycling TV' })
+  const cycAddress = `${BASE}/#u-kiosk?t=${encodeURIComponent(made.token)}&every=5&ranges=today,last7&pages=2`
+  const ctxC = await browser.createBrowserContext()
+  const pc = await newPage(ctxC)
+  await pc.setViewport({ width: 1920, height: 1080 })
+  await pc.evaluateOnNewDocument(() => {
+    // this page's clock and timers run 20 times faster: a 5 second step takes a quarter of a second
+    const K = 20
+    const realNow = Date.now.bind(Date)
+    const t0 = realNow()
+    Date.now = () => t0 + (realNow() - t0) * K
+    const st = window.setTimeout.bind(window)
+    window.setTimeout = (fn, ms, ...a) => st(fn, Math.max(0, (ms ?? 0) / K), ...a)
+    window.__steps = []
+    new MutationObserver(() => {
+      const e = document.querySelector('[data-testid="kiosk-cycle"]')
+      if (!e) return
+      const k = `${e.getAttribute('data-range')}|${e.getAttribute('data-page')}`
+      if (window.__steps[window.__steps.length - 1] !== k) window.__steps.push(k)
+    }).observe(document, { subtree: true, childList: true, attributes: true })
+  })
+  const cycMark = seen.length
+  const cycBodies = []
+  pc.on('request', (r) => { if (r.url().includes('/dashboards/kiosk/query') && r.method() === 'POST') cycBodies.push(r.postData() ?? '') })
+  await pc.goto(cycAddress, { waitUntil: 'domcontentloaded' })
+  await waitFor(pc, T('kiosk-cycle'), 30000)
+  await pc.waitForFunction(() => new Set(window.__steps).size >= 4, { timeout: 40000 })
+  const steps = await pc.evaluate(() => [...new Set(window.__steps)].sort())
+  check(steps.join() === 'last7|0,last7|1,today|0,today|1', 'kiosk cycling: it showed both ranges and both pages (four steps)', steps.join(', '))
+  const tilesNow = await pc.$$eval('[data-testid="kiosk-page"] section[data-testid^="tile-"]', (x) => x.length)
+  check(tilesNow >= 1 && tilesNow < 6, 'kiosk cycling: a page shows only part of the dashboard\'s tiles', `${tilesNow} tile(s) on this page`)
+  const ranges = new Set(cycBodies.map((b) => { try { return JSON.parse(b).range ?? '' } catch { return '?' } }))
+  check(ranges.has('today') && ranges.has('last7') && !ranges.has('?'), 'kiosk cycling: it asks the server for each range with the preset the query route already accepts', [...ranges].join(', '))
+  const cycReqs = seen.slice(cycMark).filter((x) => x.url.startsWith('/api/v1/dashboards/kiosk'))
+  check(cycReqs.length >= 2 && cycReqs.every((x) => !x.cookie && x.csrf === null && !x.url.includes(made.token.split('.')[3])), 'kiosk cycling: requests still carry no cookie, no CSRF header and no token in the URL', `${cycReqs.length} requests`)
+  // a network drop: the cached steps keep cycling, a small note shows, then it recovers
+  await pc.setOfflineMode(true)
+  await pc.evaluate(() => { window.__steps.length = 0; window.dispatchEvent(new Event('online')) })
+  await waitFor(pc, T('kiosk-hiccup'), 20000)
+  await pc.waitForFunction(() => new Set(window.__steps).size >= 3, { timeout: 30000 })
+  const offTiles = await pc.$$eval('[data-testid="kiosk-page"] section[data-testid^="tile-"][data-state="ready"]', (x) => x.length)
+  check(offTiles >= 1, 'kiosk cycling: with the network down it keeps cycling through what it already has; tiles stay on screen', `${offTiles} tiles, steps ${(await pc.evaluate(() => [...new Set(window.__steps)])).join(', ')}`)
+  await pc.setOfflineMode(false)
+  await pc.evaluate(() => window.dispatchEvent(new Event('online')))
+  await pc.waitForFunction(() => !document.querySelector('[data-testid="kiosk-hiccup"]'), { timeout: 30000 })
+  record('kiosk cycling: back online the note goes away and cycling continues', true)
+  // no cycling by default
+  const pn = await newPage(ctxC)
+  await pn.goto(`${BASE}/#u-kiosk?t=${encodeURIComponent(made.token)}`, { waitUntil: 'domcontentloaded' })
+  await waitFor(pn, T('kiosk-page'), 30000)
+  await tilesReady(pn, 6, '[data-testid="kiosk-page"]')
+  check(!(await pn.$(T('kiosk-cycle'))) && (await pn.$$eval('[data-testid="kiosk-page"] section[data-testid^="tile-"]', (x) => x.length)) === 6, 'kiosk cycling: without settings in the address there is no cycling and all tiles show')
+  await pn.close()
+  await pc.close()
 
   check(!errors.length, 'no script errors in the browser', errors.slice(0, 3).join(' | '))
 } catch (e) {

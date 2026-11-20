@@ -6,6 +6,7 @@ import { go, routeToHash, type Route } from '@/router'
 import { platform } from '@/platform'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ChatDock } from '@/chat/ChatDock'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { startChatDockSync } from '@/chat/dock'
 import { Studio } from '@/studio/Studio'
 import { AuthGate } from './Auth'
@@ -176,15 +177,15 @@ function Frame({ route }: { route: Route }) {
 
   return (
     <div className="flex h-full overflow-hidden" data-testid="app-frame" data-chat-side={chatSide}>
-      {chatSide === 'left' && <ChatDock side="left" />}
+      {chatSide === 'left' && <ErrorBoundary scope="chat-dock" compact><ChatDock side="left" /></ErrorBoundary>}
       <div className="relative h-full min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
-        {studio && <Studio key={studio} appId={studio} />}
+        {studio && <ErrorBoundary scope="studio" resetKeys={[studio]}><Studio key={studio} appId={studio} /></ErrorBoundary>}
         {settings && <SettingsPage section={'id' in route ? route.id : undefined} mode={routed} />}
         <Shell route={route} mode={routed} canSwitch={canDev} onModeChange={switchMode} activeTab={activeTab} hidden={!!studio || settings}>
-          {page}
+          <ErrorBoundary scope="portal-page" resetKeys={[routeToHash(route)]}>{page}</ErrorBoundary>
         </Shell>
       </div>
-      {chatSide === 'right' && <ChatDock side="right" />}
+      {chatSide === 'right' && <ErrorBoundary scope="chat-dock" compact><ChatDock side="right" /></ErrorBoundary>}
     </div>
   )
 }

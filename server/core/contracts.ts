@@ -116,6 +116,8 @@ export interface RouteOptions {
    * a path token and signature, one-click unsubscribe with a signed token). Never for routes that use the session cookie.
    */
   csrfExempt?: boolean
+  /** H-H: only a Full user pass may use it (also refused to an administrator holding an Operator pass; licence/seats.ts) */
+  pass?: 'full'
 }
 
 export interface Router {
@@ -527,6 +529,8 @@ export interface UserContext {
   /** the environment these privileges belong to */
   environmentId: string
   user: UserDef
+  /** H-H: the person's seat pass (licence/seats.ts withPasses); absent for service accounts and API keys of them */
+  pass?: 'full' | 'operator' | 'external'
   roles: RoleDef[]
   privileges: EffectivePrivileges
   /**

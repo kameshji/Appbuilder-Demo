@@ -216,11 +216,19 @@ export class Evaluator {
   }
 
   /** apply a runtime change: drop what depends on the parts that changed */
+  private addr = typeof location === 'undefined' ? '' : location.search + location.hash
   update(rt: RuntimeView, env: Env) {
     const o = this.rt
     if (env.w !== this.env.w || env.h !== this.env.h) {
       this.env = env
       this.invalidate('e')
+    }
+    // Param("name") reads the address: a formula that used it is evaluated again once the address is different (P3-D: a
+    // drill-through into an app that is already open changes the address, then restarts the app)
+    const addr = typeof location === 'undefined' ? '' : location.search + location.hash
+    if (addr !== this.addr) {
+      this.addr = addr
+      this.invalidate('q:params')
     }
     if (rt === o) return
     this.rt = rt
@@ -803,6 +811,7 @@ export class Evaluator {
       return true
     }
     if (name.startsWith('Param:')) {
+      this.record('q:params')
       try {
         const v = new URLSearchParams(typeof location === 'undefined' ? '' : location.search).get(name.slice(6))
         if (v !== null) return v

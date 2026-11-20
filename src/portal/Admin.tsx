@@ -4,16 +4,15 @@
  * updates (AdminOps.tsx, package L).
  * Everything shown is real data or clearly marked: "preview" (derived, not enforced) and "Soon" (not built).
  */
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
-  Activity, Archive, BadgeCheck, KeySquare, Mail, MessageCircle, MessagesSquare, ShieldCheck, ChevronLeft, ChevronRight, FileKey2, GitFork, Layers, ListChecks, Network, PackageCheck, RefreshCw, ScrollText, ShieldHalf, Upload, Users, UsersRound, Workflow, Zap,
+  Activity, Archive, KeySquare, Mail, MessageCircle, MessagesSquare, ShieldCheck, ChevronLeft, ChevronRight, FileKey2, GitFork, Layers, ListChecks, Network, PackageCheck, RefreshCw, ScrollText, ShieldHalf, Users, UsersRound, Workflow, Zap,
   type LucideIcon,
 } from 'lucide-react'
-import { usePlatform, type UserDef } from '@/platform'
+import { usePlatform } from '@/platform'
 import type { AuditEntry, AuditPageResponse } from '@/platform/http'
 import { go } from '@/router'
 import { cn } from '@/lib/utils'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
@@ -26,7 +25,6 @@ import { BackupHealthBanner, BackupsSection } from './AdminBackups'
 import { fetchInstallAuditPage } from './environmentApi'
 import { useCaps } from './security'
 import { Empty, Field, PageHeader, Panel, Segmented, errMsg, fmtDate, fmtRelative } from './kit'
-import { UserAvatar } from './Profile'
 import { fetchAuditPage } from './serverApi'
 import { UsersPanel } from './Users'
 import { DepartmentsSection, OrgChartSection, TeamsSection } from './Organisation'
@@ -34,6 +32,7 @@ import { EmailSection, ServiceAccountsSection, SignInSecuritySection } from './A
 import { NotificationAdmin } from './AdminNotifications'
 import { WhatsappAdminSection } from './AdminWhatsapp'
 import { ChatAdminSection } from './AdminChat'
+import { AdminLicence } from './AdminLicence'
 
 export type AdminSection = 'environments' | 'users' | 'security' | 'email' | 'whatsapp' | 'chat' | 'service-accounts' | 'departments' | 'teams' | 'orgchart' | 'licences' | 'audit' | 'jobs' | 'flows' | 'events' | 'backups' | 'logs' | 'usage' | 'updates'
 interface SectionDef { key: AdminSection; label: string; icon: LucideIcon; soon?: boolean }
@@ -98,7 +97,7 @@ export function AdminConsole({ section }: { section?: string }) {
           {current === 'departments' && <DepartmentsSection />}
           {current === 'teams' && <TeamsSection />}
           {current === 'orgchart' && <OrgChartSection />}
-          {current === 'licences' && <LicencesSection />}
+          {current === 'licences' && <AdminLicence />}
           {current === 'audit' && <AuditSection />}
           {current === 'jobs' && <JobsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'flows' && <FlowsAdminSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
@@ -121,92 +120,6 @@ function SectionTitle({ title, subtitle, actions }: { title: string; subtitle?: 
         {subtitle && <p className="text-sm text-muted-foreground">{subtitle}</p>}
       </div>
       {actions}
-    </div>
-  )
-}
-
-/* ------------------------------------------------------------------ licences */
-
-type Pass = 'full' | 'operator' | 'external'
-const PASSES: { key: Pass; label: string; text: string }[] = [
-  { key: 'full', label: 'Full user', text: 'Builds and administers: apps, tables, flows, security. Today: administrators and makers.' },
-  { key: 'operator', label: 'Operator', text: 'Uses apps and data with their roles, without building. Today: everyone else.' },
-  { key: 'external', label: 'External', text: 'Suppliers and customers on an external site (P6 Sites). Nobody yet: external accounts do not exist.' },
-]
-
-/** the pass a user would get under the planned model: administrators and makers Full, others Operator */
-export function previewPass(u: UserDef, roles: { id: string; isAdmin?: boolean; isMaker?: boolean }[]): Pass {
-  return roles.some((r) => u.roleIds.includes(r.id) && (r.isAdmin || r.isMaker)) ? 'full' : 'operator'
-}
-
-function LicencesSection() {
-  const users = usePlatform((s) => s.users)
-  const roles = usePlatform((s) => s.roles)
-  const active = users.filter((u) => u.status !== 'disabled')
-  const counts = useMemo(() => {
-    const c: Record<Pass, number> = { full: 0, operator: 0, external: 0 }
-    for (const u of active) c[previewPass(u, roles)]++
-    return c
-  }, [active, roles])
-  const label = (p: Pass) => PASSES.find((x) => x.key === p)!.label
-
-  return (
-    <div data-testid="admin-licences">
-      <SectionTitle
-        title="Licences"
-        subtitle="The planned model: a signed licence file checked offline, and a pass per person assigned by an administrator."
-        actions={
-          <div className="flex flex-col items-end gap-1">
-            <Button size="sm" variant="outline" disabled data-testid="upload-licence"><Upload /> Upload licence file</Button>
-            <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><SoonBadge /> Licence files arrive with P3.</span>
-          </div>
-        }
-      />
-      <Panel className="mb-4 flex items-start gap-3 p-4" data-testid="licence-current">
-        <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground"><BadgeCheck className="size-5" /></span>
-        <div className="min-w-0">
-          <div className="text-sm font-semibold">Development build, no licence file</div>
-          <p className="text-xs text-muted-foreground">This build does not check a licence and nothing is limited. Once licences exist: seat bands per install, a grace period, then read-only; export always keeps working.</p>
-        </div>
-      </Panel>
-
-      <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold">Pass types <Badge variant="outline" className="text-[10px] uppercase">Preview</Badge></h3>
-      <div className="mb-1 grid grid-cols-3 gap-3" data-testid="pass-counts">
-        {PASSES.map((p) => (
-          <Panel key={p.key} className="p-4" data-testid={`pass-${p.key}`}>
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="text-sm font-semibold">{p.label}</span>
-              <span className="text-2xl font-semibold tabular-nums" data-testid={`pass-count-${p.key}`}>{counts[p.key]}</span>
-            </div>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{p.text}</p>
-          </Panel>
-        ))}
-      </div>
-      <p className="mb-5 text-xs text-muted-foreground">Preview: how today's {active.length === 1 ? 'active user' : `${active.length} active users`} would fall into passes, derived from their roles. Nothing is enforced.</p>
-
-      <Panel className="overflow-hidden">
-        <table className="w-full text-sm" data-testid="licence-users">
-          <thead>
-            <tr className="border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground">
-              <th className="px-4 py-2.5">User</th><th className="px-4 py-2.5">Pass (preview)</th>
-              <th className="px-4 py-2.5"><span className="flex items-center gap-1.5">Assigned pass <SoonBadge /></span></th>
-            </tr>
-          </thead>
-          <tbody>
-            {active.map((u) => (
-              <tr key={u.id} className="border-b border-border last:border-0">
-                <td className="px-4 py-2"><span className="flex items-center gap-2"><UserAvatar user={u} size={22} /><span className="truncate">{u.name}</span><span className="truncate text-xs text-muted-foreground">{u.email}</span></span></td>
-                <td className="px-4 py-2">{label(previewPass(u, roles))}</td>
-                <td className="px-4 py-2">
-                  <select disabled aria-label={`Assigned pass of ${u.name} (arrives with P3)`} className="h-7 rounded-md border border-input bg-muted/50 px-2 text-xs text-muted-foreground" defaultValue="">
-                    <option value="">Assigning passes arrives with P3</option>
-                  </select>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Panel>
     </div>
   )
 }

@@ -60,6 +60,9 @@ if (cmd === 'setup-code') {
   process.exit(runSetupCodeCli())
 }
 
+// H-G: the licence service (a separate process with its own database; also `node server/licence-service/main.ts`)
+if (cmd === 'licence-service') process.exit(await (await import('./licence-service/cli.ts')).runLicenceCli(process.argv.slice(3)))
+
 // installed-server tools: version, verify-release, update, diagnostics, health, seed-config (update/cli.ts)
 const { CLI_COMMANDS, runOpsCli } = await import('./core/update/cli.ts')
 // an installed server's `appbuilder restore` uses the service's environment file (database login, workspace)

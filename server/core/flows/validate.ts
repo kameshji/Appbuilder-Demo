@@ -36,8 +36,22 @@ export interface ValidationContext {
   engine: FxEngine
   /** P3: the roles of the environment (notify roles); absent: not checked */
   roles?: { id: string; name: string }[]
+  /** P3-D: the apps of the environment and their Forms (formSubmitted triggers); absent: not checked */
+  apps?: AppForms[]
   /** actions of a connection reference (null: unknown, not checked) */
   actionsOf?(ref: string): Promise<{ id: string; inputs?: { required?: string[]; properties?: Record<string, unknown> } }[] | null>
+}
+
+/** an app and the Form UI components in it: name, the screen, and the table the form writes (null: not a plain table name) */
+export interface AppForms { id: string; name: string; dataSources: string[]; forms: { name: string; screen: string; table: string | null }[] }
+
+/** the app and form a formSubmitted trigger names (the app by id or name, the form by name; both ignoring case) */
+export function formOfTrigger(apps: AppForms[], t: { app?: unknown; form?: unknown }): { app: AppForms; form: AppForms['forms'][number] } | null {
+  const a = String(t.app ?? '').trim().toLowerCase()
+  const f = String(t.form ?? '').trim().toLowerCase()
+  const app = apps.find((x) => x.id === String(t.app ?? '').trim()) ?? apps.find((x) => x.name.toLowerCase() === a)
+  const form = app?.forms.find((x) => x.name.toLowerCase() === f)
+  return app && form ? { app, form } : null
 }
 
 const tableOf = (ctx: ValidationContext, name: string): TableDef | undefined => {
@@ -57,7 +71,7 @@ const sampleOf = (type: string): FxValue => {
   }
 }
 
-export function triggerSample(t: FlowDefinition['trigger'], tables: TableDef[]): FxRecord {
+export function triggerSample(t: FlowDefinition['trigger'], tables: TableDef[], apps?: AppForms[]): FxRecord {
   const user = { FullName: '', Email: '', Image: '', Id: '' }
   switch (t?.type) {
     case 'table': {
@@ -66,6 +80,14 @@ export function triggerSample(t: FlowDefinition['trigger'], tables: TableDef[]):
       for (const c of ['createdOn', 'modifiedOn', 'createdBy', 'owner']) if (def) (rec as FxRecord)[c] = null
       const old = def ? { ...blankRecord(def), createdOn: null, modifiedOn: null, createdBy: null, owner: null } : open({})
       return { Record: rec, Old: old, Operation: '', ChangedColumns: [], Table: '', User: user }
+    }
+    case 'formSubmitted': {
+      // the saved row has the columns of the table the form writes (when it can be told), else an open record
+      const f = apps ? formOfTrigger(apps, t) : null
+      const def = f?.form.table ? tables.find((x) => x.name.toLowerCase() === f.form.table!.toLowerCase() || x.id === f.form.table) : undefined
+      const rec = def ? blankRecord(def) : open({})
+      if (def) for (const c of ['createdOn', 'modifiedOn', 'createdBy', 'owner']) (rec as FxRecord)[c] = null
+      return { Record: rec, Operation: '', Table: '', App: '', Screen: '', Form: '', SubmittedOn: new Date(0), User: user }
     }
     case 'schedule': return { ScheduledTime: new Date(0) }
     case 'manual': {
@@ -172,6 +194,19 @@ export async function validateFlow(doc: { name?: unknown; description?: unknown;
     } else if (trig.type === 'approvalDecided') {
       if (trig.policy !== undefined && (typeof trig.policy !== 'string' || !trig.policy.trim())) err('trigger', 'policy', 'policy must name an approval policy.')
       if (trig.statuses !== undefined && (!Array.isArray(trig.statuses) || !trig.statuses.length || trig.statuses.some((x) => !['approved', 'rejected', 'completed', 'expired', 'cancelled'].includes(x)))) err('trigger', 'statuses', 'statuses must list approved, rejected, completed, expired and/or cancelled.')
+    } else if (trig.type === 'formSubmitted') {
+      const app = typeof trig.app === 'string' ? trig.app.trim() : ''
+      const form = typeof trig.form === 'string' ? trig.form.trim() : ''
+      if (!app || app.length > 120) err('trigger', 'app', 'Choose the app whose form starts this flow.')
+      if (!form || form.length > 120) err('trigger', 'form', 'Choose the form (the name of the Form UI component in the app).')
+      if (trig.on !== undefined && (!Array.isArray(trig.on) || !trig.on.length || trig.on.some((o) => o !== 'create' && o !== 'update'))) err('trigger', 'on', 'on must list create and / or update.')
+      if (app && form && ctx.apps) {
+        const found = formOfTrigger(ctx.apps, trig)
+        const theApp = ctx.apps.find((x) => x.id === app) ?? ctx.apps.find((x) => x.name.toLowerCase() === app.toLowerCase())
+        if (!theApp) err('trigger', 'app', `There is no app "${app}".`)
+        else if (!found) err('trigger', 'form', `The app "${theApp.name}" has no form named "${form}".`)
+        else if (!found.form.table && !theApp.dataSources.length) warn('trigger', 'form', `The form "${found.form.name}" has no table the server can tell: the flow will not start until its DataSource is a table of the app.`)
+      }
     } else if (trig.type === 'schedule') {
       const hasCron = typeof trig.cron === 'string' && trig.cron.trim() !== ''
       const hasEvery = trig.everyMinutes !== undefined && trig.everyMinutes !== null
@@ -242,7 +277,7 @@ export async function validateFlow(doc: { name?: unknown; description?: unknown;
   const tables = ctx.tables
   const tableNames = new Set(tables.map((t) => t.name))
   const base: Omit<ScopeData, 'steps' | 'loops'> = {
-    trigger: trig ? triggerSample(trig, tables) : open({}),
+    trigger: trig ? triggerSample(trig, tables, ctx.apps) : open({}),
     variables: vars,
     flow: { RunId: '', Name: '', Id: '', Version: 0, Mode: '', Callback: open({}) },
     user: { FullName: '', Email: '', Image: '', Id: '' },

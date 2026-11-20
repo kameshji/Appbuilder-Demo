@@ -5,6 +5,7 @@ import { printCall, generateFileCall, newFileToken } from '@/print/runtime'
 import { changeShare, collabAction, requestApprovalCall, restoreCall, runFlowCall, sendNotification, currentRow, errorMessage, isTable, platformMode, rowId, submitDeps, tableColumns, tableRows, tables } from './data'
 import { pendingFilesOf, splitFileTokens } from './attachments'
 import { finishSubmit } from './submit'
+import { withFormSubmit } from '@/platform/flows'
 import { chainItems, prepareAction } from './delegation'
 
 export type ToastKind = 'info' | 'success' | 'warning' | 'error'
@@ -13,6 +14,8 @@ export interface TraceEntry { id: string; at: number; kind: 'trace' | 'error'; m
 
 export interface RunInput {
   app: AppDef
+  /** the app's id when it runs from the platform (P3-D: the identity a Form's row write carries for formSubmitted flows) */
+  appId?: string
   rt: RuntimeView & { navStack: string[] }
   env: Env
   node: ControlNode | null
@@ -255,7 +258,9 @@ function beginRun(input: RunInput): Run {
       else if (isTableTarget(ds)) {
         // the form's base version (package H): a stale save is refused with 409 and the form offers reload / keep mine
         const version = outs.__version instanceof Date || (typeof outs.__version === 'string' && outs.__version) ? (outs.__version as Date | string) : null
-        stored = id ? tables.update(ds, id, updates, { ifVersion: version }) : tables.insert(ds, updates)
+        // the row write of THIS form: it carries the form's identity so the server can start its formSubmitted flows (P3-D)
+        const identity = input.appId && f.name ? { app: input.appId, form: f.name } : null
+        stored = withFormSubmit(identity, () => (id ? tables.update(ds, id, updates, { ifVersion: version }) : tables.insert(ds, updates)))
         fresh()
         deferTable = true
       } else if (Object.prototype.hasOwnProperty.call(view.collections, ds)) {

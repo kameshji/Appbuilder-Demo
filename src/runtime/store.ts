@@ -326,7 +326,7 @@ export function createAppStore(opts: { run?: boolean } = {}) {
     let depth = 0
     const run = (node: ControlNode | null, ctx: NodeCtx, label: string, what: { formula?: string; action?: Parameters<typeof runFormula>[0]['action']; fromSubmitButton?: boolean }, designRun = false) => {
       const st = get()
-      const input = { app: st.app, rt: st.runtime, env: st.env, node, ctx, label, ...what, dryData: designRun }
+      const input = { app: st.app, appId: st.appId ?? undefined, rt: st.runtime, env: st.env, node, ctx, label, ...what, dryData: designRun }
       const after = (r: ReturnType<typeof runFormula>, nested: number) => {
         applyRun(r)
         r.deferred.forEach(finishDeferred)

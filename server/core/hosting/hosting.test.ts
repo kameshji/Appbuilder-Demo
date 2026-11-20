@@ -228,6 +228,9 @@ describe('outbound policy of a hosted install: APPBUILDER_OUTBOUND_PRIVATE=deny 
       'server/core/hosting/cli.ts': 'the system database and the own socket (hosting commands)',
       'server/core/identity/smtp.ts': 'connects to the address assertOutboundHost returned',
       'server/core/pwa.ts': 'service worker source for the browser (same origin)',
+      // H-G: set by the operator in the install's environment, never typed in the product; https only (http for 127.0.0.1)
+      'server/core/licence/client.ts': 'the licence check to APPBUILDER_LICENCE_URL (operator setting, https, no redirects)',
+      'server/licence-service/store.ts': 'the licence service process: its own database (APPBUILDER_LICENCE_DB_URL)',
       'server/core/kernel-testkit.ts': 'tests only', 'server/core/testdb.ts': 'tests only', 'server/core/print/print-testkit.ts': 'tests only',
     }
     const re = /\bnet\.connect\(|\btls\.connect\(|\bhttps?\.request\(|new pg\.(Client|Pool)\(|createPgDb\(|createPool\(|\.env\.fetch\(|(?<![.\w])fetch\(/

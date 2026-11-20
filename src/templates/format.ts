@@ -25,7 +25,7 @@
  * packages stay valid.
  */
 import type { AppDef, ControlNode } from '../contracts.ts'
-import type { AccessScope, ColumnDef, ColumnType } from '../platform/contracts.ts'
+import type { AccessScope, BalanceDef, ColumnDef, ColumnType } from '../platform/contracts.ts'
 import type { TableEventInput } from '../platform/events.ts'
 import type { DeleteBehaviour } from '../model/types.ts'
 import { IDENT, SYSTEM_COLUMN_NAMES } from '../model/names.ts'
@@ -78,7 +78,7 @@ export interface TemplateSlot {
   required: boolean
   columns: SlotColumn[]
   /** present: the binding step may create the table (name, display name and display column it gets by default) */
-  create?: { name: string; displayName: string; primaryColumn?: string; description?: string; uniqueTogether?: string[][] }
+  create?: { name: string; displayName: string; primaryColumn?: string; description?: string; uniqueTogether?: string[][]; balance?: BalanceDef }
   /**
    * data models: created unless the maker maps it. Solution packs: `create` (default) creates the table and a name clash
    * must be resolved; `map` uses a table of the same name when there is one (shared tables such as Accounts), else creates
@@ -485,6 +485,16 @@ export function validateTemplate(raw: unknown): string[] {
     }
     if (isObj(s.create) && typeof s.create.primaryColumn === 'string' && !colIds.has(s.create.primaryColumn.toLowerCase())) p.push(`Slot ${s.id}: the display column "${s.create.primaryColumn}" is not one of its columns.`)
     if (isObj(s.create) && s.create.uniqueTogether !== undefined && (!Array.isArray(s.create.uniqueTogether) || s.create.uniqueTogether.some((u) => !Array.isArray(u) || u.length < 2 || u.some((x) => typeof x !== 'string' || !colIds.has(x.toLowerCase()))))) p.push(`Slot ${s.id}: "uniqueTogether" lists groups of two or more of its columns.`)
+    // P3-P: a synchronous balance (docs/dev/balances.md); tables and columns as tokens, checked again when bound
+    if (isObj(s.create) && s.create.balance !== undefined) {
+      const b = s.create.balance as unknown
+      const tok = (v: unknown) => typeof v === 'string' && /^Slot_[A-Za-z0-9_]+$/.test(v)
+      if (raw.kind !== 'solution' || !isObj(b) || !tok(b.movements) || !tok(b.quantity) || !tok(b.column) || !Array.isArray(b.keys) || !b.keys.length || b.keys.length > 4
+        || b.keys.some((k) => !isObj(k) || !tok(k.column) || !tok(k.from)) || (b.minColumn !== undefined && !tok(b.minColumn))
+        || (b.floor !== undefined && b.floor !== null && typeof b.floor !== 'number') || (b.label !== undefined && typeof b.label !== 'string') || (b.message !== undefined && typeof b.message !== 'string')) {
+        p.push(`Slot ${s.id}: "balance" (solution templates) names the movements slot, its quantity and key columns and this slot's balance column as tokens, with 1 to 4 keys.`)
+      }
+    }
     if (s.from !== undefined) {
       if (raw.kind !== 'solution' || !isObj(s.from) || typeof s.from.template !== 'string' || typeof s.from.slot !== 'string') p.push(`Slot ${s.id}: "from" (a shared slot) needs the template and the slot it comes from (solution templates only).`)
       else if (!(Array.isArray(raw.dependencies) && raw.dependencies.some((d) => isObj(d) && d.id === (s.from as Record<string, unknown>).template))) p.push(`Slot ${s.id}: it comes from ${String(s.from.template)}, which is not one of the dependencies.`)

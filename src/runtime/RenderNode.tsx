@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import type { ControlNode, ControlType, FxRecord, FxValue } from '@/contracts'
 import { controls } from '@/controls'
 import { enumName, isTemplateType, ROOT_CTX, type Evaluator, type LayoutKind, type NodeCtx } from './evaluator'
@@ -166,6 +167,8 @@ export const RenderNode = memo(function RenderNode({ node, ctx, mode, ev, pk, pd
       title={tooltip}
       style={style}
     >
+      {/* P3-D: one error boundary per UI component, so a component that throws shows the fallback in its own box */}
+      <ErrorBoundary scope={`component:${node.name}`} compact className="overflow-hidden">
       <Render
         key={ev.resetKey(node.id)}
         node={node}
@@ -179,6 +182,7 @@ export const RenderNode = memo(function RenderNode({ node, ctx, mode, ev, pk, pd
       >
         {children}
       </Render>
+      </ErrorBoundary>
       {design && !ctx.inert && errorList.length > 0 && (
         <span
           title={errorList.map(([k, m]) => `${k}: ${m}`).join('\n')}

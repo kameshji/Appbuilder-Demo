@@ -33,6 +33,7 @@ import { T, docOf, type FlowDoc } from './store.ts'
 import { isRunTerminal, toRunInfo } from './engine.ts'
 import { fromStored, fxToJson } from './values.ts'
 import { CronError, checkTimeZone, describeCron, nextCron, parseCron } from '../cron.ts'
+import { idempotencyKeyOf } from '../offline.ts'
 
 type Row = Record<string, unknown>
 
@@ -95,6 +96,33 @@ const isService = (r: RunAs | undefined): r is { serviceAccount: string } => !!r
 export function flowRoutes(router: ApiRouter, s: CoreServices): void {
   const f = () => s.flows
   const me = (ctx: Ctx): UserContext => ctx.user!
+
+  /**
+   * P3-D formSubmitted: the after-commit hook. The router calls this for every successful non-GET request, after the
+   * handler (the DataService's committed write) returned; nothing is added to data.ts or to the write routes. Only a 2xx
+   * POST /data/:table/rows or PATCH /data/:table/rows/:id whose body carries the Form's identity in `form` ({ app, form },
+   * sent by the running app and by the offline outbox's replay) goes on; flows.triggerFormSubmitted then checks the claim
+   * against the write (docs/dev/flows.md "The formSubmitted trigger") and never throws into the request.
+   */
+  router.onMutation((e) => {
+    const create = e.method === 'POST' && e.pattern === '/data/:table/rows'
+    const update = e.method === 'PATCH' && e.pattern === '/data/:table/rows/:id'
+    if (!create && !update) return
+    const who = e.ctx.user
+    const b = e.ctx.body
+    const claim = b && typeof b === 'object' && !Array.isArray(b) ? (b as { form?: unknown }).form : undefined
+    if (!who || !claim || typeof claim !== 'object' || Array.isArray(claim)) return
+    const row = (e.result as { row?: { id?: unknown } } | undefined)?.row
+    const rowId = update ? e.params.id : typeof row?.id === 'string' ? row.id : ''
+    if (!rowId) return
+    let key: string | null = null
+    try { key = idempotencyKeyOf(e.ctx) } catch { key = null }
+    void (async () => {
+      const t = await s.meta.tables.get(e.params.table)
+      if (!t) return
+      await f().triggerFormSubmitted(e.ctx.environmentId, who, claim as { app: unknown; form: unknown }, { op: create ? 'create' : 'update', table: t, rowId, key })
+    })().catch((err) => log('warn', `formSubmitted flows not started: ${errText(err)}`))
+  })
 
   async function need(ctx: Ctx, id: string): Promise<FlowDef> {
     const fl = await f().store.get(id)

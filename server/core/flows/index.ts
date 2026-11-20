@@ -6,12 +6,15 @@
  *  - schedule: an ab_schedules row per enabled flow (id flow_<flowId>, job flow.schedule); each slot runs once
  *    (trigger key sched:<flow>:<slot>);
  *  - manual: runManual (POST /flows/:id/run, RunFlow() in apps) with the run permission of roles;
- *  - webhook: triggerWebhook (called by package D's verified webhook route).
+ *  - webhook: triggerWebhook (called by package D's verified webhook route);
+ *  - approvalDecided: triggerApprovalDecided (called by the approvals module);
+ *  - formSubmitted (P3-D): triggerFormSubmitted, called by the flow routes' mutation listener after the server COMMITTED a
+ *    row write that carried a Form's identity (docs/dev/flows.md "The formSubmitted trigger").
  */
 import { HttpError } from '../contracts.ts'
 import type { Connector, DataService, MetaStore, NotificationService, SqlDb, UserContext } from '../contracts.ts'
 import type { TableDef, UserDef } from '../../../src/platform/contracts.ts'
-import type { FxRecord } from '../../../src/contracts.ts'
+import type { AppDef, ControlNode, FxRecord } from '../../../src/contracts.ts'
 import {
   DEFAULT_SETTINGS, FLOW_LIMITS, STEP_KINDS, TRIGGER_TYPES, type FlowDef, type FlowListItem, type RunAs, type ValidationProblem,
 } from '../../../src/platform/flows.ts'
@@ -27,7 +30,7 @@ import { errText } from '../util.ts'
 import { createFlowStore, docOf, T, type FlowDoc } from './store.ts'
 import { ADVANCE_JOB, RESUME_JOB, TIMEOUT_JOB, createFlowEngine, isRunTerminal, toRunInfo } from './engine.ts'
 import { evaluate, flowScope } from './expr.ts'
-import { callsOf, validateFlow } from './validate.ts'
+import { callsOf, formOfTrigger, validateFlow, type AppForms } from './validate.ts'
 import { jsonToFx } from './values.ts'
 import type { ApprovalsService, FlowsService, WaitOutcome } from './contracts.ts'
 
@@ -130,6 +133,8 @@ export function createFlows(deps: FlowsDeps) {
     await engine.sweep()
   })
 
+  /** P3-D: the enabled flows with a formSubmitted trigger, and the Forms of the apps (cached 5 s per environment; cleared on every flow save) */
+  const formCache = new Map<string, { at: number; flows: FlowDef[]; apps: AppForms[] | null }>()
   interface Rule { flow: FlowDef; table: TableDef }
   const rulesCache = new Map<string, { at: number; byTable: Map<string, Rule[]> }>()
   async function rules(): Promise<Map<string, Rule[]>> {
@@ -153,6 +158,7 @@ export function createFlows(deps: FlowsDeps) {
   }
   const invalidate = (): void => {
     rulesCache.clear()
+    formCache.clear()
     engine.invalidate()
   }
 
@@ -427,6 +433,104 @@ export function createFlows(deps: FlowsDeps) {
     })
   }
 
+  /* ---------------------------------------------------------------- formSubmitted trigger (P3-D) */
+
+  const LITERAL = /^\s*=\s*"((?:[^"\\]|\\.)*)"\s*$/
+  /** the Form UI components of an app: name, screen name and the table a plain `="Table"` DataSource names (null: computed) */
+  function formsOf(def: AppDef): AppForms['forms'] {
+    const out: AppForms['forms'] = []
+    const walk = (n: ControlNode, screen: string): void => {
+      if (n.type === 'Form') out.push({ name: n.name, screen, table: LITERAL.exec(String(n.props?.DataSource ?? ''))?.[1]?.replace(/\\(.)/g, '$1') ?? null })
+      for (const c of n.children ?? []) walk(c, screen)
+    }
+    for (const sc of def.screens ?? []) walk(sc, sc.name)
+    return out
+  }
+  async function appForms(): Promise<AppForms[]> {
+    const out: AppForms[] = []
+    for (const a of await deps.meta().apps.list()) {
+      const full = await deps.meta().apps.get(a.id)
+      if (full) out.push({ id: a.id, name: a.name, dataSources: full.definition.dataSources ?? [], forms: formsOf(full.definition) })
+    }
+    return out
+  }
+  async function formFlowList(): Promise<{ flows: FlowDef[]; apps: AppForms[] | null }> {
+    const envId = currentEnvironment().id
+    const c = formCache.get(envId)
+    if (c && Date.now() - c.at < 5000) return c
+    const rows = await db().query<Row>(`SELECT id FROM ${T('ab_flows')} WHERE enabled AND suspended IS NULL AND definition->'trigger'->>'type' = 'formSubmitted'`)
+    const flows: FlowDef[] = []
+    for (const r of rows) {
+      const f = await store.get(String(r.id))
+      if (f?.trigger?.type === 'formSubmitted') flows.push(f)
+    }
+    const next = { at: Date.now(), flows, apps: null as AppForms[] | null }
+    formCache.set(envId, next)
+    return next
+  }
+
+  /**
+   * The server committed a row write that CLAIMS to be the submit of Form `claim.form` of app `claim.app` (the body's `form`,
+   * sent by the running app and, for writes saved offline, by the outbox's replay). The claim starts nothing by itself; a
+   * flow starts only when ALL of these hold, each checked here, none taken from the client:
+   *  - the write exists: this is called from the flow routes' after-commit listener, only for a 2xx POST / PATCH of one row;
+   *  - the claiming person may run that app (role access), and the app has a Form of that exact name;
+   *  - the Form's table is the table that was written (its DataSource, when it is the plain name of a table, else any table
+   *    in the app's data sources);
+   *  - the flow's trigger names that app and that form, and the operation (create / update) is one it lists.
+   * The data of the run is the row as committed (read from the database), never anything the client sent; the run acts
+   * for the submitter (run as owner / triggering user / service account as the flow says), under the flow's own limits.
+   * Exactly once: trigger key form:<flow>:<submitter>:<Idempotency-Key>, so the replay of a queued submit (or a retry after a
+   * lost answer) finds the run it already made; a write without a key gets a fresh key (nothing retries it).
+   */
+  async function triggerFormSubmitted(env: string, who: UserContext, claim: { app: unknown; form: unknown }, write: { op: 'create' | 'update'; table: TableDef; rowId: string; key: string | null }): Promise<{ runIds: string[] }> {
+    return runInEnvironment(env, async () => {
+      const runIds: string[] = []
+      if (typeof claim.app !== 'string' || typeof claim.form !== 'string' || !claim.app || !claim.form || claim.app.length > 120 || claim.form.length > 120) return { runIds }
+      const cached = await formFlowList()
+      if (!cached.flows.length) return { runIds }
+      if ((await store.settings()).paused) return { runIds }
+      const apps = (cached.apps ??= await appForms())
+      const app = apps.find((a) => a.id === claim.app)
+      if (!app || !who.canRunApp(app.id)) return { runIds }
+      const form = app.forms.find((f) => f.name === claim.form)
+      if (!form) return { runIds }
+      const wrote = write.table.name.toLowerCase()
+      if (form.table ? form.table.toLowerCase() !== wrote && form.table !== write.table.id : !app.dataSources.some((d) => d.toLowerCase() === wrote || d === write.table.id)) return { runIds }
+      const mine = cached.flows.filter((f) => {
+        const t = f.trigger as Extract<FlowDef['trigger'], { type: 'formSubmitted' }>
+        const m = formOfTrigger([app], t)
+        return !!m && m.form.name === form.name && (t.on ?? ['create', 'update']).includes(write.op)
+      })
+      if (!mine.length) return { runIds }
+      // the row as committed (a Form saves one row); gone since: nothing to hand over
+      const data = deps.data()
+      const conn = await data.internals.connectorFor(write.table)
+      const raw = (await conn.select(data.internals.physical(write.table), { where: { col: 'id', op: 'eq', value: write.rowId }, top: 1 })).rows[0] as Record<string, unknown> | undefined
+      if (!raw) return { runIds }
+      const record = engine.recordFor(write.table, raw)!
+      const at = new Date()
+      const submit = write.key ?? `once-${newWorkId()}`
+      for (const f of mine) {
+        const runAs = await engine.runAsFor(f, who.user.id)
+        const trigger: FxRecord = {
+          Record: record, Operation: write.op, Table: write.table.name, App: app.name, Screen: form.screen, Form: form.name, SubmittedOn: at,
+          User: { FullName: who.user.name, Email: who.user.email, Image: '', Id: who.user.id },
+        }
+        const created = await db().tx(() => engine.createRun({
+          flowId: f.id, flowName: f.name, flowVersion: f.version, ownerId: f.ownerId, triggerKind: 'formSubmitted', triggerKey: `form:${f.id}:${who.user.id}:${submit}`.slice(0, 300),
+          triggerSummary: `${app.name}: ${form.name} ${write.op === 'create' ? 'submitted' : 'saved'} by ${who.user.name}`.slice(0, 200), trigger, runAs, runAsKind: typeof f.runAs === 'object' ? 'serviceAccount' : f.runAs,
+          triggeredBy: who.user.id, correlationId: newWorkId(), variables: engine.initialVariables(f.variables), timeoutMinutes: f.settings.timeoutMinutes,
+          regarding: { tableId: write.table.id, rowId: write.rowId }, concurrencyKey: f.settings.concurrency === 'singleton' ? f.id : null,
+          ...(f.settings.maxRunsPerMinute ? { maxRunsPerMinute: f.settings.maxRunsPerMinute } : {}),
+          ...(runAs ? {} : { failed: 'This flow runs as the triggering user but no person is known: it did not run.' }),
+        }))
+        if (created.created) runIds.push(created.id)
+      }
+      return { runIds }
+    })
+  }
+
   /* ---------------------------------------------------------------- definitions */
 
   /** validation in the current environment; conns: the flow's connection references (ref, connection id, connector kind) */
@@ -434,7 +538,9 @@ export function createFlows(deps: FlowsDeps) {
     const all = await store.list()
     const actions = deps.actions()
     const ids = new Map(conns.map((c) => [c.ref, c.connectionId]))
+    const apps = doc.trigger?.type === 'formSubmitted' ? await appForms() : undefined
     return validateFlow(doc as never, {
+      ...(apps ? { apps } : {}),
       tables: await deps.meta().tables.list(),
       flows: all.filter((f) => f.id !== selfId).map((f) => ({ id: f.id, name: f.name, trigger: f.trigger, calls: resolveCalls(all, callsOf(f.steps)) })),
       selfId, selfName: String(doc.name ?? 'this flow'), connections: new Map(conns.map((c) => [c.ref, c.connector ?? ''])), engine: engine.engine(),
@@ -519,7 +625,7 @@ export function createFlows(deps: FlowsDeps) {
 
   return {
     ...service,
-    store, engine, invalidate, validate, syncSchedule, runManual, waitForResponse, canRun, canEdit, assertCanAttach, listItems, retention, triggerApprovalDecided,
+    store, engine, invalidate, validate, syncSchedule, runManual, waitForResponse, canRun, canEdit, assertCanAttach, listItems, retention, triggerApprovalDecided, triggerFormSubmitted,
     catalog: () => ({ steps: STEP_KINDS, triggers: TRIGGER_TYPES, limits: FLOW_LIMITS }),
     /** tests: the flow clock (Now(), delays, timeouts, deadlines) */
     setClock: engine.setClock,

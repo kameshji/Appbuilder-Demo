@@ -8,7 +8,8 @@
  * resize, or the step buttons / arrow keys; src/dashboards/grid.ts has the arithmetic), the title, who can view it
  * (ViewerRoles.tsx) and the tiles (TileEditor.tsx). The environment's settings are DashboardSettings.tsx.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Download, ExternalLink, Factory, GripVertical, KeyRound, LayoutDashboard, Mail, Minus, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Settings2, Table2, Trash2, TriangleAlert, Users, X } from 'lucide-react'
 import { platform, usePlatform } from '@/platform'
 import { Button } from '@/components/ui/button'
@@ -439,7 +440,16 @@ export function Grid({ def, editing, onLayout, children, rowPx = ROW_PX }: { def
  * One tile. `bare`: read only and without the tile's own buttons (table view, export, drill-through, pin) and without
  * pointer interaction on the chart: the kiosk page and the pinned tiles on Home use it. `onPin`: the viewer's pin button.
  */
-export function Tile({ tile, data, calendar, defaults, editing, selected, onEdit, onPick, onConfigure, onStep, onOpen, chrome, bare = false, pinned, onPin, titleClass }: {
+/** P3-D: every tile has its own error boundary, so one tile that cannot draw does not take the dashboard (or the kiosk) with it */
+export function Tile(props: ComponentProps<typeof TileBody>) {
+  return (
+    <ErrorBoundary scope={`tile:${props.tile.id}`} resetKeys={[props.data]} compact className="size-full rounded-lg border bg-card">
+      <TileBody {...props} />
+    </ErrorBoundary>
+  )
+}
+
+function TileBody({ tile, data, calendar, defaults, editing, selected, onEdit, onPick, onConfigure, onStep, onOpen, chrome, bare = false, pinned, onPin, titleClass }: {
   tile: TileDef; data?: TileData; calendar: CalendarSettings; defaults: { locale: string; currency: string; timeZone: string }
   editing: boolean; selected: string | null; onEdit(f: (t: TileDef) => TileDef | null): void; onPick(row: Record<string, unknown>): void; onConfigure?(): void
   onStep?(d: { dx?: number; dy?: number; dw?: number; dh?: number }): void; onOpen?(): void; chrome?: Chrome

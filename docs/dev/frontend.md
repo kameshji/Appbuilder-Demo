@@ -291,6 +291,30 @@ their state while you build.
 - Build-time constants (`vite.config.ts` `define`, declared in `src/build-info.d.ts`): `__APP_VERSION__` (package.json) and
   `__THIRD_PARTY__` (the summary table of `THIRD-PARTY-NOTICES.md`), shown in Settings > About.
 
+## Error boundaries (P3-D)
+
+`src/components/ErrorBoundary.tsx` (a class component; React has no hook for it). A boundary catches the render errors of its subtree and shows
+"This part of the page could not be shown", a **Reload** button for that part, the request reference when the error is a server error
+(`referenceOf`), and, outside production only, the message and the component stack (never the stack in a production build). `resetKeys`:
+when one changes the boundary retries its children.
+
+| Scope | Where | Resets on |
+| --- | --- | --- |
+| `portal`, `run-app`, `kiosk` | `App.tsx` around the portal, the player and the kiosk page | Reload |
+| `portal-page` | `Portal.tsx`, the page area inside the shell | route change |
+| `app-tab:<id>` | `UserMode.tsx` `AppTabPanes`, one per tab | the active tab changing |
+| `studio` | `Portal.tsx` around `Studio` | the app changing |
+| `chat-dock` | `Portal.tsx` around both docks | Reload |
+| `tile:<id>` | `DashboardsPage.tsx` `Tile` (so the viewer, the editor preview, pins and the kiosk all have it) | new data |
+| `component:<name>` | `runtime/RenderNode.tsx`, around each UI component's renderer | Reload |
+
+`main.tsx` gives the root `onCaughtError` / `onUncaughtError`, which log the error and its component stack to the console
+(`logRenderError`). **There is no client-error endpoint on the server and none was added**, so nothing is reported anywhere else.
+Cost of one boundary per UI component, measured with `renderToString` of 2,000 siblings: about 6 microseconds each (7.8 ms against 20.0 ms
+for 2,000), so about 1 ms for a 200-component screen; accepted. Test hook: `window.__abForceCrash(scope[, false])` makes the boundaries of
+that exact scope throw on their next render through the real catch path (it can only break the viewer's own page); `p3-misc.mjs` uses it
+on the production build. Not caught by a boundary (React limitation): errors in event handlers, in async code and in the boundary itself.
+
 ## The flow designer
 
 Dev mode > Flows > a flow (`src/flows/FlowsPage.tsx`) renders `FlowDesigner` (`src/flows/designer/`, P1 package B; design in

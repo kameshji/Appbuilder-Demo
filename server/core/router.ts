@@ -20,6 +20,7 @@ import { hostingFor } from './hosting/settings.ts'
 import { adaptCookiesOut } from './hosting/cookies.ts'
 import { readOnlyGateFor } from './hosting/read-only.ts'
 import { hostingRoutes } from './hosting/routes.ts'
+import { passRefusal } from './licence/seats.ts'
 
 /** default JSON body limit; a route's maxBodyMB overrides it (JSON and raw bodies alike) */
 export const JSON_LIMIT_BYTES = 2 * 1024 * 1024
@@ -509,6 +510,9 @@ export function createRouter(services: Services, opts: RouterOptions = {}): ApiR
         }
         if (route.opts.auth === 'admin' && !user.privileges.isAdmin) throw new HttpError(403, 'denied', 'Only administrators can do this.')
         ctx.user = user
+        // H-H: Studio, data model, flow designer and the other maker routes need a Full user pass (licence/seats.ts)
+        const passDenied = passRefusal(route.opts, method, user)
+        if (passDenied) throw passDenied
         if (route.opts.design && method !== 'GET' && (await services.environments?.isLocked(ctx.environmentId))) {
           throw new HttpError(403, 'denied', LOCKED_MESSAGE)
         }

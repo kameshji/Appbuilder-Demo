@@ -13,6 +13,10 @@
  * a token that is revoked, expired or wrong (401), an account that can no longer open the dashboard (403) or a deleted
  * dashboard (404) clears the data and shows a full-page message, and keeps retrying so a re-enabled screen recovers. No
  * editing, no drill-through, no links into the app. The cursor hides after 3 seconds without movement.
+ *
+ * Cycling (P3-D), only when the address asks (`&every=30&ranges=today,last7&pages=2`, src/dashboards/kiosk.ts): the step
+ * follows the clock; each range is fetched with the `range` the query route has always accepted (a preset name, checked
+ * by the server) and kept, so the rotation goes on through a network drop with what it has. Pages are cut on the screen.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MonitorX, WifiOff } from 'lucide-react'
@@ -20,9 +24,9 @@ import { API_BASE } from '@/platform/http'
 import type { DashboardDef } from '@/dashboards/types'
 import type { TileData } from '@/dashboards/viewer'
 import { rangeLabel } from '@/dashboards/dates'
-import type { DateRange } from '@/dashboards/dates'
-import { PROBLEM_TEXT, blocksData, kioskRefreshMs, kioskRetryMs, kioskTiles, problemOf, tokenFromHash } from '@/dashboards/kiosk'
-import type { KioskAnswer, KioskInfo, KioskProblem } from '@/dashboards/kiosk'
+import type { DateRange, RangePreset } from '@/dashboards/dates'
+import { PROBLEM_TEXT, blocksData, cycleAt, cycleFromHash, cycleQuery, cycleSteps, kioskRefreshMs, kioskRetryMs, kioskTiles, pageDef, problemOf, splitPages, tokenFromHash } from '@/dashboards/kiosk'
+import type { KioskAnswer, KioskCycle, KioskInfo, KioskProblem } from '@/dashboards/kiosk'
 import { cn } from '@/lib/utils'
 import { Grid, Tile } from './DashboardsPage'
 
@@ -59,36 +63,46 @@ async function kioskFetch<T>(token: string, method: 'GET' | 'POST', path: string
 }
 
 export function KioskPage() {
-  const [token, setToken] = useState<string | null>(() => tokenFromHash(location.hash))
+  const [address, setAddress] = useState(() => location.hash)
   useEffect(() => {
-    const f = () => setToken(tokenFromHash(location.hash))
+    const f = () => setAddress(location.hash)
     window.addEventListener('hashchange', f)
     return () => window.removeEventListener('hashchange', f)
   }, [])
+  const token = tokenFromHash(address)
+  const cycle = cycleFromHash(address)
   // the address keeps the token (a screen that restarts must come back), the tab title never does
   useEffect(() => { document.title = 'Dashboard screen' }, [])
-  return token ? <KioskScreen key={token} token={token} /> : <KioskMessage problem="no-token" />
+  // a different cycle in the address starts the screen again, at its first step
+  return token ? <KioskScreen key={`${token}|${cycle ? cycleQuery(cycle) : ''}`} token={token} cycle={cycle} /> : <KioskMessage problem="no-token" />
 }
 
-function KioskScreen({ token }: { token: string }) {
+/** what one date range showed the last time it was fetched; kept so the cycle goes on through a network drop */
+interface Entry { data: Record<string, TileData>; range: DateRange | null; stamp: Date; at: number }
+const keyOf = (r: RangePreset | null): string => r ?? ''
+
+function KioskScreen({ token, cycle }: { token: string; cycle: KioskCycle | null }) {
   const [info, setInfo] = useState<KioskInfo | null>(null)
-  const [data, setData] = useState<Record<string, TileData>>({})
-  const [range, setRange] = useState<DateRange | null>(null)
-  const [stamp, setStamp] = useState<Date | null>(null)
+  const [entries, setEntries] = useState<Record<string, Entry>>({})
   const [problem, setProblem] = useState<KioskProblem | null>(null)
   const [idle, setIdle] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
   const failures = useRef(0)
   const defAt = useRef(0)
   const infoRef = useRef<KioskInfo | null>(null)
+  const entriesRef = useRef<Record<string, Entry>>({})
+  const wantKey = useRef(keyOf(cycle?.ranges[0] ?? null)) // the first step's range: the first request already asks for it
+  const startAt = useRef(Date.now())
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const alive = useRef(true)
 
   const running = useRef(false)
-  const cycle = useCallback(async () => {
+  const refresh = useCallback(async () => {
     // one request chain at a time (a timer, "online" and "visible" may all ask at once)
     if (running.current) return
     running.current = true
     if (timer.current) clearTimeout(timer.current)
+    const key = wantKey.current
     let next: number
     try {
       let cur = infoRef.current
@@ -98,14 +112,17 @@ function KioskScreen({ token }: { token: string }) {
         infoRef.current = cur
         if (alive.current) setInfo(cur)
       }
-      const a = await kioskFetch<KioskAnswer>(token, 'POST', '/dashboards/kiosk/query', { dashboardId: cur.dashboard.id })
+      // the range asked for is one of the server's own presets (the query route validates it as it always did)
+      const a = await kioskFetch<KioskAnswer>(token, 'POST', '/dashboards/kiosk/query', { dashboardId: cur.dashboard.id, ...(key ? { range: key } : {}) })
       if (!alive.current) { running.current = false; return }
-      setData(kioskTiles(cur.dashboard.def, cur.settings, a))
-      setRange(a.range)
-      setStamp(new Date())
+      entriesRef.current = { ...entriesRef.current, [key]: { data: kioskTiles(cur.dashboard.def, cur.settings, a), range: a.range, stamp: new Date(), at: Date.now() } }
+      setEntries(entriesRef.current)
       setProblem(null)
       failures.current = 0
-      next = kioskRefreshMs(cur.dashboard.def)
+      const refreshMs = kioskRefreshMs(cur.dashboard.def)
+      // the cycle moved on to a range that was not fetched yet (or not lately) while this request was running: ask for it now
+      const e = entriesRef.current[wantKey.current]
+      next = wantKey.current !== key && (!e || Date.now() - e.at > refreshMs) ? 0 : refreshMs
     } catch (e) {
       if (!alive.current) { running.current = false; return }
       const err = e instanceof KioskError ? e : new KioskError(0, null)
@@ -116,30 +133,49 @@ function KioskScreen({ token }: { token: string }) {
         // the token no longer allows it: nothing of the dashboard stays on the screen
         infoRef.current = null
         setInfo(null)
-        setData({})
-        setRange(null)
+        entriesRef.current = {}
+        setEntries({})
       }
       next = blocksData(p) ? Math.max(60_000, kioskRetryMs(failures.current)) : kioskRetryMs(failures.current, err.retryAfter)
     }
     running.current = false
     if (timer.current) clearTimeout(timer.current)
-    timer.current = setTimeout(() => void cycle(), next)
+    timer.current = setTimeout(() => void refresh(), next)
   }, [token])
 
   useEffect(() => {
     alive.current = true
-    void cycle()
+    void refresh()
     // back online, or the tab shown again: ask now instead of waiting for the timer
-    const now = () => { if (document.visibilityState === 'visible') void cycle() }
-    window.addEventListener('online', now)
-    document.addEventListener('visibilitychange', now)
+    const ask = () => { if (document.visibilityState === 'visible') void refresh() }
+    window.addEventListener('online', ask)
+    document.addEventListener('visibilitychange', ask)
     return () => {
       alive.current = false
       if (timer.current) clearTimeout(timer.current)
-      window.removeEventListener('online', now)
-      document.removeEventListener('visibilitychange', now)
+      window.removeEventListener('online', ask)
+      document.removeEventListener('visibilitychange', ask)
     }
-  }, [cycle])
+  }, [refresh])
+
+  // cycling: the step follows the clock; a range that has no data yet (the network was down) is skipped, never waited for
+  const def = info?.dashboard.def ?? null
+  const pages = useMemo(() => (def ? splitPages(def.tiles, cycle?.pages ?? 1) : [[]]), [def, cycle])
+  const steps = useMemo(() => cycleSteps(cycle, pages.length), [cycle, pages.length])
+  const pos = useMemo(() => cycleAt(steps, startAt.current, (cycle?.every ?? 0) * 1000, now, (s) => !!entries[keyOf(s.range)]), [steps, cycle, now, entries])
+  const step = steps[pos.index] ?? steps[0]!
+  const wantedKey = keyOf((steps[pos.wanted] ?? step).range)
+  useEffect(() => {
+    if (!cycle || steps.length < 2) return
+    const t = setTimeout(() => setNow(Date.now()), Math.max(50, Math.min(pos.msToNext, 60_000)) + 5)
+    return () => clearTimeout(t)
+  }, [cycle, steps.length, pos.msToNext, now])
+  const wantedAt = entries[wantedKey]?.at
+  useEffect(() => {
+    wantKey.current = wantedKey
+    if (!info) return
+    if (wantedAt === undefined || Date.now() - wantedAt > kioskRefreshMs(info.dashboard.def)) void refresh()
+  }, [wantedKey, wantedAt, info, refresh])
 
   // the cursor hides after a while without movement
   useEffect(() => {
@@ -155,10 +191,16 @@ function KioskScreen({ token }: { token: string }) {
   useEffect(() => { document.title = info ? info.dashboard.name : 'Dashboard screen' }, [info])
 
   if (!info) return <KioskMessage problem={problem} idle={idle} />
-  return <KioskBoard def={info.dashboard.def} settings={info.settings} data={data} range={range} stamp={stamp} problem={problem} idle={idle} />
+  const shown = entries[keyOf(step.range)]
+  return (
+    <KioskBoard def={pageDef(info.dashboard.def, pages, step.page)} settings={info.settings} data={shown?.data ?? {}} range={shown?.range ?? null} stamp={shown?.stamp ?? null}
+      problem={problem} idle={idle} cycle={cycle && steps.length > 1 ? { index: pos.index, count: steps.length, page: step.page, pages: pages.length, range: step.range } : null} />
+  )
 }
 
-function KioskBoard({ def, settings, data, range, stamp, problem, idle }: { def: DashboardDef; settings: KioskInfo['settings']; data: Record<string, TileData>; range: DateRange | null; stamp: Date | null; problem: KioskProblem | null; idle: boolean }) {
+interface CycleView { index: number; count: number; page: number; pages: number; range: RangePreset | null }
+
+function KioskBoard({ def, settings, data, range, stamp, problem, idle, cycle }: { def: DashboardDef; settings: KioskInfo['settings']; data: Record<string, TileData>; range: DateRange | null; stamp: Date | null; problem: KioskProblem | null; idle: boolean; cycle: CycleView | null }) {
   const calendar = useMemo(() => ({ timeZone: settings.timeZone, fiscalYearStart: settings.fiscalYearStart, weekStart: settings.weekStart, shifts: settings.shifts }), [settings])
   const defaults = useMemo(() => ({ locale: settings.locale, currency: settings.currency, timeZone: settings.timeZone }), [settings])
   const [height, setHeight] = useState(() => window.innerHeight)
@@ -172,6 +214,12 @@ function KioskBoard({ def, settings, data, range, stamp, problem, idle }: { def:
       <header className="flex h-16 shrink-0 items-center gap-4 border-b bg-card px-6">
         <h1 className="truncate text-2xl font-semibold" data-testid="kiosk-title">{def.title}</h1>
         <span className="text-lg text-muted-foreground" data-testid="kiosk-range">{rangeLabel(range)}</span>
+        {cycle && (
+          <span className="flex items-center gap-1.5 text-base text-muted-foreground" data-testid="kiosk-cycle" data-step={cycle.index} data-steps={cycle.count} data-range={cycle.range ?? ''} data-page={cycle.page} data-pages={cycle.pages}>
+            {cycle.pages > 1 && <span>Page {cycle.page + 1} of {cycle.pages}</span>}
+            <span aria-hidden className="flex gap-1">{Array.from({ length: cycle.count }, (_, i) => <span key={i} className={cn('size-2 rounded-full', i === cycle.index ? 'bg-foreground' : 'bg-muted-foreground/30')} />)}</span>
+          </span>
+        )}
         <span className="ml-auto flex items-center gap-2 text-base text-muted-foreground" data-testid="kiosk-stamp">
           {problem && !blocksData(problem) && <span className="flex items-center gap-1.5 rounded-full bg-amber-500/15 px-3 py-1 text-sm text-amber-900 dark:text-amber-200" data-testid="kiosk-hiccup"><WifiOff className="size-4" />{PROBLEM_TEXT[problem].title}</span>}
           {stamp ? `Updated ${stamp.toLocaleTimeString(settings.locale, { hour: '2-digit', minute: '2-digit' })}` : ''}

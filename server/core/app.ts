@@ -42,6 +42,8 @@ import { pwaRoutes } from './pwa.ts'
 import { offlineRoutes } from './offline.ts'
 import { chatRoutes } from './chat/routes.ts'
 import { notesRoutes } from './notes/routes.ts'
+import { licenceRoutes, startLicence, stopLicence } from './licence/index.ts'
+import { withPasses } from './licence/seats.ts'
 
 export interface AppServer {
   services: CoreServices
@@ -80,7 +82,8 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   if (config.host !== '127.0.0.1' && config.host !== 'localhost' && config.host !== '::1') {
     log('warn', `listening on ${config.host}: other computers can reach the sign-in page. There is no TLS; see docs/admin/hardening-checklist.md.`)
   }
-  router.setSessionResolver(sessionResolver(services))
+  // H-H: seat passes (an Operator pass is no maker: licence/seats.ts)
+  router.setSessionResolver(withPasses(services, sessionResolver(services)))
   // realtime hub and notifications (package H): the hub pushes notifications; hidden presence follows the settings
   const notifications = createNotificationService({ services })
   services.notifications = notifications
@@ -144,6 +147,8 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   chatRoutes(router, services, live, { env })
   // P3-N: notes (the NOTE_TAGS sanitiser, mentions in notes, the Notes page's routes)
   notesRoutes(router, services)
+  // H-G / H-H: the licence state, "check now" and seat passes (Admin console > Licences)
+  licenceRoutes(router, services)
   if (opts.boot !== false) {
     await services.boot()
     if (services.ready()) {
@@ -164,6 +169,8 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
     let needsSetup = !services.setupComplete()
     if (!needsSetup && services.ready()) needsSetup = (await services.meta.users.count().catch(() => 1)) === 0
     if (needsSetup && !services.state.incompatible) services.setupCode.issue({ print: opts.printSetupCode !== false })
+    // H-G: the licence client (nothing is sent without APPBUILDER_LICENCE_URL / _ID / _KEY)
+    startLicence(services, { env })
   }
   if (opts.jobs !== false) services.kernel.start()
   return {
@@ -179,6 +186,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
     },
     async close() {
       offOutbox()
+      stopLicence(services)
       await live.close().catch(() => {})
       await services.close()
     },

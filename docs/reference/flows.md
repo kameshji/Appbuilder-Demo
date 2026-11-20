@@ -14,7 +14,7 @@ Every step also takes `id`, `name`, `description`, `runAfter` (`[{ step, when: [
   - [Run by a person or an app](#run-by-a-person-or-an-app)
   - [When a web request arrives](#when-a-web-request-arrives)
   - [When an approval is decided](#when-an-approval-is-decided)
-  - [When a form is submitted (reserved)](#when-a-form-is-submitted-reserved)
+  - [When a form is submitted](#when-a-form-is-submitted)
 - [Steps](#steps)
   - [Condition](#condition)
   - [Switch](#switch)
@@ -111,13 +111,19 @@ Every step also takes `id`, `name`, `description`, `runAfter` (`[{ step, when: [
 
 **Guarantee:** One run per decided request and flow (trigger key appr:<flow>:<request>).
 
-### When a form is submitted (reserved)
+### When a form is submitted
 
-`type: "formSubmitted"` (reserved). Reserved for a later release.
+`type: "formSubmitted"`. Starts a run when a person submits a Form of an app and the row is saved; the run acts for that person (P3-D).
 
-**Expressions see:** -
+| Field | Type | Required | What it is |
+| --- | --- | --- | --- |
+| `app` | text | yes | The app (its name or id). |
+| `form` | text | yes | The name of the Form UI component in the app. |
+| `on` | ("create" \| "update")[] |  | New rows and / or edited rows (default both). |
 
-**Guarantee:** -
+**Expressions see:** Trigger.Record (the saved row), Trigger.Operation ("create" or "update"), Trigger.Table, Trigger.App, Trigger.Screen, Trigger.Form, Trigger.User (the submitter), Trigger.SubmittedOn
+
+**Guarantee:** One run per submit and flow, also when the submit was saved offline and sent later (trigger key form:<flow>:<submitter>:<idempotency key>). Started only from a row write the server committed for that person, never from a bare claim.
 
 ## Steps
 

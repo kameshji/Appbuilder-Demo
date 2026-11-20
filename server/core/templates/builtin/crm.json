@@ -1,0 +1,4439 @@
+{
+  "format": "appbuilder/template",
+  "formatVersion": 2,
+  "id": "builtin.crm",
+  "version": "1.0.0",
+  "kind": "solution",
+  "name": "CRM",
+  "shortName": "CRM",
+  "prefix": "Crm",
+  "description": "For a small sales team: leads (capture, qualify, convert to an account, a contact and an opportunity), opportunities with stages, expected value and close date, quotes with lines and a printable quotation (no tax computed), activities on each deal's timeline, email and WhatsApp touchpoints, a sales pipeline dashboard (by stage, by owner, won and lost, forecast by month), a desktop app and a phone app for reps, flows for new leads, stale deals, big discounts (manager approval) and won or lost deals, and three roles (sales rep with own rows, sales manager with the team's rows, viewer). Accounts, contacts, products and price lists come from the common business model. Stages, lead sources and loss reasons are reference rows; SAMPLE rows of fictional deals are optional.",
+  "publisher": "Appbuilder",
+  "tags": [
+    "crm",
+    "sales",
+    "leads",
+    "opportunities",
+    "quotes",
+    "pipeline",
+    "solution"
+  ],
+  "minPlatformVersion": "0.7.0",
+  "modes": [
+    "copy",
+    "linked"
+  ],
+  "dependencies": [
+    {
+      "id": "builtin.business-model",
+      "minVersion": "1.0.0"
+    }
+  ],
+  "slots": [
+    {
+      "id": "Accounts",
+      "label": "Accounts (common business model)",
+      "description": "The organisations you sell to: the Accounts of the common business model, shared with other packs.",
+      "required": true,
+      "from": {
+        "template": "builtin.business-model",
+        "slot": "Accounts"
+      },
+      "columns": [
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true
+        },
+        {
+          "id": "Type",
+          "label": "Type",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": false
+        },
+        {
+          "id": "Email",
+          "label": "Email",
+          "types": [
+            "email"
+          ],
+          "required": false
+        },
+        {
+          "id": "Phone",
+          "label": "Phone",
+          "types": [
+            "phone"
+          ],
+          "required": false
+        },
+        {
+          "id": "Industry",
+          "label": "Industry",
+          "types": [
+            "text"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "Contacts",
+      "label": "Contacts (common business model)",
+      "description": "The people at your accounts.",
+      "required": true,
+      "from": {
+        "template": "builtin.business-model",
+        "slot": "Contacts"
+      },
+      "columns": [
+        {
+          "id": "FullName",
+          "label": "Full name",
+          "types": [
+            "text"
+          ],
+          "required": true
+        },
+        {
+          "id": "Account",
+          "label": "Account",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Accounts"
+        },
+        {
+          "id": "JobTitle",
+          "label": "Job title",
+          "types": [
+            "text"
+          ],
+          "required": false
+        },
+        {
+          "id": "Email",
+          "label": "Email",
+          "types": [
+            "email"
+          ],
+          "required": false
+        },
+        {
+          "id": "Phone",
+          "label": "Phone",
+          "types": [
+            "phone"
+          ],
+          "required": false
+        },
+        {
+          "id": "Mobile",
+          "label": "Mobile",
+          "types": [
+            "phone"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "Products",
+      "label": "Products (common business model)",
+      "description": "What you sell: the Products of the common business model.",
+      "required": true,
+      "from": {
+        "template": "builtin.business-model",
+        "slot": "Products"
+      },
+      "columns": [
+        {
+          "id": "Code",
+          "label": "Code",
+          "types": [
+            "text"
+          ],
+          "required": false
+        },
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true
+        },
+        {
+          "id": "StandardPrice",
+          "label": "Standard price",
+          "types": [
+            "currency"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "PriceLists",
+      "label": "Price lists (common business model)",
+      "description": "Price lists of the common business model.",
+      "required": true,
+      "from": {
+        "template": "builtin.business-model",
+        "slot": "PriceLists"
+      },
+      "columns": [
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true
+        },
+        {
+          "id": "IsDefault",
+          "label": "Default",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "PriceListItems",
+      "label": "Price list items (common business model)",
+      "description": "The price of a product in a price list.",
+      "required": true,
+      "from": {
+        "template": "builtin.business-model",
+        "slot": "PriceListItems"
+      },
+      "columns": [
+        {
+          "id": "PriceList",
+          "label": "Price list",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "PriceLists"
+        },
+        {
+          "id": "Product",
+          "label": "Product",
+          "types": [
+            "lookup"
+          ],
+          "required": true,
+          "lookupSlot": "Products"
+        },
+        {
+          "id": "UnitPrice",
+          "label": "Unit price",
+          "types": [
+            "currency"
+          ],
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "LeadSources",
+      "label": "Lead sources",
+      "description": "Where leads come from (reference rows; change them to your own).",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "LeadSources",
+        "displayName": "Lead sources",
+        "primaryColumn": "Name",
+        "description": "Where leads come from (reference rows; change them to your own)."
+      },
+      "columns": [
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true,
+            "unique": true
+          }
+        },
+        {
+          "id": "Active",
+          "label": "Active",
+          "types": [
+            "boolean"
+          ],
+          "required": false,
+          "create": {
+            "type": "boolean",
+            "default": "true"
+          }
+        }
+      ]
+    },
+    {
+      "id": "LossReasons",
+      "label": "Loss reasons",
+      "description": "Why an opportunity was lost (reference rows; change them to your own).",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "LossReasons",
+        "displayName": "Loss reasons",
+        "primaryColumn": "Name",
+        "description": "Why an opportunity was lost (reference rows; change them to your own)."
+      },
+      "columns": [
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true,
+            "unique": true
+          }
+        },
+        {
+          "id": "Active",
+          "label": "Active",
+          "types": [
+            "boolean"
+          ],
+          "required": false,
+          "create": {
+            "type": "boolean",
+            "default": "true"
+          }
+        }
+      ]
+    },
+    {
+      "id": "SalesStages",
+      "label": "Sales stages",
+      "description": "The stages of an opportunity with the probability of winning at each (reference rows). The probability of an opportunity follows its stage.",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "SalesStages",
+        "displayName": "Sales stages",
+        "primaryColumn": "Name",
+        "description": "The stages of an opportunity with the probability of winning at each (reference rows). The probability of an opportunity follows its stage."
+      },
+      "columns": [
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true,
+            "unique": true
+          }
+        },
+        {
+          "id": "Sequence",
+          "label": "Order",
+          "types": [
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "number"
+          }
+        },
+        {
+          "id": "Probability",
+          "label": "Probability (%)",
+          "types": [
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "number"
+          }
+        },
+        {
+          "id": "IsOpen",
+          "label": "Open stage",
+          "types": [
+            "boolean"
+          ],
+          "required": false,
+          "create": {
+            "type": "boolean",
+            "default": "true"
+          }
+        }
+      ]
+    },
+    {
+      "id": "Opportunities",
+      "label": "Opportunities",
+      "description": "Deals in progress: stage, expected value, close date and the weighted amount (value x probability of the stage).",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "Opportunities",
+        "displayName": "Opportunities",
+        "primaryColumn": "Name",
+        "description": "Deals in progress: stage, expected value, close date and the weighted amount (value x probability of the stage)."
+      },
+      "columns": [
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true,
+            "indexed": true
+          }
+        },
+        {
+          "id": "Account",
+          "label": "Account",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Accounts",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "Contact",
+          "label": "Contact",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Contacts",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "Stage",
+          "label": "Stage",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "choice",
+            "required": true,
+            "choices": [
+              "Prospect",
+              "Qualified",
+              "Proposal",
+              "Negotiation",
+              "Won",
+              "Lost"
+            ],
+            "default": "Prospect",
+            "indexed": true
+          }
+        },
+        {
+          "id": "Amount",
+          "label": "Expected value",
+          "types": [
+            "currency",
+            "decimal",
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "currency"
+          }
+        },
+        {
+          "id": "Probability",
+          "label": "Probability (%)",
+          "types": [
+            "number",
+            "decimal"
+          ],
+          "required": false,
+          "create": {
+            "type": "number"
+          }
+        },
+        {
+          "id": "WeightedAmount",
+          "label": "Weighted value",
+          "types": [
+            "currency",
+            "decimal",
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "currency",
+            "computed": {
+              "kind": "formula",
+              "formula": "Round(Coalesce(Slot_Opportunities_Amount, 0) * Coalesce(Slot_Opportunities_Probability, 0) / 100, 2)"
+            }
+          }
+        },
+        {
+          "id": "CloseDate",
+          "label": "Expected close",
+          "types": [
+            "date"
+          ],
+          "required": true,
+          "create": {
+            "type": "date",
+            "required": true,
+            "indexed": true
+          }
+        },
+        {
+          "id": "Source",
+          "label": "Lead source",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "LeadSources",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "LossReason",
+          "label": "Loss reason",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "LossReasons",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "NextStep",
+          "label": "Next step",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        },
+        {
+          "id": "ClosedOn",
+          "label": "Closed on",
+          "types": [
+            "date"
+          ],
+          "required": false,
+          "create": {
+            "type": "date"
+          }
+        },
+        {
+          "id": "Description",
+          "label": "Notes",
+          "types": [
+            "multiline"
+          ],
+          "required": false,
+          "create": {
+            "type": "multiline"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "Probability from the stage; closed date",
+          "kind": "event",
+          "timing": "before",
+          "operations": [
+            "create",
+            "update"
+          ],
+          "actions": "If(!IsBlank(LookUp(Slot_SalesStages, Slot_SalesStages_Name = New.Slot_Opportunities_Stage)), SetField({Slot_Opportunities_Probability: LookUp(Slot_SalesStages, Slot_SalesStages_Name = New.Slot_Opportunities_Stage).Slot_SalesStages_Probability})); If((New.Slot_Opportunities_Stage = \"Won\" || New.Slot_Opportunities_Stage = \"Lost\") && IsBlank(New.Slot_Opportunities_ClosedOn), SetField({Slot_Opportunities_ClosedOn: Today()}))",
+          "runAs": "caller",
+          "enabled": true
+        },
+        {
+          "name": "A lost deal has a reason",
+          "kind": "validation",
+          "timing": "before",
+          "operations": [
+            "create",
+            "update"
+          ],
+          "condition": "Slot_Opportunities_Stage <> \"Lost\" || !IsBlank(Slot_Opportunities_LossReason)",
+          "message": "Choose the loss reason before marking the opportunity Lost.",
+          "field": "Slot_Opportunities_LossReason",
+          "runAs": "caller",
+          "enabled": true
+        },
+        {
+          "name": "Value is not negative",
+          "kind": "validation",
+          "timing": "before",
+          "operations": [
+            "create",
+            "update"
+          ],
+          "condition": "Coalesce(Slot_Opportunities_Amount, 0) >= 0",
+          "message": "The expected value cannot be negative.",
+          "field": "Slot_Opportunities_Amount",
+          "runAs": "caller",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "id": "Leads",
+      "label": "Leads",
+      "description": "People and companies that may become customers: capture, qualify, then convert to an account, a contact and an opportunity (set the status Converted).",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "Leads",
+        "displayName": "Leads",
+        "primaryColumn": "Name",
+        "description": "People and companies that may become customers: capture, qualify, then convert to an account, a contact and an opportunity (set the status Converted)."
+      },
+      "columns": [
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true,
+            "indexed": true
+          }
+        },
+        {
+          "id": "Company",
+          "label": "Company",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        },
+        {
+          "id": "JobTitle",
+          "label": "Job title",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        },
+        {
+          "id": "Email",
+          "label": "Email",
+          "types": [
+            "email"
+          ],
+          "required": false,
+          "create": {
+            "type": "email"
+          }
+        },
+        {
+          "id": "Phone",
+          "label": "Phone",
+          "types": [
+            "phone"
+          ],
+          "required": false,
+          "create": {
+            "type": "phone"
+          }
+        },
+        {
+          "id": "Source",
+          "label": "Lead source",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "LeadSources",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "Status",
+          "label": "Status",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "choice",
+            "required": true,
+            "choices": [
+              "New",
+              "Contacted",
+              "Qualified",
+              "Unqualified",
+              "Converted"
+            ],
+            "default": "New",
+            "indexed": true
+          }
+        },
+        {
+          "id": "EstimatedValue",
+          "label": "Estimated value",
+          "types": [
+            "currency",
+            "decimal",
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "currency"
+          }
+        },
+        {
+          "id": "NextFollowUp",
+          "label": "Next follow-up",
+          "types": [
+            "date"
+          ],
+          "required": false,
+          "create": {
+            "type": "date"
+          }
+        },
+        {
+          "id": "Notes",
+          "label": "Notes",
+          "types": [
+            "multiline"
+          ],
+          "required": false,
+          "create": {
+            "type": "multiline"
+          }
+        },
+        {
+          "id": "ConvertedAccount",
+          "label": "Account (after conversion)",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Accounts",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "ConvertedContact",
+          "label": "Contact (after conversion)",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Contacts",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "ConvertedOpportunity",
+          "label": "Opportunity (after conversion)",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Opportunities",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "A way to reach the lead",
+          "kind": "validation",
+          "timing": "before",
+          "operations": [
+            "create",
+            "update"
+          ],
+          "condition": "Slot_Leads_Status = \"New\" || Slot_Leads_Status = \"Contacted\" || Slot_Leads_Status = \"Unqualified\" || !IsBlank(Slot_Leads_Email) || !IsBlank(Slot_Leads_Phone)",
+          "message": "A qualified or converted lead needs an email address or a phone number.",
+          "field": "Slot_Leads_Phone",
+          "runAs": "caller",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "id": "Quotes",
+      "label": "Quotes",
+      "description": "Commercial quotes for an opportunity: lines, a header discount, the total. No tax is computed on a quote. A discount above 10% needs a sales manager's approval before the quote is sent.",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "Quotes",
+        "displayName": "Quotes",
+        "primaryColumn": "Number",
+        "description": "Commercial quotes for an opportunity: lines, a header discount, the total. No tax is computed on a quote. A discount above 10% needs a sales manager's approval before the quote is sent."
+      },
+      "columns": [
+        {
+          "id": "Number",
+          "label": "Number",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text",
+            "unique": true,
+            "default": "=NextNumber(\"Slot_Seq_Quote\")"
+          }
+        },
+        {
+          "id": "Opportunity",
+          "label": "Opportunity",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Opportunities",
+          "create": {
+            "type": "lookup",
+            "onDelete": "restrict"
+          }
+        },
+        {
+          "id": "Account",
+          "label": "Account",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Accounts",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "PriceList",
+          "label": "Price list",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "PriceLists",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "QuoteDate",
+          "label": "Quote date",
+          "types": [
+            "date"
+          ],
+          "required": false,
+          "create": {
+            "type": "date",
+            "default": "=Today()"
+          }
+        },
+        {
+          "id": "ValidUntil",
+          "label": "Valid until",
+          "types": [
+            "date"
+          ],
+          "required": false,
+          "create": {
+            "type": "date"
+          }
+        },
+        {
+          "id": "Status",
+          "label": "Status",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "choice",
+            "required": true,
+            "choices": [
+              "Draft",
+              "Sent",
+              "Accepted",
+              "Declined"
+            ],
+            "default": "Draft",
+            "indexed": true
+          }
+        },
+        {
+          "id": "DiscountPercent",
+          "label": "Discount (%)",
+          "types": [
+            "decimal",
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "decimal",
+            "default": "0"
+          }
+        },
+        {
+          "id": "Subtotal",
+          "label": "Subtotal",
+          "types": [
+            "currency",
+            "decimal",
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "currency"
+          }
+        },
+        {
+          "id": "DiscountAmount",
+          "label": "Discount amount",
+          "types": [
+            "currency",
+            "decimal",
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "currency",
+            "computed": {
+              "kind": "formula",
+              "formula": "Round(Coalesce(Slot_Quotes_Subtotal, 0) * Coalesce(Slot_Quotes_DiscountPercent, 0) / 100, 2)"
+            }
+          }
+        },
+        {
+          "id": "Total",
+          "label": "Total (no tax)",
+          "types": [
+            "currency",
+            "decimal",
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "currency",
+            "computed": {
+              "kind": "formula",
+              "formula": "Round(Coalesce(Slot_Quotes_Subtotal, 0) * (1 - Coalesce(Slot_Quotes_DiscountPercent, 0) / 100), 2)"
+            }
+          }
+        },
+        {
+          "id": "Approval",
+          "label": "Discount approval",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "choice",
+            "choices": [
+              "Not needed",
+              "Pending",
+              "Approved",
+              "Rejected"
+            ],
+            "default": "Not needed"
+          }
+        },
+        {
+          "id": "ApprovedDiscount",
+          "label": "Approved discount (%)",
+          "types": [
+            "decimal",
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "decimal"
+          }
+        },
+        {
+          "id": "Terms",
+          "label": "Terms",
+          "types": [
+            "multiline"
+          ],
+          "required": false,
+          "create": {
+            "type": "multiline"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "Account and price list",
+          "kind": "event",
+          "timing": "before",
+          "operations": [
+            "create",
+            "update"
+          ],
+          "actions": "If(IsBlank(New.Slot_Quotes_Account) && !IsBlank(New.Slot_Quotes_Opportunity), SetField({Slot_Quotes_Account: LookUp(Slot_Opportunities, id = New.Slot_Quotes_Opportunity).Slot_Opportunities_Account})); If(IsBlank(New.Slot_Quotes_PriceList) && !IsBlank(LookUp(Slot_PriceLists, Slot_PriceLists_IsDefault = true)), SetField({Slot_Quotes_PriceList: LookUp(Slot_PriceLists, Slot_PriceLists_IsDefault = true).id}))",
+          "runAs": "caller",
+          "enabled": true
+        },
+        {
+          "name": "Discount between 0 and 100",
+          "kind": "validation",
+          "timing": "before",
+          "operations": [
+            "create",
+            "update"
+          ],
+          "condition": "Coalesce(Slot_Quotes_DiscountPercent, 0) >= 0 && Coalesce(Slot_Quotes_DiscountPercent, 0) <= 100",
+          "message": "The discount is a percentage between 0 and 100.",
+          "field": "Slot_Quotes_DiscountPercent",
+          "runAs": "caller",
+          "enabled": true
+        },
+        {
+          "name": "Valid until after the quote date",
+          "kind": "validation",
+          "timing": "before",
+          "operations": [
+            "create",
+            "update"
+          ],
+          "condition": "IsBlank(Slot_Quotes_ValidUntil) || IsBlank(Slot_Quotes_QuoteDate) || Slot_Quotes_ValidUntil >= Slot_Quotes_QuoteDate",
+          "message": "The quote cannot be valid until a date before it was made.",
+          "field": "Slot_Quotes_ValidUntil",
+          "runAs": "caller",
+          "enabled": true
+        },
+        {
+          "name": "A big discount is approved before the quote is sent",
+          "kind": "validation",
+          "timing": "before",
+          "operations": [
+            "create",
+            "update"
+          ],
+          "condition": "(Slot_Quotes_Status <> \"Sent\" && Slot_Quotes_Status <> \"Accepted\") || Coalesce(Slot_Quotes_DiscountPercent, 0) <= 10 || (Slot_Quotes_Approval = \"Approved\" && Coalesce(Slot_Quotes_DiscountPercent, 0) <= Coalesce(Slot_Quotes_ApprovedDiscount, 0))",
+          "message": "A discount above 10% needs the sales manager's approval before the quote is sent. Save the quote as Draft and wait for the approval.",
+          "field": "Slot_Quotes_Status",
+          "runAs": "caller",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "id": "QuoteLines",
+      "label": "Quote lines",
+      "description": "The products on a quote: quantity and unit price (from the quote's price list, else the product's standard price).",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "QuoteLines",
+        "displayName": "Quote lines",
+        "primaryColumn": "Description",
+        "description": "The products on a quote: quantity and unit price (from the quote's price list, else the product's standard price)."
+      },
+      "columns": [
+        {
+          "id": "Description",
+          "label": "Description",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true
+          }
+        },
+        {
+          "id": "Quote",
+          "label": "Quote",
+          "types": [
+            "lookup"
+          ],
+          "required": true,
+          "lookupSlot": "Quotes",
+          "create": {
+            "type": "lookup",
+            "required": true,
+            "onDelete": "cascade"
+          }
+        },
+        {
+          "id": "Product",
+          "label": "Product",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Products",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "PriceList",
+          "label": "Price list (from the quote)",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "PriceLists",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "Quantity",
+          "label": "Quantity",
+          "types": [
+            "decimal",
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "decimal",
+            "default": "1"
+          }
+        },
+        {
+          "id": "UnitPrice",
+          "label": "Unit price",
+          "types": [
+            "currency",
+            "decimal",
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "currency"
+          }
+        },
+        {
+          "id": "Amount",
+          "label": "Amount",
+          "types": [
+            "currency",
+            "decimal",
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "currency",
+            "computed": {
+              "kind": "formula",
+              "formula": "Round(Coalesce(Slot_QuoteLines_Quantity, 0) * Coalesce(Slot_QuoteLines_UnitPrice, 0), 2)"
+            }
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "Price list of the quote",
+          "kind": "event",
+          "timing": "before",
+          "operations": [
+            "create",
+            "update"
+          ],
+          "actions": "If(IsBlank(New.Slot_QuoteLines_PriceList) && !IsBlank(New.Slot_QuoteLines_Quote), SetField({Slot_QuoteLines_PriceList: LookUp(Slot_Quotes, id = New.Slot_QuoteLines_Quote).Slot_Quotes_PriceList}))",
+          "runAs": "caller",
+          "enabled": true
+        },
+        {
+          "name": "Description and price from the product",
+          "kind": "event",
+          "timing": "before",
+          "operations": [
+            "create",
+            "update"
+          ],
+          "actions": "If(IsBlank(New.Slot_QuoteLines_UnitPrice) && !IsBlank(New.Slot_QuoteLines_Product), SetField({Slot_QuoteLines_UnitPrice: Coalesce(LookUp(Slot_PriceListItems, Slot_PriceListItems_Product = New.Slot_QuoteLines_Product && Slot_PriceListItems_PriceList = New.Slot_QuoteLines_PriceList).Slot_PriceListItems_UnitPrice, LookUp(Slot_Products, id = New.Slot_QuoteLines_Product).Slot_Products_StandardPrice)})); If(IsBlank(New.Slot_QuoteLines_Description) && !IsBlank(New.Slot_QuoteLines_Product), SetField({Slot_QuoteLines_Description: LookUp(Slot_Products, id = New.Slot_QuoteLines_Product).Slot_Products_Name}))",
+          "runAs": "caller",
+          "enabled": true
+        },
+        {
+          "name": "Quantity and price",
+          "kind": "validation",
+          "timing": "before",
+          "operations": [
+            "create",
+            "update"
+          ],
+          "condition": "Coalesce(Slot_QuoteLines_Quantity, 0) > 0 && Coalesce(Slot_QuoteLines_UnitPrice, 0) >= 0",
+          "message": "The quantity must be more than zero and the price cannot be negative.",
+          "field": "Slot_QuoteLines_Quantity",
+          "runAs": "caller",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "id": "Touchpoints",
+      "label": "Touchpoints",
+      "description": "Emails and WhatsApp messages to the contact of an opportunity. An email is sent when the environment has an email connection; every touchpoint is logged as an activity on the opportunity's timeline.",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "Touchpoints",
+        "displayName": "Touchpoints",
+        "primaryColumn": "Subject",
+        "description": "Emails and WhatsApp messages to the contact of an opportunity. An email is sent when the environment has an email connection; every touchpoint is logged as an activity on the opportunity's timeline."
+      },
+      "columns": [
+        {
+          "id": "Subject",
+          "label": "Subject",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true
+          }
+        },
+        {
+          "id": "Channel",
+          "label": "Channel",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "choice",
+            "required": true,
+            "choices": [
+              "Email",
+              "WhatsApp"
+            ],
+            "default": "Email"
+          }
+        },
+        {
+          "id": "Opportunity",
+          "label": "Opportunity",
+          "types": [
+            "lookup"
+          ],
+          "required": true,
+          "lookupSlot": "Opportunities",
+          "create": {
+            "type": "lookup",
+            "required": true,
+            "onDelete": "cascade"
+          }
+        },
+        {
+          "id": "Contact",
+          "label": "Contact",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Contacts",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "Message",
+          "label": "Message",
+          "types": [
+            "multiline"
+          ],
+          "required": false,
+          "create": {
+            "type": "multiline"
+          }
+        },
+        {
+          "id": "Status",
+          "label": "Status",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "choice",
+            "choices": [
+              "Queued",
+              "Sent",
+              "Not sent",
+              "Logged"
+            ],
+            "default": "Queued"
+          }
+        },
+        {
+          "id": "Result",
+          "label": "Result",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        }
+      ]
+    }
+  ],
+  "payload": {
+    "apps": [
+      {
+        "key": "Sales",
+        "name": "Sales",
+        "description": "The sales team at a PC: pipeline with the timeline of each deal, leads (qualify, convert), quotes with lines and print, accounts, contacts, email and WhatsApp touchpoints.",
+        "app": {
+          "formatVersion": 2,
+          "name": "Sales",
+          "width": 1920,
+          "height": 1080,
+          "scaleMode": "responsive",
+          "theme": {
+            "mode": "light"
+          },
+          "dataSources": [
+            "Slot_Opportunities",
+            "Slot_Leads",
+            "Slot_Quotes",
+            "Slot_QuoteLines",
+            "Slot_Touchpoints",
+            "Slot_Accounts",
+            "Slot_Contacts",
+            "Slot_Products",
+            "Slot_PriceLists"
+          ],
+          "appProps": {
+            "OnStart": "=false"
+          },
+          "screens": [
+            {
+              "id": "crm_sd_salesscreen",
+              "name": "SalesScreen",
+              "type": "Screen",
+              "props": {
+                "Fill": "=RGBA(248, 250, 252, 1)"
+              },
+              "children": [
+                {
+                  "id": "crm_sd_headertitle",
+                  "name": "HeaderTitle",
+                  "type": "Label",
+                  "props": {
+                    "X": "=32",
+                    "Y": "=20",
+                    "Width": "=900",
+                    "Height": "=44",
+                    "Text": "=\"Sales\"",
+                    "Size": "=28",
+                    "FontWeight": "=FontWeight.Bold"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sd_headersub",
+                  "name": "HeaderSub",
+                  "type": "Label",
+                  "props": {
+                    "X": "=32",
+                    "Y": "=64",
+                    "Width": "=1400",
+                    "Height": "=24",
+                    "Text": "=\"Leads, pipeline, quotes, accounts and contacts. Amounts are in rupees; quotes carry no tax.\"",
+                    "Size": "=14",
+                    "Color": "=RGBA(100, 116, 139, 1)"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sd_crmtabs",
+                  "name": "CrmTabs",
+                  "type": "Tabs",
+                  "props": {
+                    "X": "=32",
+                    "Y": "=96",
+                    "Width": "=1200",
+                    "Height": "=44",
+                    "Items": "=[\"Pipeline\", \"Leads\", \"Quotes\", \"Accounts\", \"Contacts\", \"Touchpoints\"]",
+                    "Default": "=\"Pipeline\"",
+                    "Variant": "=\"Underline\""
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sd_oppsection",
+                  "name": "OppSection",
+                  "type": "Container",
+                  "props": {
+                    "X": "=32",
+                    "Y": "=140",
+                    "Width": "=1856",
+                    "Height": "=916",
+                    "AnchorH": "=Anchor.Stretch",
+                    "AnchorV": "=Anchor.Stretch",
+                    "Visible": "=If(IsBlank(CrmTabs.SelectedText), \"Pipeline\", CrmTabs.SelectedText) = \"Pipeline\""
+                  },
+                  "children": [
+                    {
+                      "id": "crm_sd_opptable",
+                      "name": "OppTable",
+                      "type": "DataTable",
+                      "props": {
+                        "X": "=0",
+                        "Y": "=0",
+                        "Width": "=1080",
+                        "Height": "=916",
+                        "AnchorH": "=Anchor.Stretch",
+                        "AnchorV": "=Anchor.Stretch",
+                        "Items": "=Sort(Slot_Opportunities, createdOn, SortOrder.Descending)",
+                        "Columns": "=\"Slot_Opportunities_Name:Opportunity, Slot_Opportunities_Account:Account, Slot_Opportunities_Stage:Stage, Slot_Opportunities_Amount:Value, Slot_Opportunities_WeightedAmount:Weighted, Slot_Opportunities_CloseDate:Close, owner:Owner\"",
+                        "Searchable": "=true"
+                      },
+                      "children": []
+                    },
+                    {
+                      "id": "crm_sd_opppanel",
+                      "name": "OppPanel",
+                      "type": "Container",
+                      "props": {
+                        "X": "=1104",
+                        "Y": "=0",
+                        "Width": "=752",
+                        "Height": "=916",
+                        "AnchorH": "=Anchor.End",
+                        "AnchorV": "=Anchor.Stretch",
+                        "Fill": "=Color.White",
+                        "Radius": "=12"
+                      },
+                      "children": [
+                        {
+                          "id": "crm_sd_opppaneltitle",
+                          "name": "OppPanelTitle",
+                          "type": "Label",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=16",
+                            "Width": "=460",
+                            "Height": "=32",
+                            "Text": "=If(OppForm.Mode = \"New\", \"New: opportunity\", Coalesce(OppTable.Selected.Slot_Opportunities_Name, \"Select a row or add one\"))",
+                            "Size": "=20",
+                            "FontWeight": "=FontWeight.Semibold"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_oppnew",
+                          "name": "OppNew",
+                          "type": "Button",
+                          "props": {
+                            "X": "=552",
+                            "Y": "=16",
+                            "Width": "=176",
+                            "Height": "=40",
+                            "Text": "=\"+ New opportunity\"",
+                            "OnSelect": "=NewForm(OppForm)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_oppadvance",
+                          "name": "OppAdvance",
+                          "type": "Button",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=64",
+                            "Width": "=176",
+                            "Height": "=36",
+                            "Text": "=\"Advance stage\"",
+                            "OnSelect": "=Patch(Slot_Opportunities, OppTable.Selected, {Slot_Opportunities_Stage: If(OppTable.Selected.Slot_Opportunities_Stage = \"Prospect\", \"Qualified\", If(OppTable.Selected.Slot_Opportunities_Stage = \"Qualified\", \"Proposal\", If(OppTable.Selected.Slot_Opportunities_Stage = \"Proposal\", \"Negotiation\", If(OppTable.Selected.Slot_Opportunities_Stage = \"Negotiation\", \"Won\", OppTable.Selected.Slot_Opportunities_Stage))))}); Notify(\"Stage updated\", NotificationType.Success)",
+                            "DisplayMode": "=If(!IsBlank(OppTable.Selected) && OppTable.Selected.Slot_Opportunities_Stage <> \"Won\" && OppTable.Selected.Slot_Opportunities_Stage <> \"Lost\", DisplayMode.Edit, DisplayMode.Disabled)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_oppwon",
+                          "name": "OppWon",
+                          "type": "Button",
+                          "props": {
+                            "X": "=212",
+                            "Y": "=64",
+                            "Width": "=112",
+                            "Height": "=36",
+                            "Text": "=\"Mark won\"",
+                            "OnSelect": "=Patch(Slot_Opportunities, OppTable.Selected, {Slot_Opportunities_Stage: \"Won\"}); Notify(\"Marked won\", NotificationType.Success)",
+                            "DisplayMode": "=If(IsBlank(OppTable.Selected), DisplayMode.Disabled, DisplayMode.Edit)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_oppform",
+                          "name": "OppForm",
+                          "type": "Form",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=112",
+                            "Width": "=704",
+                            "Height": "=380",
+                            "AnchorV": "=Anchor.Start",
+                            "DataSource": "=\"Slot_Opportunities\"",
+                            "Item": "=OppTable.Selected",
+                            "Mode": "=FormMode.Edit",
+                            "Fields": "=\"Slot_Opportunities_Name, Slot_Opportunities_Account, Slot_Opportunities_Contact, Slot_Opportunities_Stage, Slot_Opportunities_Amount, Slot_Opportunities_CloseDate, Slot_Opportunities_Source, Slot_Opportunities_LossReason, Slot_Opportunities_NextStep, Slot_Opportunities_Description\"",
+                            "Columns": "=2",
+                            "OnSuccess": "=Notify(\"Saved\", NotificationType.Success)",
+                            "OnFailure": "=Notify(OppForm.Error, NotificationType.Error)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_opptimeline",
+                          "name": "OppTimeline",
+                          "type": "RecordTimeline",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=504",
+                            "Width": "=704",
+                            "Height": "=396",
+                            "AnchorV": "=Anchor.Stretch",
+                            "Record": "=OppTable.Selected",
+                            "Table": "=\"Slot_Opportunities\"",
+                            "Title": "=\"Calls, meetings, emails, comments\""
+                          },
+                          "children": []
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "crm_sd_leadsection",
+                  "name": "LeadSection",
+                  "type": "Container",
+                  "props": {
+                    "X": "=32",
+                    "Y": "=140",
+                    "Width": "=1856",
+                    "Height": "=916",
+                    "AnchorH": "=Anchor.Stretch",
+                    "AnchorV": "=Anchor.Stretch",
+                    "Visible": "=If(IsBlank(CrmTabs.SelectedText), \"Pipeline\", CrmTabs.SelectedText) = \"Leads\""
+                  },
+                  "children": [
+                    {
+                      "id": "crm_sd_leadtable",
+                      "name": "LeadTable",
+                      "type": "DataTable",
+                      "props": {
+                        "X": "=0",
+                        "Y": "=0",
+                        "Width": "=1080",
+                        "Height": "=916",
+                        "AnchorH": "=Anchor.Stretch",
+                        "AnchorV": "=Anchor.Stretch",
+                        "Items": "=Sort(Slot_Leads, createdOn, SortOrder.Descending)",
+                        "Columns": "=\"Slot_Leads_Name:Lead, Slot_Leads_Company:Company, Slot_Leads_Status:Status, Slot_Leads_Source:Source, Slot_Leads_EstimatedValue:Estimate, Slot_Leads_Phone:Phone, Slot_Leads_NextFollowUp:Follow-up\"",
+                        "Searchable": "=true"
+                      },
+                      "children": []
+                    },
+                    {
+                      "id": "crm_sd_leadpanel",
+                      "name": "LeadPanel",
+                      "type": "Container",
+                      "props": {
+                        "X": "=1104",
+                        "Y": "=0",
+                        "Width": "=752",
+                        "Height": "=916",
+                        "AnchorH": "=Anchor.End",
+                        "AnchorV": "=Anchor.Stretch",
+                        "Fill": "=Color.White",
+                        "Radius": "=12"
+                      },
+                      "children": [
+                        {
+                          "id": "crm_sd_leadpaneltitle",
+                          "name": "LeadPanelTitle",
+                          "type": "Label",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=16",
+                            "Width": "=460",
+                            "Height": "=32",
+                            "Text": "=If(LeadForm.Mode = \"New\", \"New: lead\", Coalesce(LeadTable.Selected.Slot_Leads_Name, \"Select a row or add one\"))",
+                            "Size": "=20",
+                            "FontWeight": "=FontWeight.Semibold"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_leadnew",
+                          "name": "LeadNew",
+                          "type": "Button",
+                          "props": {
+                            "X": "=552",
+                            "Y": "=16",
+                            "Width": "=176",
+                            "Height": "=40",
+                            "Text": "=\"+ New lead\"",
+                            "OnSelect": "=NewForm(LeadForm)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_leadconvert",
+                          "name": "LeadConvert",
+                          "type": "Button",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=64",
+                            "Width": "=176",
+                            "Height": "=36",
+                            "Text": "=\"Convert to deal\"",
+                            "OnSelect": "=Patch(Slot_Leads, LeadTable.Selected, {Slot_Leads_Status: \"Converted\"}); Notify(\"Converting: the account, contact and opportunity are created in a moment\", NotificationType.Success)",
+                            "DisplayMode": "=If(!IsBlank(LeadTable.Selected) && LeadTable.Selected.Slot_Leads_Status <> \"Converted\", DisplayMode.Edit, DisplayMode.Disabled)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_leadqualify",
+                          "name": "LeadQualify",
+                          "type": "Button",
+                          "props": {
+                            "X": "=212",
+                            "Y": "=64",
+                            "Width": "=120",
+                            "Height": "=36",
+                            "Text": "=\"Qualify\"",
+                            "OnSelect": "=Patch(Slot_Leads, LeadTable.Selected, {Slot_Leads_Status: \"Qualified\"}); Notify(\"Qualified\", NotificationType.Success)",
+                            "DisplayMode": "=If(!IsBlank(LeadTable.Selected) && (LeadTable.Selected.Slot_Leads_Status = \"New\" || LeadTable.Selected.Slot_Leads_Status = \"Contacted\"), DisplayMode.Edit, DisplayMode.Disabled)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_leadform",
+                          "name": "LeadForm",
+                          "type": "Form",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=112",
+                            "Width": "=704",
+                            "Height": "=788",
+                            "AnchorV": "=Anchor.Stretch",
+                            "DataSource": "=\"Slot_Leads\"",
+                            "Item": "=LeadTable.Selected",
+                            "Mode": "=FormMode.Edit",
+                            "Fields": "=\"Slot_Leads_Name, Slot_Leads_Company, Slot_Leads_JobTitle, Slot_Leads_Email, Slot_Leads_Phone, Slot_Leads_Source, Slot_Leads_Status, Slot_Leads_EstimatedValue, Slot_Leads_NextFollowUp, Slot_Leads_Notes\"",
+                            "Columns": "=2",
+                            "OnSuccess": "=Notify(\"Saved\", NotificationType.Success)",
+                            "OnFailure": "=Notify(LeadForm.Error, NotificationType.Error)"
+                          },
+                          "children": []
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "crm_sd_quotesection",
+                  "name": "QuoteSection",
+                  "type": "Container",
+                  "props": {
+                    "X": "=32",
+                    "Y": "=140",
+                    "Width": "=1856",
+                    "Height": "=916",
+                    "AnchorH": "=Anchor.Stretch",
+                    "AnchorV": "=Anchor.Stretch",
+                    "Visible": "=If(IsBlank(CrmTabs.SelectedText), \"Pipeline\", CrmTabs.SelectedText) = \"Quotes\""
+                  },
+                  "children": [
+                    {
+                      "id": "crm_sd_quotetable",
+                      "name": "QuoteTable",
+                      "type": "DataTable",
+                      "props": {
+                        "X": "=0",
+                        "Y": "=0",
+                        "Width": "=1080",
+                        "Height": "=916",
+                        "AnchorH": "=Anchor.Stretch",
+                        "AnchorV": "=Anchor.Stretch",
+                        "Items": "=Sort(Slot_Quotes, createdOn, SortOrder.Descending)",
+                        "Columns": "=\"Slot_Quotes_Number:Quote, Slot_Quotes_Opportunity:Opportunity, Slot_Quotes_Account:Account, Slot_Quotes_Status:Status, Slot_Quotes_Total:Total, Slot_Quotes_DiscountPercent:Discount %, Slot_Quotes_Approval:Approval, Slot_Quotes_ValidUntil:Valid until\"",
+                        "Searchable": "=true"
+                      },
+                      "children": []
+                    },
+                    {
+                      "id": "crm_sd_quotepanel",
+                      "name": "QuotePanel",
+                      "type": "Container",
+                      "props": {
+                        "X": "=1104",
+                        "Y": "=0",
+                        "Width": "=752",
+                        "Height": "=916",
+                        "AnchorH": "=Anchor.End",
+                        "AnchorV": "=Anchor.Stretch",
+                        "Fill": "=Color.White",
+                        "Radius": "=12"
+                      },
+                      "children": [
+                        {
+                          "id": "crm_sd_quotepaneltitle",
+                          "name": "QuotePanelTitle",
+                          "type": "Label",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=16",
+                            "Width": "=460",
+                            "Height": "=32",
+                            "Text": "=If(QuoteForm.Mode = \"New\", \"New: quote\", Coalesce(QuoteTable.Selected.Slot_Quotes_Number, \"Select a row or add one\"))",
+                            "Size": "=20",
+                            "FontWeight": "=FontWeight.Semibold"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_quotenew",
+                          "name": "QuoteNew",
+                          "type": "Button",
+                          "props": {
+                            "X": "=552",
+                            "Y": "=16",
+                            "Width": "=176",
+                            "Height": "=40",
+                            "Text": "=\"+ New quote\"",
+                            "OnSelect": "=NewForm(QuoteForm)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_quoteprint",
+                          "name": "QuotePrint",
+                          "type": "PrintButton",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=64",
+                            "Width": "=148",
+                            "Height": "=36",
+                            "Text": "=\"Print quote\"",
+                            "Template": "=\"Slot_Print_Quote\"",
+                            "Record": "=QuoteTable.Selected",
+                            "DisplayMode": "=If(IsBlank(QuoteTable.Selected), DisplayMode.Disabled, DisplayMode.Edit)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_quoteform",
+                          "name": "QuoteForm",
+                          "type": "Form",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=112",
+                            "Width": "=704",
+                            "Height": "=340",
+                            "AnchorV": "=Anchor.Start",
+                            "DataSource": "=\"Slot_Quotes\"",
+                            "Item": "=QuoteTable.Selected",
+                            "Mode": "=FormMode.Edit",
+                            "Fields": "=\"Slot_Quotes_Opportunity, Slot_Quotes_Account, Slot_Quotes_PriceList, Slot_Quotes_QuoteDate, Slot_Quotes_ValidUntil, Slot_Quotes_Status, Slot_Quotes_DiscountPercent, Slot_Quotes_Terms\"",
+                            "Columns": "=2",
+                            "OnSuccess": "=Notify(\"Saved\", NotificationType.Success)",
+                            "OnFailure": "=Notify(QuoteForm.Error, NotificationType.Error)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_quotetotals",
+                          "name": "QuoteTotals",
+                          "type": "Label",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=460",
+                            "Width": "=704",
+                            "Height": "=24",
+                            "Text": "=If(IsBlank(QuoteTable.Selected), \"\", \"Subtotal \" & Text(Sum(Filter(Slot_QuoteLines, Slot_QuoteLines_Quote = QuoteTable.Selected.id), Slot_QuoteLines_Amount), \"#,##0.00\") & \"  ·  Total \" & Text(Round(Sum(Filter(Slot_QuoteLines, Slot_QuoteLines_Quote = QuoteTable.Selected.id), Slot_QuoteLines_Amount) * (1 - Coalesce(QuoteTable.Selected.Slot_Quotes_DiscountPercent, 0) / 100), 2), \"#,##0.00\") & \"  ·  Approval: \" & QuoteTable.Selected.Slot_Quotes_Approval & \"  ·  no tax is computed\")",
+                            "Size": "=13",
+                            "Color": "=RGBA(100, 116, 139, 1)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_quotelinelist",
+                          "name": "QuoteLineList",
+                          "type": "DataTable",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=492",
+                            "Width": "=704",
+                            "Height": "=190",
+                            "AnchorV": "=Anchor.Stretch",
+                            "Items": "=Filter(Slot_QuoteLines, Slot_QuoteLines_Quote = Coalesce(QuoteTable.Selected.id, \"-\"))",
+                            "Columns": "=\"Slot_QuoteLines_Description:Item, Slot_QuoteLines_Quantity:Qty, Slot_QuoteLines_UnitPrice:Unit price, Slot_QuoteLines_Amount:Amount\"",
+                            "EmptyText": "=\"No lines yet: add one below\""
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_quotelineform",
+                          "name": "QuoteLineForm",
+                          "type": "Form",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=690",
+                            "Width": "=704",
+                            "Height": "=214",
+                            "AnchorV": "=Anchor.End",
+                            "DataSource": "=\"Slot_QuoteLines\"",
+                            "Mode": "=FormMode.New",
+                            "Item": "={Slot_QuoteLines_Quote: QuoteTable.Selected.id, Slot_QuoteLines_Quantity: 1}",
+                            "Fields": "=\"Slot_QuoteLines_Quote, Slot_QuoteLines_Product, Slot_QuoteLines_Description, Slot_QuoteLines_Quantity, Slot_QuoteLines_UnitPrice\"",
+                            "Columns": "=5",
+                            "SubmitText": "=\"Add line\"",
+                            "OnSuccess": "=Notify(\"Line added\", NotificationType.Success); NewForm(QuoteLineForm)",
+                            "OnFailure": "=Notify(QuoteLineForm.Error, NotificationType.Error)"
+                          },
+                          "children": []
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "crm_sd_acctsection",
+                  "name": "AcctSection",
+                  "type": "Container",
+                  "props": {
+                    "X": "=32",
+                    "Y": "=140",
+                    "Width": "=1856",
+                    "Height": "=916",
+                    "AnchorH": "=Anchor.Stretch",
+                    "AnchorV": "=Anchor.Stretch",
+                    "Visible": "=If(IsBlank(CrmTabs.SelectedText), \"Pipeline\", CrmTabs.SelectedText) = \"Accounts\""
+                  },
+                  "children": [
+                    {
+                      "id": "crm_sd_accttable",
+                      "name": "AcctTable",
+                      "type": "DataTable",
+                      "props": {
+                        "X": "=0",
+                        "Y": "=0",
+                        "Width": "=1080",
+                        "Height": "=916",
+                        "AnchorH": "=Anchor.Stretch",
+                        "AnchorV": "=Anchor.Stretch",
+                        "Items": "=Sort(Slot_Accounts, Slot_Accounts_Name, SortOrder.Ascending)",
+                        "Columns": "=\"Slot_Accounts_Name:Account, Slot_Accounts_Type:Type, Slot_Accounts_Industry:Industry, Slot_Accounts_Phone:Phone, Slot_Accounts_Email:Email\"",
+                        "Searchable": "=true"
+                      },
+                      "children": []
+                    },
+                    {
+                      "id": "crm_sd_acctpanel",
+                      "name": "AcctPanel",
+                      "type": "Container",
+                      "props": {
+                        "X": "=1104",
+                        "Y": "=0",
+                        "Width": "=752",
+                        "Height": "=916",
+                        "AnchorH": "=Anchor.End",
+                        "AnchorV": "=Anchor.Stretch",
+                        "Fill": "=Color.White",
+                        "Radius": "=12"
+                      },
+                      "children": [
+                        {
+                          "id": "crm_sd_acctpaneltitle",
+                          "name": "AcctPanelTitle",
+                          "type": "Label",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=16",
+                            "Width": "=460",
+                            "Height": "=32",
+                            "Text": "=If(AcctForm.Mode = \"New\", \"New: account\", Coalesce(AcctTable.Selected.Slot_Accounts_Name, \"Select a row or add one\"))",
+                            "Size": "=20",
+                            "FontWeight": "=FontWeight.Semibold"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_acctnew",
+                          "name": "AcctNew",
+                          "type": "Button",
+                          "props": {
+                            "X": "=552",
+                            "Y": "=16",
+                            "Width": "=176",
+                            "Height": "=40",
+                            "Text": "=\"+ New account\"",
+                            "OnSelect": "=NewForm(AcctForm)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_acctform",
+                          "name": "AcctForm",
+                          "type": "Form",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=72",
+                            "Width": "=704",
+                            "Height": "=828",
+                            "AnchorV": "=Anchor.Stretch",
+                            "DataSource": "=\"Slot_Accounts\"",
+                            "Item": "=AcctTable.Selected",
+                            "Mode": "=FormMode.Edit",
+                            "Fields": "=\"Slot_Accounts_Name, Slot_Accounts_Type, Slot_Accounts_Industry, Slot_Accounts_Phone, Slot_Accounts_Email\"",
+                            "Columns": "=2",
+                            "OnSuccess": "=Notify(\"Saved\", NotificationType.Success)",
+                            "OnFailure": "=Notify(AcctForm.Error, NotificationType.Error)"
+                          },
+                          "children": []
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "crm_sd_contsection",
+                  "name": "ContSection",
+                  "type": "Container",
+                  "props": {
+                    "X": "=32",
+                    "Y": "=140",
+                    "Width": "=1856",
+                    "Height": "=916",
+                    "AnchorH": "=Anchor.Stretch",
+                    "AnchorV": "=Anchor.Stretch",
+                    "Visible": "=If(IsBlank(CrmTabs.SelectedText), \"Pipeline\", CrmTabs.SelectedText) = \"Contacts\""
+                  },
+                  "children": [
+                    {
+                      "id": "crm_sd_conttable",
+                      "name": "ContTable",
+                      "type": "DataTable",
+                      "props": {
+                        "X": "=0",
+                        "Y": "=0",
+                        "Width": "=1080",
+                        "Height": "=916",
+                        "AnchorH": "=Anchor.Stretch",
+                        "AnchorV": "=Anchor.Stretch",
+                        "Items": "=Sort(Slot_Contacts, Slot_Contacts_FullName, SortOrder.Ascending)",
+                        "Columns": "=\"Slot_Contacts_FullName:Name, Slot_Contacts_Account:Account, Slot_Contacts_JobTitle:Title, Slot_Contacts_Phone:Phone, Slot_Contacts_Email:Email\"",
+                        "Searchable": "=true"
+                      },
+                      "children": []
+                    },
+                    {
+                      "id": "crm_sd_contpanel",
+                      "name": "ContPanel",
+                      "type": "Container",
+                      "props": {
+                        "X": "=1104",
+                        "Y": "=0",
+                        "Width": "=752",
+                        "Height": "=916",
+                        "AnchorH": "=Anchor.End",
+                        "AnchorV": "=Anchor.Stretch",
+                        "Fill": "=Color.White",
+                        "Radius": "=12"
+                      },
+                      "children": [
+                        {
+                          "id": "crm_sd_contpaneltitle",
+                          "name": "ContPanelTitle",
+                          "type": "Label",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=16",
+                            "Width": "=460",
+                            "Height": "=32",
+                            "Text": "=If(ContForm.Mode = \"New\", \"New: contact\", Coalesce(ContTable.Selected.Slot_Contacts_FullName, \"Select a row or add one\"))",
+                            "Size": "=20",
+                            "FontWeight": "=FontWeight.Semibold"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_contnew",
+                          "name": "ContNew",
+                          "type": "Button",
+                          "props": {
+                            "X": "=552",
+                            "Y": "=16",
+                            "Width": "=176",
+                            "Height": "=40",
+                            "Text": "=\"+ New contact\"",
+                            "OnSelect": "=NewForm(ContForm)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_contform",
+                          "name": "ContForm",
+                          "type": "Form",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=72",
+                            "Width": "=704",
+                            "Height": "=828",
+                            "AnchorV": "=Anchor.Stretch",
+                            "DataSource": "=\"Slot_Contacts\"",
+                            "Item": "=ContTable.Selected",
+                            "Mode": "=FormMode.Edit",
+                            "Fields": "=\"Slot_Contacts_FullName, Slot_Contacts_Account, Slot_Contacts_JobTitle, Slot_Contacts_Email, Slot_Contacts_Phone, Slot_Contacts_Mobile\"",
+                            "Columns": "=2",
+                            "OnSuccess": "=Notify(\"Saved\", NotificationType.Success)",
+                            "OnFailure": "=Notify(ContForm.Error, NotificationType.Error)"
+                          },
+                          "children": []
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "crm_sd_tpsection",
+                  "name": "TpSection",
+                  "type": "Container",
+                  "props": {
+                    "X": "=32",
+                    "Y": "=140",
+                    "Width": "=1856",
+                    "Height": "=916",
+                    "AnchorH": "=Anchor.Stretch",
+                    "AnchorV": "=Anchor.Stretch",
+                    "Visible": "=If(IsBlank(CrmTabs.SelectedText), \"Pipeline\", CrmTabs.SelectedText) = \"Touchpoints\""
+                  },
+                  "children": [
+                    {
+                      "id": "crm_sd_tptable",
+                      "name": "TpTable",
+                      "type": "DataTable",
+                      "props": {
+                        "X": "=0",
+                        "Y": "=0",
+                        "Width": "=1080",
+                        "Height": "=916",
+                        "AnchorH": "=Anchor.Stretch",
+                        "AnchorV": "=Anchor.Stretch",
+                        "Items": "=Sort(Slot_Touchpoints, createdOn, SortOrder.Descending)",
+                        "Columns": "=\"Slot_Touchpoints_Subject:Subject, Slot_Touchpoints_Channel:Channel, Slot_Touchpoints_Opportunity:Opportunity, Slot_Touchpoints_Status:Status, Slot_Touchpoints_Result:Result\"",
+                        "Searchable": "=true"
+                      },
+                      "children": []
+                    },
+                    {
+                      "id": "crm_sd_tppanel",
+                      "name": "TpPanel",
+                      "type": "Container",
+                      "props": {
+                        "X": "=1104",
+                        "Y": "=0",
+                        "Width": "=752",
+                        "Height": "=916",
+                        "AnchorH": "=Anchor.End",
+                        "AnchorV": "=Anchor.Stretch",
+                        "Fill": "=Color.White",
+                        "Radius": "=12"
+                      },
+                      "children": [
+                        {
+                          "id": "crm_sd_tppaneltitle",
+                          "name": "TpPanelTitle",
+                          "type": "Label",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=16",
+                            "Width": "=460",
+                            "Height": "=32",
+                            "Text": "=If(TpForm.Mode = \"New\", \"New: touchpoint\", Coalesce(TpTable.Selected.Slot_Touchpoints_Subject, \"Select a row or add one\"))",
+                            "Size": "=20",
+                            "FontWeight": "=FontWeight.Semibold"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_tpnew",
+                          "name": "TpNew",
+                          "type": "Button",
+                          "props": {
+                            "X": "=552",
+                            "Y": "=16",
+                            "Width": "=176",
+                            "Height": "=40",
+                            "Text": "=\"+ New touchpoint\"",
+                            "OnSelect": "=NewForm(TpForm)"
+                          },
+                          "children": []
+                        },
+                        {
+                          "id": "crm_sd_tpform",
+                          "name": "TpForm",
+                          "type": "Form",
+                          "props": {
+                            "X": "=24",
+                            "Y": "=72",
+                            "Width": "=704",
+                            "Height": "=828",
+                            "AnchorV": "=Anchor.Stretch",
+                            "DataSource": "=\"Slot_Touchpoints\"",
+                            "Item": "=TpTable.Selected",
+                            "Mode": "=FormMode.Edit",
+                            "Fields": "=\"Slot_Touchpoints_Opportunity, Slot_Touchpoints_Contact, Slot_Touchpoints_Channel, Slot_Touchpoints_Subject, Slot_Touchpoints_Message\"",
+                            "Columns": "=2",
+                            "OnSuccess": "=Notify(\"Saved\", NotificationType.Success)",
+                            "OnFailure": "=Notify(TpForm.Error, NotificationType.Error)"
+                          },
+                          "children": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "key": "SalesOnTheGo",
+        "name": "Sales on the go",
+        "description": "Reps on a phone: my open deals, log a call or a meeting in a few taps, update a stage, look up an account with its deals and people; works offline (entry).",
+        "phone": true,
+        "app": {
+          "formatVersion": 2,
+          "name": "Sales on the go",
+          "width": 360,
+          "height": 800,
+          "scaleMode": "responsive",
+          "theme": {
+            "mode": "light"
+          },
+          "dataSources": [
+            "Slot_Opportunities",
+            "Slot_Accounts",
+            "Slot_Contacts",
+            "Activities"
+          ],
+          "appProps": {
+            "OnStart": "=Set(varDeal, Blank()); Set(varAcct, Blank()); Set(varLogType, \"Call\")"
+          },
+          "screens": [
+            {
+              "id": "crm_sp_gohome",
+              "name": "GoHome",
+              "type": "Screen",
+              "props": {
+                "Fill": "=RGBA(248, 250, 252, 1)"
+              },
+              "children": [
+                {
+                  "id": "crm_sp_gotitle",
+                  "name": "GoTitle",
+                  "type": "Label",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=12",
+                    "Width": "=328",
+                    "Height": "=36",
+                    "Text": "=\"Sales · बिक्री\"",
+                    "Size": "=22",
+                    "FontWeight": "=FontWeight.Bold",
+                    "AnchorH": "=Anchor.Stretch"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_gotabs",
+                  "name": "GoTabs",
+                  "type": "Tabs",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=52",
+                    "Width": "=328",
+                    "Height": "=44",
+                    "AnchorH": "=Anchor.Stretch",
+                    "Items": "=[\"My deals\", \"Accounts\"]",
+                    "Default": "=\"My deals\"",
+                    "Variant": "=\"Segmented\""
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_deallist",
+                  "name": "DealList",
+                  "type": "DataTable",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=104",
+                    "Width": "=328",
+                    "Height": "=680",
+                    "AnchorH": "=Anchor.Stretch",
+                    "AnchorV": "=Anchor.Stretch",
+                    "Visible": "=If(IsBlank(GoTabs.SelectedText), \"My deals\", GoTabs.SelectedText) = \"My deals\"",
+                    "Searchable": "=true",
+                    "Items": "=Sort(Filter(Slot_Opportunities, Slot_Opportunities_Stage <> \"Won\" && Slot_Opportunities_Stage <> \"Lost\"), Slot_Opportunities_CloseDate, SortOrder.Ascending)",
+                    "Columns": "=\"Slot_Opportunities_Name:Deal, Slot_Opportunities_Stage:Stage, Slot_Opportunities_Amount:Value, Slot_Opportunities_CloseDate:Close\"",
+                    "CardColumns": "=\"Slot_Opportunities_Name:Deal, Slot_Opportunities_Account:Account, Slot_Opportunities_Stage:Stage, Slot_Opportunities_Amount:Value\"",
+                    "EmptyText": "=\"No open deals\"",
+                    "OnSelect": "=Set(varDeal, DealList.Selected); EditForm(StageForm); Navigate(DealScreen)"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_acctlist",
+                  "name": "AcctList",
+                  "type": "DataTable",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=104",
+                    "Width": "=328",
+                    "Height": "=680",
+                    "AnchorH": "=Anchor.Stretch",
+                    "AnchorV": "=Anchor.Stretch",
+                    "Visible": "=GoTabs.SelectedText = \"Accounts\"",
+                    "Searchable": "=true",
+                    "Items": "=Sort(Slot_Accounts, Slot_Accounts_Name, SortOrder.Ascending)",
+                    "Columns": "=\"Slot_Accounts_Name:Account, Slot_Accounts_Phone:Phone, Slot_Accounts_Industry:Industry\"",
+                    "CardColumns": "=\"Slot_Accounts_Name:Account, Slot_Accounts_Phone:Phone, Slot_Accounts_Industry:Industry\"",
+                    "EmptyText": "=\"No accounts\"",
+                    "OnSelect": "=Set(varAcct, AcctList.Selected); Navigate(AcctScreen)"
+                  },
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": "crm_sp_dealscreen",
+              "name": "DealScreen",
+              "type": "Screen",
+              "props": {
+                "Fill": "=RGBA(248, 250, 252, 1)"
+              },
+              "children": [
+                {
+                  "id": "crm_sp_dealback",
+                  "name": "DealBack",
+                  "type": "Button",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=12",
+                    "Width": "=88",
+                    "Height": "=40",
+                    "Text": "=\"< Back\"",
+                    "OnSelect": "=Back()"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_dealtitle",
+                  "name": "DealTitle",
+                  "type": "Label",
+                  "props": {
+                    "X": "=116",
+                    "Y": "=12",
+                    "Width": "=228",
+                    "Height": "=40",
+                    "Text": "=varDeal.Slot_Opportunities_Name",
+                    "Size": "=18",
+                    "FontWeight": "=FontWeight.Bold",
+                    "AnchorH": "=Anchor.Stretch"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_dealinfo",
+                  "name": "DealInfo",
+                  "type": "Label",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=56",
+                    "Width": "=328",
+                    "Height": "=22",
+                    "Text": "=varDeal.Slot_Opportunities_Stage & \" · Rs \" & Text(Coalesce(varDeal.Slot_Opportunities_Amount, 0), \"#,##0\") & \" · close \" & Text(varDeal.Slot_Opportunities_CloseDate, \"dd/mm/yyyy\")",
+                    "Size": "=13",
+                    "Color": "=RGBA(100, 116, 139, 1)",
+                    "AnchorH": "=Anchor.Stretch"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_logcall",
+                  "name": "LogCall",
+                  "type": "Button",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=88",
+                    "Width": "=156",
+                    "Height": "=52",
+                    "Text": "=\"Log a call · कॉल\"",
+                    "OnSelect": "=Set(varLogType, \"Call\"); Navigate(LogScreen)",
+                    "AnchorH": "=Anchor.Stretch"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_logmeeting",
+                  "name": "LogMeeting",
+                  "type": "Button",
+                  "props": {
+                    "X": "=188",
+                    "Y": "=88",
+                    "Width": "=156",
+                    "Height": "=52",
+                    "Text": "=\"Log a meeting · मीटिंग\"",
+                    "OnSelect": "=Set(varLogType, \"Meeting\"); Navigate(LogScreen)",
+                    "AnchorH": "=Anchor.End"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_stagetitle",
+                  "name": "StageTitle",
+                  "type": "Label",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=152",
+                    "Width": "=328",
+                    "Height": "=24",
+                    "Text": "=\"Update the stage\"",
+                    "Size": "=15",
+                    "FontWeight": "=FontWeight.Semibold",
+                    "AnchorH": "=Anchor.Stretch"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_stageform",
+                  "name": "StageForm",
+                  "type": "Form",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=180",
+                    "Width": "=328",
+                    "Height": "=360",
+                    "AnchorH": "=Anchor.Stretch",
+                    "DataSource": "=\"Slot_Opportunities\"",
+                    "Item": "=varDeal",
+                    "Mode": "=FormMode.Edit",
+                    "Fields": "=\"Slot_Opportunities_Stage, Slot_Opportunities_Amount, Slot_Opportunities_CloseDate, Slot_Opportunities_LossReason, Slot_Opportunities_NextStep\"",
+                    "Columns": "=1",
+                    "OnSuccess": "=Notify(\"Saved\", NotificationType.Success)",
+                    "OnFailure": "=Notify(StageForm.Error, NotificationType.Error)"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_dealtimeline",
+                  "name": "DealTimeline",
+                  "type": "RecordTimeline",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=552",
+                    "Width": "=328",
+                    "Height": "=232",
+                    "AnchorH": "=Anchor.Stretch",
+                    "AnchorV": "=Anchor.Stretch",
+                    "Record": "=varDeal",
+                    "Table": "=\"Slot_Opportunities\"",
+                    "Title": "=\"Timeline\""
+                  },
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": "crm_sp_logscreen",
+              "name": "LogScreen",
+              "type": "Screen",
+              "props": {
+                "Fill": "=RGBA(248, 250, 252, 1)"
+              },
+              "children": [
+                {
+                  "id": "crm_sp_logback",
+                  "name": "LogBack",
+                  "type": "Button",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=12",
+                    "Width": "=88",
+                    "Height": "=40",
+                    "Text": "=\"< Back\"",
+                    "OnSelect": "=Back()"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_logtitle",
+                  "name": "LogTitle",
+                  "type": "Label",
+                  "props": {
+                    "X": "=116",
+                    "Y": "=12",
+                    "Width": "=228",
+                    "Height": "=40",
+                    "Text": "=varLogType & \" · \" & Left(varDeal.Slot_Opportunities_Name, 22)",
+                    "Size": "=16",
+                    "FontWeight": "=FontWeight.Bold",
+                    "AnchorH": "=Anchor.Stretch"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_loghint",
+                  "name": "LogHint",
+                  "type": "Label",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=56",
+                    "Width": "=328",
+                    "Height": "=40",
+                    "Text": "=\"Saved on the deal's timeline.\"",
+                    "Size": "=12",
+                    "Color": "=RGBA(100, 116, 139, 1)",
+                    "AnchorH": "=Anchor.Stretch"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_logsubject",
+                  "name": "LogSubject",
+                  "type": "TextInput",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=104",
+                    "Width": "=328",
+                    "Height": "=48",
+                    "AnchorH": "=Anchor.Stretch",
+                    "Placeholder": "=\"What was said? (subject)\""
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_lognotes",
+                  "name": "LogNotes",
+                  "type": "TextInput",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=164",
+                    "Width": "=328",
+                    "Height": "=48",
+                    "AnchorH": "=Anchor.Stretch",
+                    "Placeholder": "=\"Notes (optional)\""
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_logsave",
+                  "name": "LogSave",
+                  "type": "Button",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=228",
+                    "Width": "=328",
+                    "Height": "=52",
+                    "Text": "=\"Save · सेव करें\"",
+                    "OnSelect": "=If(IsBlank(LogSubject.Value), Notify(\"Write a subject first\", NotificationType.Warning), Patch(Activities, Defaults(Activities), {Type: varLogType, Subject: LogSubject.Value, Description: LogNotes.Value, Status: \"Done\", regardingId: varDeal.id, StartOn: Now()}); Reset(LogSubject); Reset(LogNotes); Notify(\"Logged on the deal\", NotificationType.Success); Back())",
+                    "AnchorH": "=Anchor.Stretch"
+                  },
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": "crm_sp_acctscreen",
+              "name": "AcctScreen",
+              "type": "Screen",
+              "props": {
+                "Fill": "=RGBA(248, 250, 252, 1)"
+              },
+              "children": [
+                {
+                  "id": "crm_sp_acctback",
+                  "name": "AcctBack",
+                  "type": "Button",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=12",
+                    "Width": "=88",
+                    "Height": "=40",
+                    "Text": "=\"< Back\"",
+                    "OnSelect": "=Back()"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_accttitle",
+                  "name": "AcctTitle",
+                  "type": "Label",
+                  "props": {
+                    "X": "=116",
+                    "Y": "=12",
+                    "Width": "=228",
+                    "Height": "=40",
+                    "Text": "=varAcct.Slot_Accounts_Name",
+                    "Size": "=18",
+                    "FontWeight": "=FontWeight.Bold",
+                    "AnchorH": "=Anchor.Stretch"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_acctinfo",
+                  "name": "AcctInfo",
+                  "type": "Label",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=56",
+                    "Width": "=328",
+                    "Height": "=60",
+                    "Text": "=\"Phone \" & Coalesce(varAcct.Slot_Accounts_Phone, \"-\") & Char(10) & \"Email \" & Coalesce(varAcct.Slot_Accounts_Email, \"-\")",
+                    "Size": "=14",
+                    "AnchorH": "=Anchor.Stretch"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_acctdealstitle",
+                  "name": "AcctDealsTitle",
+                  "type": "Label",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=124",
+                    "Width": "=328",
+                    "Height": "=24",
+                    "Text": "=\"Deals\"",
+                    "Size": "=15",
+                    "FontWeight": "=FontWeight.Semibold",
+                    "AnchorH": "=Anchor.Stretch"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_acctdeals",
+                  "name": "AcctDeals",
+                  "type": "DataTable",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=152",
+                    "Width": "=328",
+                    "Height": "=280",
+                    "AnchorH": "=Anchor.Stretch",
+                    "Items": "=Filter(Slot_Opportunities, Slot_Opportunities_Account = Coalesce(varAcct.id, \"-\"))",
+                    "Columns": "=\"Slot_Opportunities_Name:Deal, Slot_Opportunities_Stage:Stage, Slot_Opportunities_Amount:Value\"",
+                    "EmptyText": "=\"No deals for this account\"",
+                    "OnSelect": "=Set(varDeal, AcctDeals.Selected); EditForm(StageForm); Navigate(DealScreen)"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_acctpeopletitle",
+                  "name": "AcctPeopleTitle",
+                  "type": "Label",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=444",
+                    "Width": "=328",
+                    "Height": "=24",
+                    "Text": "=\"People\"",
+                    "Size": "=15",
+                    "FontWeight": "=FontWeight.Semibold",
+                    "AnchorH": "=Anchor.Stretch"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "crm_sp_acctpeople",
+                  "name": "AcctPeople",
+                  "type": "DataTable",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=472",
+                    "Width": "=328",
+                    "Height": "=312",
+                    "AnchorH": "=Anchor.Stretch",
+                    "AnchorV": "=Anchor.Stretch",
+                    "Items": "=Filter(Slot_Contacts, Slot_Contacts_Account = Coalesce(varAcct.id, \"-\"))",
+                    "Columns": "=\"Slot_Contacts_FullName:Name, Slot_Contacts_Phone:Phone, Slot_Contacts_JobTitle:Title\"",
+                    "EmptyText": "=\"No contacts\""
+                  },
+                  "children": []
+                }
+              ]
+            }
+          ],
+          "offline": {
+            "entry": true,
+            "tables": [
+              {
+                "table": "Slot_Opportunities",
+                "filter": "Slot_Opportunities_Stage <> \"Won\" && Slot_Opportunities_Stage <> \"Lost\"",
+                "maxRows": 500
+              },
+              {
+                "table": "Slot_Accounts",
+                "maxRows": 2000
+              },
+              {
+                "table": "Slot_Contacts",
+                "maxRows": 2000
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "flows": [
+      {
+        "key": "NewLead",
+        "name": "New lead: tell the owner and the managers",
+        "description": "A new lead notifies its owner (the person who captured it) and the sales managers.",
+        "definition": {
+          "trigger": {
+            "type": "table",
+            "table": "Slot_Leads",
+            "on": [
+              "create"
+            ]
+          },
+          "steps": [
+            {
+              "id": "tell",
+              "name": "TellOwner",
+              "kind": "notify",
+              "to": "Trigger.Record.owner",
+              "roles": [
+                "Slot_Role_SalesManager"
+              ],
+              "title": "\"New lead: \" & Trigger.Record.Slot_Leads_Name",
+              "body": "Coalesce(Trigger.Record.Slot_Leads_Company, \"\") & \" · \" & Coalesce(Text(Trigger.Record.Slot_Leads_EstimatedValue), \"no estimate\") & \". Qualify it in the Sales app.\"",
+              "link": "\"#u-\" & \"Slot_App_Sales\"",
+              "channels": [
+                "inApp"
+              ]
+            }
+          ],
+          "settings": {
+            "concurrency": "perRecord",
+            "timeoutMinutes": 1440,
+            "retentionDays": 30,
+            "onError": "fail"
+          }
+        }
+      },
+      {
+        "key": "ConvertLead",
+        "name": "Convert a lead",
+        "description": "A lead whose status becomes Converted gets an account (an existing one with the same name is reused), a contact and an opportunity, all owned by the lead's owner, once; the lead links to them.",
+        "definition": {
+          "trigger": {
+            "type": "table",
+            "table": "Slot_Leads",
+            "on": [
+              "update"
+            ],
+            "columns": [
+              "Slot_Leads_Status"
+            ],
+            "condition": "Trigger.Record.Slot_Leads_Status = \"Converted\" && Trigger.Old.Slot_Leads_Status <> \"Converted\" && IsBlank(Trigger.Record.Slot_Leads_ConvertedOpportunity)"
+          },
+          "variables": [
+            {
+              "name": "AccountId",
+              "type": "text"
+            }
+          ],
+          "steps": [
+            {
+              "id": "ex",
+              "name": "Existing",
+              "kind": "data.list",
+              "table": "Slot_Accounts",
+              "filter": "Slot_Accounts_Name = Coalesce(Trigger.Record.Slot_Leads_Company, Trigger.Record.Slot_Leads_Name)",
+              "top": 1
+            },
+            {
+              "id": "acct",
+              "name": "AccountStep",
+              "kind": "condition",
+              "if": "CountRows(Steps.Existing.Output) > 0",
+              "then": [
+                {
+                  "id": "usea",
+                  "name": "UseExisting",
+                  "kind": "setVariable",
+                  "variable": "AccountId",
+                  "value": "First(Steps.Existing.Output).id"
+                }
+              ],
+              "else": [
+                {
+                  "id": "newa",
+                  "name": "NewAccount",
+                  "kind": "data.create",
+                  "table": "Slot_Accounts",
+                  "owner": "Trigger.Record.owner",
+                  "values": {
+                    "Slot_Accounts_Name": "Coalesce(Trigger.Record.Slot_Leads_Company, Trigger.Record.Slot_Leads_Name)",
+                    "Slot_Accounts_Type": "\"Customer\"",
+                    "Slot_Accounts_Phone": "Trigger.Record.Slot_Leads_Phone",
+                    "Slot_Accounts_Email": "Trigger.Record.Slot_Leads_Email"
+                  }
+                },
+                {
+                  "id": "seta",
+                  "name": "UseNew",
+                  "kind": "setVariable",
+                  "variable": "AccountId",
+                  "value": "Steps.NewAccount.Output.id"
+                }
+              ]
+            },
+            {
+              "id": "con",
+              "name": "NewContact",
+              "kind": "data.create",
+              "table": "Slot_Contacts",
+              "owner": "Trigger.Record.owner",
+              "values": {
+                "Slot_Contacts_FullName": "Trigger.Record.Slot_Leads_Name",
+                "Slot_Contacts_Account": "Variables.AccountId",
+                "Slot_Contacts_JobTitle": "Trigger.Record.Slot_Leads_JobTitle",
+                "Slot_Contacts_Email": "Trigger.Record.Slot_Leads_Email",
+                "Slot_Contacts_Phone": "Trigger.Record.Slot_Leads_Phone"
+              }
+            },
+            {
+              "id": "opp",
+              "name": "NewOpportunity",
+              "kind": "data.create",
+              "table": "Slot_Opportunities",
+              "owner": "Trigger.Record.owner",
+              "values": {
+                "Slot_Opportunities_Name": "Coalesce(Trigger.Record.Slot_Leads_Company, Trigger.Record.Slot_Leads_Name) & \" - new deal\"",
+                "Slot_Opportunities_Account": "Variables.AccountId",
+                "Slot_Opportunities_Contact": "Steps.NewContact.Output.id",
+                "Slot_Opportunities_Stage": "\"Qualified\"",
+                "Slot_Opportunities_Amount": "Coalesce(Trigger.Record.Slot_Leads_EstimatedValue, 0)",
+                "Slot_Opportunities_CloseDate": "DateAdd(Today(), 60, \"Days\")",
+                "Slot_Opportunities_Source": "Trigger.Record.Slot_Leads_Source"
+              }
+            },
+            {
+              "id": "link",
+              "name": "LinkLead",
+              "kind": "data.update",
+              "table": "Slot_Leads",
+              "rowId": "Trigger.Record",
+              "values": {
+                "Slot_Leads_ConvertedAccount": "Variables.AccountId",
+                "Slot_Leads_ConvertedContact": "Steps.NewContact.Output.id",
+                "Slot_Leads_ConvertedOpportunity": "Steps.NewOpportunity.Output.id"
+              }
+            },
+            {
+              "id": "tell",
+              "name": "TellOwner",
+              "kind": "notify",
+              "to": "Trigger.Record.owner",
+              "title": "\"Lead converted: \" & Trigger.Record.Slot_Leads_Name",
+              "body": "\"An account, a contact and an opportunity were created. Open the Pipeline in the Sales app.\"",
+              "link": "\"#u-\" & \"Slot_App_Sales\"",
+              "channels": [
+                "inApp"
+              ]
+            }
+          ],
+          "settings": {
+            "concurrency": "perRecord",
+            "timeoutMinutes": 1440,
+            "retentionDays": 30,
+            "onError": "fail"
+          }
+        }
+      },
+      {
+        "key": "StaleOpportunity",
+        "name": "Stale opportunity reminder",
+        "description": "Every working day at 09:00 (India time) each open opportunity that has not changed for 14 days gets a follow-up task for its owner (one open reminder per opportunity).",
+        "definition": {
+          "trigger": {
+            "type": "schedule",
+            "cron": "0 9 * * 1-6",
+            "timeZone": "Asia/Kolkata"
+          },
+          "steps": [
+            {
+              "id": "stale",
+              "name": "Stale",
+              "kind": "data.list",
+              "table": "Slot_Opportunities",
+              "filter": "Slot_Opportunities_Stage <> \"Won\" && Slot_Opportunities_Stage <> \"Lost\" && modifiedOn < DateAdd(Today(), -14, \"Days\")",
+              "top": 500
+            },
+            {
+              "id": "each",
+              "name": "EachOpportunity",
+              "kind": "forEach",
+              "items": "Steps.Stale.Output",
+              "as": "Opp",
+              "steps": [
+                {
+                  "id": "chk",
+                  "name": "AlreadyAsked",
+                  "kind": "condition",
+                  "if": "CountRows(Filter(Activities, regardingId = Opp.id && Category = \"Stale reminder\" && Status = \"Open\")) = 0",
+                  "then": [
+                    {
+                      "id": "task",
+                      "name": "FollowUpTask",
+                      "kind": "data.create",
+                      "table": "Activities",
+                      "owner": "Opp.owner",
+                      "values": {
+                        "Type": "\"Task\"",
+                        "Subject": "\"Follow up: \" & Opp.Slot_Opportunities_Name & \" has not moved for 14 days\"",
+                        "Description": "\"Stage \" & Opp.Slot_Opportunities_Stage & \". Log a call or a meeting, or move the stage.\"",
+                        "Priority": "\"High\"",
+                        "Status": "\"Open\"",
+                        "Category": "\"Stale reminder\"",
+                        "DueOn": "Today()",
+                        "AssignedTo": "Opp.owner",
+                        "regardingId": "Opp.id"
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ],
+          "settings": {
+            "concurrency": "singleton",
+            "timeoutMinutes": 60,
+            "retentionDays": 30,
+            "onError": "fail"
+          }
+        }
+      },
+      {
+        "key": "QuoteApproval",
+        "name": "Quote discount approval",
+        "description": "A quote with a discount above 10% (and above what was approved before) is marked Pending and asked of the sales managers on behalf of the rep who owns it; the answer is written back and the rep is told. Until approved the quote cannot be set to Sent.",
+        "definition": {
+          "trigger": {
+            "type": "table",
+            "table": "Slot_Quotes",
+            "on": [
+              "create",
+              "update"
+            ],
+            "columns": [
+              "Slot_Quotes_DiscountPercent"
+            ],
+            "condition": "Coalesce(Trigger.Record.Slot_Quotes_DiscountPercent, 0) > 10 && Coalesce(Trigger.Record.Slot_Quotes_DiscountPercent, 0) > Coalesce(Trigger.Record.Slot_Quotes_ApprovedDiscount, 0) && Trigger.Record.Slot_Quotes_Approval <> \"Pending\""
+          },
+          "steps": [
+            {
+              "id": "pend",
+              "name": "MarkPending",
+              "kind": "data.update",
+              "table": "Slot_Quotes",
+              "rowId": "Trigger.Record",
+              "values": {
+                "Slot_Quotes_Approval": "\"Pending\""
+              }
+            },
+            {
+              "id": "ask",
+              "name": "Ask",
+              "kind": "approval",
+              "title": "\"Quote \" & Trigger.Record.Slot_Quotes_Number & \": \" & Text(Trigger.Record.Slot_Quotes_DiscountPercent) & \"% discount\"",
+              "details": "\"Discount above the 10% limit.\"",
+              "policy": "Slot_Policy_QuoteDiscount",
+              "regarding": {
+                "table": "Slot_Quotes",
+                "rowId": "Trigger.Record"
+              },
+              "requester": "Trigger.Record.owner",
+              "fields": {
+                "Quote": "Trigger.Record.Slot_Quotes_Number",
+                "Discount": "Trigger.Record.Slot_Quotes_DiscountPercent",
+                "Subtotal": "Trigger.Record.Slot_Quotes_Subtotal"
+              }
+            },
+            {
+              "id": "set",
+              "name": "WriteBack",
+              "kind": "data.update",
+              "table": "Slot_Quotes",
+              "rowId": "Trigger.Record",
+              "values": {
+                "Slot_Quotes_Approval": "If(Steps.Ask.Output.Outcome = \"Approve\", \"Approved\", \"Rejected\")",
+                "Slot_Quotes_ApprovedDiscount": "If(Steps.Ask.Output.Outcome = \"Approve\", Trigger.Record.Slot_Quotes_DiscountPercent, Coalesce(Trigger.Record.Slot_Quotes_ApprovedDiscount, 0))"
+              }
+            },
+            {
+              "id": "tell",
+              "name": "TellRep",
+              "kind": "notify",
+              "to": "Trigger.Record.owner",
+              "title": "\"Quote \" & Trigger.Record.Slot_Quotes_Number & \": discount \" & If(Steps.Ask.Output.Outcome = \"Approve\", \"approved\", \"not approved\")",
+              "body": "Coalesce(Steps.Ask.Output.Comments, \"\")",
+              "link": "\"#u-\" & \"Slot_App_Sales\"",
+              "channels": [
+                "inApp"
+              ]
+            }
+          ],
+          "settings": {
+            "concurrency": "perRecord",
+            "timeoutMinutes": 20160,
+            "retentionDays": 30,
+            "onError": "fail"
+          }
+        }
+      },
+      {
+        "key": "QuoteTotals",
+        "name": "Keep the quote subtotal",
+        "description": "When a quote line is added, changed or deleted, the subtotal of its quote is recalculated (the discount amount and the total follow). Switch it on with the other flows; the printed quote always sums the lines itself.",
+        "definition": {
+          "trigger": {
+            "type": "table",
+            "table": "Slot_QuoteLines",
+            "on": [
+              "create",
+              "update",
+              "delete"
+            ]
+          },
+          "steps": [
+            {
+              "id": "lines",
+              "name": "Lines",
+              "kind": "data.list",
+              "table": "Slot_QuoteLines",
+              "filter": "Slot_QuoteLines_Quote = Trigger.Record.Slot_QuoteLines_Quote",
+              "top": 2000
+            },
+            {
+              "id": "has",
+              "name": "QuoteStillThere",
+              "kind": "condition",
+              "if": "!IsBlank(LookUp(Slot_Quotes, id = Trigger.Record.Slot_QuoteLines_Quote))",
+              "then": [
+                {
+                  "id": "sub",
+                  "name": "SetSubtotal",
+                  "kind": "data.update",
+                  "table": "Slot_Quotes",
+                  "rowId": "Trigger.Record.Slot_QuoteLines_Quote",
+                  "values": {
+                    "Slot_Quotes_Subtotal": "Coalesce(Sum(Steps.Lines.Output, Slot_QuoteLines_Amount), 0)"
+                  }
+                }
+              ],
+              "else": []
+            }
+          ],
+          "settings": {
+            "concurrency": "singleton",
+            "timeoutMinutes": 60,
+            "retentionDays": 30,
+            "onError": "fail"
+          }
+        }
+      },
+      {
+        "key": "WonLost",
+        "name": "Won or lost: tell the owner and the managers",
+        "description": "An opportunity that becomes Won or Lost notifies its owner and the sales managers (with the loss reason).",
+        "definition": {
+          "trigger": {
+            "type": "table",
+            "table": "Slot_Opportunities",
+            "on": [
+              "update"
+            ],
+            "columns": [
+              "Slot_Opportunities_Stage"
+            ],
+            "condition": "(Trigger.Record.Slot_Opportunities_Stage = \"Won\" || Trigger.Record.Slot_Opportunities_Stage = \"Lost\") && Trigger.Old.Slot_Opportunities_Stage <> Trigger.Record.Slot_Opportunities_Stage"
+          },
+          "steps": [
+            {
+              "id": "tell",
+              "name": "Tell",
+              "kind": "notify",
+              "to": "Trigger.Record.owner",
+              "roles": [
+                "Slot_Role_SalesManager"
+              ],
+              "title": "If(Trigger.Record.Slot_Opportunities_Stage = \"Won\", \"Won: \", \"Lost: \") & Trigger.Record.Slot_Opportunities_Name",
+              "body": "\"Rs \" & Text(Coalesce(Trigger.Record.Slot_Opportunities_Amount, 0), \"#,##0\") & If(Trigger.Record.Slot_Opportunities_Stage = \"Lost\", \". Reason: \" & Coalesce(LookUp(Slot_LossReasons, id = Trigger.Record.Slot_Opportunities_LossReason).Slot_LossReasons_Name, \"not given\"), \"\")",
+              "link": "\"#u-\" & \"Slot_App_Sales\"",
+              "channels": [
+                "inApp"
+              ]
+            }
+          ],
+          "settings": {
+            "concurrency": "perRecord",
+            "timeoutMinutes": 1440,
+            "retentionDays": 30,
+            "onError": "fail"
+          }
+        }
+      },
+      {
+        "key": "LogTouchpoint",
+        "name": "Send and log a touchpoint",
+        "description": "A new touchpoint (email or WhatsApp to the contact of an opportunity) is logged as an activity on the opportunity. An email is sent through the environment's email connection when there is one; without a connection, or when the send fails, the touchpoint is marked Not sent and the run still succeeds. WhatsApp is logged only: Appbuilder sends nothing from this flow (see the CRM pack page for adding a WhatsApp connection).",
+        "definition": {
+          "trigger": {
+            "type": "table",
+            "table": "Slot_Touchpoints",
+            "on": [
+              "create"
+            ]
+          },
+          "steps": [
+            {
+              "id": "ch",
+              "name": "ByChannel",
+              "kind": "condition",
+              "if": "Trigger.Record.Slot_Touchpoints_Channel = \"Email\"",
+              "then": [
+                {
+                  "id": "to",
+                  "name": "Recipient",
+                  "kind": "compose",
+                  "value": "Coalesce(LookUp(Slot_Contacts, id = Trigger.Record.Slot_Touchpoints_Contact).Slot_Contacts_Email, \"\")"
+                },
+                {
+                  "id": "try",
+                  "name": "TrySend",
+                  "kind": "scope",
+                  "steps": [
+                    {
+                      "id": "mail",
+                      "name": "Mail",
+                      "kind": "email",
+                      "to": "Steps.Recipient.Output",
+                      "subject": "Trigger.Record.Slot_Touchpoints_Subject",
+                      "body": "Coalesce(Trigger.Record.Slot_Touchpoints_Message, \"\")",
+                      "retry": {
+                        "type": "none",
+                        "count": 0,
+                        "intervalSeconds": 0
+                      }
+                    }
+                  ]
+                },
+                {
+                  "id": "ok",
+                  "name": "MarkSent",
+                  "kind": "data.update",
+                  "table": "Slot_Touchpoints",
+                  "rowId": "Trigger.Record",
+                  "values": {
+                    "Slot_Touchpoints_Status": "\"Sent\"",
+                    "Slot_Touchpoints_Result": "\"Email sent\""
+                  },
+                  "runAfter": [
+                    {
+                      "step": "try",
+                      "when": [
+                        "succeeded"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": "no",
+                  "name": "MarkNotSent",
+                  "kind": "data.update",
+                  "table": "Slot_Touchpoints",
+                  "rowId": "Trigger.Record",
+                  "values": {
+                    "Slot_Touchpoints_Status": "\"Not sent\"",
+                    "Slot_Touchpoints_Result": "\"Not sent: no email connection, no email address for the contact, or the send failed. Logged on the timeline.\""
+                  },
+                  "runAfter": [
+                    {
+                      "step": "try",
+                      "when": [
+                        "failed",
+                        "timedOut"
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "else": [
+                {
+                  "id": "wa",
+                  "name": "MarkLogged",
+                  "kind": "data.update",
+                  "table": "Slot_Touchpoints",
+                  "rowId": "Trigger.Record",
+                  "values": {
+                    "Slot_Touchpoints_Status": "\"Logged\"",
+                    "Slot_Touchpoints_Result": "\"Logged only: Appbuilder did not send this WhatsApp message.\""
+                  }
+                }
+              ]
+            },
+            {
+              "id": "log",
+              "name": "LogActivity",
+              "kind": "data.create",
+              "table": "Activities",
+              "owner": "Trigger.Record.owner",
+              "values": {
+                "Type": "If(Trigger.Record.Slot_Touchpoints_Channel = \"Email\", \"Email\", \"Custom\")",
+                "Subject": "Trigger.Record.Slot_Touchpoints_Channel & \": \" & Trigger.Record.Slot_Touchpoints_Subject",
+                "Description": "Coalesce(Trigger.Record.Slot_Touchpoints_Message, \"\")",
+                "Status": "\"Done\"",
+                "Category": "Trigger.Record.Slot_Touchpoints_Channel",
+                "StartOn": "Now()",
+                "regardingId": "Trigger.Record.Slot_Touchpoints_Opportunity"
+              }
+            }
+          ],
+          "settings": {
+            "concurrency": "perRecord",
+            "timeoutMinutes": 1440,
+            "retentionDays": 30,
+            "onError": "fail"
+          }
+        }
+      }
+    ],
+    "approvalPolicies": [
+      {
+        "key": "QuoteDiscount",
+        "name": "Quote discount",
+        "description": "A sales manager approves a quote whose discount is above 10%; the rep who made the quote is never asked. A reminder after 8 hours, due in two days.",
+        "definition": {
+          "type": "single",
+          "approvers": [
+            "role:Slot_Role_SalesManager"
+          ],
+          "allowSelfApproval": false,
+          "dueMinutes": 2880,
+          "reminders": {
+            "afterMinutes": 480,
+            "everyMinutes": 480,
+            "max": 3
+          }
+        }
+      }
+    ],
+    "dashboards": [
+      {
+        "key": "SalesPipeline",
+        "name": "Sales pipeline",
+        "roles": [
+          "Slot_Role_SalesRep",
+          "Slot_Role_SalesManager",
+          "Slot_Role_SalesViewer"
+        ],
+        "def": {
+          "version": 1,
+          "title": "Sales pipeline",
+          "description": "Open pipeline, weighted forecast, won value, win rate, by stage, by owner, won and lost, and the forecast by month. Each person sees the rows their role allows: a rep their own, a manager the team's.",
+          "range": "all",
+          "refreshSeconds": 120,
+          "tiles": [
+            {
+              "id": "open",
+              "title": "Open pipeline",
+              "kind": "kpi",
+              "layout": {
+                "x": 0,
+                "y": 0,
+                "w": 3,
+                "h": 3
+              },
+              "query": {
+                "table": "Slot_Opportunities",
+                "measures": [
+                  {
+                    "id": "Open",
+                    "label": "Open pipeline",
+                    "fn": "sum",
+                    "col": "Slot_Opportunities_Amount"
+                  }
+                ],
+                "filter": {
+                  "and": [
+                    {
+                      "not": {
+                        "col": "Slot_Opportunities_Stage",
+                        "op": "eq",
+                        "value": "Won"
+                      }
+                    },
+                    {
+                      "not": {
+                        "col": "Slot_Opportunities_Stage",
+                        "op": "eq",
+                        "value": "Lost"
+                      }
+                    }
+                  ]
+                }
+              },
+              "visual": {
+                "format": {
+                  "style": "currency",
+                  "currency": "INR",
+                  "compact": true
+                },
+                "kpi": {
+                  "measure": "Open",
+                  "higherIsBetter": true
+                }
+              }
+            },
+            {
+              "id": "weighted",
+              "title": "Weighted forecast",
+              "kind": "kpi",
+              "layout": {
+                "x": 3,
+                "y": 0,
+                "w": 3,
+                "h": 3
+              },
+              "query": {
+                "table": "Slot_Opportunities",
+                "measures": [
+                  {
+                    "id": "Weighted",
+                    "label": "Weighted forecast",
+                    "fn": "sum",
+                    "col": "Slot_Opportunities_WeightedAmount"
+                  }
+                ],
+                "filter": {
+                  "and": [
+                    {
+                      "not": {
+                        "col": "Slot_Opportunities_Stage",
+                        "op": "eq",
+                        "value": "Won"
+                      }
+                    },
+                    {
+                      "not": {
+                        "col": "Slot_Opportunities_Stage",
+                        "op": "eq",
+                        "value": "Lost"
+                      }
+                    }
+                  ]
+                }
+              },
+              "visual": {
+                "format": {
+                  "style": "currency",
+                  "currency": "INR",
+                  "compact": true
+                },
+                "kpi": {
+                  "measure": "Weighted",
+                  "higherIsBetter": true
+                }
+              }
+            },
+            {
+              "id": "won",
+              "title": "Won value",
+              "kind": "kpi",
+              "layout": {
+                "x": 6,
+                "y": 0,
+                "w": 3,
+                "h": 3
+              },
+              "query": {
+                "table": "Slot_Opportunities",
+                "measures": [
+                  {
+                    "id": "WonValue",
+                    "label": "Won value",
+                    "fn": "sum",
+                    "col": "Slot_Opportunities_Amount"
+                  }
+                ],
+                "filter": {
+                  "col": "Slot_Opportunities_Stage",
+                  "op": "eq",
+                  "value": "Won"
+                }
+              },
+              "visual": {
+                "format": {
+                  "style": "currency",
+                  "currency": "INR",
+                  "compact": true
+                },
+                "kpi": {
+                  "measure": "WonValue",
+                  "higherIsBetter": true
+                }
+              }
+            },
+            {
+              "id": "winrate",
+              "title": "Win rate",
+              "kind": "kpi",
+              "layout": {
+                "x": 9,
+                "y": 0,
+                "w": 3,
+                "h": 3
+              },
+              "query": {
+                "table": "Slot_Opportunities",
+                "measures": [
+                  {
+                    "id": "Won",
+                    "label": "Won",
+                    "fn": "count",
+                    "filter": {
+                      "col": "Slot_Opportunities_Stage",
+                      "op": "eq",
+                      "value": "Won"
+                    }
+                  },
+                  {
+                    "id": "Closed",
+                    "label": "Closed",
+                    "fn": "count",
+                    "filter": {
+                      "or": [
+                        {
+                          "col": "Slot_Opportunities_Stage",
+                          "op": "eq",
+                          "value": "Won"
+                        },
+                        {
+                          "col": "Slot_Opportunities_Stage",
+                          "op": "eq",
+                          "value": "Lost"
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "computed": [
+                  {
+                    "id": "WinRate",
+                    "label": "Win rate",
+                    "expr": {
+                      "fn": "div",
+                      "args": [
+                        {
+                          "m": "Won"
+                        },
+                        {
+                          "m": "Closed"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "visual": {
+                "format": {
+                  "style": "percent",
+                  "decimals": 1
+                },
+                "kpi": {
+                  "measure": "WinRate",
+                  "higherIsBetter": true
+                }
+              }
+            },
+            {
+              "id": "bystage",
+              "title": "Pipeline by stage",
+              "kind": "bar",
+              "layout": {
+                "x": 0,
+                "y": 3,
+                "w": 6,
+                "h": 4
+              },
+              "query": {
+                "table": "Slot_Opportunities",
+                "groupBy": [
+                  "Slot_Opportunities_Stage"
+                ],
+                "measures": [
+                  {
+                    "id": "Value",
+                    "label": "Value",
+                    "fn": "sum",
+                    "col": "Slot_Opportunities_Amount"
+                  },
+                  {
+                    "id": "Weighted",
+                    "label": "Weighted",
+                    "fn": "sum",
+                    "col": "Slot_Opportunities_WeightedAmount"
+                  },
+                  {
+                    "id": "Deals",
+                    "label": "Deals",
+                    "fn": "count"
+                  }
+                ],
+                "dateColumn": {
+                  "col": "Slot_Opportunities_CloseDate",
+                  "kind": "date"
+                }
+              },
+              "visual": {
+                "category": "Slot_Opportunities_Stage",
+                "series": [
+                  {
+                    "key": "Value"
+                  },
+                  {
+                    "key": "Weighted"
+                  }
+                ],
+                "format": {
+                  "style": "currency",
+                  "currency": "INR",
+                  "compact": true
+                }
+              }
+            },
+            {
+              "id": "byowner",
+              "title": "Open pipeline by owner",
+              "kind": "bar",
+              "layout": {
+                "x": 6,
+                "y": 3,
+                "w": 6,
+                "h": 4
+              },
+              "query": {
+                "table": "Slot_Opportunities",
+                "groupBy": [
+                  "owner"
+                ],
+                "measures": [
+                  {
+                    "id": "Value",
+                    "label": "Open value",
+                    "fn": "sum",
+                    "col": "Slot_Opportunities_Amount"
+                  },
+                  {
+                    "id": "Deals",
+                    "label": "Deals",
+                    "fn": "count"
+                  }
+                ],
+                "filter": {
+                  "and": [
+                    {
+                      "not": {
+                        "col": "Slot_Opportunities_Stage",
+                        "op": "eq",
+                        "value": "Won"
+                      }
+                    },
+                    {
+                      "not": {
+                        "col": "Slot_Opportunities_Stage",
+                        "op": "eq",
+                        "value": "Lost"
+                      }
+                    }
+                  ]
+                },
+                "dateColumn": {
+                  "col": "Slot_Opportunities_CloseDate",
+                  "kind": "date"
+                }
+              },
+              "visual": {
+                "category": "owner",
+                "series": [
+                  {
+                    "key": "Value"
+                  }
+                ],
+                "format": {
+                  "style": "currency",
+                  "currency": "INR",
+                  "compact": true
+                }
+              }
+            },
+            {
+              "id": "wonlost",
+              "title": "Won and lost",
+              "kind": "bar",
+              "layout": {
+                "x": 0,
+                "y": 7,
+                "w": 6,
+                "h": 4
+              },
+              "query": {
+                "table": "Slot_Opportunities",
+                "groupBy": [
+                  "Slot_Opportunities_Stage"
+                ],
+                "measures": [
+                  {
+                    "id": "Value",
+                    "label": "Value",
+                    "fn": "sum",
+                    "col": "Slot_Opportunities_Amount"
+                  },
+                  {
+                    "id": "Deals",
+                    "label": "Deals",
+                    "fn": "count"
+                  }
+                ],
+                "filter": {
+                  "or": [
+                    {
+                      "col": "Slot_Opportunities_Stage",
+                      "op": "eq",
+                      "value": "Won"
+                    },
+                    {
+                      "col": "Slot_Opportunities_Stage",
+                      "op": "eq",
+                      "value": "Lost"
+                    }
+                  ]
+                }
+              },
+              "visual": {
+                "category": "Slot_Opportunities_Stage",
+                "series": [
+                  {
+                    "key": "Value"
+                  }
+                ],
+                "format": {
+                  "style": "currency",
+                  "currency": "INR",
+                  "compact": true
+                }
+              }
+            },
+            {
+              "id": "forecast",
+              "title": "Forecast by month",
+              "kind": "bar",
+              "layout": {
+                "x": 6,
+                "y": 7,
+                "w": 6,
+                "h": 4
+              },
+              "query": {
+                "table": "Slot_Opportunities",
+                "bucket": {
+                  "col": "Slot_Opportunities_CloseDate",
+                  "unit": "month"
+                },
+                "measures": [
+                  {
+                    "id": "Weighted",
+                    "label": "Weighted forecast",
+                    "fn": "sum",
+                    "col": "Slot_Opportunities_WeightedAmount"
+                  },
+                  {
+                    "id": "Value",
+                    "label": "Value",
+                    "fn": "sum",
+                    "col": "Slot_Opportunities_Amount"
+                  }
+                ],
+                "filter": {
+                  "and": [
+                    {
+                      "not": {
+                        "col": "Slot_Opportunities_Stage",
+                        "op": "eq",
+                        "value": "Won"
+                      }
+                    },
+                    {
+                      "not": {
+                        "col": "Slot_Opportunities_Stage",
+                        "op": "eq",
+                        "value": "Lost"
+                      }
+                    }
+                  ]
+                },
+                "dateColumn": {
+                  "col": "Slot_Opportunities_CloseDate",
+                  "kind": "date"
+                }
+              },
+              "visual": {
+                "category": "__bucket",
+                "series": [
+                  {
+                    "key": "Weighted"
+                  },
+                  {
+                    "key": "Value"
+                  }
+                ],
+                "format": {
+                  "style": "currency",
+                  "currency": "INR",
+                  "compact": true
+                }
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "printTemplates": [
+      {
+        "key": "Quote",
+        "name": "Quote",
+        "description": "A commercial quotation with its lines, the discount and the total; no tax is computed and the document says so.",
+        "doc": {
+          "page": {
+            "size": "A4",
+            "orientation": "portrait"
+          },
+          "source": {
+            "kind": "record",
+            "table": "Slot_Quotes",
+            "related": [
+              {
+                "name": "Lines",
+                "table": "Slot_QuoteLines",
+                "column": "Slot_QuoteLines_Quote",
+                "sort": [
+                  {
+                    "column": "createdOn"
+                  }
+                ]
+              }
+            ]
+          },
+          "fileName": "Quote {Slot_Quotes_Number}",
+          "metadata": {
+            "title": "Quote {Slot_Quotes_Number}"
+          },
+          "header": {
+            "blocks": [],
+            "letterhead": "first",
+            "right": "Quote {Slot_Quotes_Number}"
+          },
+          "footer": {
+            "blocks": [],
+            "pageNumbers": true,
+            "left": "Printed {FormatDate(Now(), \"dd-MM-yyyy HH:mm\")} by {User().FullName}"
+          },
+          "body": [
+            {
+              "id": "h",
+              "kind": "heading",
+              "level": 1,
+              "text": "Quotation"
+            },
+            {
+              "id": "sub",
+              "kind": "text",
+              "text": "**{Slot_Quotes_Number}** · {FormatDate(Slot_Quotes_QuoteDate, \"dd-MM-yyyy\")}",
+              "size": 11
+            },
+            {
+              "id": "kv",
+              "kind": "keyValue",
+              "columns": 2,
+              "items": [
+                {
+                  "label": "Customer",
+                  "value": "Slot_Quotes_Account"
+                },
+                {
+                  "label": "Opportunity",
+                  "value": "Slot_Quotes_Opportunity"
+                },
+                {
+                  "label": "Quote date",
+                  "value": "Slot_Quotes_QuoteDate",
+                  "format": "date"
+                },
+                {
+                  "label": "Valid until",
+                  "value": "Slot_Quotes_ValidUntil",
+                  "format": "date"
+                }
+              ]
+            },
+            {
+              "id": "tbl",
+              "kind": "table",
+              "rows": "Related.Lines",
+              "totals": true,
+              "emptyText": "No lines on this quote.",
+              "columns": [
+                {
+                  "header": "Item",
+                  "value": "ThisItem.Slot_QuoteLines_Description",
+                  "flex": 4,
+                  "total": "label",
+                  "totalLabel": "Subtotal"
+                },
+                {
+                  "header": "Qty",
+                  "value": "ThisItem.Slot_QuoteLines_Quantity",
+                  "width": 20,
+                  "format": "number",
+                  "align": "right"
+                },
+                {
+                  "header": "Unit price (Rs)",
+                  "value": "ThisItem.Slot_QuoteLines_UnitPrice",
+                  "width": 32,
+                  "format": "currency",
+                  "align": "right"
+                },
+                {
+                  "header": "Amount (Rs)",
+                  "value": "ThisItem.Slot_QuoteLines_Amount",
+                  "width": 34,
+                  "format": "currency",
+                  "align": "right",
+                  "total": "sum"
+                }
+              ]
+            },
+            {
+              "id": "tot",
+              "kind": "keyValue",
+              "columns": 1,
+              "boxed": true,
+              "items": [
+                {
+                  "label": "Subtotal",
+                  "value": "Sum(Related.Lines, Slot_QuoteLines_Amount)",
+                  "format": "currency"
+                },
+                {
+                  "label": "Discount ({Coalesce(Slot_Quotes_DiscountPercent, 0)}%)",
+                  "value": "Round(Sum(Related.Lines, Slot_QuoteLines_Amount) * Coalesce(Slot_Quotes_DiscountPercent, 0) / 100, 2)",
+                  "format": "currency"
+                },
+                {
+                  "label": "Total",
+                  "value": "Round(Sum(Related.Lines, Slot_QuoteLines_Amount) * (1 - Coalesce(Slot_Quotes_DiscountPercent, 0) / 100), 2)",
+                  "format": "currency"
+                }
+              ]
+            },
+            {
+              "id": "notax",
+              "kind": "text",
+              "text": "*Amounts are in Indian rupees. No tax has been computed on this quotation; any applicable taxes are added when the invoice is made.*",
+              "size": 10
+            },
+            {
+              "id": "terms",
+              "kind": "text",
+              "text": "**Terms.** {Coalesce(Slot_Quotes_Terms, \"As agreed.\")}",
+              "visible": "!IsBlank(Slot_Quotes_Terms)"
+            },
+            {
+              "id": "sig",
+              "kind": "signature",
+              "labels": [
+                "For the supplier",
+                "Accepted by the customer"
+              ],
+              "showDate": true,
+              "keepTogether": true,
+              "spaceBefore": 8
+            }
+          ]
+        }
+      }
+    ],
+    "roles": [
+      {
+        "key": "SalesRep",
+        "name": "Sales rep",
+        "description": "Works their own leads, accounts, contacts, opportunities, quotes and touchpoints (own rows only); reads products, price lists and the reference lists. Cannot change a quote's discount approval.",
+        "tables": {
+          "Products": {
+            "read": "all"
+          },
+          "PriceLists": {
+            "read": "all"
+          },
+          "PriceListItems": {
+            "read": "all"
+          },
+          "LeadSources": {
+            "read": "all"
+          },
+          "LossReasons": {
+            "read": "all"
+          },
+          "SalesStages": {
+            "read": "all"
+          },
+          "Accounts": {
+            "create": true,
+            "read": "own",
+            "update": "own",
+            "delete": "none"
+          },
+          "Contacts": {
+            "create": true,
+            "read": "own",
+            "update": "own",
+            "delete": "none"
+          },
+          "Opportunities": {
+            "create": true,
+            "read": "own",
+            "update": "own",
+            "delete": "none"
+          },
+          "Leads": {
+            "create": true,
+            "read": "own",
+            "update": "own",
+            "delete": "none"
+          },
+          "Quotes": {
+            "create": true,
+            "read": "own",
+            "update": "own",
+            "delete": "none",
+            "columns": {
+              "Approval": "read",
+              "ApprovedDiscount": "read",
+              "Subtotal": "read"
+            }
+          },
+          "QuoteLines": {
+            "create": true,
+            "read": "own",
+            "update": "own",
+            "delete": "own"
+          },
+          "Touchpoints": {
+            "create": true,
+            "read": "own",
+            "update": "none",
+            "delete": "none"
+          }
+        }
+      },
+      {
+        "key": "SalesManager",
+        "name": "Sales manager",
+        "description": "Sees and works the rows of their team (the people in the same teams), approves quotes with a big discount, keeps the lead sources, loss reasons and stages.",
+        "tables": {
+          "Products": {
+            "read": "all"
+          },
+          "PriceLists": {
+            "read": "all"
+          },
+          "PriceListItems": {
+            "read": "all"
+          },
+          "LeadSources": {
+            "create": true,
+            "read": "all",
+            "update": "all",
+            "delete": "none"
+          },
+          "LossReasons": {
+            "create": true,
+            "read": "all",
+            "update": "all",
+            "delete": "none"
+          },
+          "SalesStages": {
+            "create": true,
+            "read": "all",
+            "update": "all",
+            "delete": "none"
+          },
+          "Accounts": {
+            "create": true,
+            "read": "team",
+            "update": "team",
+            "delete": "none"
+          },
+          "Contacts": {
+            "create": true,
+            "read": "team",
+            "update": "team",
+            "delete": "none"
+          },
+          "Opportunities": {
+            "create": true,
+            "read": "team",
+            "update": "team",
+            "delete": "team"
+          },
+          "Leads": {
+            "create": true,
+            "read": "team",
+            "update": "team",
+            "delete": "team"
+          },
+          "Quotes": {
+            "create": true,
+            "read": "team",
+            "update": "team",
+            "delete": "none"
+          },
+          "QuoteLines": {
+            "create": true,
+            "read": "team",
+            "update": "team",
+            "delete": "team"
+          },
+          "Touchpoints": {
+            "create": true,
+            "read": "team",
+            "update": "none",
+            "delete": "none"
+          }
+        }
+      },
+      {
+        "key": "SalesViewer",
+        "name": "Sales viewer",
+        "description": "Reads the whole pipeline, quotes and accounts (for management and finance); changes nothing.",
+        "tables": {
+          "Products": {
+            "read": "all"
+          },
+          "PriceLists": {
+            "read": "all"
+          },
+          "PriceListItems": {
+            "read": "all"
+          },
+          "LeadSources": {
+            "read": "all"
+          },
+          "LossReasons": {
+            "read": "all"
+          },
+          "SalesStages": {
+            "read": "all"
+          },
+          "Accounts": {
+            "read": "all"
+          },
+          "Contacts": {
+            "read": "all"
+          },
+          "Opportunities": {
+            "read": "all"
+          },
+          "Leads": {
+            "read": "all"
+          },
+          "Quotes": {
+            "read": "all"
+          },
+          "QuoteLines": {
+            "read": "all"
+          },
+          "Touchpoints": {
+            "read": "all"
+          }
+        }
+      }
+    ],
+    "sequences": [
+      {
+        "key": "Quote",
+        "name": "Quotes",
+        "prefix": "QT/{FY}/",
+        "padding": 4,
+        "resetRule": "financialYear",
+        "description": "Quote numbers (restart each financial year, April to March)."
+      }
+    ],
+    "reference": {
+      "SalesStages": [
+        {
+          "_id": "prospect",
+          "Name": "Prospect",
+          "Sequence": 1,
+          "Probability": 10,
+          "IsOpen": true
+        },
+        {
+          "_id": "qualified",
+          "Name": "Qualified",
+          "Sequence": 2,
+          "Probability": 25,
+          "IsOpen": true
+        },
+        {
+          "_id": "proposal",
+          "Name": "Proposal",
+          "Sequence": 3,
+          "Probability": 50,
+          "IsOpen": true
+        },
+        {
+          "_id": "negotiation",
+          "Name": "Negotiation",
+          "Sequence": 4,
+          "Probability": 75,
+          "IsOpen": true
+        },
+        {
+          "_id": "won",
+          "Name": "Won",
+          "Sequence": 5,
+          "Probability": 100,
+          "IsOpen": false
+        },
+        {
+          "_id": "lost",
+          "Name": "Lost",
+          "Sequence": 6,
+          "Probability": 0,
+          "IsOpen": false
+        }
+      ],
+      "LeadSources": [
+        {
+          "_id": "web",
+          "Name": "Website",
+          "Active": true
+        },
+        {
+          "_id": "referral",
+          "Name": "Referral",
+          "Active": true
+        },
+        {
+          "_id": "trade",
+          "Name": "Trade show",
+          "Active": true
+        },
+        {
+          "_id": "cold",
+          "Name": "Cold call",
+          "Active": true
+        },
+        {
+          "_id": "partner",
+          "Name": "Partner",
+          "Active": true
+        },
+        {
+          "_id": "whatsapp",
+          "Name": "WhatsApp enquiry",
+          "Active": true
+        },
+        {
+          "_id": "email",
+          "Name": "Email enquiry",
+          "Active": true
+        },
+        {
+          "_id": "social",
+          "Name": "Social media",
+          "Active": true
+        }
+      ],
+      "LossReasons": [
+        {
+          "_id": "price",
+          "Name": "Price too high",
+          "Active": true
+        },
+        {
+          "_id": "competitor",
+          "Name": "Chose a competitor",
+          "Active": true
+        },
+        {
+          "_id": "budget",
+          "Name": "No budget",
+          "Active": true
+        },
+        {
+          "_id": "nodecision",
+          "Name": "No decision",
+          "Active": true
+        },
+        {
+          "_id": "timing",
+          "Name": "Bad timing",
+          "Active": true
+        },
+        {
+          "_id": "fit",
+          "Name": "Requirements not met",
+          "Active": true
+        },
+        {
+          "_id": "noresp",
+          "Name": "No response",
+          "Active": true
+        }
+      ]
+    },
+    "sample": {
+      "Opportunities": [
+        {
+          "_id": "o1",
+          "Name": "SAMPLE Asha Textiles: dyeing line upgrade",
+          "Stage": "Prospect",
+          "Amount": 1850000,
+          "CloseDate": "2027-02-15",
+          "Probability": 10,
+          "Source": "referral"
+        },
+        {
+          "_id": "o2",
+          "Name": "SAMPLE Brightway Foods: packing machines",
+          "Stage": "Qualified",
+          "Amount": 4200000,
+          "CloseDate": "2027-01-31",
+          "Probability": 25,
+          "Source": "trade"
+        },
+        {
+          "_id": "o3",
+          "Name": "SAMPLE Chandra Engineering: CNC service contract",
+          "Stage": "Proposal",
+          "Amount": 960000,
+          "CloseDate": "2026-12-20",
+          "Probability": 50,
+          "Source": "partner"
+        },
+        {
+          "_id": "o4",
+          "Name": "SAMPLE Deepak Traders: warehouse racks",
+          "Stage": "Proposal",
+          "Amount": 2750000,
+          "CloseDate": "2026-12-10",
+          "Probability": 50,
+          "Source": "web"
+        },
+        {
+          "_id": "o5",
+          "Name": "SAMPLE Evergreen Pharma: cleanroom panels",
+          "Stage": "Negotiation",
+          "Amount": 12500000,
+          "CloseDate": "2026-12-05",
+          "Probability": 75,
+          "Source": "referral"
+        },
+        {
+          "_id": "o6",
+          "Name": "SAMPLE Falcon Logistics: fleet tracking",
+          "Stage": "Negotiation",
+          "Amount": 780000,
+          "CloseDate": "2026-11-30",
+          "Probability": 75,
+          "Source": "trade"
+        },
+        {
+          "_id": "o7",
+          "Name": "SAMPLE Gupta Plastics: mould maintenance",
+          "Stage": "Won",
+          "Amount": 540000,
+          "CloseDate": "2026-11-10",
+          "Probability": 100,
+          "ClosedOn": "2026-11-12",
+          "Source": "partner"
+        },
+        {
+          "_id": "o8",
+          "Name": "SAMPLE Harbor Packaging: printing press",
+          "Stage": "Won",
+          "Amount": 6800000,
+          "CloseDate": "2026-10-28",
+          "Probability": 100,
+          "ClosedOn": "2026-10-30",
+          "Source": "web"
+        },
+        {
+          "_id": "o9",
+          "Name": "SAMPLE Indus Steel: crane inspection",
+          "Stage": "Lost",
+          "Amount": 1200000,
+          "CloseDate": "2026-11-05",
+          "Probability": 0,
+          "ClosedOn": "2026-11-08",
+          "LossReason": "price",
+          "Source": "referral"
+        },
+        {
+          "_id": "o10",
+          "Name": "SAMPLE Jaya Auto: assembly tooling",
+          "Stage": "Lost",
+          "Amount": 3100000,
+          "CloseDate": "2026-10-20",
+          "Probability": 0,
+          "ClosedOn": "2026-10-25",
+          "LossReason": "competitor",
+          "Source": "trade"
+        }
+      ],
+      "Leads": [
+        {
+          "_id": "l1",
+          "Name": "SAMPLE Kiran Rao",
+          "Company": "Kiran Textile Mills",
+          "Status": "New",
+          "Source": "web",
+          "EstimatedValue": 2200000,
+          "Phone": "+91 90000 10001",
+          "Email": "l1@sample.example.test",
+          "Notes": "SAMPLE lead (fictional)"
+        },
+        {
+          "_id": "l2",
+          "Name": "SAMPLE Lata Menon",
+          "Company": "Menon Foods",
+          "Status": "Contacted",
+          "Source": "referral",
+          "EstimatedValue": 900000,
+          "Phone": "+91 90000 10002",
+          "Email": "l2@sample.example.test",
+          "Notes": "SAMPLE lead (fictional)"
+        },
+        {
+          "_id": "l3",
+          "Name": "SAMPLE Manoj Patel",
+          "Company": "Patel Hardware",
+          "Status": "Qualified",
+          "Source": "trade",
+          "EstimatedValue": 450000,
+          "Phone": "+91 90000 10003",
+          "Email": "l3@sample.example.test",
+          "Notes": "SAMPLE lead (fictional)"
+        },
+        {
+          "_id": "l4",
+          "Name": "SAMPLE Neha Joshi",
+          "Company": "Joshi Dairy",
+          "Status": "New",
+          "Source": "whatsapp",
+          "EstimatedValue": 300000,
+          "Phone": "+91 90000 10004",
+          "Email": "l4@sample.example.test",
+          "Notes": "SAMPLE lead (fictional)"
+        },
+        {
+          "_id": "l5",
+          "Name": "SAMPLE Omkar Desai",
+          "Company": "Desai Castings",
+          "Status": "Unqualified",
+          "Source": "cold",
+          "EstimatedValue": 150000,
+          "Phone": "+91 90000 10005",
+          "Email": "l5@sample.example.test",
+          "Notes": "SAMPLE lead (fictional)"
+        },
+        {
+          "_id": "l6",
+          "Name": "SAMPLE Pooja Nair",
+          "Company": "Nair Spices",
+          "Status": "Contacted",
+          "Source": "email",
+          "EstimatedValue": 620000,
+          "Phone": "+91 90000 10006",
+          "Email": "l6@sample.example.test",
+          "Notes": "SAMPLE lead (fictional)"
+        }
+      ],
+      "Quotes": [
+        {
+          "_id": "q1",
+          "Number": "SAMPLE-QT-0001",
+          "Opportunity": "o3",
+          "Status": "Draft",
+          "DiscountPercent": 5,
+          "QuoteDate": "2026-11-12",
+          "Subtotal": 960000,
+          "Approval": "Not needed",
+          "Terms": "SAMPLE: 50% advance, balance on delivery (fictional)."
+        },
+        {
+          "_id": "q2",
+          "Number": "SAMPLE-QT-0002",
+          "Opportunity": "o5",
+          "Status": "Draft",
+          "DiscountPercent": 15,
+          "QuoteDate": "2026-11-15",
+          "Subtotal": 12500000,
+          "Approval": "Not needed",
+          "Terms": "SAMPLE: 50% advance, balance on delivery (fictional)."
+        },
+        {
+          "_id": "q3",
+          "Number": "SAMPLE-QT-0003",
+          "Opportunity": "o8",
+          "Status": "Accepted",
+          "DiscountPercent": 0,
+          "QuoteDate": "2026-10-20",
+          "Subtotal": 6800000,
+          "Approval": "Not needed",
+          "Terms": "SAMPLE: 50% advance, balance on delivery (fictional)."
+        }
+      ],
+      "QuoteLines": [
+        {
+          "_id": "ql1",
+          "Description": "SAMPLE annual service visit",
+          "Quote": "q1",
+          "Quantity": 4,
+          "UnitPrice": 120000
+        },
+        {
+          "_id": "ql2",
+          "Description": "SAMPLE spare kit",
+          "Quote": "q1",
+          "Quantity": 2,
+          "UnitPrice": 240000
+        },
+        {
+          "_id": "ql3",
+          "Description": "SAMPLE cleanroom panel set",
+          "Quote": "q2",
+          "Quantity": 50,
+          "UnitPrice": 200000
+        },
+        {
+          "_id": "ql4",
+          "Description": "SAMPLE installation",
+          "Quote": "q2",
+          "Quantity": 1,
+          "UnitPrice": 2500000
+        },
+        {
+          "_id": "ql5",
+          "Description": "SAMPLE printing press",
+          "Quote": "q3",
+          "Quantity": 1,
+          "UnitPrice": 6800000
+        }
+      ]
+    }
+  },
+  "signature": {
+    "alg": "sha256",
+    "digest": "f79647946e0af04030dad79437cc93ec9c7474d367d054ca325bca311cd1fa6a"
+  }
+}

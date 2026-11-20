@@ -90,6 +90,8 @@ export const READ_ONLY_ALLOWED: ReadonlySet<string> = new Set([
   'POST /notifications/unsubscribe', 'POST /dashboards/snapshots/unsubscribe',
   // support: the diagnostics bundle
   'POST /admin/diagnostics',
+  // H-G: the licence retry ("Check now" in Admin console > Licences): it is what ends the licence reason
+  'POST /install/licence/check',
 ])
 
 /** GET routes that write business data or start work (none today; a later one is added here and refused) */
@@ -174,8 +176,8 @@ export interface ReadOnlyGate {
   peek(): ReadOnlyState | null
   /** throws the read-only error for a route that is refused while read-only */
   check(method: string, key: string, res?: ServerResponse): Promise<void>
-  /** the licence client (H-G): its own reason; null clears it */
-  setLicence(s: { message?: string; since?: string } | null): void
+  /** the licence client (H-G): its own state (reason licence, or payment / suspended from a signed answer); null clears it */
+  setLicence(s: { message?: string; since?: string; reason?: ReadOnlyReason } | null): void
   /** forget the cache (after the server command changed the setting in this process, tests) */
   invalidate(): void
 }
@@ -245,7 +247,7 @@ export function createReadOnlyGate(deps: GateDeps): ReadOnlyGate {
       throw readOnlyError(s)
     },
     setLicence(s) {
-      licence = s ? { reason: 'licence', message: String(s.message ?? '').slice(0, 300), since: s.since ?? new Date(now()).toISOString(), source: 'licence' } : null
+      licence = s ? { reason: s.reason ?? 'licence', message: String(s.message ?? '').slice(0, 300), since: s.since ?? new Date(now()).toISOString(), source: 'licence' } : null
     },
     invalidate() {
       readAt = 0

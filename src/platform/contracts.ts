@@ -155,6 +155,32 @@ export interface TableDef {
    * back to 0 (rows already in the bin stay until their time runs out).
    */
   recycleBin?: boolean
+  /**
+   * P3-P, a synchronous balance (docs/dev/balances.md): this table holds the running balance of the rows of another
+   * table (the movements), one row per key, kept by the platform in the same transaction as every movement under a row
+   * lock, and the movement is refused when the balance would go below the floor. Both tables in the default database.
+   */
+  balance?: BalanceDef
+}
+
+/** TableDef.balance: "column = sum of movements.quantity per key", never below the floor (docs/dev/balances.md) */
+export interface BalanceDef {
+  /** the movements table (name or id) whose rows move the balance */
+  movements: string
+  /** the movements column with the signed quantity (number, decimal or currency) */
+  quantity: string
+  /** this table's column holding the running balance (number, decimal or currency); kept by the platform */
+  column: string
+  /** 1 to 4 key columns: `column` of this table = `from` of the movements table (same type) */
+  keys: { column: string; from: string }[]
+  /** the lowest allowed balance (default 0); null: no floor (the balance may go negative) */
+  floor?: number | null
+  /** optional column of this table with a per-key minimum (blank: the floor) */
+  minColumn?: string
+  /** what the balance is called in the refusal ("Stock"; default the table's display name) */
+  label?: string
+  /** the refusal, with {label} {keys} {floor} {available} {requested} and {<key column>} parts (default: plain English) */
+  message?: string
 }
 
 export type SystemTableGroup = 'people' | 'collaboration' | 'files' | 'communication' | 'logging' | 'reference' | 'approvals'

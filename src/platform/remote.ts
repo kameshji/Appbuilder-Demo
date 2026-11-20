@@ -15,6 +15,7 @@ import { remoteRecycle, type RecycleBatch } from './recycle-api.ts'
 import type { AppDef, FxRecord, FxValue } from '@/contracts'
 import { PlatformError } from './contracts'
 import { rememberErrorReference } from './errorMessages'
+import { currentFormSubmit } from './flows'
 import type {
   AccessScope, AppMeta, AttachmentRef, ColumnAccess, ColumnDef, ConnectionRef, DataErrorEvent, DataFileDef,
   DataOp, PlatformApi, RoleDef, Row, Session, SolutionDef, TableDef, UserDef, WorkspaceState,
@@ -824,7 +825,8 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     queries.opsChanged(def.name)
     setState({}, true)
     // P2-A offline entry: offline (or behind an earlier queued write of this row) the outbox keeps the write
-    const queueCreate = () => offlineHook()!.queue({ kind: 'create', table: def.name, rowId: id, values: payload }, {
+    const form = currentFormSubmit() // P3-D: read now, while the Form's submit is running (the write itself is sent later)
+    const queueCreate = () => offlineHook()!.queue({ kind: 'create', table: def.name, rowId: id, values: payload, ...(form ? { form } : {}) }, {
       done: (res) => {
         const saved = rowFromJson(e.def, (res as RowResponse).row)
         settle(e, op, () => upsertConfirmed(e, saved), { kind: 'create', row: saved })
@@ -834,7 +836,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     enqueue(async () => {
       if (offlineHook()?.divert(def.name, id)) return queueCreate()
       try {
-        const res = await call<RowResponse>('POST', `/data/${enc(def.name)}/rows`, { json: { values: payload } })
+        const res = await call<RowResponse>('POST', `/data/${enc(def.name)}/rows`, { json: { values: payload, ...(form ? { form } : {}) } })
         const saved = rowFromJson(e.def, res.row)
         settle(e, op, () => upsertConfirmed(e, saved), { kind: 'create', row: saved })
       } catch (err) {
@@ -888,14 +890,15 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       }, { kind: 'update', row: saved })
     }
     // P2-A offline entry (see insertRow): the version check travels with the queued change
-    const queueUpdate = () => offlineHook()!.queue({ kind: 'update', table: def.name, rowId: id, values: payload, ...(ifModifiedOn ? { ifModifiedOn } : {}) }, {
+    const form = currentFormSubmit() // P3-D (see insertRow)
+    const queueUpdate = () => offlineHook()!.queue({ kind: 'update', table: def.name, rowId: id, values: payload, ...(ifModifiedOn ? { ifModifiedOn } : {}), ...(form ? { form } : {}) }, {
       done: (res) => applySaved(res as RowResponse),
       fail: (err) => rollback(e, op, 'update', [id], err),
     })
     enqueue(async () => {
       if (offlineHook()?.divert(def.name, id)) return queueUpdate()
       try {
-        const res = await call<RowResponse>('PATCH', `/data/${enc(def.name)}/rows/${enc(id)}`, { json: { changes: payload, ...(ifModifiedOn ? { ifModifiedOn } : {}) } })
+        const res = await call<RowResponse>('PATCH', `/data/${enc(def.name)}/rows/${enc(id)}`, { json: { changes: payload, ...(ifModifiedOn ? { ifModifiedOn } : {}), ...(form ? { form } : {}) } })
         applySaved(res)
       } catch (err) {
         if (isNetworkError(err) && offlineHook()?.accepts(def.name)) return queueUpdate()

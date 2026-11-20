@@ -30,6 +30,7 @@ import { useCaps } from './security'
 import { OrgFields, UserImportDialog, orgFieldsOf, orgPatch, type OrgFieldsValue } from './Organisation'
 import { fetchDirectoryVisibility, saveDirectoryVisibility, type DirectoryVisibility } from './eventsApi'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { PassBulkBar, PassCell, usePasses } from './UserPasses'
 
 function UserDialog({ open, onOpenChange, user, onCreated, emailConfigured }: { open: boolean; onOpenChange(o: boolean): void; user: UserDef | null; onCreated(u: UserDef, invite: boolean): void; emailConfigured?: boolean }) {
   const server = usePlatform((s) => s.mode) === 'server'
@@ -186,7 +187,11 @@ export function UsersPanel() {
   const onlineMembers = usePresence(server ? 'online' : null, null)
   const online = new Set(onlineMembers.map((m) => m.id))
   const isMe = (u: UserDef) => (server ? u.id === session?.user.id : u.id === currentUserId)
-  const cols = server ? 7 : 5
+  // H-H: seat passes (install administrators assign; everyone in this page sees them)
+  const passes = usePasses(server, users.length)
+  const [picked, setPicked] = useState<string[]>([])
+  const canPass = server && caps.isInstallAdmin && !!passes
+  const cols = (server ? 8 : 5) + (canPass ? 1 : 0)
 
   return (
     <div data-testid="admin-users">
@@ -207,6 +212,7 @@ export function UsersPanel() {
           Demo mode: passwords, disabling and sign-in need the local server. Switch between users from the avatar menu.
         </div>
       )}
+      {canPass && <PassBulkBar selected={picked} state={passes} onDone={() => setPicked([])} />}
       {users.length === 0 ? (
         <Empty icon={UserRound} title="No users yet" description="Add a user to run apps as them." action={<Button onClick={() => setUserDlg({ user: null })}><Plus /> Add user</Button>} />
       ) : (
@@ -214,12 +220,14 @@ export function UsersPanel() {
           <table className="w-full text-sm" data-testid="users-table">
             <thead>
               <tr className="whitespace-nowrap border-b border-border bg-muted/50 text-left text-xs font-medium text-muted-foreground">
-                <th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Email</th><th className="px-4 py-2.5">Department</th><th className="px-4 py-2.5">Roles</th>{server && <th className="px-4 py-2.5">Sign-in</th>}{server && <th className="px-4 py-2.5">Last sign-in</th>}<th className="w-40 px-4 py-2.5"><span className="sr-only">Actions</span></th>
+                {canPass && <th className="w-8 px-2 py-2.5"><Checkbox aria-label="Select every listed person" checked={ulist.length > 0 && ulist.every((u) => picked.includes(u.id))} onCheckedChange={(v) => setPicked(v === true ? ulist.map((u) => u.id) : [])} data-testid="users-select-all" /></th>}
+                <th className="px-4 py-2.5">Name</th><th className="px-4 py-2.5">Email</th><th className="px-4 py-2.5">Department</th><th className="px-4 py-2.5">Roles</th>{server && <th className="px-4 py-2.5">Sign-in</th>}{server && <th className="px-4 py-2.5">Last sign-in</th>}{server && <th className="px-4 py-2.5">Pass</th>}<th className="w-40 px-4 py-2.5"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
               {ulist.map((u) => (
                 <tr key={u.id} className="border-b border-border last:border-0 hover:bg-accent/40" data-testid={`user-row-${u.id}`}>
+                  {canPass && <td className="px-2 py-2.5"><Checkbox aria-label={`Select ${u.name}`} checked={picked.includes(u.id)} onCheckedChange={(v) => setPicked(v === true ? [...picked, u.id] : picked.filter((x) => x !== u.id))} data-testid={`user-select-${u.id}`} /></td>}
                   <td className="px-4 py-2.5 font-medium">
                     <span className="flex items-center gap-2.5">
                       <span className="relative">
@@ -252,6 +260,7 @@ export function UsersPanel() {
                     </td>
                   )}
                   {server && <td className="whitespace-nowrap px-4 py-2.5 text-xs text-muted-foreground" data-testid={`last-login-${u.id}`} title={u.lastLogin ? fmtDate(u.lastLogin) : undefined}>{u.lastLogin ? fmtRelative(u.lastLogin) : 'Never'}</td>}
+                  {server && <td className="px-4 py-2.5"><PassCell userId={u.id} name={u.name} state={passes} canAssign={canPass} /></td>}
                   <td className="px-4 py-1.5">
                     <div className="flex justify-end gap-1">
                       {server && <Button variant="ghost" size="icon-sm" aria-label={`${u.hasPassword ? 'Reset' : 'Set'} password for ${u.name}`} title={u.hasPassword ? 'Reset password' : 'Set password'} disabled={!account && !isMe(u)} onClick={() => setPwUser(u)} data-testid={`password-${u.id}`}><KeyRound /></Button>}

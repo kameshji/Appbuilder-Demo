@@ -51,6 +51,8 @@ export interface ItemBody {
   fileType?: string
   fileSize?: number
   label?: string
+  /** P3-D: the Form this write is the submit of; sent with the write so the server raises that form's flows once */
+  form?: { app: string; form: string }
   error?: { code: string; message: string; field?: string }
   /** conflict: the row as it is on the server now */
   current?: Record<string, unknown>
@@ -94,6 +96,7 @@ export interface NewItem {
   file?: Blob
   fileName?: string
   label?: string
+  form?: { app: string; form: string }
 }
 
 export interface Callbacks {
@@ -196,6 +199,7 @@ export class Outbox {
       ...(n.column ? { column: n.column } : {}),
       ...(n.file ? { fileName: n.fileName ?? 'file', fileType: n.file.type || 'application/octet-stream', fileSize: n.file.size } : {}),
       ...(n.label ? { label: n.label } : {}),
+      ...(n.form ? { form: n.form } : {}),
     }
     const stored: Stored = {
       id, seq, kind: n.kind, table: n.table, rowId: n.rowId, environmentId: n.environmentId, appId: n.appId ?? '', createdAt: at, status: 'waiting', attempts: 0, rev: 0,

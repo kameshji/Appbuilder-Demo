@@ -12,6 +12,7 @@ import { startPreferenceEffects } from '@/portal/theme'
 import { ConnectionBar } from '@/phone/ConnectionBar'
 import { OfflineStart, offlineAtStart, rememberServerMode } from '@/phone/OfflineStart'
 import { KioskPage } from '@/portal/dashboards/KioskPage'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 
 export default function App() {
   const [state, setState] = useState<{ phase: 'loading' | 'ready' | 'error' | 'offline'; error?: string }>({ phase: 'loading' })
@@ -45,7 +46,7 @@ export default function App() {
       .catch((e: unknown) => mounted.current && setState({ phase: 'error', error: errorMessage(e) }))
   }, [kiosk])
 
-  if (kiosk) return <KioskPage />
+  if (kiosk) return <ErrorBoundary scope="kiosk"><KioskPage /></ErrorBoundary>
 
   if (state.phase === 'loading') {
     return (
@@ -72,10 +73,10 @@ export default function App() {
   // The standalone player and the chat pop-out are windows of their own; everything else (Dev mode, User mode with
   // its app tabs, the Studio) lives in the shell, so app tabs stay mounted while you build.
   // P2-A: the connection strip is in the page flow under everything (it never covers an app's buttons)
-  if (route.page === 'run') return <AuthGate><WithStrip><RunApp key={route.id} appId={route.id} /></WithStrip></AuthGate>
+  if (route.page === 'run') return <AuthGate><WithStrip><ErrorBoundary scope="run-app" resetKeys={[route.id]}><RunApp key={route.id} appId={route.id} /></ErrorBoundary></WithStrip></AuthGate>
   // P3-B: a chat link (#chat?c=..) in a main window at desktop width keeps the shell; the dock opens it (src/chat/deeplink.ts)
   if (route.page === 'chat' && !chatOpensInShell()) return <AuthGate><ChatWindow /></AuthGate>
-  return <AuthGate><WithStrip><Portal route={route.page === 'chat' ? shellRouteForChat() : route} /></WithStrip></AuthGate>
+  return <AuthGate><WithStrip><ErrorBoundary scope="portal"><Portal route={route.page === 'chat' ? shellRouteForChat() : route} /></ErrorBoundary></WithStrip></AuthGate>
 }
 
 function WithStrip({ children }: { children: ReactNode }) {

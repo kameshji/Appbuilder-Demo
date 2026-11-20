@@ -37,10 +37,13 @@ export interface TileVisual {
  * Drill-through: clicking a point or a row (or the "Open" button of the tile) opens an app. The values named in `params`
  * are passed in the address, `#u-<appId>?name=value`, which the app reads with Param("name") (the only start-parameter
  * mechanism the runtime has). `field` is a group column, "__bucket" (the date grouping) or a measure / calculation id of
- * the clicked result row. There is no way to open a particular screen of an app from an address, so none is stored.
+ * the clicked result row. `screen` (P3-D) names a screen of the app: the address becomes
+ * `#u-<appId>?screen=<name>&name=value` and the app opens on that screen (an unknown name opens the start screen).
  */
 export interface TileDrill {
   appId: string
+  /** the name of the screen to open (1-80 characters); absent: the app's start screen */
+  screen?: string
   params?: { name: string; field: string }[]
 }
 
@@ -63,7 +66,12 @@ export interface TileDef {
 export const MAX_DRILL_PARAMS = 8
 const APP_ID_RE = /^[A-Za-z0-9_-]{1,80}$/
 const PARAM_RE = /^[A-Za-z_][A-Za-z0-9_]{0,40}$/
-export const isDrillParamName = (s: string): boolean => PARAM_RE.test(s)
+/** the address parameter that names the screen: a drill-through value cannot use it (src/runtime/startparams.ts reads it) */
+export const DRILL_SCREEN_PARAM = 'screen'
+export const MAX_DRILL_SCREEN_LENGTH = 80
+export const isDrillParamName = (s: string): boolean => PARAM_RE.test(s) && s.toLowerCase() !== DRILL_SCREEN_PARAM
+// eslint-disable-next-line no-control-regex
+const CONTROL_RE = /[\u0000-\u001f\u007f]/
 
 /** structural check of a tile's drill-through target; throws with a readable message, returns a cleaned copy */
 export function checkDrill(raw: unknown, tileId: string): TileDrill {
@@ -72,6 +80,12 @@ export function checkDrill(raw: unknown, tileId: string): TileDrill {
   const appId = typeof d.appId === 'string' ? d.appId : ''
   if (!APP_ID_RE.test(appId)) throw new Error(`Tile ${tileId}: the drill-through target needs an app (an id of letters, digits, - or _).`)
   const out: TileDrill = { appId }
+  if (d.screen !== undefined && d.screen !== null) {
+    if (typeof d.screen !== 'string') throw new Error(`Tile ${tileId}: the screen to open must be the name of a screen (text).`)
+    const screen = d.screen.trim()
+    if (!screen || screen.length > MAX_DRILL_SCREEN_LENGTH || CONTROL_RE.test(screen)) throw new Error(`Tile ${tileId}: the screen to open must be a name of 1 to ${MAX_DRILL_SCREEN_LENGTH} characters without line breaks or other special characters.`)
+    out.screen = screen
+  }
   if (d.params !== undefined) {
     if (!Array.isArray(d.params)) throw new Error(`Tile ${tileId}: the drill-through parameters must be a list.`)
     if (d.params.length > MAX_DRILL_PARAMS) throw new Error(`Tile ${tileId}: a drill-through passes at most ${MAX_DRILL_PARAMS} values.`)
@@ -80,6 +94,7 @@ export function checkDrill(raw: unknown, tileId: string): TileDrill {
       const o = p && typeof p === 'object' ? (p as Record<string, unknown>) : {}
       const name = typeof o.name === 'string' ? o.name : ''
       const field = typeof o.field === 'string' ? o.field : ''
+      if (name.toLowerCase() === DRILL_SCREEN_PARAM) throw new Error(`Tile ${tileId}: "${name}" cannot be a parameter name: it is the address's word for the screen to open. Choose the screen in the tile's screen list instead.`)
       if (!PARAM_RE.test(name)) throw new Error(`Tile ${tileId}: "${name}" cannot be a parameter name (start with a letter, then letters, digits or _; at most 41).`)
       if (names.has(name.toLowerCase())) throw new Error(`Tile ${tileId}: the parameter ${name} is listed twice.`)
       names.add(name.toLowerCase())

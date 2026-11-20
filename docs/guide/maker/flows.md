@@ -126,6 +126,10 @@ Click the trigger card.
   are shown, computed by the server.
 * **Run by a person or an app**: typed inputs (text, number, yes/no, date, choice, record, table) and where it may be
   started. Run it with **Run now** on the flow's page, or from an app (below).
+* **When a form is submitted**: choose the app and one of its forms (the app's own Form UI component), and whether new records, changed
+  records or both count. The flow starts after the save went through, runs for the person who submitted (so "run as the triggering user"
+  works), and gets the saved record as `Trigger.Record`, plus `Trigger.Form`, `Trigger.App`, `Trigger.Screen`, `Trigger.Operation` and the
+  submitter. A submit saved offline starts the flow once, when the phone sends it. Flows you import from a solution arrive off.
 * **When a web request arrives**: **Create the web address** shows the address and the signing secret **once**, with copy
   buttons; rotate either later, require signatures or not, turn the address off, or revoke it. The panel shows how to sign
   a request (HMAC-SHA256). Paste a sample body to get its fields as dynamic content. Details: [webhooks](webhooks.md).

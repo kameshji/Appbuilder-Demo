@@ -14,7 +14,10 @@ import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import type { DashboardInfo } from '@/dashboards/types'
-import { kioskAddress } from '@/dashboards/kiosk'
+import { CYCLE_DEFAULT_SECONDS, CYCLE_MAX_PAGES, CYCLE_MAX_RANGES, CYCLE_MAX_SECONDS, CYCLE_MIN_SECONDS, kioskAddress } from '@/dashboards/kiosk'
+import type { KioskCycle } from '@/dashboards/kiosk'
+import { RANGE_PRESETS } from '@/dashboards/dates'
+import type { RangePreset } from '@/dashboards/dates'
 import { errMsg, fmtDate, fmtRelative, useToast } from '../kit'
 import { useCaps } from '../security'
 import { dashboardsApi } from './api'
@@ -59,6 +62,20 @@ export function ViewTokensSheet({ info, onClose }: { info: DashboardInfo; onClos
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [created, setCreated] = useState<NewViewToken | null>(null)
+  // cycling (P3-D): part of the address, not of the token; off by default
+  const [cycleOn, setCycleOn] = useState(false)
+  const [cycleEvery, setCycleEvery] = useState(String(CYCLE_DEFAULT_SECONDS))
+  const [cycleRanges, setCycleRanges] = useState<RangePreset[]>([])
+  const [cyclePages, setCyclePages] = useState('1')
+  const [createdCycle, setCreatedCycle] = useState<KioskCycle | null>(null)
+  const cycleOf = (): KioskCycle | null => {
+    if (!cycleOn) return null
+    const every = Math.floor(Number(cycleEvery)); const pages = Math.floor(Number(cyclePages))
+    return { every: Number.isFinite(every) ? every : CYCLE_DEFAULT_SECONDS, ranges: cycleRanges, pages: Number.isFinite(pages) ? pages : 1 }
+  }
+  const everyOk = !cycleOn || (Number(cycleEvery) >= CYCLE_MIN_SECONDS && Number(cycleEvery) <= CYCLE_MAX_SECONDS)
+  const pagesOk = !cycleOn || (Number(cyclePages) >= 1 && Number(cyclePages) <= CYCLE_MAX_PAGES)
+  const cycleUseful = !cycleOn || cycleRanges.length >= 2 || Number(cyclePages) >= 2
   const [copied, setCopied] = useState<'address' | 'token' | null>(null)
   const [revoking, setRevoking] = useState<string | null>(null)
 
@@ -71,6 +88,7 @@ export function ViewTokensSheet({ info, onClose }: { info: DashboardInfo; onClos
     setBusy(true)
     try {
       const t = await dashboardsApi.createToken(info.id, { label: label.trim(), expiresOn: expiryOf(expiry, expiryDate), viewAs: viewAs ? { serviceAccount: viewAs } : 'creator' })
+      setCreatedCycle(cycleOf())
       setCreated(t)
       setCopied(null)
       setLabel('')
@@ -85,7 +103,7 @@ export function ViewTokensSheet({ info, onClose }: { info: DashboardInfo; onClos
       load()
     } catch (e) { toast(errMsg(e), 'error') }
   }
-  const address = created ? kioskAddress(location.origin, location.pathname, created.token) : ''
+  const address = created ? kioskAddress(location.origin, location.pathname, created.token, createdCycle) : ''
   const copy = async (what: 'address' | 'token') => {
     if (!created) return
     if (await copyText(what === 'address' ? address : created.token)) setCopied(what)
@@ -93,6 +111,7 @@ export function ViewTokensSheet({ info, onClose }: { info: DashboardInfo; onClos
   }
   // closing with the token still on screen: it is gone for good afterwards
   const close = () => { setCreated(null); onClose() }
+  const toggleRange = (k: RangePreset) => setCycleRanges((r) => (r.includes(k) ? r.filter((x) => x !== k) : r.length >= CYCLE_MAX_RANGES ? r : [...r, k]))
 
   return (
     <Sheet open onOpenChange={(o) => { if (!o) close() }}>
@@ -154,8 +173,28 @@ export function ViewTokensSheet({ info, onClose }: { info: DashboardInfo; onClos
                     : 'Each tile runs with your own row and column security, checked on every refresh. Only administrators can choose a service account.'}
                 </span>
               </label>
+              <fieldset className="grid gap-2 rounded-md border p-3 text-xs" data-testid="token-cycle">
+                <legend className="px-1 font-medium text-muted-foreground">Cycling (optional)</legend>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={cycleOn} onChange={(e) => setCycleOn(e.target.checked)} data-testid="token-cycle-on" /> Rotate this screen through date ranges and / or pages of tiles</label>
+                {cycleOn && (
+                  <div className="grid gap-3">
+                    <div className="flex flex-wrap items-end gap-3">
+                      <label className="grid gap-1"><span className="text-muted-foreground">Seconds on each step ({CYCLE_MIN_SECONDS} to {CYCLE_MAX_SECONDS})</span>
+                        <Input className="h-8 w-28" type="number" min={CYCLE_MIN_SECONDS} max={CYCLE_MAX_SECONDS} value={cycleEvery} onChange={(e) => setCycleEvery(e.target.value)} data-testid="token-cycle-every" /></label>
+                      <label className="grid gap-1"><span className="text-muted-foreground">Pages of tiles (1 to {CYCLE_MAX_PAGES})</span>
+                        <Input className="h-8 w-28" type="number" min={1} max={CYCLE_MAX_PAGES} value={cyclePages} onChange={(e) => setCyclePages(e.target.value)} data-testid="token-cycle-pages" /></label>
+                    </div>
+                    <div className="grid gap-1"><span className="text-muted-foreground">Date ranges to rotate through (in the order you tick them; none: the dashboard's own range)</span>
+                      <div className="flex flex-wrap gap-x-4 gap-y-1">{RANGE_PRESETS.map((p) => (
+                        <label key={p.key} className="flex items-center gap-1.5"><input type="checkbox" checked={cycleRanges.includes(p.key)} onChange={() => toggleRange(p.key)} data-testid={`token-cycle-range-${p.key}`} /> {p.label}</label>
+                      ))}</div></div>
+                    <p className="text-muted-foreground">Pages split the dashboard into groups of whole rows of tiles, shown one after the other, for dashboards with more tiles than fit the screen. The cycle is part of the address, not of the token: the token still shows this one dashboard, and every range is checked by the server as before. The screen keeps rotating through what it already has if the network drops.</p>
+                    {!cycleUseful && <p className="text-amber-700 dark:text-amber-300" role="status">Choose at least two ranges or two pages, otherwise the screen will not rotate.</p>}
+                  </div>
+                )}
+              </fieldset>
               {error && <p className="flex gap-1.5 text-xs text-destructive" role="alert"><TriangleAlert className="mt-0.5 size-3.5 shrink-0" />{error}</p>}
-              <div className="flex justify-end"><Button size="sm" onClick={() => void create()} disabled={busy || !label.trim()} data-testid="token-create">{busy ? <Spinner /> : <KeyRound />} Create view token</Button></div>
+              <div className="flex justify-end"><Button size="sm" onClick={() => void create()} disabled={busy || !label.trim() || !everyOk || !pagesOk} data-testid="token-create">{busy ? <Spinner /> : <KeyRound />} Create view token</Button></div>
             </section>
           )}
           <section className="p-4" aria-label="View tokens">

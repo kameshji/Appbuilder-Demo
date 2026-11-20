@@ -20,6 +20,7 @@ import { currentUserRecord } from './data'
 import { schemaFor } from './delegation'
 import { DraftScope, type DraftScopeValue } from '@/phone/drafts'
 import { setAppManifest } from '@/phone/pwa'
+import { startPlan } from './startparams'
 
 /**
  * `#run-<id>`: the player. Without a Studio it runs the saved app. When the Studio of the same app
@@ -135,6 +136,24 @@ function Player({ appId, embedded, onBack }: { appId: string; embedded: boolean;
       store.getState().setRunSurface(false)
     }
   }, [appId, store, embedded])
+
+  // P3-D: an address can name a screen (and values for Param()): honoured when the app has just loaded and again whenever
+  // the address changes while it is open (a drill-through from a dashboard into an app that is already open)
+  const startReady = loadState === 'ready' && loadedId === appId
+  useEffect(() => {
+    if (!startReady) return
+    const apply = (fresh: boolean) => {
+      const st = store.getState()
+      const plan = startPlan(location.hash, appId, st.app.screens, st.runtime.navStack[st.runtime.navStack.length - 1], fresh)
+      if (plan.restart) st.restartRuntime()
+      if (plan.open) store.getState().navigateTo(plan.open)
+      if (plan.unknown) store.getState().notify(`The screen "${plan.unknown}" is not in this app any more, so the start screen is shown.`, 'info')
+    }
+    apply(true)
+    const onHash = () => apply(false)
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [startReady, appId, store])
 
   if (denied) {
     return (

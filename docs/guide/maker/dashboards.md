@@ -81,13 +81,14 @@ Clicking a point of a chart or a row of a table then opens that app in a tab. A 
 
 You can pass values of the clicked row to the app: group columns, the date grouping, measures and calculations. Each value goes to
 the app under a parameter name you choose (by default the first group column, named after it). The app starts at the address
-`#u-<app id>?Machine=Press+1`, and **inside the app** the value is read with the formula `Param("Machine")`, for example in a screen's
+`#u-<app id>?screen=Detail&Machine=Press+1`, and **inside the app** the value is read with the formula `Param("Machine")`, for example in a screen's
 start formula or as the filter of a list. This is the only way the app runtime takes start values, so the app has to read them: an
 app that never calls `Param` simply opens as it is. Blank values are not passed. If the app is already open in a tab and values are
-passed, the tab is closed and opened again, because an app reads its parameters when it starts (unsaved input in that app is lost).
+passed, the app in that tab starts again with the new values (unsaved input in that app is lost) and goes to the screen you chose.
 
-**Not possible:** choosing a particular screen of the app. The runtime has no address for a screen; the app opens on its first screen
-(an app can jump to a screen itself from a start formula that reads a parameter). People without access to the app see "You do not
+**Choosing a screen.** Under the app, the **Screen** list offers the screens of that app; leave it on "The app's start screen" to open as before.
+If the screen is later renamed or deleted, the editor marks it "(not in this app)" and people who click land on the start screen, with
+a short notice. People without access to the app see "You do not
 have access to <app>" when they click. Parameters passed this way are visible in the browser's address bar.
 
 ## Who can see a dashboard
@@ -168,6 +169,14 @@ The screen shows the dashboard full size with no menus, no sign-in and no links 
 dashboard's own date range and no filters. Whoever has the address sees what the token's account sees, until you **Revoke** the token
 (Screens, the token's row: the screen then says "This screen's view token does not work" at its next refresh and shows no data) or it
 expires. Details and the remaining risks: [../../admin/dashboards.md](../../admin/dashboards.md#view-tokens-tv-and-kiosk-screens).
+
+## Cycling through ranges and pages
+
+A screen can rotate by itself. In the **Screens** dialog, under **Cycling (optional)**, tick **Cycle**, choose how often (5 seconds to an hour),
+which date ranges to go through (Today, Last 7 days, ...) and how many pages to split the tiles into. The address that you copy then has
+the settings after the token; leave it off and the screen shows the dashboard as before. Each step shows one range and one page, with
+"Page 2 of 3" and dots in the top bar. If the connection drops, the screen keeps rotating through what it already has and shows the small
+note; it asks for the rest when the connection is back. The token is unchanged: it still shows only this dashboard.
 
 ## Email snapshots
 

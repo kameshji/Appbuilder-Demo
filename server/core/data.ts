@@ -34,6 +34,8 @@ import { childRelationships, MAX_CASCADE_DEPTH, selfCycleColumns } from './model
 import type { RowScope } from './contracts.ts'
 import { createRecycle, deleteSourceOf, newBatch } from './recycle.ts'
 import type { BatchCtx, BatchInfo, DeleteSource, Effect, RecycleStore, RestoreResult } from './recycle.ts'
+import type { Balances, Ledger } from './balances/engine.ts'
+import { maintainedColumns } from './balances/engine.ts'
 
 type JsonRow = Record<string, QueryValue>
 type Cell = RawRow[string]
@@ -66,6 +68,8 @@ export interface DataDeps {
   system?: () => SystemDataHooks | null
   /** recycle bin (recycle.ts): the batch store of the system database; absent / null: every delete is final */
   recycle?: () => RecycleStore | null
+  /** synchronous balances (balances/engine.ts, P3-P): absent / null without the database */
+  balances?: () => Balances | null
 }
 
 /** extra helpers for the attachment routes (same module boundary as the service) */
@@ -256,6 +260,29 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     return h ? h.unit(physical(table), fn) : fn()
   }
 
+  /* ---------------------------------------------------------------- synchronous balances (balances/engine.ts) */
+
+  /** the balances this table's rows move (it is their movements table), or [] */
+  async function ledgersOf(def: TableDef): Promise<Ledger[]> {
+    const b = deps.balances?.()
+    return b ? b.sources(def) : []
+  }
+
+  /** applies the difference of the movement rows before / after a change to their balances (same unit of work) */
+  async function moveBalances(ledgers: Ledger[], before: RawRow[], after: RawRow[]): Promise<void> {
+    const b = deps.balances?.()
+    if (!b || !ledgers.length || (!before.length && !after.length)) return
+    for (const c of await b.apply(ledgers, before, after)) {
+      changed(null, c.table, c.op, [c.rowId], [c.column])
+      await deps.hooks?.()?.outbox(null, c.table, { op: c.op, rowId: c.rowId, changed: [c.column], before: c.before, after: c.after })
+    }
+  }
+
+  /** a balance table's rows are kept by the platform: users never add, import or delete them */
+  function refuseBalanceWrite(ctx: UserContext | null, def: TableDef): void {
+    if (ctx && def.balance) throw new HttpError(403, 'denied', `The rows of "${def.displayName || def.name}" are kept by the platform from the movements in ${def.balance.movements}: record a movement instead.`)
+  }
+
   async function audit(ctx: UserContext | null, action: string, table: TableDef, rowId?: string, details?: unknown) {
     try {
       await meta().audit({ userId: ctx?.user.id ?? null, action, tableId: table.id, rowId, details })
@@ -440,6 +467,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
       }
       if (col.computed) continue // formula and rollup columns: the server calculates them, values sent are ignored
       if (col.type === 'autonumber' && !(opts.preserve && !ctx)) continue // server-assigned
+      if (ctx && def.balance && maintainedColumns(def).has(col.name)) continue // a balance: kept by the platform
       writableColumn(ctx, def, col)
       raw[col.name] = coerceIn(col, v)
     }
@@ -551,9 +579,11 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     const def = physical(table)
     checkWritableTable(def)
     if (ctx && !ctx.canCreate(def)) throw cannotCreate(def)
+    refuseBalanceWrite(ctx, def)
     const connector = await writableConnector(def)
     const raw = await buildRow(ctx, def, values, { ...opts, conn: connector })
     await connector.insert(def, [raw])
+    await moveBalances(await ledgersOf(def), [], [raw])
     await deps.system?.()?.afterWrite(ctx, def, 'create', raw, null)
     await markFileModified(def)
     await audit(ctx, 'row.insert', def, String(raw.id))
@@ -582,6 +612,9 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     const hooks = deps.hooks?.()
     // read-modify-write of formula columns and before-events: concurrent saves of one row run one after another
     if (hooks) await hooks.lockRow(def, id)
+    // a movement of a balance: locked and read before the change (its old quantity and key leave the balance)
+    const ledgers = await ledgersOf(def)
+    const balBefore = ledgers.length ? await deps.balances!()!.lock(def, ledgers, [id]) : []
     const existing = await findRow(def, id)
     const readable = async () => (ctx ? (await findRow(def, id, ctx.rowPredicate(def, 'read'))) !== null : existing !== null)
     if (!existing) throw new HttpError(404, 'not-found', 'Row not found.')
@@ -601,6 +634,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
       if (isSystem(col)) continue // never writable by clients: ignored
       if (col.computed) continue // calculated by the server: ignored
       if (col.type === 'autonumber' && ctx) continue
+      if (ctx && def.balance && maintainedColumns(def).has(col.name)) continue // a balance: kept by the platform
       writableColumn(ctx, def, col)
       raw[col.name] = coerceIn(col, v)
     }
@@ -663,6 +697,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
       }
       throw (await readable()) ? new HttpError(403, 'denied', 'You are not allowed to change this row.') : new HttpError(404, 'not-found', 'Row not found.')
     }
+    if (ledgers.length) await moveBalances(ledgers, balBefore, await deps.balances!()!.read(def, ledgers, [id]))
     if (removed.length) {
       const recs = (await meta().attachments.many(removed)).filter((a) => a.tableId === def.id && a.rowId === id)
       await removeAttachments(recs)
@@ -778,6 +813,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     if (!Array.isArray(idsIn) || !idsIn.every((x) => typeof x === 'string')) throw new HttpError(422, 'invalid', 'ids must be a list of row ids.')
     const ids = [...new Set(idsIn.filter((x) => x && x.length <= 64))]
     if (!ids.length) return 0
+    refuseBalanceWrite(ctx, def)
     const connector = await writableConnector(def)
     // recycle bin: the first table of the delete decides (its setting on: one batch for the whole operation; its
     // setting off: every row goes for good, as before). Cascaded tables keep their rows when they have a bin too.
@@ -800,6 +836,9 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     } else {
       targets = await matchingIds(connector, def, ids, undefined)
     }
+    // movements of a balance: locked before the delete; the rows that are gone afterwards leave the balance
+    const ledgers = targets.length ? await ledgersOf(def) : []
+    const balBefore = ledgers.length ? await deps.balances!()!.lock(def, ledgers, targets) : []
     // before-delete events (they may Reject); single deletes keep the whole row for the outbox and the after-events
     const hooks = deps.hooks?.()
     const keep: RawRow[] = []
@@ -836,6 +875,10 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
       if (targets.length) await deps.system?.()?.afterDelete(def, targets)
     }
     if (total === 0 && ids.length === 1) throw new HttpError(404, 'not-found', 'Row not found.')
+    if (ledgers.length && total > 0) {
+      const left = new Set((await deps.balances!()!.read(def, ledgers, targets)).map((r) => String(r.id)))
+      await moveBalances(ledgers, balBefore.filter((r) => !left.has(String(r.id))), [])
+    }
     if (total > 0) {
       await markFileModified(def)
       const b = batch && soft ? { batch: batch.id } : {}
@@ -859,6 +902,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     if (typeof csv !== 'string') throw new HttpError(422, 'invalid', 'csv must be text.', 'csv')
     if (mode !== 'append' && mode !== 'replace') throw new HttpError(422, 'invalid', "mode must be 'append' or 'replace'.", 'mode')
     if (ctx && !ctx.canCreate(def)) throw cannotCreate(def)
+    refuseBalanceWrite(ctx, def)
     const parsed = Papa.parse<Record<string, string>>(csv.replace(/^﻿/, ''), { header: true, skipEmptyLines: 'greedy' })
     const headers = parsed.meta.fields ?? []
     // header -> column (by name, then display name; case-insensitive). Unknown, system, hidden, read-only columns are ignored.
@@ -939,8 +983,15 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
       } else if (targets.length) await c.delete(def, targets, guard)
       if (rows.length) await c.insert(def, rows)
     }
+    // movements of a balance: the replaced rows are locked first; one balance step for the whole import
+    const ledgers = await ledgersOf(def)
+    const balBefore = ledgers.length && targets.length ? await deps.balances!()!.lock(def, ledgers, targets) : []
     if (connector.capabilities.transactions && connector.transaction) await connector.transaction(write)
     else await write(connector)
+    if (ledgers.length) {
+      const left = new Set(targets.length ? (await deps.balances!()!.read(def, ledgers, targets)).map((r) => String(r.id)) : [])
+      await moveBalances(ledgers, balBefore.filter((r) => !left.has(String(r.id))), rows)
+    }
     if (targets.length && bin) {
       const gone = bin.rootIds
       if (gone.length && def.sharing) for (const sh of await deps.recycle!()!.takeShares(def.id, gone)) bin.effects.push({ kind: 'share', tableId: def.id, rowId: sh.rowId, old: sh.row })
@@ -1178,7 +1229,14 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     rowOut: (ctx, t, r) => rowOut(ctx, t, r),
     updateAsSystem: async (t, id, changes) => { await update(null, t, id, changes) },
     audit, removeAttachments, log: deps.log,
-    outbox: async (ctx, t, e) => { await deps.hooks?.()?.outbox(ctx, t, e) },
+    outbox: async (ctx, t, e) => {
+      // a restore brings movements of a balance back: their quantities count again (refused below the floor)
+      if ((e.details as { action?: string } | undefined)?.action === 'restore' && e.rowIds.length) {
+        const ledgers = await ledgersOf(physical(t))
+        if (ledgers.length) await moveBalances(ledgers, [], await deps.balances!()!.read(physical(t), ledgers, e.rowIds))
+      }
+      await deps.hooks?.()?.outbox(ctx, t, e)
+    },
     changed: (ctx, t, ids) => changed(ctx, t, 'insert', ids, []),
   })
 

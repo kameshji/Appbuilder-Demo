@@ -65,11 +65,21 @@ On `SIGTERM` the install stops accepting connections, closes idle ones, closes t
 
 ## Read-only
 
-One state with a reason: `suspended` (by the operator), `payment` (unpaid), `maintenance`, `licence` (later: the licence
-could not be verified for more than 3 days). Set it with `appbuilder read-only on --reason suspended [--message "..."]`
+One state with a reason: `suspended` (by the operator), `payment` (unpaid), `maintenance`, `licence` (the licence
+could not be verified for more than 3 days; set by the licence client, see [Licensing](licensing.md)). Set it with `appbuilder read-only on --reason suspended [--message "..."]`
 (applied by a running server within 5 seconds, no restart), end it with `appbuilder read-only off`, see it with
 `appbuilder read-only status`. Writes are refused, reads, sign-in and exports work; the details are in
 [Operations](operations.md#read-only-installs).
+
+## Licence
+
+Every hosted install gets `APPBUILDER_LICENCE_URL=https://licence.<domain>`, `APPBUILDER_LICENCE_ID` and
+`APPBUILDER_LICENCE_KEY_FILE` (an install key from `licence-service key issue <org>`, in a file readable only by the
+install's user). The install checks at start and every 6 hours and sends only its seat counts. The licence service runs
+on the same server as its own process and database (`node server/licence-service/main.ts serve`, behind Caddy as
+`licence.<domain>` with `APPBUILDER_LICENCE_TRUST_PROXY=1`); the commands, the grace and what it does not resist are in
+[Licensing](licensing.md). A licence that becomes unpaid or suspended in the licence service makes the install read-only
+with that reason (`payment` / `suspended`) after the notice; `appbuilder read-only on` stays the immediate switch.
 
 ## Cookies
 
@@ -100,5 +110,5 @@ The fleet's mail relay: hosted installs refuse loopback and private addresses, s
 ## Not part of this yet
 
 The fleet tool (`abfleet`), the systemd template unit, the Caddy site template, per-install OS users, database roles with
-their REVOKEs and limits, the licence service: later packages of the hosting phase. Listening on a Unix socket, the socket's
+their REVOKEs and limits, later packages of the hosting phase. (The licence service exists: [Licensing](licensing.md).) Listening on a Unix socket, the socket's
 permissions and the clean stop are tested on Linux (continuous integration); on Windows only the TCP variant runs.

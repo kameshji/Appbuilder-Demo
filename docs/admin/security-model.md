@@ -25,6 +25,8 @@ Two-step verification (TOTP or email codes) exists. The product has had no outsi
 | --- | --- | --- |
 | Who is signed in | **Server** (session cookie, checked on every request) | `server/core/auth.ts`, `router.ts` |
 | Maker or Administrator needed for an action | **Server** (route level `auth: 'maker' / 'admin'`) | `server/core/router.ts` |
+| Seat pass: an Operator pass has no Dev mode (no maker routes, design routes or `pass: 'full'` routes, also for administrators) | **Server** (session resolver and router) | `server/core/licence/seats.ts`, `router.ts` |
+| Licence: read-only after 72 hours without a valid signed answer, or when the licence service reports unpaid / suspended | **Server** (the read-only gate) | `server/core/licence/client.ts`, `hosting/read-only.ts` |
 | Table privileges, row filters, own-row scope, column access | **Server**, in the data service and the SQL it builds | `server/core/security.ts`, `data.ts`, `attachments.ts` |
 | Which apps a person may open | **Server** (`GET /apps/:id`) | `server/routes/meta/apps.ts` |
 | Hiding buttons, menus and pages the person cannot use; blocking obviously invalid input early | **Browser** (a convenience mirror) | `src/portal/security.ts`, `src/runtime` |
@@ -583,6 +585,10 @@ beyond their role. Web pages the user visits are not trusted.
 
 ## Explicit limitations
 
+- **Licensing is not tamper-proof.** The licence answer is signed (Ed25519) and checked for replay, organisation, install
+  and clock rollback, but whoever controls the server machine of an on-premises install can change the program, remove
+  the licence settings (the install then runs unlicensed) or edit the stored time of the last answer. Accepted: the
+  licence is backed by the contract ([Licensing](licensing.md)). Only seat counts are sent to the licence service.
 - One server process on one machine; no multi-server, high-availability or multi-tenant use (one organisation per
   install; the multi-tenant cloud of D46 does not exist yet). Network and internet access only through the HTTPS reverse
   proxy the installers set up (`--https lan` / `--https domain`) or your own; with `--https domain` the sign-in page is

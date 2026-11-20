@@ -1,11 +1,12 @@
 /**
  * Drill-through from a tile to an app (P2-C), pure: no React, DOM or packages; shared-code rules. The only start-parameter
  * mechanism the app runtime has is the address: `#u-<appId>?name=value`, read inside the app with Param("name")
- * (src/runtime/evaluator.ts). Opening a particular SCREEN from an address does not exist, so a drill target is an app
- * plus the values to pass. docs/dev/dashboards.md ("Drill-through").
+ * (src/runtime/evaluator.ts). Since P3-D the reserved parameter `screen` names the screen to open
+ * (`#u-<appId>?screen=<name>&name=value`; src/runtime/startparams.ts reads it, an unknown name opens the start screen).
+ * A drill target is an app, optionally a screen of it, plus the values to pass. docs/dev/dashboards.md ("Drill-through").
  */
 import type { TileDef, TileDrill } from './types.ts'
-import { MAX_DRILL_PARAMS } from './types.ts'
+import { DRILL_SCREEN_PARAM, MAX_DRILL_PARAMS } from './types.ts'
 
 /** a value the clicked row can hand to the app */
 export interface DrillField { field: string; label: string }
@@ -26,6 +27,7 @@ export function paramNameOf(field: string): string {
   if (field === '__bucket') return 'date'
   let n = field.replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 41)
   if (!/^[A-Za-z_]/.test(n)) n = `p${n}`.slice(0, 41)
+  if (n.toLowerCase() === DRILL_SCREEN_PARAM) n = `${n}_value` // "screen" is the address's word for the screen to open
   return n
 }
 
@@ -61,16 +63,24 @@ export function drillValues(drill: TileDrill, row: Record<string, unknown> | und
   return out
 }
 
-/** the address that opens the app with the clicked values: `#u-<appId>` or `#u-<appId>?Machine=Press+1&date=2026-03-01` */
+const enc = (s: string) => encodeURIComponent(s).replace(/%20/g, '+')
+
+/**
+ * The address that opens the app with the clicked values: `#u-<appId>`, `#u-<appId>?Machine=Press+1&date=2026-03-01`, and
+ * with a screen `#u-<appId>?screen=Machine+detail&Machine=Press+1`. `screen` is always the first parameter and is never
+ * also a value (a value cannot be named "screen": checkDashboardDef refuses it, and it is skipped here for a hand-made drill).
+ */
 export function drillHash(drill: TileDrill, row?: Record<string, unknown>): string {
-  const vals = drillValues(drill, row)
-  const q = vals.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v).replace(/%20/g, '+')}`).join('&')
-  return `#u-${drill.appId}${q ? `?${q}` : ''}`
+  const parts: string[] = []
+  if (drill.screen && drill.screen.trim()) parts.push(`${DRILL_SCREEN_PARAM}=${enc(drill.screen.trim())}`)
+  for (const [k, v] of drillValues(drill, row)) if (k.toLowerCase() !== DRILL_SCREEN_PARAM) parts.push(`${enc(k)}=${enc(v)}`)
+  return `#u-${drill.appId}${parts.length ? `?${parts.join('&')}` : ''}`
 }
 
 /** the target in words, for the tile editor */
 export function describeDrill(drill: TileDrill, appName: string, labelOf: (field: string) => string = (f) => f): string {
   const ps = drill.params ?? []
-  if (!ps.length) return `Clicking opens ${appName}.`
-  return `Clicking opens ${appName} and passes ${ps.map((p) => `${labelOf(p.field)} as ${p.name}`).join(', ')}; the app reads them with Param("${ps[0]!.name}").`
+  const where = drill.screen ? `the screen "${drill.screen}" of ${appName}` : appName
+  if (!ps.length) return `Clicking opens ${where}.`
+  return `Clicking opens ${where} and passes ${ps.map((p) => `${labelOf(p.field)} as ${p.name}`).join(', ')}; the app reads them with Param("${ps[0]!.name}").`
 }

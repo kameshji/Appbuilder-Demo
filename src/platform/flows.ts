@@ -45,9 +45,30 @@ export type Trigger =
   | { type: 'webhook'; secretRef?: string }
   /** P1-C: an approval request was decided (approved, rejected, a custom answer, expired or cancelled); policy: only requests of that policy (name or id); outcomes: only these statuses */
   | { type: 'approvalDecided'; policy?: string; statuses?: ('approved' | 'rejected' | 'completed' | 'expired' | 'cancelled')[] }
-  | { type: 'formSubmitted' }
+  /**
+   * P3-D: a Form of an app was submitted and its row write succeeded. `app` is the app's id or name, `form` the name of the
+   * Form UI component; `on` (default create and update) picks new-row and / or edit-row submits. The run is started by
+   * the server from the committed write (docs/dev/flows.md "The formSubmitted trigger"); it runs for the submitter.
+   */
+  | { type: 'formSubmitted'; app: string; form: string; on?: ('create' | 'update')[] }
 
 export type TriggerType = Trigger['type']
+
+/**
+ * P3-D: the Form a row write is the submit of. The running app wraps the Form's own write in `withFormSubmit`; the
+ * platform's row write (remote.ts, and the offline outbox for queued writes) sends it as `form` next to `values` /
+ * `changes`. It is only a CLAIM: the server starts a flow from it only after checking it against the committed write.
+ */
+export interface FormIdentity { app: string; form: string }
+let submitting: FormIdentity | null = null
+/** runs `fn` (a synchronous row write) as the submit of a Form */
+export function withFormSubmit<T>(id: FormIdentity | null, fn: () => T): T {
+  const before = submitting
+  submitting = id
+  try { return fn() } finally { submitting = before }
+}
+/** the Form whose submit is writing right now, or null */
+export const currentFormSubmit = (): FormIdentity | null => submitting
 
 /* ------------------------------------------------------------------ steps */
 
@@ -475,7 +496,16 @@ export const TRIGGER_TYPES: readonly TriggerTypeDoc[] = [
     fields: [{ name: 'policy', type: 'text', doc: 'Only requests of this approval policy (name or id).' }, { name: 'statuses', type: '("approved" | "rejected" | "completed" | "expired" | "cancelled")[]', doc: 'Only these endings (default all).' }],
     scope: 'Trigger.Request (Id, Title, Status, Outcome, RequestedBy, Policy, RegardingTable, RegardingId, CompletedOn, Fields), Trigger.Responses', guarantee: 'One run per decided request and flow (trigger key appr:<flow>:<request>).',
   },
-  { type: 'formSubmitted', title: 'When a form is submitted (reserved)', summary: 'Reserved for a later release.', fields: [], scope: '-', guarantee: '-', reserved: true },
+  {
+    type: 'formSubmitted', title: 'When a form is submitted', summary: 'Starts a run when a person submits a Form of an app and the row is saved; the run acts for that person (P3-D).',
+    fields: [
+      { name: 'app', type: 'text', required: true, doc: 'The app (its name or id).' },
+      { name: 'form', type: 'text', required: true, doc: 'The name of the Form UI component in the app.' },
+      { name: 'on', type: '("create" | "update")[]', doc: 'New rows and / or edited rows (default both).' },
+    ],
+    scope: 'Trigger.Record (the saved row), Trigger.Operation ("create" or "update"), Trigger.Table, Trigger.App, Trigger.Screen, Trigger.Form, Trigger.User (the submitter), Trigger.SubmittedOn',
+    guarantee: 'One run per submit and flow, also when the submit was saved offline and sent later (trigger key form:<flow>:<submitter>:<idempotency key>). Started only from a row write the server committed for that person, never from a bare claim.',
+  },
 ]
 
 export const CONTAINER_KINDS: readonly StepKind[] = ['condition', 'switch', 'forEach', 'until', 'scope']

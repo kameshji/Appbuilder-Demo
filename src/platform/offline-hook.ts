@@ -18,6 +18,7 @@ import type { ConditionV2, QueryPlan, QueryV2Response } from './query'
 import { resultTypes, rowsFromWire } from './query-wire'
 import { schemaInfoOf } from './query-local'
 import { executePlan } from '../fx/query/reference.ts'
+import type { FormIdentity } from './flows'
 
 export interface QueuedWrite {
   kind: 'create' | 'update' | 'upload'
@@ -31,6 +32,8 @@ export interface QueuedWrite {
   column?: string
   file?: Blob
   fileName?: string
+  /** P3-D: the Form this write is the submit of (the server raises that form's formSubmitted flows from the committed write) */
+  form?: FormIdentity
 }
 
 export interface QueueCallbacks {

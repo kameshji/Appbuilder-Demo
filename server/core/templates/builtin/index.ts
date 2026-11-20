@@ -15,6 +15,8 @@ export const BUILTIN_TEMPLATE_FILES: { file: string; url: URL }[] = [
   { file: 'visitor-log.json', url: new URL('./visitor-log.json', import.meta.url) },
   // P3-M2: the manufacturing pack
   { file: 'manufacturing.json', url: new URL('./manufacturing.json', import.meta.url) },
+  { file: 'crm.json', url: new URL('./crm.json', import.meta.url) },
+  { file: 'erp-lite.json', url: new URL('./erp-lite.json', import.meta.url) },
 ]
 
 export const BUILTIN_MANIFEST_URL = new URL('./manifest.json', import.meta.url)

@@ -14,6 +14,7 @@ import { Empty, PageHeader, fmtRelative, useToast } from './kit'
 import { matches, useSearch } from './Shell'
 import { canRun, closeAppTab, openAppTab, openAppWindow, useWorkspace } from './workspace'
 import { PinnedTiles } from './dashboards/PinnedTiles'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ShareToChatButton } from '@/chat/share'
 
 /* ------------------------------------------------------------------ helpers */
@@ -345,7 +346,7 @@ export function AppTabPanes({ activeId }: { activeId: string | null }) {
     <>
       {tabs.map((id) => (
         <div key={id} role="tabpanel" data-testid={`tab-pane-${id}`} aria-hidden={id !== activeId} className={cn('absolute inset-0', id === activeId ? 'block' : 'hidden')}>
-          <RunApp appId={id} embedded onBack={() => go({ page: 'u' })} />
+          <ErrorBoundary scope={`app-tab:${id}`} resetKeys={[activeId]}><RunApp appId={id} embedded onBack={() => go({ page: 'u' })} /></ErrorBoundary>
         </div>
       ))}
     </>

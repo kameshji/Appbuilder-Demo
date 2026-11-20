@@ -790,3 +790,21 @@ table rebuilds its indexes (1,000,000 rows: 17 s); deleted rows take space until
 **Decision.** `scripts/exit-check/h-isolation.mjs` starts three installs of this tree with database roles prepared as the fleet tool will, a host-routing proxy and a test-only DNS shim, and tries every cross-organisation route; negative controls prove it detects PostgreSQL's default grants and the on-premises outbound policy. Calls from one install to a sibling's public name are refused through `APPBUILDER_OUTBOUND_DENY`. External database connections check their host at every use, and a host resolving to a refused address is not stored.
 
 **Consequences.** File permissions between installs, systemd limits, real TLS and Caddy need a Linux server and are not covered. A DNS answer changing between the check and the driver's own lookup remains a residual risk (as in the Phase 0 review). Details: `docs/dev/hosting.md`.
+
+## D60. Stock that cannot go negative is a table-level balance, not a rollup (P3 package P, Nov 2026)
+
+**Decision.** A `balance` declaration on a table keeps the running sum of another table's rows, keyed by column values (item + location), updated inside the movement's transaction under a per-key advisory lock and a row lock at READ COMMITTED, and refuses a change below the floor with a plain message. Proven by 20 parallel issues of the last 10 units. It lives in the table definition (no schema step) and is packs-only for now. ERP-lite's receipt and delivery lines are stock movements; its invoices are commercial documents with no tax until the GST gate opens. The CRM pack computes no tax either.
+
+**Consequences.** Both tables must be in the default database; writes made outside the platform are not seen (a reconcile function exists, no job calls it yet). Details: `docs/dev/balances.md`.
+
+## D61. Licence answers are signed and bound to the request; grace runs on the install's clock with a high-water mark (hosting H-G, H-H, Nov 2026)
+
+**Decision.** The licence answer is Ed25519-signed by a key pair separate from the release key and checked against the request's nonce, licence id and install id. Grace is 72 hours on the install's own clock from when the last valid answer arrived; a stored high-water mark makes a clock set back by more than 5 minutes count as expired until a fresh answer. Unpaid, suspended and duplicate answers drive the shared read-only gate with their own reason; a refused key does not renew the grace; an unlicensed install works as before. Passes are stored in user settings (no schema change): an Operator is refused maker and design routes on the server; everyone starts as Full user; over-seat means 14 days of warnings, then no new assignments, never lockouts.
+
+**Consequences.** Not tamper-proof against whoever runs an on-premises server: accepted, backed by the contract. Details: `docs/dev/licensing.md`, `docs/admin/licensing.md`.
+
+## D62. Form-submitted trigger is a claim verified against the committed write; error boundaries per UI component (P3 package D, Nov 2026)
+
+**Decision.** The form's identity travels in the row write body (so the offline outbox replays it unchanged); the server treats it as a claim and starts a flow only for a committed write by someone who may run the app, on that form's table, exactly once per idempotency key, acting on behalf of the submitter. Kiosk cycling uses only the existing range presets and client-side pages, so a token's reach does not widen. Error boundaries wrap pages, app tabs, the Studio, the chat dock, dashboard tiles and each UI component (about 6 microseconds each, measured by a render benchmark).
+
+**Consequences.** A crash between commit and the listener on a write without an idempotency key loses the trigger. Render errors go to the console only.

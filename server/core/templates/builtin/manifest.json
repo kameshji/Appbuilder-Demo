@@ -42,6 +42,18 @@
       "id": "builtin.manufacturing",
       "version": "1.0.0",
       "sha256": "f74ccb3067b70398e302c4a187e39e0dbbbb590121b3737e6203f44b1dadbad0"
+    },
+    {
+      "file": "crm.json",
+      "id": "builtin.crm",
+      "version": "1.0.0",
+      "sha256": "f79647946e0af04030dad79437cc93ec9c7474d367d054ca325bca311cd1fa6a"
+    },
+    {
+      "file": "erp-lite.json",
+      "id": "builtin.erp-lite",
+      "version": "1.0.0",
+      "sha256": "8cf32e3c14733d5f0a75093493579f608baa77910bb518e1ae4fc9c9e802b5ff"
     }
   ]
 }
