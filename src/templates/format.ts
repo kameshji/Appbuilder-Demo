@@ -28,7 +28,7 @@ import type { AppDef, ControlNode } from '../contracts.ts'
 import type { AccessScope, ColumnDef, ColumnType } from '../platform/contracts.ts'
 import type { TableEventInput } from '../platform/events.ts'
 import type { DeleteBehaviour } from '../model/types.ts'
-import { IDENT } from '../model/names.ts'
+import { IDENT, SYSTEM_COLUMN_NAMES } from '../model/names.ts'
 
 export const TEMPLATE_FORMAT = 'appbuilder/template'
 /** the newest package format this Appbuilder reads (1 stays valid) */
@@ -474,6 +474,9 @@ export function validateTemplate(raw: unknown): string[] {
     for (const c of s.columns) {
       if (!isObj(c) || typeof c.id !== 'string' || !IDENT.test(c.id)) { p.push(`Slot ${s.id}: a column needs an identifier "id".`); continue }
       if (colIds.has(c.id.toLowerCase())) p.push(`Slot ${s.id}: the column "${c.id}" is declared twice.`)
+      // every table has the system columns (src/model/names.ts); a column of the same name (in any case) cannot be created
+      const cid = String(c.id)
+      if (SYSTEM_COLUMN_NAMES.some((n) => n.toLowerCase() === cid.toLowerCase())) p.push(`${s.id}.${cid}: "${cid}" is the name of a system column that every table has (${SYSTEM_COLUMN_NAMES.join(', ')}); give the column another id, such as ${s.id.replace(/s$/, '')}${cid[0].toUpperCase()}${cid.slice(1)}.`)
       colIds.add(c.id.toLowerCase())
       if (!Array.isArray(c.types) || !c.types.length || c.types.some((t) => !COLUMN_TYPES.includes(t as ColumnType))) p.push(`${s.id}.${c.id}: "types" lists column types.`)
       if (typeof c.required !== 'boolean') p.push(`${s.id}.${c.id}: "required" must be true or false.`)

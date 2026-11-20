@@ -2,8 +2,13 @@
  * Core data model UI components (P0 package N): the record timeline (activities, comments, files and record events in
  * one feed, with a composer), a person picker, a tag input and an activity list. Everything goes through
  * platform.collab (server: the collaboration API, secured by the regarding rule; demo: the browser workspace).
+ *
+ * P3 package E: the timeline's comments are the record's discussion (spec default 5). Editing one's own comment (an
+ * "edited" marker; no history is kept, as for chat messages), mentions limited to readers of the record in the
+ * composer and in the edit box, "Share to chat" for the record, a read marker for chat's Discussions list, an event for
+ * each approval answer, and an extension point for other modules' actions in the composer (addTimelineAction).
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   Bell, BellOff, CalendarClock, CheckSquare, FileText, History, ListTodo, Loader2, Mail, MessageSquare, Paperclip, Phone, Plus, StickyNote,
@@ -27,6 +32,8 @@ import { GenerateDocumentButton } from '@/print/GenerateDocument'
 import { recordIdOf, usePeopleNames } from './people'
 import { useDevice } from '@/phone/env'
 import { BottomSheet } from '@/phone/sheet'
+import { ShareToChatButton } from '@/chat/share'
+import { chatApi } from '@/chat/api'
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -60,6 +67,147 @@ export function composeBody(text: string, mentions: Map<string, string>): string
     if (html.includes(token)) html = html.split(token).join(`<span data-mention="${id}">@${esc(name)}</span>`)
   }
   return html.split(/\r?\n/).map((l) => `<p>${l}</p>`).join('')
+}
+
+const decode = (t: string) => t.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+
+/** a comment's rich text -> the edit box's plain text with @Name tokens, and the mentions it holds (name -> user id) */
+export function commentToText(html: string): { text: string; mentions: Map<string, string> } {
+  const mentions = new Map<string, string>()
+  let h = html.replace(/<span data-mention="([^"]+)">@?([^<]*)<\/span>/g, (_m, id: string, name: string) => {
+    mentions.set(decode(name), id)
+    return `@${name}`
+  })
+  h = h.replace(/<\/p>\s*<p>/g, '\n').replace(/<br\s*\/?>/g, '\n').replace(/<\/(li|div|h[1-6])>/g, '\n').replace(/<[^>]+>/g, '')
+  return { text: decode(h).replace(/\n{3,}/g, '\n\n').trim(), mentions }
+}
+
+/* ------------------------------------------------------------------ extension point: actions in the composer */
+
+/** another module's action in the timeline composer (Notes: "New note"); `run` gets the record and a reload */
+export interface TimelineAction {
+  id: string
+  label: string
+  icon?: typeof Plus
+  /** server mode only (default false) */
+  serverOnly?: boolean
+  run(o: { rowId: string; table?: string; reload(): void }): void | Promise<void>
+}
+const timelineActions: TimelineAction[] = []
+export function addTimelineAction(a: TimelineAction): () => void {
+  const i = timelineActions.findIndex((x) => x.id === a.id)
+  if (i >= 0) timelineActions.splice(i, 1, a)
+  else timelineActions.push(a)
+  return () => {
+    const j = timelineActions.indexOf(a)
+    if (j >= 0) timelineActions.splice(j, 1)
+  }
+}
+
+/* ------------------------------------------------------------------ a text box with the @mention picker (readers only) */
+
+function MentionBox({ rowId, table, value, onChange, mentions, placeholder, testId, onSubmit, onEscape, autoFocus = false, className }: {
+  rowId: string
+  table?: string
+  value: string
+  onChange(v: string): void
+  mentions: Map<string, string>
+  placeholder: string
+  testId: string
+  onSubmit(): void
+  onEscape?(): void
+  autoFocus?: boolean
+  className?: string
+}) {
+  const [mention, setMention] = useState<{ q: string; at: number } | null>(null)
+  const [people, setPeople] = useState<PersonOption[]>([])
+  const ta = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    if (!mention) return
+    let live = true
+    // the server answers only people who can read the record (a mention of anyone else is refused anyway)
+    platform.collab!.mentionable(rowId, mention.q, table).then((r) => live && setPeople(r)).catch(() => live && setPeople([]))
+    return () => { live = false }
+  }, [mention, rowId, table])
+  const change = (v: string, caret: number) => {
+    onChange(v)
+    const before = v.slice(0, caret)
+    const m = /(^|\s)@([\p{L}\p{N}._-]{0,30})$/u.exec(before)
+    setMention(m ? { q: m[2], at: caret - m[2].length - 1 } : null)
+  }
+  const pick = (p: PersonOption) => {
+    if (!mention) return
+    const next = `${value.slice(0, mention.at)}@${p.name} ${value.slice(mention.at + 1 + mention.q.length)}`
+    mentions.set(p.name, p.id)
+    onChange(next)
+    setMention(null)
+    ta.current?.focus()
+  }
+  return (
+    <div className="relative">
+      <Textarea
+        ref={ta}
+        value={value}
+        autoFocus={autoFocus}
+        placeholder={placeholder}
+        className={cn('min-h-[64px] resize-none text-sm', className)}
+        data-testid={testId}
+        onChange={(e) => change(e.target.value, e.target.selectionStart ?? e.target.value.length)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) onSubmit()
+          if (e.key === 'Escape') {
+            if (mention) setMention(null)
+            else onEscape?.()
+          }
+        }}
+      />
+      {mention && (
+        <div className="absolute left-2 top-full z-20 mt-1 w-72 rounded-md border bg-popover p-1 shadow-md" data-testid="mention-list">
+          {people.length === 0 ? (
+            <div className="p-2 text-xs text-muted-foreground">No match among the people who can see this record. Only they can be mentioned.</div>
+          ) : people.map((p) => (
+            <button key={p.id} type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent" onMouseDown={(e) => { e.preventDefault(); pick(p) }} data-testid={`mention-${p.id}`}>
+              <AvatarCircle src="" name={p.name} size="20px" />
+              <span className="truncate">{p.name}</span>
+              <span className="ml-auto truncate text-xs text-muted-foreground">{p.email}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** editing one's own comment: the same text box and mention rule; "edited" shows on the comment afterwards */
+function EditComment({ item, rowId, table, onDone }: { item: TimelineItem; rowId: string; table?: string; onDone(saved: boolean): void }) {
+  const start = useMemo(() => commentToText(String(item.data.Body ?? '')), [item.data.Body])
+  const [text, setText] = useState(start.text)
+  const mentions = useRef(new Map(start.mentions))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const save = async () => {
+    if (!text.trim()) return
+    setBusy(true)
+    setError('')
+    try {
+      await platform.collab!.editComment(item.id, composeBody(text.trim(), mentions.current))
+      onDone(true)
+    } catch (e) {
+      setError(errText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="mt-1 space-y-1.5" data-testid="timeline-edit">
+      <MentionBox rowId={rowId} table={table} value={text} onChange={setText} mentions={mentions.current} placeholder="Edit the comment" testId="timeline-edit-input" onSubmit={() => void save()} onEscape={() => onDone(false)} autoFocus />
+      <div className="flex items-center gap-1.5">
+        <Button size="sm" className="h-7" disabled={busy || !text.trim()} onClick={() => void save()} data-testid="timeline-edit-save">{busy ? <Loader2 className="size-3.5 animate-spin" /> : null}Save</Button>
+        <Button size="sm" variant="ghost" className="h-7" onClick={() => onDone(false)}>Cancel</Button>
+        <span className="truncate text-xs text-destructive">{error}</span>
+      </div>
+    </div>
+  )
 }
 
 /* ------------------------------------------------------------------ person picker (also used inside the timeline) */
@@ -177,8 +325,10 @@ const DESIGN_ITEMS: TimelineItem[] = [
   { kind: 'event', id: 'd4', at: new Date(Date.now() - 172_800_000).toISOString(), by: null, byName: 'Ravi Kumar', data: { action: 'created', columns: [] } },
 ]
 
-function TimelineEntry({ item, onToggle, onDelete }: { item: TimelineItem; onToggle(i: TimelineItem): void; onDelete(i: TimelineItem): void }) {
+function TimelineEntry({ item, onToggle, onDelete, rowId, table, onEdited }: { item: TimelineItem; onToggle(i: TimelineItem): void; onDelete(i: TimelineItem): void; rowId?: string; table?: string; onEdited?(): void }) {
   const who = item.byName ?? 'Someone'
+  const [editing, setEditing] = useState(false)
+  const meId = usePlatform((s) => s.session?.user.id ?? null)
   const head = (icon: ReactNode, text: ReactNode) => (
     <div className="flex items-center gap-2 text-xs text-muted-foreground">
       {icon}
@@ -188,14 +338,23 @@ function TimelineEntry({ item, onToggle, onDelete }: { item: TimelineItem; onTog
   )
   if (item.kind === 'comment') {
     const html = sanitizeRichText(String(item.data.Body ?? ''))
+    // editing: one's own comments only (the server's rule: about the record AND written by me)
+    const mine = !!meId && item.by === meId && item.data.canEdit === true
     return (
-      <div className="flex gap-2.5" data-testid="timeline-comment">
+      <div className="flex gap-2.5" data-testid="timeline-comment" data-id={item.id}>
         <AvatarCircle src="" name={who} size="28px" />
         <div className="min-w-0 flex-1">
-          {head(null, <><span className="font-medium text-foreground">{who}</span>{item.data.EditedOn ? ' (edited)' : ''}</>)}
-          <div className="ab-richtext mt-0.5 break-words text-sm [&_span[data-mention]]:rounded [&_span[data-mention]]:bg-primary/10 [&_span[data-mention]]:px-1 [&_span[data-mention]]:font-medium [&_span[data-mention]]:text-primary" dangerouslySetInnerHTML={{ __html: html }} />
-          {item.data.canEdit === true && (
-            <button type="button" className="mt-0.5 text-xs text-muted-foreground hover:text-destructive" onClick={() => onDelete(item)}>Delete</button>
+          {head(null, <><span className="font-medium text-foreground">{who}</span>{item.data.EditedOn ? <span data-testid="timeline-edited" title={new Date(String(item.data.EditedOn)).toLocaleString()}> (edited)</span> : ''}</>)}
+          {editing && rowId ? (
+            <EditComment item={item} rowId={rowId} table={table} onDone={(saved) => { setEditing(false); if (saved) onEdited?.() }} />
+          ) : (
+            <div className="ab-richtext mt-0.5 break-words text-sm [&_span[data-mention]]:rounded [&_span[data-mention]]:bg-primary/10 [&_span[data-mention]]:px-1 [&_span[data-mention]]:font-medium [&_span[data-mention]]:text-primary" dangerouslySetInnerHTML={{ __html: html }} data-testid="timeline-comment-body" />
+          )}
+          {!editing && (mine || item.data.canEdit === true) && (
+            <div className="mt-0.5 flex gap-3">
+              {mine && rowId && <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setEditing(true)} data-testid="timeline-edit-action">Edit</button>}
+              {item.data.canEdit === true && <button type="button" className="text-xs text-muted-foreground hover:text-destructive" onClick={() => onDelete(item)} data-testid="timeline-delete-action">Delete</button>}
+            </div>
           )}
         </div>
       </div>
@@ -211,7 +370,7 @@ function TimelineEntry({ item, onToggle, onDelete }: { item: TimelineItem; onTog
           {head(null, <><span className="font-medium text-foreground">{who}</span> added a {String(item.data.Type ?? 'task').toLowerCase()}{item.assignedName ? ` for ${item.assignedName}` : ''}</>)}
           <div className="mt-0.5 flex items-center gap-2 text-sm">
             {item.data.Type === 'Task' && <Checkbox checked={done} onCheckedChange={() => onToggle(item)} aria-label="Done" />}
-            <span className={cn('min-w-0 truncate', done && 'text-muted-foreground line-through')}>{String(item.data.Subject ?? '')}</span>
+            {item.data.Type === 'Note' ? <a href={`#u-notes?n=${encodeURIComponent(item.id)}`} className="min-w-0 truncate text-primary hover:underline">{String(item.data.Subject ?? '')}</a> : <span className={cn('min-w-0 truncate', done && 'text-muted-foreground line-through')}>{String(item.data.Subject ?? '')}</span>}
             {item.data.DueOn ? <Badge variant="outline" className="shrink-0 font-normal">due {due(String(item.data.DueOn))}</Badge> : null}
             {item.data.Status && !done ? <Badge variant="secondary" className="shrink-0 font-normal">{String(item.data.Status)}</Badge> : null}
           </div>
@@ -237,6 +396,26 @@ function TimelineEntry({ item, onToggle, onDelete }: { item: TimelineItem; onTog
     )
   }
   // P1-C: approval requests about this record (shown to those who may see the request)
+  // P3-E: one event per answer (who, what, when, comment), for viewers who may see the request
+  if (item.data.action === 'approval.answered') {
+    const what = String(item.data.what ?? 'responded')
+    const resp = String(item.data.response ?? '')
+    const comment = String(item.data.comment ?? '')
+    const link = <a className="text-primary underline-offset-2 hover:underline" href={`#u-approvals?id=${encodeURIComponent(String(item.data.approvalId))}`}>{String(item.data.title ?? '')}</a>
+    return (
+      <div className="flex gap-2.5" data-testid="timeline-approval-answer" data-response={resp} data-what={what}>
+        <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-muted"><CheckSquare className="size-3.5" /></span>
+        <div className="min-w-0 flex-1 pt-1.5">
+          {head(null, <>
+            <span className="font-medium text-foreground">{who}</span>{' '}
+            {what === 'info.requested' ? <>asked for more information on {link}</> : what === 'info.answered' ? <>added the information asked for on {link}</> : <>answered <span className="font-medium text-foreground">"{resp}"</span> on {link}{item.data.stage && Number(item.data.stage) > 1 ? ` (stage ${String(item.data.stage)})` : ''}</>}
+            {item.data.via === 'email' ? ' by email' : ''}
+          </>)}
+          {comment && <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-muted-foreground" data-testid="timeline-approval-comment">{comment}</p>}
+        </div>
+      </div>
+    )
+  }
   if (typeof item.data.action === 'string' && item.data.action.startsWith('approval.')) {
     const decided = item.data.action === 'approval.decided'
     const st = String(item.data.status ?? '')
@@ -263,34 +442,11 @@ function Composer({ rowId, table, onDone }: { rowId: string; table?: string; onD
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [mention, setMention] = useState<{ q: string; at: number } | null>(null)
-  const [people, setPeople] = useState<PersonOption[]>([])
   const mentions = useRef(new Map<string, string>())
-  const ta = useRef<HTMLTextAreaElement>(null)
   const [task, setTask] = useState<{ subject: string; due: string; assignee: PersonOption | null } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const server = usePlatform((s) => s.mode === 'server')
 
-  useEffect(() => {
-    if (!mention) return
-    let live = true
-    platform.collab!.mentionable(rowId, mention.q, table).then((r) => live && setPeople(r)).catch(() => live && setPeople([]))
-    return () => { live = false }
-  }, [mention, rowId, table])
-
-  const onChange = (v: string, caret: number) => {
-    setText(v)
-    const before = v.slice(0, caret)
-    const m = /(^|\s)@([\p{L}\p{N}._-]{0,30})$/u.exec(before)
-    setMention(m ? { q: m[2], at: caret - m[2].length - 1 } : null)
-  }
-  const pick = (p: PersonOption) => {
-    if (!mention) return
-    const next = `${text.slice(0, mention.at)}@${p.name} ${text.slice(mention.at + 1 + mention.q.length)}`
-    mentions.current.set(p.name, p.id)
-    setText(next)
-    setMention(null)
-    ta.current?.focus()
-  }
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true)
     setError('')
@@ -320,33 +476,7 @@ function Composer({ rowId, table, onDone }: { rowId: string; table?: string; onD
 
   return (
     <div className="space-y-2 border-b pb-3">
-      <div className="relative">
-        <Textarea
-          ref={ta}
-          value={text}
-          placeholder="Write a comment. Type @ to mention someone who can see this record."
-          className="min-h-[64px] resize-none text-sm"
-          data-testid="timeline-composer"
-          onChange={(e) => onChange(e.target.value, e.target.selectionStart ?? e.target.value.length)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) void send()
-            if (e.key === 'Escape') setMention(null)
-          }}
-        />
-        {mention && (
-          <div className="absolute left-2 top-full z-20 mt-1 w-72 rounded-md border bg-popover p-1 shadow-md" data-testid="mention-list">
-            {people.length === 0 ? (
-              <div className="p-2 text-xs text-muted-foreground">No match among the people who can see this record. Only they can be mentioned.</div>
-            ) : people.map((p) => (
-              <button key={p.id} type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent" onMouseDown={(e) => { e.preventDefault(); pick(p) }} data-testid={`mention-${p.id}`}>
-                <AvatarCircle src="" name={p.name} size="20px" />
-                <span className="truncate">{p.name}</span>
-                <span className="ml-auto truncate text-xs text-muted-foreground">{p.email}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      <MentionBox rowId={rowId} table={table} value={text} onChange={setText} mentions={mentions.current} placeholder="Write a comment. Type @ to mention someone who can see this record." testId="timeline-composer" onSubmit={() => void send()} />
       {task && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border p-2">
           <Input className="h-8 min-w-40 flex-1" placeholder="Task" value={task.subject} onChange={(e) => setTask({ ...task, subject: e.target.value })} data-testid="task-subject" autoFocus />
@@ -365,6 +495,10 @@ function Composer({ rowId, table, onDone }: { rowId: string; table?: string; onD
         <Button size="sm" variant="ghost" className="h-8" onClick={() => setTask(task ?? { subject: '', due: '', assignee: null })}><Plus className="size-3.5" />Task</Button>
         <Button size="sm" variant="ghost" className="h-8" onClick={() => fileRef.current?.click()}><Paperclip className="size-3.5" />File</Button>
         {platform.getState().mode === 'server' && <GenerateDocumentButton rowId={rowId} table={table} run={run} />}
+        {timelineActions.filter((a) => server || !a.serverOnly).map((a) => {
+          const Icon = a.icon ?? Plus
+          return <Button key={a.id} size="sm" variant="ghost" className="h-8" onClick={() => void run(async () => a.run({ rowId, table, reload: onDone }))} data-testid={`timeline-action-${a.id}`}><Icon className="size-3.5" />{a.label}</Button>
+        })}
         <input ref={fileRef} type="file" className="hidden" onChange={(e) => {
           const f = e.target.files?.[0]
           e.target.value = ''
@@ -426,6 +560,8 @@ export function useTimeline(rowId: string, table: string | undefined, pageSize: 
     setLoading(true)
     platform.collab!.timeline(rowId, { table, limit: pageSize }).then((p) => {
       if (n !== seq.current) return
+      // chat's Discussions list counts comments after my last read: this record's discussion is on screen now
+      if (p.following && platform.getState().mode === 'server') void chatApi.discussionRead(p.table, rowId).catch(() => {})
       setPage(p)
       setMore([])
       setCursor(p.nextCursor)
@@ -484,9 +620,10 @@ function RecordTimelineRender({ props, mode, setOutput }: ControlRenderProps) {
       <div className="flex items-center gap-2 border-b px-3 py-2">
         <History className="size-4 text-muted-foreground" />
         <span className="min-w-0 truncate text-sm font-medium">{toText(props.Title) || (page?.title ? `Timeline: ${page.title}` : 'Timeline')}</span>
+        {!design && t.page && <ShareToChatButton target={{ kind: 'record', table: t.page.table, row: rowId }} title={t.page.title || undefined} size="icon-sm" className="ml-auto h-7" />}
         {page && (
           <Button
-            size="sm" variant={page.following ? 'secondary' : 'ghost'} className="ml-auto h-7" disabled={design} data-testid="timeline-follow"
+            size="sm" variant={page.following ? 'secondary' : 'ghost'} className={cn('h-7', (design || !t.page) && 'ml-auto')} disabled={design} data-testid="timeline-follow"
             onClick={async () => { await platform.collab!.follow(rowId, !page.following, table).catch(() => {}); t.reload() }}
           >
             {page.following ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}{page.following ? 'Following' : 'Follow'}
@@ -503,7 +640,7 @@ function RecordTimelineRender({ props, mode, setOutput }: ControlRenderProps) {
           {page && (design ? <Tags rowId="" tags={page.tags} onDone={() => {}} /> : <Tags rowId={rowId} table={table} tags={page.tags} onDone={t.reload} />)}
           {showComposer && !design && t.page?.canComment && <Composer rowId={rowId} table={table} onDone={t.reload} />}
           {items.length === 0 && !t.loading && <div className="py-6 text-center text-sm text-muted-foreground">Nothing here yet.</div>}
-          {items.map((i) => <TimelineEntry key={`${i.kind}:${i.id}`} item={i} onToggle={toggle} onDelete={del} />)}
+          {items.map((i) => <TimelineEntry key={`${i.kind}:${i.id}`} item={i} onToggle={toggle} onDelete={del} rowId={design ? undefined : rowId} table={table} onEdited={t.reload} />)}
           {!design && t.cursor && <Button variant="ghost" size="sm" className="w-full" onClick={() => void t.loadMore()}>Show older</Button>}
           {t.loading && <div className="flex justify-center"><Loader2 className="size-4 animate-spin text-muted-foreground" /></div>}
         </div>

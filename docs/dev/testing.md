@@ -303,6 +303,49 @@ WhatsApp Cloud API (a mock of the Graph API; the shapes come from Meta's documen
 not a real mail provider (a fake SMTP relay), and their timings come from a developer PC with a sandbox database (`fsync` may be
 off), so they are **not production numbers**. `docs/dev/phone-test-script.md` is the manual script for real phones.
 
+## Isolation suite (hosting exit check 2)
+
+`node scripts/exit-check/h-isolation.mjs` (also `npx vitest run server/core/hosting/isolation`) starts three installs of
+this tree as separate processes (`node --import scripts/fleet/testing/dns-shim.mjs server/main.ts`), each with its own
+database and PostgreSQL role set up as the fleet tool will (no superuser, `CREATEDB` or `CREATEROLE`; `CONNECT` only to
+its own database; `PUBLIC` revoked there and on `postgres` / `template1`; `CONNECTION LIMIT 12` on role and database;
+`statement_timeout` 60 s), its own folder, workspace, secret key and locked `https://<key>.hb.test.invalid` address,
+hosted settings on and `APPBUILDER_OUTBOUND_DENY=*.hb.test.invalid`. They sit behind an in-process proxy on
+127.0.0.1:5300 that routes like the Caddy site template (exact host names, catch-all 404, canonical `Host`,
+`X-Forwarded-Host` removed, `X-Forwarded-For` replaced, `X-Forwarded-Proto: https`; no TLS). The DNS shim answers only
+for the test names (`*.hb.test.invalid` -> the server, `*.hb-dns.test.invalid` -> loopback, private, IPv6, metadata) and
+changes nothing in the product. Loopback canaries on 5310/5311 record any connection an outbound attempt makes.
+
+| File | What |
+| --- | --- |
+| `scripts/fleet/testing/fleet.mjs` | the fleet: PostgreSQL, roles, installs (seed-config, migrate, admin invite, start), proxy, canaries, cleanup (also on Ctrl-C) |
+| `scripts/fleet/testing/isolation.mjs` | the checks, the leak scan of every answer and of A's logs, the Markdown report |
+| `scripts/fleet/testing/dns-shim.mjs` | test-only DNS answers for the installs' processes |
+| `scripts/exit-check/h-isolation.mjs` | prints the table (also `.sandbox/hb/h-isolation.md`); exit 1 on any failed check, 2 when the fleet cannot start |
+| `server/core/hosting/isolation.integration.test.ts` | the same suite under vitest, one test per area plus the negative controls |
+
+PostgreSQL: `APPBUILDER_HB_ADMIN_DB=postgres://<superuser>:<pw>@host:port/postgres` for a cluster the suite may change
+(CI), otherwise a **private cluster** made with `initdb` / `pg_ctl` from `APPBUILDER_HB_PG_BIN` (default
+`.sandbox/pg/pgsql/bin`) on 127.0.0.1:`APPBUILDER_HB_PG_PORT` (5319), password authentication, removed afterwards. Not the
+shared sandbox cluster: revoking `CONNECT` on `postgres` / `template1` there breaks every other suite that creates
+databases through them. `APPBUILDER_HB_SHARED_CLUSTER=1` leaves those two grants alone (two checks then show "not run").
+Ports 5300-5319; 5174 and 5433 are refused. Everything is named `ab_hb_*` and removed; `HB_KEEP=1` keeps the folders.
+About 2.5 minutes on the development PC (start-up of three installs is most of it). On Linux the installs listen on Unix
+sockets; on Windows on TCP 127.0.0.1 (the socket check shows "not run"). A hard kill (not Ctrl-C) can leave install
+processes running; the next run stops a leftover private cluster in `.sandbox/hb`.
+
+Every check asserts the refusal and that nothing of B (marker row, administrator and user email, database password,
+secret key, folders, session, API key, view token, invitation) is in the answer; at the end A's console and log files are
+searched for B and for A's own secrets. Database and role names are not secrets: every role reads them in the catalogue
+(they are opaque `ab_hb_o<8>` ids). Negative controls, each must be detected: a database with PostgreSQL's default grants
+is reachable by A's role; `postgres` is reachable before the cluster preparation; the on-premises outbound policy reaches
+the loopback canary.
+
+Not covered here (a Linux server with systemd, one OS user per install and Caddy, later packages): file permissions between
+installs (every install here runs as the same OS user, so A's process could read B's folder), systemd CPU, memory and task
+limits, disk quotas, real TLS and Caddy's admin API and rate limits, the licence service, `abfleet` itself, an install
+restore of another install's archive through the CLI (H-F).
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push and pull request to `main`, on `ubuntu-latest` with Node 22.18 (the lowest version
@@ -319,6 +362,10 @@ allowed by `engines`, needed for native type stripping). Steps, in order:
    `APPBUILDER_TEST_MYSQL=mysql://abci:...@127.0.0.1:3306/appbuilder_test`. This runs the whole suite: unit tests, the docs staleness
    tests, the PostgreSQL integration tests and the MySQL connector tests (each skipped when its variable is unset).
 5. `npm run build`.
+
+A second job, **isolation**, runs the cross-instance isolation suite (below) with its own `postgres:16` container and that
+container's superuser in `APPBUILDER_HB_ADMIN_DB` (the suite creates roles and revokes `CONNECT` on `postgres` and
+`template1` from `PUBLIC`, which the `test` job must not see). The `test` job skips the suite.
 
 The credentials in the workflow are for the disposable service container only; never put real credentials in it. The screenshot
 script is not run in CI, and `npm run lint` is not part of the workflow yet. Not covered: a matrix over `postgres:15` and

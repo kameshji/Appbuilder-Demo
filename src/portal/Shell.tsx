@@ -19,6 +19,7 @@ import { modulesFor, moduleRoute, type ModuleEntry, type ShellMode } from './mod
 import { SoonBadge } from './ComingSoon'
 import { AppTabPanes, TabStrip } from './UserMode'
 import { LiveIndicator, NotificationBell } from './Notifications'
+import { QuickNoteButton } from '@/notes/QuickNote'
 
 /* ------------------------------------------------------------------ search context */
 
@@ -60,7 +61,7 @@ function activeNav(route: PortalRoute): string {
   if (route.page === 'printtemplate') return 'printtemplates'
   if (route.page === 'soon') return `soon-${route.id}`
   // built-in User mode pages light up their menu entry (#u-approvals -> Approvals); app tabs keep "My apps"
-  if (route.page === 'u') return 'id' in route ? ({ approvals: 'approvals', tasks: 'tasks', mentions: 'mentions', reports: 'myreports', dashboards: 'dashboards' } as Record<string, string>)[route.id] ?? 'u' : 'u'
+  if (route.page === 'u') return 'id' in route ? ({ approvals: 'approvals', tasks: 'tasks', mentions: 'mentions', reports: 'myreports', dashboards: 'dashboards', notes: 'notes' } as Record<string, string>)[route.id] ?? 'u' : 'u'
   if (route.page === 'admin') return 'admin'
   return route.page
 }
@@ -229,6 +230,7 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
           </Button>
           <LiveIndicator />
           {/* Power Platform order: notifications, chat, environment, account (last) */}
+          <QuickNoteButton />
           <NotificationBell />
           <div className="hidden items-center gap-2 md:flex"><ChatButton /><EnvironmentPicker /></div>
           <ProfileAvatar />

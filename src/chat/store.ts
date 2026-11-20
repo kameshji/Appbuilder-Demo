@@ -9,7 +9,9 @@ import { platform } from '@/platform'
 import { richTextToPlain } from '@/platform/system-tables'
 import { chatTopic, chatTypingTopic, CHAT_LIMITS, type ChatCardRef, type ChatCardView, type ChatConversation, type ChatFile, type ChatMessageView, type ChatPushMessage } from '@/platform/chat-protocol'
 import { ChatApiError, chatApi, errText, setLiveIdSource, type ChatMe } from './api'
-import { ChatSocket, type SocketState, type TopicMessage } from './socket'
+import { pageLiveClient } from '@/platform/remote-live'
+import type { LiveClient, LiveHandler } from '@/platform/live'
+import { socketStateOf, type SocketState } from './conn'
 import { composeBody, liveMentions, type MentionMap } from './format'
 import {
   applyChanges, applyHistory, applyPush, applyReplies, closeThread, emptyTimeline, findBySeq, openThread, patchMessage, toggleReaction, upsertMessage, type Timeline,
@@ -57,7 +59,14 @@ export const useChat = create<ChatState>(() => initial())
 const get = () => useChat.getState()
 const set = (p: Partial<ChatState> | ((s: ChatState) => Partial<ChatState>)) => useChat.setState(p)
 
-let sock: ChatSocket | null = null
+type TopicMessage = Parameters<LiveHandler>[0]
+
+/**
+ * the page's one live connection (src/platform/live.ts, made by remote-live.ts): chat subscribes its topics on it
+ * (install-wide, so they survive an environment switch); there is no second socket
+ */
+let sock: LiveClient | null = null
+let offStatus: (() => void) | null = null
 let offUser: (() => void) | null = null
 let topicOffs: (() => void)[] = []
 let hadOpen = false
@@ -113,20 +122,26 @@ export async function startChat(): Promise<void> {
     return
   }
   if (startedFor !== userId) return
+  sock = pageLiveClient()
+  if (!sock) {
+    startedFor = null
+    set({ status: 'unavailable', reason: 'Live updates are not available on this page.' })
+    return
+  }
   set({ me })
-  sock = new ChatSocket({ onSessionEnd: () => { resetChat() } })
   setLiveIdSource(() => sock?.connectionId() ?? null)
-  hadOpen = false
-  sock.onState((c) => {
-    set({ conn: c })
+  hadOpen = sock.status().state === 'open'
+  set({ conn: socketStateOf(sock.status()) })
+  offStatus = sock.onStatus((st) => {
+    const c = socketStateOf(st)
+    if (get().conn !== c) set({ conn: c })
     if (c === 'open') {
       // after a reconnect the counts may have moved while away (the conversation topics catch up by their seq)
       if (hadOpen) void loadList()
       hadOpen = true
     }
   })
-  offUser = sock.subscribe(`user:${me.id}`, onUser)
-  sock.start()
+  offUser = sock.subscribe(`user:${me.id}`, undefined, onUser)
   await loadList()
   set({ status: 'ready' })
   const p = pendingOpen
@@ -140,7 +155,11 @@ export function resetChat(): void {
   topicOffs = []
   offUser?.()
   offUser = null
-  sock?.stop()
+  offStatus?.()
+  offStatus = null
+  for (const w of cardWatch.values()) w.off()
+  cardWatch.clear()
+  // the connection is the page's: chat only leaves its topics
   sock = null
   startedFor = null
   buffers.clear()
@@ -242,8 +261,8 @@ function subscribeOpen(id: string) {
   unsubscribeOpen()
   if (!sock) return
   topicOffs = [
-    sock.subscribe(chatTopic(id), (m) => onTopic(id, m)),
-    sock.subscribe(chatTypingTopic(id), (m) => onTyping(id, m)),
+    sock.subscribe(chatTopic(id), undefined, (m) => onTopic(id, m)),
+    sock.subscribe(chatTypingTopic(id), undefined, (m) => onTyping(id, m)),
   ]
 }
 
@@ -324,9 +343,58 @@ export async function loadOlder(id: string): Promise<boolean> {
   }
 }
 
-/** scroll to a message: page back until it is loaded (top-level), or find it in its thread */
+/** loads the page around an old message (a deep link): never pages back through the whole conversation */
+export async function loadAround(id: string, seq: number): Promise<void> {
+  const key = `${id}:latest`
+  if (get().busy[key]) return
+  setBusy(key, true)
+  try {
+    const page = await chatApi.history(id, { around: seq, limit: CHAT_LIMITS.pageSize })
+    setTimeline(id, applyHistory(tl(id) ?? emptyTimeline(id), page, 'around'))
+    replayBuffer(id)
+  } catch (e) {
+    fail(e)
+  } finally {
+    setBusy(key, false)
+  }
+}
+
+/** pages forward from a window loaded around an old message */
+export async function loadNewer(id: string): Promise<boolean> {
+  const t = tl(id)
+  const key = `${id}:newer`
+  if (!t?.loaded || !t.hasNewer || !t.items.length || get().busy[key]) return false
+  setBusy(key, true)
+  try {
+    const page = await chatApi.history(id, { after: t.items[t.items.length - 1].seq, limit: CHAT_LIMITS.pageSize })
+    setTimeline(id, applyHistory(tl(id) ?? t, page, 'newer'))
+    return page.messages.length > 0
+  } catch (e) {
+    fail(e)
+    return false
+  } finally {
+    setBusy(key, false)
+  }
+}
+
+/** back to the newest messages (after reading an old one) */
+export async function jumpToLatest(id: string): Promise<void> {
+  set({ focus: null, atBottom: true })
+  await loadLatest(id)
+}
+
+/** a top-level message outside the loaded window? (older than it, or newer than a window around an old message) */
+function outsideWindow(t: Timeline, seq: number): boolean {
+  if (!t.items.length) return false
+  return (t.hasOlder && seq < t.items[0].seq) || (t.hasNewer && seq > t.items[t.items.length - 1].seq)
+}
+
+/**
+ * scroll to a message: in the loaded window, one page back when it is just above it, otherwise the page AROUND it
+ * (package E: a deep link to an old message does not page back 40 times); a reply opens its thread
+ */
 export async function focusOn(id: string, seq: number): Promise<void> {
-  for (let n = 0; n < 40; n++) {
+  for (let n = 0; n < 3; n++) {
     const t = tl(id)
     if (!t?.loaded) return
     const hit = findBySeq(t, seq)
@@ -340,9 +408,12 @@ export async function focusOn(id: string, seq: number): Promise<void> {
       return
     }
     if (seq <= t.purgedSeq) break
-    if (t.items.length && seq >= t.items[0].seq) break
-    if (!t.hasOlder) break
-    if (!(await loadOlder(id))) break
+    if (!outsideWindow(t, seq)) break
+    if (n === 0 && t.hasOlder && t.items.length && seq < t.items[0].seq && t.items[0].seq - seq <= CHAT_LIMITS.pageSize) {
+      if (!(await loadOlder(id))) break
+      continue
+    }
+    await loadAround(id, seq)
   }
   // not a top-level message in the history: a thread reply (its latest change is at or after its seq)
   try {
@@ -473,7 +544,8 @@ async function readNow(id: string): Promise<void> {
   if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
   const c = convOf(s, id)
   const t = s.timelines[id]
-  if (!c?.me || !t?.loaded) return
+  // a window around an old message is not the end of the conversation: reading it does not read everything
+  if (!c?.me || !t?.loaded || t.hasNewer) return
   const seq = Math.max(t.applied, 0)
   if (c.me.lastReadSeq >= seq && c.unread === 0 && c.mentions === 0) return
   set({ list: markReadLocal(get().list, id, seq) })
@@ -548,6 +620,8 @@ export async function sendMessage(channelId: string, input: SendInput): Promise<
   const body = composeBody(input.text, liveMentions(input.text, input.mentions))
   const p = createPending({ clientId: newClientId(), channelId, parentId: input.parentId, body, text: richTextToPlain(body), files: input.files, cards: input.cards })
   set((s) => ({ pending: [...s.pending, p] }))
+  // writing while an old message was shown: the new message is at the end, so the newest page comes back
+  if (!input.parentId && tl(channelId)?.hasNewer) void jumpToLatest(channelId)
   await deliver(p)
 }
 
@@ -669,10 +743,11 @@ export function clearNotice(): void {
 const cardRefs = new Map<string, { env: string; table: string | null }>()
 const cardWatch = new Map<string, { off: () => void; count: number }>()
 
-export const cardKey = (messageId: string, index: number) => `${messageId}:${index}`
+/** a card's answer is kept per message version (an approval card is edited when its request moves on) */
+export const cardKey = (messageId: string, index: number, version = 0) => `${messageId}:${index}:${version}`
 
-export async function resolveCard(messageId: string, index: number, ref: ChatCardRef): Promise<void> {
-  const key = cardKey(messageId, index)
+export async function resolveCard(messageId: string, index: number, ref: ChatCardRef, version = 0): Promise<void> {
+  const key = cardKey(messageId, index, version)
   const cur = get().cards[key]
   if (cur === 'loading') return
   cardRefs.set(key, { env: ref.env, table: ref.kind === 'record' ? ref.table : null })
@@ -692,7 +767,7 @@ export function watchCardTable(env: string, table: string): () => void {
   if (cur) {
     cur.count++
   } else if (sock) {
-    const off = sock.subscribe(`table:${table}`, (m) => {
+    const off = sock.subscribe(`table:${table}`, env, (m) => {
       if (m.t !== 'table') return
       // forget the answers of this table's cards: the mounted cards resolve again
       set((s) => {
@@ -700,7 +775,7 @@ export function watchCardTable(env: string, table: string): () => void {
         for (const [key, r] of cardRefs) if (r.env === env && r.table === table && cards[key] !== 'loading') delete cards[key]
         return { cards }
       })
-    }, env)
+    }, { keep: true })
     cardWatch.set(k, { off, count: 1 })
   }
   return () => {
@@ -711,6 +786,16 @@ export function watchCardTable(env: string, table: string): () => void {
       cardWatch.delete(k)
     }
   }
+}
+
+/** resolve one card again now (after answering an approval card: the answer shows at once) */
+export function forgetCard(messageId: string, index: number, version = 0): void {
+  const key = cardKey(messageId, index, version)
+  set((s) => {
+    const cards = { ...s.cards }
+    delete cards[key]
+    return { cards }
+  })
 }
 
 /** package E's "Share to chat": the card waits in the composer of the conversation the person picks */
@@ -729,6 +814,6 @@ if (typeof window !== 'undefined') {
     state: () => get(),
     /** drop the live connection as a network cut would */
     drop: () => sock?.drop(),
-    socketState: () => sock?.state() ?? 'off',
+    socketState: () => (sock ? socketStateOf(sock.status()) : 'off'),
   }
 }

@@ -12,6 +12,11 @@
  *  - cards never return a field or a row the reader may not read (and say "not available" alike for a hidden and a
  *    missing row); mentions do not notify people about conversations they cannot see (they are refused);
  *  - search never ranks or counts hidden messages; a removed member loses the conversation at once and on the socket.
+ * Package E adds: chat mentions for the Mentions page (only the mentioned reader, the conversation's rule again), the
+ * page around an old message (members only), approval cards (only the approver's own conversation; nobody posts in it
+ * or forges an approval card; answered through the approvals API with its checks; closed when decided; never shown to
+ * someone who may not see the request), a timeline event per answer (only for viewers who may see the request), and
+ * record discussions (the regarding rule: a record the reader cannot read is not listed; losing access loses it).
  *   APPBUILDER_TEST_DB=postgres://... npx vitest run server/core/chat/chat-security.integration
  */
 import http from 'node:http'
@@ -145,6 +150,8 @@ describe.skipIf(!PG_URL)('chat leak suite (PostgreSQL)', { timeout: 180_000 }, (
   let recordOk = ''
   let recordHidden = ''
   let cardMsg = ''
+  /** package E: a record of Raj's for the approval card, the timeline answer and the discussion */
+  let recordE = ''
   /** strings that only members of the private / direct / group conversations may ever receive */
   let SECRETS: string[] = []
 
@@ -582,6 +589,159 @@ describe.skipIf(!PG_URL)('chat leak suite (PostgreSQL)', { timeout: 180_000 }, (
     expect([...files.values()].some((c) => c.includes('ZEBRA-BYTES'))).toBe(true)
   })
 
+
+  it('package E LEAK: chat mentions reach only the mentioned reader, with the link that opens the message', async () => {
+    const r = await P_.raj.get('/chat/mentions')
+    expect(r.status, r.text).toBe(200)
+    const mine = r.data.items.find((m: any) => m.regardingId === privMsg)
+    expect(mine, r.text).toBeTruthy()
+    expect(mine.Link).toMatch(new RegExp(`^#chat\\?c=${priv}&m=\\d+$`))
+    expect(mine.Body).toContain('zebracode')
+    for (const who of ['nia', 'mia', 'eve', 'ada', 'mo'] as const) {
+      const x = await P_[who].get('/chat/mentions')
+      expect([200, 403], `${who}: ${x.text}`).toContain(x.status)
+      noSecret(`${who} chat mentions`, x.text)
+    }
+    for (const who of ['key', 'anon'] as const) expect([401, 403]).toContain((await P_[who].get('/chat/mentions')).status)
+    // someone else cannot mark Raj's mention read
+    await P_.nia.post(`/chat/mentions/${mine.id}/read`)
+    expect((await P_.raj.get('/chat/mentions')).data.items.find((m: any) => m.id === mine.id).IsRead).toBe(false)
+  })
+
+  it('package E LEAK: the page around an old message is for readers of the conversation only', async () => {
+    const seq = (await P_.raj.get(`/chat/conversations/${priv}/messages`)).data.messages.find((m: any) => m.id === privMsg).seq
+    const a = await P_.raj.get(`/chat/conversations/${priv}/messages?around=${seq}&limit=10`)
+    expect(a.status, a.text).toBe(200)
+    expect(a.data.messages.some((m: any) => m.id === privMsg)).toBe(true)
+    expect(typeof a.data.newer).toBe('boolean')
+    for (const who of ['nia', 'mia', 'eve', 'ada'] as const) {
+      const x = await P_[who].get(`/chat/conversations/${priv}/messages?around=${seq}`)
+      expect(x.status).toBe(404)
+      noSecret(`${who} around`, x.text)
+    }
+    const ch = await P_.raj.get(`/chat/conversations/${priv}/changes?after=0`)
+    expect(ch.status).toBe(200)
+    expect(ch.data.more ?? false).toBe(false)
+  })
+
+  it('package E LEAK: approval cards: the approver alone, answered through the approvals API with its checks, closed when decided', async () => {
+    // a record of Raj's own (Raj reads it without Secret; Mo reads all)
+    const rec = await P_.raj.post(`/data/${tableId}/rows`, { values: { Title: 'Raj pump record' } })
+    expect(rec.status, rec.text).toBe(200)
+    recordE = rec.data.row.id
+    const pol = await P_.ada.post('/approvals/policies', { name: 'Card check', definition: { type: 'single', approvers: ['raj@example.com'], requireCommentOnReject: true } })
+    expect(pol.status, pol.text).toBe(200)
+    const req = await P_.mo.post('/approvals', { policy: 'Card check', title: 'Buy pump AQUILA-CARD', fields: { Amount: 5000, Vendor: 'AQUILA-VENDOR' }, regarding: { table: tableId, rowId: recordE } })
+    expect(req.status, req.text).toBe(200)
+    const reqId = req.data.id
+    // the sweep posts the card into Raj's conversation with the system sender "Approvals"
+    let conv: any = null
+    let card: any = null
+    for (let i = 0; i < 150 && !card; i++) {
+      conv = (await P_.raj.get('/chat/conversations')).data.items.find((c: any) => c.system === 'approvals')
+      if (conv) card = (await P_.raj.get(`/chat/conversations/${conv.id}/messages`)).data.messages.find((m: any) => m.cards?.[0]?.kind === 'approval' && m.cards[0].request === reqId)
+      if (!card) await sleep(200)
+    }
+    expect(card, 'the approval card arrives').toBeTruthy()
+    expect(conv.name).toBe('Approvals')
+    expect(conv.canPost).toBe(false)
+    expect(conv.unread).toBeGreaterThan(0)
+    expect(card.sender).toBe(null)
+    expect(card.cards[0].state).toBe('pending')
+    // the message holds a reference, never the fields
+    expect(JSON.stringify(card.cards)).not.toContain('AQUILA-VENDOR')
+    const v = await P_.raj.post('/chat/cards/resolve', { messageId: card.id, index: 0 })
+    expect(v.status, v.text).toBe(200)
+    expect(v.data).toMatchObject({ available: true, kind: 'approval', request: reqId, status: 'pending', canDecide: true, title: 'Buy pump AQUILA-CARD' })
+    expect(v.data.fields).toEqual(expect.arrayContaining([{ name: 'Vendor', value: 'AQUILA-VENDOR' }]))
+    // outsiders: the conversation, the card, the topic do not exist for them
+    const SEC = ['AQUILA-CARD', 'AQUILA-VENDOR', conv.id, card.id]
+    for (const who of ['nia', 'mia', 'eve', 'ada', 'mo'] as const) {
+      const p = P_[who]
+      expect((await p.get(`/chat/conversations/${conv.id}`)).status).toBe(404)
+      const r = await p.post('/chat/cards/resolve', { messageId: card.id, index: 0 })
+      expect(r.status).toBe(404)
+      noSecret(`${who} approval card`, r.text + (await p.get('/chat/conversations')).text + (await p.get('/chat/search?q=AQUILA')).text, SEC)
+      const sk = sock(p)
+      await sk.waitMsg((m) => m.t === 'hello')
+      const sub = await sk.sub(`chat:${conv.id}`)
+      expect(sub.t).toBe('error')
+      sk.close()
+    }
+    // nobody posts in it, reacts to the card, or forges an approval card anywhere
+    expect((await P_.raj.post(`/chat/conversations/${conv.id}/messages`, { body: 'hello' })).status).toBe(403)
+    expect((await P_.raj.post(`/chat/messages/${card.id}/reactions`, { emoji: '👍' })).status).toBe(422)
+    expect((await P_.raj.post(`/chat/messages/${card.id}/report`, { reason: 'x' })).status).toBe(422)
+    expect((await P_.raj.del(`/chat/messages/${card.id}`)).status).toBe(403)
+    const forged = await P_.mo.post(`/chat/conversations/${open}/messages`, { body: 'x', cards: [{ kind: 'approval', env: 'default', request: reqId, assignment: 'a', state: 'pending' }] })
+    expect(forged.status).toBe(422)
+    // the requester has no card and cannot answer their own request (self-approval: the service's rule)
+    expect((await P_.mo.get('/chat/conversations')).data.items.some((c: any) => c.system === 'approvals')).toBe(false)
+    expect((await P_.mo.post(`/approvals/${reqId}/respond`, { response: 'Approve' })).status).toBe(403)
+    // the card's buttons call the inbox's route: a rejection needs a comment
+    const noComment = await P_.raj.post(`/approvals/${reqId}/respond`, { response: 'Reject' })
+    expect(noComment.status, noComment.text).toBe(422)
+    expect(noComment.data.error.field).toBe('comment')
+    const ok = await P_.raj.post(`/approvals/${reqId}/respond`, { response: 'Approve', comment: 'fine by me OKCOMMENT' })
+    expect(ok.status, ok.text).toBe(200)
+    expect(ok.data.status).toBe('approved')
+    // decisions are immutable, from any door
+    expect((await P_.raj.post(`/approvals/${reqId}/respond`, { response: 'Reject', comment: 'changed my mind' })).status).toBe(409)
+    // the card is closed by the sweep (an edit: a new change seq) and resolves to the decision
+    let done: any = null
+    for (let i = 0; i < 150 && !done; i++) {
+      const m = (await P_.raj.get(`/chat/conversations/${conv.id}/messages`)).data.messages.find((x: any) => x.id === card.id)
+      if (m?.cards?.[0]?.state === 'done') done = m
+      else await sleep(200)
+    }
+    expect(done, 'the card is closed').toBeTruthy()
+    expect(done.changeSeq).toBeGreaterThan(card.changeSeq)
+    const after = await P_.raj.post('/chat/cards/resolve', { messageId: card.id, index: 0 })
+    expect(after.data).toMatchObject({ status: 'approved', canDecide: false, myAnswer: { response: 'Approve', comment: 'fine by me OKCOMMENT' } })
+    // the inbox shows the same decision with one answer in its history
+    const inbox = await P_.raj.get(`/approvals/${reqId}`)
+    expect(inbox.data.request.status).toBe('approved')
+    expect(inbox.data.request.history.filter((x: any) => x.action === 'responded')).toHaveLength(1)
+    // the answer on the record's timeline: for the requester and the approver, not for someone who may not see it
+    for (const who of ['mo', 'raj'] as const) {
+      const tl = await P_[who].get(`/collab/timeline?table=${tableId}&row=${recordE}`)
+      expect(tl.status, tl.text).toBe(200)
+      const ev = tl.data.items.find((i: any) => i.data?.action === 'approval.answered')
+      expect(ev, `${who} sees the answer`).toBeTruthy()
+      expect(ev.data).toMatchObject({ response: 'Approve', comment: 'fine by me OKCOMMENT', approvalId: reqId })
+      expect(ev.by).toBe(ids['Raj Member'])
+    }
+    for (const who of ['nia', 'sam', 'mia'] as const) {
+      const tl = await P_[who].get(`/collab/timeline?table=${tableId}&row=${recordE}`)
+      noSecret(`${who} timeline`, tl.text, ['OKCOMMENT', 'AQUILA-CARD'])
+    }
+  })
+
+  it('package E LEAK: record discussions follow the regarding rule', async () => {
+    expect((await P_.raj.post('/collab/follow', { table: tableId, row: recordE, on: true })).status).toBe(200)
+    expect((await P_.mo.post('/collab/follow', { table: tableId, row: recordHidden, on: true })).status).toBe(200)
+    const c1 = await P_.mo.post(`/data/sys_comments/rows`, { values: { Body: `<p>quaggaword for <span data-mention="${ids['Raj Member']}">@Raj</span></p>`, regardingTable: tableId, regardingId: recordE, Link: `#u-app?record=${recordE}` } })
+    expect(c1.status, c1.text).toBe(200)
+    const c2 = await P_.mo.post(`/data/sys_comments/rows`, { values: { Body: '<p>yakword only for readers</p>', regardingTable: tableId, regardingId: recordHidden } })
+    expect(c2.status, c2.text).toBe(200)
+    const raj = await P_.raj.get('/chat/discussions', 'default')
+    expect(raj.status, raj.text).toBe(200)
+    const it1 = raj.data.items.find((i: any) => i.row === recordE)
+    expect(it1).toMatchObject({ following: true, mentioned: true, link: `#u-app?record=${recordE}` })
+    expect(it1.unread).toBeGreaterThan(0)
+    expect(it1.lastText).toContain('quaggaword')
+    noSecret('raj discussions', raj.text, ['yakword', recordHidden, 'HIDDENROW-SECRET'])
+    expect((await P_.raj.post('/chat/discussions/read', { table: tableId, row: recordE }, 'default')).data.following).toBe(true)
+    expect((await P_.raj.get('/chat/discussions', 'default')).data.items.find((i: any) => i.row === recordE).unread).toBe(0)
+    expect((await P_.mo.get('/chat/discussions', 'default')).data.items.some((i: any) => i.row === recordHidden)).toBe(true)
+    for (const who of ['nia', 'sam', 'oto'] as const) {
+      const x = await P_[who].get('/chat/discussions', 'default')
+      noSecret(`${who} discussions`, x.text, ['quaggaword', 'yakword', recordE, recordHidden])
+    }
+    // someone else's read marker does not move Raj's (Nia has no Follows row about it to touch)
+    await P_.nia.post('/chat/discussions/read', { table: tableId, row: recordE }, 'default')
+  })
+
   it('a removed member stops receiving the conversation at once: socket ended, no search hits, 404', async () => {
     const s = sock(P_.raj)
     await s.waitMsg((m) => m.t === 'hello')
@@ -599,5 +759,17 @@ describe.skipIf(!PG_URL)('chat leak suite (PostgreSQL)', { timeout: 180_000 }, (
     await P_.mo.post(`/chat/conversations/${priv}/messages`, { body: 'after you left: zebracode' })
     await sleep(300)
     expect(s.msgs.slice(n).filter((m) => m.t === 'chat')).toEqual([])
+  })
+
+  it('package E: the removed member\'s chat mention is gone from the Mentions page; losing read access loses the discussion', async () => {
+    expect((await P_.raj.get('/chat/mentions')).data.items.some((m: any) => m.regardingId === privMsg)).toBe(false)
+    // Raj loses his role (no read access to the record any more): the discussion is not listed, its comments are not sent
+    await h.q(`DELETE FROM env_default.ab_user_roles WHERE user_id = $1`, [ids['Raj Member']])
+    h.app.services.security.invalidate()
+    await sleep(100)
+    const x = await P_.raj.get('/chat/discussions', 'default')
+    expect(x.data.items.some((i: any) => i.row === recordE)).toBe(false)
+    noSecret('raj discussions after losing access', x.text, ['quaggaword'])
+    expect((await P_.raj.get(`/collab/timeline?table=${tableId}&row=${recordE}`)).status).toBe(404)
   })
 })

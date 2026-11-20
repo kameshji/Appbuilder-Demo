@@ -1,4 +1,4 @@
-# Hosting support in the server (H-A, H-C)
+# Hosting support in the server (H-A, H-C, H-B)
 
 What the server does for many installs on one machine, and the rules for code added later. Operator view:
 [docs/admin/hosting.md](../admin/hosting.md). Design: [docs/plan/hosting-spec.md](../plan/hosting-spec.md).
@@ -10,7 +10,7 @@ What the server does for many installs on one machine, and the rules for code ad
 | `server/core/hosting/settings.ts` | every hosting setting from the environment (`hostingSettings`), the hosted profile's defaults (`applyHostingDefaults`), the instance env file, the "inside the instance folder" check, `hostingFor(services)` / `configureHosting` / `lockedPublicUrl` |
 | `server/core/hosting/cookies.ts` | the `__Host-` prefix at the HTTP boundary |
 | `server/core/hosting/read-only.ts` | the read-only state, the route and job classification, the gate, the stored setting |
-| `server/core/hosting/routes.ts` | `GET /api/v1/install/read-only`, and the job runner hook; called by `createRouter` |
+| `server/core/hosting/routes.ts` | `GET /api/v1/install/read-only`, `GET /api/v1/install/public-address` (administrators: `{ publicUrl, locked }`, the Admin console's read-only "Public address"), and the job runner hook; called by `createRouter` |
 | `server/core/hosting/cli.ts` | `migrate`, `admin invite`, `read-only`, `hosting-check`, `health` over the socket |
 | `server/main.ts` | loads the instance env, applies the defaults, dispatches the commands, listens on the socket or port, pool size, start-up check, shutdown order |
 | `src/portal/ReadOnlyBanner.tsx` | the banner under the top bar (mounted in `Shell.tsx`) |
@@ -31,7 +31,15 @@ not attach them by itself.
   `assertOutboundHost`) or `actions/outbound.ts` (`safeRequest`, `resolveAllowed`). `hosting.test.ts` lists every server
   file that opens a connection; a new one fails the test until it is reviewed and added with its reason.
 - **Writes outside the workspace.** A new folder setting must stay inside `APPBUILDER_INSTANCE_DIR` when it is set; add it
-  to `writePathProblems`. Background loops take their interval from a setting (no hard-coded host, port or interval).
+  to `writePathProblems`. Folders typed in the Admin console are checked where they are saved, before anything is created
+  there (the backup and off-site folders: `backup/service.ts`), and a setting that names programs the server runs (the
+  PostgreSQL tools folder) is refused and ignored when the instance folder is set.
+- **Client addresses.** Rate limits and throttles key on `identity(services).ip(req)` (`clientIp`): the `X-Forwarded-For`
+  entry behind the trusted proxy (`APPBUILDER_TRUST_PROXY=1`, hosted default), the TCP peer otherwise. Never
+  `req.socket.remoteAddress` (behind the proxy or a socket every client has the same one), never a header without the
+  trusted-proxy setting.
+- **Error codes.** `install_read_only` and `licence_read_only` are `ReadOnlyErrorCode` in `src/platform/contracts.ts`;
+  the client shows the server's message for them (no fixed text in `errorMessages.ts`; `isReadOnlyError`). Background loops take their interval from a setting (no hard-coded host, port or interval).
 - **Routes.** Every non-GET route is refused while read-only unless its key (`'POST /pattern/:param'`, as registered,
   without `/api/v1`) is in `READ_ONLY_ALLOWED`; a GET route that writes must be listed in `READ_ONLY_REFUSED_GETS`.
   `read-only.integration.test.ts` requests every registered route while read-only and checks both lists name existing
@@ -64,7 +72,7 @@ most every 5 seconds (`READ_ONLY_REFRESH_MS`), so a command takes effect in a ru
 | `table-event.after`, `rollup.recompute`, `rollup.reconcile`, `formula.backfill`, `index.sync` | pause |
 | `flow.advance`, `flow.resume`, `flow.timeout`, `flow.schedule`, `flow.retention`, `flow.digest` | pause |
 | `approval.notify`, `approval.decided`, `approval.retention` | pause |
-| `tasks.reminders`, `tasks.digest`, `collab.notify`, `collab.orphan-sweep` | pause |
+| `tasks.reminders`, `tasks.digest`, `collab.notify`, `collab.orphan-sweep`, `notes.notify` | pause |
 | `notifications.digest`, `notifications.delivery-retention`, `whatsapp.notify`, `whatsapp.retention` | pause |
 | `report.run`, `dashboard.snapshot`, `print.bulk`, `print.sweep`, `model.summary.refresh` | pause |
 | `attachments.delete-files`, `attachments.sweep`, `data.recycle-purge`, `chat.retention` | pause |
@@ -85,5 +93,8 @@ database and migrations and the job worker (`createApp`), then the listener. On 
 
 `server/core/hosting/hosting.test.ts` (settings, cookies, outbound policy, no database), `read-only.integration.test.ts`
 (every route, every job type, the outbox, exports), `cli.integration.test.ts` (the commands with a server running),
+`followups.integration.test.ts` (the sign-in throttle behind the proxy, backup folders and tools with
+`APPBUILDER_INSTANCE_DIR`, the public-address route), `isolation-policy.test.ts` (socket paths and localhost names in the
+outbound policy), `isolation.integration.test.ts` (the cross-instance isolation suite, [testing](testing.md#isolation-suite-hosting-exit-check-2)),
 `main.integration.test.ts` (`node server/main.ts` as a hosted install over TCP 127.0.0.1:5271 and, on Linux and macOS, a
 Unix socket; skipped on Windows with a printed reason).

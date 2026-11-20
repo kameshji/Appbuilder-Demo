@@ -518,7 +518,11 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     const b = obj(ctx.body) as Partial<LoginRequest> & Record<string, unknown>
     const email = (typeof b.email === 'string' ? b.email : '').trim().toLowerCase().slice(0, 191)
     const password = typeof b.password === 'string' ? b.password.slice(0, 1024) : ''
-    const key = `${email}|${ctx.req.socket.remoteAddress ?? ''}`
+    // H-B: the client's address as the rest of the server derives it (identity/util.ts clientIp): behind the one trusted
+    // proxy (APPBUILDER_TRUST_PROXY=1, the hosted default) the X-Forwarded-For entry, else the TCP peer. Keyed on the peer
+    // alone, every client behind the proxy or a Unix socket shared one key, so anyone could lock a known account out.
+    // Without a trusted proxy the header is ignored: a client cannot choose its own key. The per-email backoff stays.
+    const key = `${email}|${idn.ip(ctx.req)}`
     if (throttle.blocked(key)) {
       await audit(services, null, 'auth.login_throttled', { email })
       await idn.logSignIn(ctx, { email, outcome: 'failure', reason: 'throttled', method: 'password' })

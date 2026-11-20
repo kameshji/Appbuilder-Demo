@@ -970,6 +970,9 @@ export async function uninstallContext(s: Services, ctx: Ctx, id: string, delete
   const appsAll = await s.meta.apps.list()
   const tablesWithData: UninstallPlan['tablesWithData'] = []
   const drop: TableDef[] = []
+  // a table points at another when it looks it up, or is a reporting view or summary of it
+  const pointsAt = (x: TableDef, def: TableDef): boolean => x.id !== def.id && (x.columns.some((col) => col.type === 'lookup' && col.lookupTable?.toLowerCase() === def.name.toLowerCase()) || (x.reporting?.kind === 'view' && x.reporting.base === def.id) || (x.reporting?.kind === 'summary' && x.reporting.source === def.id))
+  const decided: { def: TableDef; rows: number; keep: string | null; withData: boolean }[] = []
   for (const t of c.tables ?? []) {
     const def = all.find((x) => x.id === t.id)
     if (!def) continue
@@ -979,20 +982,35 @@ export async function uninstallContext(s: Services, ctx: Ctx, id: string, delete
       const r = await conn.select(def, { select: ['id'], count: true, top: 1 })
       rows = r.total ?? r.rows.length
     } catch { rows = 0 }
-    const referrers = all.filter((x) => !createdIds.has(x.id) && (x.columns.some((col) => col.type === 'lookup' && col.lookupTable?.toLowerCase() === def.name.toLowerCase()) || (x.reporting?.kind === 'view' && x.reporting.base === def.id) || (x.reporting?.kind === 'summary' && x.reporting.source === def.id)))
+    const referrers = all.filter((x) => !createdIds.has(x.id) && pointsAt(x, def))
     const users = []
     for (const a of appsAll) {
       if (apps.includes(a.id)) continue
       const full = await s.meta.apps.get(a.id)
       if ((full?.definition.dataSources ?? []).some((n) => n.toLowerCase() === def.name.toLowerCase())) users.push(a.name)
     }
-    if (referrers.length || users.length) {
-      items.push({ kind: 'table', id: def.id, name: def.displayName, action: 'kept', rows, note: `kept: ${[referrers.length ? `the tables ${referrers.map((x) => x.displayName).join(', ')} point at it` : '', users.length ? `the apps ${users.join(', ')} use it` : ''].filter(Boolean).join('; ')}` })
-      continue
+    if (referrers.length || users.length) decided.push({ def, rows, withData: false, keep: `kept: ${[referrers.length ? `the tables ${referrers.map((x) => x.displayName).join(', ')} point at it` : '', users.length ? `the apps ${users.join(', ')} use it` : ''].filter(Boolean).join('; ')}` })
+    else decided.push({ def, rows, withData: rows > 0, keep: rows > 0 && !deleteTables ? `kept with its ${rows} row${rows === 1 ? '' : 's'} (an administrator can tick "Delete tables with data")` : null })
+  }
+  // a table of the template that would go (it is empty, say after "Remove sample data") but that a KEPT table of the
+  // template looks up stays too: dropping it would break the kept table (the data model refuses that). Repeated until
+  // nothing changes, so a chain of lookups is followed.
+  for (let changed = true; changed;) {
+    changed = false
+    for (const d of decided) {
+      if (d.keep) continue
+      const by = decided.filter((k) => k.keep && pointsAt(k.def, d.def))
+      if (!by.length) continue
+      d.keep = `kept: the table${by.length === 1 ? '' : 's'} ${by.map((k) => k.def.displayName).join(', ')}, kept, ${by.length === 1 ? 'looks' : 'look'} it up${d.rows ? '' : ' (it is empty)'}`
+      d.withData = false
+      changed = true
     }
-    if (rows > 0) tablesWithData.push({ id: def.id, name: def.displayName, rows })
-    if (rows > 0 && !deleteTables) {
-      items.push({ kind: 'table', id: def.id, name: def.displayName, action: 'kept', rows, note: `kept with its ${rows} row${rows === 1 ? '' : 's'} (an administrator can tick "Delete tables with data")` })
+  }
+  for (const d of decided) {
+    const { def, rows } = d
+    if (d.withData) tablesWithData.push({ id: def.id, name: def.displayName, rows })
+    if (d.keep) {
+      items.push({ kind: 'table', id: def.id, name: def.displayName, action: 'kept', rows, note: d.keep })
       continue
     }
     items.push({ kind: 'table', id: def.id, name: def.displayName, action: 'removed', rows, ...(rows > 0 ? { destructive: true } : {}), note: rows > 0 ? `the table and its ${rows} row${rows === 1 ? '' : 's'} are deleted` : 'empty: the table is deleted' })

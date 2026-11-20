@@ -5,7 +5,7 @@ import { checkPlan } from '@/fx/query/validate'
 import { executePlan } from '@/fx/query/reference'
 import { schemaInfoOf } from '@/platform/query-local'
 import {
-  LABEL_BATCH, LABEL_SORT_LIMIT, LOADING_MARK, NOT_AVAILABLE, batches, isNoConnection, labelPlans, labelStoreKey, labelText, lookupCell,
+  LABEL_BATCH, LABEL_SORT_LIMIT, LOADING_MARK, NOT_AVAILABLE, answerMaySet, batches, isNoConnection, labelPlans, labelStoreKey, labelText, lookupCell,
   lookupSearchCondition, lookupSort, lookupSortKey, lookupSortSupport, lookupSortText, mergeLabels, missingIds, pickerMessage, pickerNote, pickerPlan, type LabelEntry,
 } from './lookups'
 
@@ -69,6 +69,48 @@ describe('label batches', () => {
     // a rename (live refresh) changes the label
     expect(mergeLabels(m, ['p0001'], [{ __id: 'p0001', Name: 'Renamed' }], 'Name')).toBe(true)
     expect(m.get('p0001')).toBe('Renamed')
+  })
+  it('a shared store settles when two answers disagree (one refetched after a delete, one still showing its previous rows)', () => {
+    // the render loop of the Manufacturing exit check: two lists fold their own answers into one store on every render;
+    // each fold that changes something notifies every list, which folds again
+    const m = new Map<string, LabelEntry>()
+    const order = new Map<string, number>()
+    const before = [{ __id: 's1', Name: 'SAMPLE press 1' }]
+    // the first answer of both plans: the label
+    expect(mergeLabels(m, ['s1'], before, 'Name', { order, at: 1 })).toBe(true)
+    expect(mergeLabels(m, ['s1', 's2'], before, 'Name', { order, at: 2 })).toBe(true) // s2: not available
+    // the SAMPLE rows are removed: plan A has refetched (s1 is gone), plan B still refetches (its previous rows, provisional)
+    const fresh = { order, at: 3 }
+    const stale = { order, at: null }
+    let flips = 0
+    for (let render = 0; render < 60; render++) {
+      if (mergeLabels(m, ['s1'], [], 'Name', fresh)) flips++
+      if (mergeLabels(m, ['s1', 's2'], before, 'Name', stale)) flips++
+    }
+    expect(flips).toBe(1) // once (label -> not available), never back and forth
+    expect(m.get('s1')).toBeNull()
+    // an answer seen before another never overrides it, even when both are complete answers
+    const older = { order, at: 2 }
+    expect(mergeLabels(m, ['s1'], before, 'Name', older)).toBe(false)
+    expect(m.get('s1')).toBeNull()
+    // plan B's refetch arrives (a newer answer): it agrees, nothing changes
+    expect(mergeLabels(m, ['s1', 's2'], [], 'Name', { order, at: 4 })).toBe(false)
+    // a provisional answer (an error, a failed refresh) only fills what is not known yet
+    expect(mergeLabels(m, ['s1', 'new'], [{ __id: 's1', Name: 'x' }], 'Name', { order, at: null })).toBe(true)
+    expect(m.get('s1')).toBeNull()
+    expect(m.get('new')).toBeNull()
+    // a later complete answer still wins (a rename after the delete was undone, say)
+    expect(mergeLabels(m, ['s1'], [{ __id: 's1', Name: 'Back' }], 'Name', { order, at: 5 })).toBe(true)
+    expect(m.get('s1')).toBe('Back')
+  })
+  it('answerMaySet: a provisional answer fills only unknown entries; a complete one never overrides a newer one', () => {
+    const order = new Map([['a', 5]])
+    expect(answerMaySet({ order, at: null }, 'a', true)).toBe(false)
+    expect(answerMaySet({ order, at: null }, 'b', false)).toBe(true)
+    expect(answerMaySet({ order, at: 4 }, 'a', true)).toBe(false)
+    expect(answerMaySet({ order, at: 5 }, 'a', true)).toBe(true)
+    expect(answerMaySet({ order, at: 6 }, 'a', true)).toBe(true)
+    expect(answerMaySet({ order, at: 1 }, 'b', true)).toBe(true)
   })
   it('labels per user and table (another user sees other rows)', () => {
     expect(labelStoreKey('u1', 'Products')).toBe(labelStoreKey('u1', 'products'))

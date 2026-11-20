@@ -770,3 +770,23 @@ table rebuilds its indexes (1,000,000 rows: 17 s); deleted rows take space until
 **Decision.** One gate in the router, before the session and the body, refuses every non-GET route not on an explicit allow-list with 503 `install_read_only` / `licence_read_only`; new routes are refused until classified and a test requests every route. 503, not a 4xx, because the phone outbox keeps 5xx items waiting. The job runner pauses unlisted job types and their schedules and stops outbox dispatch; mail, backups and health keep running. `__Host-` cookies are applied at the HTTP boundary and old plain cookies are not accepted (people sign in once more). The public URL is locked through `APPBUILDER_PUBLIC_URL`, enforced in the one function every link uses. Hosted defaults come from `APPBUILDER_HOSTED=1`.
 
 **Consequences.** Details: `docs/dev/hosting.md`, `docs/admin/hosting.md`.
+
+## D56. A flow acts on behalf of whoever caused the run (P3 platform fixes, Nov 2026)
+
+**Decision.** A run records who caused it (the actor of the triggering change, or who pressed the button); child runs and resubmits keep it; schedules and web requests have none. For approval routing only, that person counts as the requester: manager references and the fallback start from them, and neither they nor the flow's identity is asked, delegated to, reassigned to or escalated to unless `allowSelfApproval` is set. An optional step `requester` can add one person, never remove one. Who sees and withdraws the request stays the flow's identity, so no access widens. `data.create` may set the owner under the existing assign-owner rule (only an administrator's flow may give rows to someone else). Notify can target roles and teams, resolved at send time.
+
+**Consequences.** Existing flows change only where the person who caused the run is not the flow's identity. Details: `docs/dev/flows.md`, `docs/dev/approvals.md`.
+
+## D57. Notes use an own small editor; the server sanitiser is the boundary (P3 package N, Nov 2026)
+
+**Decision.** TipTap (MIT, measured 375 to 480 kB minified) exceeds the 300 kB budget, so Notes use an own editor of about 55 kB over `contenteditable` with a strict allow-list that keeps tables and images. The server sanitiser (`src/notes/sanitize.ts`) is the security boundary whatever the editor. Record cards are references resolved per reader with chat's resolver. Notes are online-only; print uses the browser.
+
+## D58. Chat cards for approvals use the inbox route; chat is on the page's one live connection (P3 package E, Nov 2026)
+
+**Decision.** A record's discussion is its Comments; editing marks a comment "(edited)" and keeps no history. Approval cards go into each approver's conversation with the system sender "Approvals", one reference card per assignment, and the buttons call `/approvals/:id/respond` like the inbox. No cards when in-app Approvals notifications are off. Chat moved onto the page's single socket and install-wide topics survive an environment switch. Online dots are not built (they need a per-pair hub topic).
+
+## D59. Hosting isolation is tested with real processes and is a hard gate (hosting H-B, Nov 2026)
+
+**Decision.** `scripts/exit-check/h-isolation.mjs` starts three installs of this tree with database roles prepared as the fleet tool will, a host-routing proxy and a test-only DNS shim, and tries every cross-organisation route; negative controls prove it detects PostgreSQL's default grants and the on-premises outbound policy. Calls from one install to a sibling's public name are refused through `APPBUILDER_OUTBOUND_DENY`. External database connections check their host at every use, and a host resolving to a refused address is not stored.
+
+**Consequences.** File permissions between installs, systemd limits, real TLS and Caddy need a Linux server and are not covered. A DNS answer changing between the check and the driver's own lookup remains a residual risk (as in the Phase 0 review). Details: `docs/dev/hosting.md`.

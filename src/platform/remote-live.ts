@@ -58,12 +58,33 @@ export interface RemoteLive {
   noteRowChange(tableId: string, rowId: string, by: LivePerson): void
 }
 
+let pageClient: LiveClient | null = null
+const pageClientListeners = new Set<(c: LiveClient | null) => void>()
+
+/**
+ * the page's one live connection (server mode), for modules that speak protocol details the LiveApi contract does not
+ * carry: chat (chat and typing pushes, the subscribed seq, kept topics, the connection id for X-Appbuilder-Live). Null in
+ * demo mode and before the platform made it.
+ */
+export function pageLiveClient(): LiveClient | null {
+  return pageClient
+}
+export function onPageLiveClient(fn: (c: LiveClient | null) => void): () => void {
+  pageClientListeners.add(fn)
+  return () => {
+    pageClientListeners.delete(fn)
+  }
+}
+
 export function createRemoteLive(deps: RemoteLiveDeps): RemoteLive {
   const setT = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
   const clearT = deps.clearTimer ?? ((t: unknown) => clearTimeout(t as ReturnType<typeof setTimeout>))
   const setI = deps.setInterval ?? ((fn: () => void, ms: number) => setInterval(fn, ms))
   const clearI = deps.clearInterval ?? ((t: unknown) => clearInterval(t as ReturnType<typeof setInterval>))
   const client = new LiveClient({ ...deps.live, onSessionProblem: (code) => deps.checkSession(code) })
+  // the page makes one (tests may make several: the latest is the page's)
+  pageClient = client
+  for (const l of [...pageClientListeners]) l(client)
   const env = () => deps.getState().environmentId || undefined
   const tracked = new Map<string, () => void>()
   const pendingInvalidations = new Map<string, { timer: unknown; first: number }>()
@@ -165,11 +186,16 @@ export function createRemoteLive(deps: RemoteLiveDeps): RemoteLive {
     } catch { /* the bell shows nothing new */ }
   }
 
+  let userTopicFor: string | null = null
   function subscribeBase() {
-    const me = deps.getState().session?.user.id
-    offUser?.()
+    const me = deps.getState().session?.user.id ?? null
+    // user:<me> is install-wide: it stays subscribed across an environment switch (no unsub / sub gap)
+    if (me !== userTopicFor || !offUser) {
+      offUser?.()
+      offUser = me ? client.subscribe(`user:${me}`, undefined, onUser) : null
+      userTopicFor = me
+    }
     offEnv?.()
-    offUser = me ? client.subscribe(`user:${me}`, undefined, onUser) : null
     offEnv = env() ? client.subscribe('env', env(), onEnv) : null
   }
 
@@ -194,6 +220,7 @@ export function createRemoteLive(deps: RemoteLiveDeps): RemoteLive {
     offUser?.()
     offEnv?.()
     offUser = offEnv = null
+    userTopicFor = null
     client.resetTopics()
     client.stop()
     rowChanges.clear()
@@ -206,7 +233,8 @@ export function createRemoteLive(deps: RemoteLiveDeps): RemoteLive {
     if (!started) return
     for (const off of tracked.values()) off()
     tracked.clear()
-    client.resetTopics()
+    // environment-bound topics go; install-wide ones (user:, chat:) and kept ones (chat cards' tables) stay
+    client.resetEnvTopics()
     subscribeBase()
   }
 

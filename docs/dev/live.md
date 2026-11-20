@@ -149,6 +149,26 @@ Demo mode: `demo-live.ts` gives the same API over a `BroadcastChannel` named `ap
 an app tells the other tabs, which re-read them from browser storage; notifications are kept in browser storage; presence
 uses a heartbeat every 10 seconds. There are no locks in demo mode.
 
+### Chat on the same connection (P3 package E)
+
+Chat no longer opens a socket of its own: `src/chat/store.ts` takes the page's `LiveClient` (`pageLiveClient()` in
+`remote-live.ts`) and subscribes `chat:<id>`, `chat:typing:<id>` and `user:<me>` on it. What the client does for that:
+
+- `chat` and `typing` messages are routed to the handlers of their topic (no `env`: chat topics are install-wide);
+- the `subscribed` answer of a chat topic is delivered to its handlers (with `seq`, the conversation's `LastSeq`), instead
+  of the table-style resync; a new server `epoch` still sends every topic, chat included, a `resync`;
+- `unsubscribed` (the server ended a subscription) and an `error` that answers a `sub` (matched by its id) reach the
+  topic's handlers;
+- `resetEnvTopics()` (an environment switch, called by `remote-live.ts` `envChanged()`) drops environment-bound topics,
+  presence and locks only; install-wide topics and topics subscribed with `{ keep: true }` (a chat card's record table in
+  another environment) stay; `resetTopics()` (sign-out) still drops everything; `user:<me>` is not unsubscribed and
+  subscribed again on a switch;
+- the browser's `offline` event closes the socket at once (status degraded "You are offline."), so a cut network shows
+  at once; `online` reconnects;
+- `drop()` (tests and exit checks: a network cut) and `serverEpoch()`.
+
+Tests: `src/chat/socket.test.ts` (the routing chat needs), `src/platform/live.test.ts` (unchanged behaviour).
+
 ## Scaling limits
 
 The hub is in the server process: subscriptions, presence, locks, sequences and the "last writer" memory live in memory.

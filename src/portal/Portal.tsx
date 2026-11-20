@@ -21,6 +21,7 @@ import { DataFiles } from './DataFiles'
 import { SolutionDetail, Solutions } from './Solutions'
 import { ComingSoon } from './ComingSoon'
 import { MentionsPage, TasksPage } from './TasksPage'
+import { NotesPage } from '@/notes/NotesPage'
 import { ApprovalsPage } from '@/approvals/ApprovalsPage'
 import { ReportsPage } from './Reports'
 import { PrintTemplatesPage } from '@/print/PrintTemplatesPage'
@@ -147,7 +148,7 @@ function Frame({ route }: { route: Route }) {
 
   // built-in User mode pages of the core data model (P0-N): #u-tasks, #u-mentions (not app tabs)
   // (Approvals and Dashboards are also in the Dev menu and then show in Dev mode: modeOfRoute)
-  const builtin = route.page === 'u' && 'id' in route && (route.id === 'tasks' || route.id === 'mentions' || route.id === 'reports' || route.id === 'approvals' || route.id === 'dashboards') ? route.id : null
+  const builtin = route.page === 'u' && 'id' in route && (route.id === 'tasks' || route.id === 'mentions' || route.id === 'reports' || route.id === 'approvals' || route.id === 'dashboards' || route.id === 'notes') ? route.id : null
   const activeTab = routed === 'user' && route.page === 'u' && 'id' in route && !builtin ? route.id : null
   useTabSync(activeTab)
 
@@ -166,6 +167,7 @@ function Frame({ route }: { route: Route }) {
   else if (route.page === 'soon') page = <ComingSoon moduleKey={route.id} mode={routed} />
   else if (builtin === 'tasks') page = <TasksPage />
   else if (builtin === 'mentions') page = <MentionsPage />
+  else if (builtin === 'notes') page = <NotesPage />
   else if (builtin === 'reports') page = <ReportsPage />
   else if (builtin === 'approvals') page = <ApprovalsPage />
   else if (builtin === 'dashboards') page = <DashboardsPage />

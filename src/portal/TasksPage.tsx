@@ -21,6 +21,7 @@ import { ScheduleFields, browserZone, fieldSelect } from './ScheduleFields'
 import type { ScheduleValue } from './ScheduleFields'
 import { describeRecurrence, parseRecurrence } from '@/platform/recurrence'
 import { Empty, PageHeader, Segmented, errMsg, fmtRelative, useToast } from './kit'
+import { isChatMention, loadChatMentions, mergeMentions, openChatMention } from '@/chat/mentions'
 
 const STATUSES = ['Open', 'In progress', 'Done'] as const
 
@@ -394,20 +395,26 @@ export function MentionsPage() {
   const { toast } = useToast()
   const [items, setItems] = useState<MentionItem[] | null>(null)
   const load = useCallback(() => {
-    platform.collab!.mentions().then(setItems).catch((e) => {
+    // P3-E: chat mentions too (from the chat environment, with the link that opens the message)
+    Promise.all([platform.collab!.mentions(), platform.getState().mode === 'server' ? loadChatMentions() : Promise.resolve([])]).then(([a, b]) => setItems(mergeMentions(a, b))).catch((e) => {
       setItems([])
       toast(errMsg(e), 'error')
     })
   }, [toast])
   useLive(load, ['table:sys_mentions'])
   const open = async (m: MentionItem) => {
+    if (isChatMention(m)) {
+      await openChatMention(m)
+      load()
+      return
+    }
     if (!m.IsRead) await platform.collab!.markMentionRead(m.id).catch(() => {})
     if (m.Link && m.Link.startsWith('#')) location.hash = m.Link.slice(1)
     else load()
   }
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col gap-4 overflow-y-auto p-6" data-testid="mentions-page">
-      <PageHeader icon={AtSign} title="Mentions" subtitle="Comments where someone mentioned you." />
+      <PageHeader icon={AtSign} title="Mentions" subtitle="Comments and chat messages where someone mentioned you." />
       {items === null ? (
         <div className="flex justify-center p-8"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
       ) : items.length === 0 ? (
@@ -415,7 +422,7 @@ export function MentionsPage() {
       ) : (
         <div className="divide-y rounded-lg border bg-card">
           {items.map((m) => (
-            <button key={m.id} type="button" onClick={() => void open(m)} className="flex w-full items-start gap-3 p-3 text-left hover:bg-accent/40" data-testid="mention-row">
+            <button key={m.id} type="button" onClick={() => void open(m)} className="flex w-full items-start gap-3 p-3 text-left hover:bg-accent/40" data-testid="mention-row" data-kind={isChatMention(m) ? 'chat' : 'comment'}>
               <span className={cn('mt-1.5 size-2 shrink-0 rounded-full', m.IsRead ? 'bg-transparent' : 'bg-primary')} aria-label={m.IsRead ? 'Read' : 'Unread'} />
               <div className="min-w-0 flex-1">
                 <div className="text-sm"><span className="font-medium">{m.byName ?? 'Someone'}</span> mentioned you{m.regardingLabel ? <> on <span className="font-medium">{m.regardingTableName}: {m.regardingLabel}</span></> : null}</div>

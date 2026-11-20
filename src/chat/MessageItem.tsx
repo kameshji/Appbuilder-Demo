@@ -101,7 +101,9 @@ export const MessageItem = memo(function MessageItem({ m, conversation, compact,
       </div>
     )
   }
-  const name = m.sender?.name ?? 'Someone'
+  // a card from Appbuilder itself (no sender): the system sender "Approvals"
+  const fromSystem = !m.sender && m.cards.some((c) => c.kind === 'approval')
+  const name = m.sender?.name ?? (fromSystem ? 'Approvals' : 'Someone')
   return (
     <div
       role="article"
@@ -132,7 +134,7 @@ export const MessageItem = memo(function MessageItem({ m, conversation, compact,
             {m.body && <Body html={m.body} me={meId} />}
             {m.editedOn && <span className="text-[11px] text-muted-foreground" data-testid="chat-edited">(edited)</span>}
             <Files files={m.files} />
-            {m.cards.map((c, i) => <ChatCard key={i} messageId={m.id} index={i} card={c} />)}
+            {m.cards.map((c, i) => <ChatCard key={i} messageId={m.id} index={i} card={c} version={c.kind === 'approval' ? m.changeSeq : 0} />)}
             <Reactions m={m} me={meId} canReact={canAct} />
           </>
         )}
@@ -144,7 +146,7 @@ export const MessageItem = memo(function MessageItem({ m, conversation, compact,
           </button>
         )}
       </div>
-      {!m.deleted && !editing && (
+      {!m.deleted && !editing && !fromSystem && (
         <div className="absolute -top-3 right-2 hidden items-center rounded-md border border-border bg-card shadow-sm group-hover:flex group-focus-within:flex has-[[data-state=open]]:flex" data-testid="chat-actions">
           {canAct && <EmojiPicker onPick={(e) => void react(m, e)} />}
           {!inThread && canAct && (

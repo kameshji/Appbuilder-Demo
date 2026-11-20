@@ -200,6 +200,9 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
       id: s.uid('conn'), name, connector: kind, status: 'not-configured', settings, isDefault: false,
       scope: kind === 'files' ? 'device' : 'server', ...(secret !== undefined ? { secret } : {}), hasSecret: !!secret,
     }
+    // a database host that resolves to an address the outbound policy refuses is not stored at all (hosting isolation):
+    // a stored one would be reachable by every later use of the connection
+    if ((kind === 'postgres' || kind === 'mysql') && settings.host) await assertOutboundHost(String(settings.host), 'Connection')
     await s.meta.connections.upsert(rec)
     const res = await testAndStore(s, rec.id)
     await audit(s, ctx, 'connection.create', { id: rec.id, name, connector: kind }, undefined)
@@ -238,6 +241,7 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
       next.status = b.status as ConnectionRef['status']
     }
     if (ACTION_KINDS.has(rec.connector) && (b.settings !== undefined || b.secret !== undefined)) checkActionConnection(s, rec.connector, next.settings ?? {}, next.secret)
+    if ((rec.connector === 'postgres' || rec.connector === 'mysql') && rec.id !== DEFAULT_CONNECTION_ID && b.settings !== undefined && next.settings?.host) await assertOutboundHost(String(next.settings.host), 'Connection')
     await s.meta.connections.upsert(next)
     await s.connections.reset(rec.id)
     forgetActionState(s, rec.id)

@@ -260,6 +260,15 @@ export function createApprovals(services: CoreServices) {
 
   const responsesOfRow = (r: Row): ResponseOption[] => responsesOf(json<ApprovalDefinition>(r.definition, { type: 'single' }))
   const defOf = (r: Row): ApprovalDefinition => json<ApprovalDefinition>(r.definition, { type: 'single' })
+  /**
+   * P3: a flow's request made on behalf of people (the person whose change started the run, and the step's `requester`;
+   * kept in the request's copy of the definition): routing starts from the first of them, and none of them nor the
+   * requester (the flow's identity) is asked unless the definition allows self-approval. requested_by (who asks: who
+   * sees the request, withdraws it, is told the decision) stays the flow's identity.
+   */
+  const behalfOf = (def: ApprovalDefinition): string[] => { const v = (def as { onBehalfOf?: unknown }).onBehalfOf; return Array.isArray(v) ? v.map(String).filter(Boolean) : [] }
+  const routeFrom = (r: Row): string | null => behalfOf(defOf(r))[0] ?? (r.requested_by ? str(r.requested_by) : null)
+  const selfOf = (r: Row): string[] => [...(r.requested_by ? [str(r.requested_by)] : []), ...behalfOf(defOf(r))]
 
   async function hist(requestId: string, actor: Actor, action: string, stage: number | null, details: Record<string, unknown> = {}): Promise<void> {
     await db().exec(
@@ -340,7 +349,7 @@ export function createApprovals(services: CoreServices) {
       const org = await loadOrg()
       let plan: { stages: StagePlan[]; notes: { action: string; text: string }[] }
       try {
-        plan = expandStages(def, { requesterId: input.requestedBy, org, evalCondition: evalCondition(fields) })
+        plan = expandStages(def, { requesterId: behalfOf(def)[0] ?? input.requestedBy, org, evalCondition: evalCondition(fields) })
       } catch (e) {
         if (e instanceof RoutingError) throw invalid(e.message, 'approvers')
         throw e
@@ -380,7 +389,7 @@ export function createApprovals(services: CoreServices) {
     let res: ReturnType<typeof resolveStage>
     try {
       res = resolveStage({ name: str(st.name), mode: str(st.mode) as StagePlan['mode'], quorum: st.quorum === null ? undefined : Number(st.quorum), refs: json<string[]>(st.refs, []) }, {
-        org, requesterId: r.requested_by ? str(r.requested_by) : null, allowSelfApproval: !!def.allowSelfApproval, separationOfDuties: !!def.separationOfDuties,
+        org, requesterId: routeFrom(r), alsoSelf: selfOf(r), allowSelfApproval: !!def.allowSelfApproval, separationOfDuties: !!def.separationOfDuties,
         previousApprovers, delegations: await activeDelegations(at), policyKeys: pol.length ? [str(pol[0].id), str(pol[0].name)] : [],
       })
     } catch (e) {
@@ -577,7 +586,7 @@ export function createApprovals(services: CoreServices) {
       const to = findPerson(org, str(o.to))
       if (!to || to.status === 'disabled') throw invalid(`There is nobody active "${str(o.to)}" in this environment.`, 'to')
       const def = defOf(r)
-      if (to.id === str(r.requested_by) && !def.allowSelfApproval) throw invalid(`${to.name} made the request and may not approve it.`, 'to')
+      if (selfOf(r).includes(to.id) && !def.allowSelfApproval) throw invalid(`${to.name} ${to.id === str(r.requested_by) ? 'made the request' : 'caused this request'} and may not approve it.`, 'to')
       if (asg.some((a) => a.status === 'pending' && Number(a.stage_idx) === Number(r.current_stage) && str(a.user_id) === to.id)) throw invalid(`${to.name} is already asked.`, 'to')
       const at = now()
       const by = org.people.get(ctx.user.id)?.name ?? ctx.user.name
@@ -672,7 +681,7 @@ export function createApprovals(services: CoreServices) {
           if (policies.length && !policies.includes(str(o.pname).toLowerCase()) && !policies.includes(str(o.rid).toLowerCase())) continue
           const r = await lockRequest(str(o.rid))
           if (!r || !isOpenStatus(str(r.status))) continue
-          if (str(d.to_user) === str(r.requested_by) && !defOf(r).allowSelfApproval) {
+          if (selfOf(r).includes(str(d.to_user)) && !defOf(r).allowSelfApproval) {
             await hist(str(r.id), SYSTEM, 'delegation.skipped', Number(r.current_stage), { text: 'The delegate made this request; it stays with the person asked.', delegation: str(d.id) })
             continue
           }
@@ -782,7 +791,7 @@ export function createApprovals(services: CoreServices) {
     const addFor = async (old: Row | null, target: string, note0: string) => {
       if (old) await db().exec(`UPDATE ${T('ab_approval_assignments')} SET status = 'escalated', next_reminder_at = NULL WHERE id = $1`, [str(old.id)])
       // a delegation of the escalation target is honoured too
-      const dl = delegateOf(target, { delegations, policyKeys: pol.length ? [str(pol[0].id), str(pol[0].name)] : [], org, requesterId: r.requested_by ? str(r.requested_by) : null, allowSelfApproval: !!def.allowSelfApproval })
+      const dl = delegateOf(target, { delegations, policyKeys: pol.length ? [str(pol[0].id), str(pol[0].name)] : [], org, requesterId: routeFrom(r), alsoSelf: selfOf(r), allowSelfApproval: !!def.allowSelfApproval })
       const toUser = dl?.userId ?? target
       const note = dl ? `${note0} On behalf of ${org.people.get(target)?.name ?? target} (delegation).` : note0
       const exists = await db().query<Row>(`SELECT id FROM ${T('ab_approval_assignments')} WHERE request_id = $1 AND stage_idx = $2 AND user_id = $3 AND status IN ('pending', 'responded')`, [id, idx, toUser])
@@ -798,7 +807,7 @@ export function createApprovals(services: CoreServices) {
     switch (e.action) {
       case 'manager': {
         for (const a of pending) {
-          const m = managersOf(org, str(a.user_id)).find((p) => p.status !== 'disabled' && (def.allowSelfApproval || p.id !== str(r.requested_by)))
+          const m = managersOf(org, str(a.user_id)).find((p) => p.status !== 'disabled' && (def.allowSelfApproval || !selfOf(r).includes(p.id)))
           if (m) await addFor(a, m.id, `Overdue: escalated to the manager of ${org.people.get(str(a.user_id))?.name ?? str(a.user_id)}.`)
           else await hist(id, SYSTEM, 'escalation.skipped', idx, { text: `${org.people.get(str(a.user_id))?.name ?? str(a.user_id)} has no manager on record; they stay asked.` })
         }
@@ -1143,9 +1152,12 @@ export function createApprovals(services: CoreServices) {
           policy: req.policy ?? null, approvers: req.approvers, ...(req.typeGiven === false && req.policy ? {} : { type: req.type as ApprovalDefinition['type'] }),
           ...(req.optionsGiven === false ? {} : { options: req.options }), extra,
         })
+        // P3: on behalf of the person whose change started the run (and the step's requester): see behalfOf
+        const requestedBy = req.requestedBy ?? identity?.user.id ?? null
+        const behalf = [...new Set((req.onBehalfOf ?? []).filter((u) => typeof u === 'string' && u && u !== requestedBy))]
         const r = await createRequest({
           idempotencyKey: req.idempotencyKey, title: req.title, details: req.details, fields: req.fields, regarding: req.regarding ?? null,
-          requestedBy: req.requestedBy ?? identity?.user.id ?? null, definition: def, policyId: pol?.id ?? null, source: 'flow',
+          requestedBy, definition: behalf.length ? { ...def, onBehalfOf: behalf } as ApprovalDefinition : def, policyId: pol?.id ?? null, source: 'flow',
           flow: { flowId: req.flowId, flowName: req.flowName, runId: req.runId, waitId: req.waitId, stepKey: req.stepKey }, dueOn: req.dueOn ? new Date(req.dueOn) : null,
         }, { id: null, kind: 'flow' })
         return { id: r.id }

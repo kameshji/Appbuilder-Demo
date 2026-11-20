@@ -134,6 +134,7 @@ export const JOB_READ_ONLY: Readonly<Record<string, { mode: 'run' | 'pause'; why
   'identity.signin-log.retention': P('retention sweep of the sign-in log'),
   'identity.mail-log.retention': P('retention sweep of the email log'),
   'collab.notify': P('notifications of comments, mentions and task assignments (they write notifications)'),
+  'notes.notify': P('notifications of shared notes and mentions in them (they write notifications)'),
   'collab.orphan-sweep': P('deletes collaboration rows'),
   'tasks.reminders': P('task reminders: sent (once each) when writable again'),
   'tasks.digest': P('the daily task digest: the next one after resume'),

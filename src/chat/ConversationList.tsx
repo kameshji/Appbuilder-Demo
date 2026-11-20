@@ -10,6 +10,7 @@ import { listTime } from './format'
 import { openConversation, useChat } from './store'
 import { filterConversations } from './unread'
 import { BrowseChannelsDialog, NewConversationDialog } from './dialogs'
+import { Discussions } from './Discussions'
 
 export function ConversationList({ className }: { className?: string }) {
   const list = useChat((s) => s.list)
@@ -21,6 +22,8 @@ export function ConversationList({ className }: { className?: string }) {
   const [searchError, setSearchError] = useState('')
   const [newOpen, setNewOpen] = useState(false)
   const [browseOpen, setBrowseOpen] = useState(false)
+  // package E: the record discussions I follow or was mentioned in (Comments of the page's environment)
+  const [tab, setTab] = useState<'conversations' | 'discussions'>('conversations')
   const items = useMemo(() => filterConversations(list.order.map((id) => list.byId[id]), q), [list, q])
   const listRef = useRef<HTMLUListElement>(null)
 
@@ -98,6 +101,15 @@ export function ConversationList({ className }: { className?: string }) {
           <MessageSquarePlus />
         </Button>
       </div>
+      <div className="flex shrink-0 gap-1 border-b border-border px-2 py-1" role="tablist" aria-label="Chat lists">
+        {(['conversations', 'discussions'] as const).map((k) => (
+          <button key={k} type="button" role="tab" aria-selected={tab === k} data-testid={`chat-tab-${k}`} onClick={() => setTab(k)}
+            className={cn('rounded-md px-2 py-1 text-xs font-medium', tab === k ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-muted')}>
+            {k === 'conversations' ? 'Conversations' : 'Discussions'}
+          </button>
+        ))}
+      </div>
+      {tab === 'discussions' ? <Discussions className="min-h-0 flex-1" /> : (
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         {items.length === 0 && !q && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground" data-testid="chat-empty">
@@ -175,6 +187,7 @@ export function ConversationList({ className }: { className?: string }) {
           </section>
         )}
       </div>
+      )}
       <NewConversationDialog open={newOpen} onOpenChange={setNewOpen} />
       <BrowseChannelsDialog open={browseOpen} onOpenChange={setBrowseOpen} />
     </div>

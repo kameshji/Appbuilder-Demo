@@ -62,6 +62,7 @@ Asks people to approve; the run waits (costing nothing) until they answer or the
 | `regarding` | { table, rowId: Fx } |  | The record the approval is about. |
 | `policy` | text |  | An approval policy (name or id): approvers, stages, thresholds, reminders, escalation. |
 | `fields` | Record<label, Fx> |  | Fields shown to approvers (also to those who cannot open the record); threshold rules read them. |
+| `requester` | Fx (one person) |  | One more person the request is on behalf of (for example Trigger.Record.owner). Always on behalf of the person whose change or button press started the run: they, the identity of the flow and this person are never asked (unless allowSelfApproval), and manager references and the fallback start from this person (else from the triggering person). |
 | `quorum` | number |  | type quorum: how many must approve. |
 | `stages` | { name?, approvers, mode?, quorum?, condition? }[] |  | type sequential: the stages. |
 | `dueMinutes` | number |  | Due this long after the request; reminders and escalation count from it. |

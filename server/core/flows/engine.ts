@@ -64,7 +64,7 @@ const SUSPEND_KINDS = new Set(['delay', 'approval', 'callFlow', 'waitForCallback
 export interface EngineDeps {
   db(): SqlDb | null
   meta(): MetaStore
-  data(): DataService & { internals: { connectorFor(t: TableDef): Promise<Connector>; physical(t: TableDef): TableDef } }
+  data(): DataService & { internals: { connectorFor(t: TableDef): Promise<Connector>; physical(t: TableDef): TableDef; writeCells(ctx: UserContext | null, t: TableDef, rowId: string, changes: Record<string, unknown>): Promise<number> } }
   forUser(user: UserDef): Promise<UserContext>
   jobs: JobQueue
   store: FlowStore
@@ -102,7 +102,18 @@ export interface RunRow {
   responded: boolean
   stepCount: number
   doc: FlowDoc | null
-  options: { approvalOutcome?: string }
+  /** causedBy (P3): the person whose change, button press or call started the run (a child run and a resubmit keep it) */
+  options: { approvalOutcome?: string; causedBy?: string | null }
+}
+
+/**
+ * Who caused a run (P3; docs/dev/flows.md "Identity and security"): the person whose change started a table trigger
+ * (the outbox event's actor), who pressed the button (manual, test runs), inherited by child runs and resubmits; none for
+ * schedules, web requests and decided approvals. Runs created before it was recorded fall back to triggered_by.
+ */
+export function causedByOf(run: Pick<RunRow, 'options' | 'triggerKind' | 'triggeredBy' | 'mode'>): string | null {
+  if (run.options?.causedBy !== undefined) return run.options.causedBy ?? null
+  return run.triggerKind === 'table' || run.triggerKind === 'manual' || run.mode === 'test' ? run.triggeredBy ?? null : null
 }
 
 interface StepRow {
@@ -481,6 +492,9 @@ export function createFlowEngine(deps: EngineDeps) {
     const d = db()
     const id = n.id ?? `run_${randomBytes(9).toString('base64url')}`
     const payload = toStoredSafe(n.trigger, FLOW_LIMITS.triggerPayloadBytes, 'The trigger payload')
+    // who caused the run (causedByOf): recorded once, at the start; child runs and resubmits pass it on in options
+    const options: RunRow['options'] = { ...(n.options ?? {}) }
+    if (options.causedBy === undefined) options.causedBy = causedByOf({ options: {}, triggerKind: n.triggerKind, triggeredBy: n.triggeredBy ?? null, mode: n.mode ?? 'normal' })
     if (n.coalesceKey) {
       // a queued (not started) run of the same record takes the newer payload
       const c = await d.query<Row>(
@@ -501,7 +515,7 @@ export function createFlowEngine(deps: EngineDeps) {
       [id, n.flowId, n.flowName, n.flowVersion, n.ownerId, n.mode ?? 'normal', !!n.dryRun, n.triggerKind, n.triggerKey ?? null, n.triggerSummary?.slice(0, 300) ?? null,
         JSON.stringify(payload), n.runAs, n.runAsKind, n.triggeredBy ?? null, n.correlationId ?? newWorkId(), JSON.stringify((n.chain ?? []).slice(-32)), n.depth ?? 0, n.callDepth ?? 0,
         n.parentRunId ?? null, n.parentWaitId ?? null, n.resubmittedFrom ?? null, n.concurrencyKey ?? null, n.seq ?? Date.now(), JSON.stringify(n.variables),
-        n.regarding?.tableId ?? null, n.regarding?.rowId ?? null, deadline, now, n.doc ? JSON.stringify(n.doc) : null, JSON.stringify(n.options ?? {})],
+        n.regarding?.tableId ?? null, n.regarding?.rowId ?? null, deadline, now, n.doc ? JSON.stringify(n.doc) : null, JSON.stringify(options)],
     )
     if (!rows.length) {
       const ex = n.triggerKey ? await d.query<Row>(`SELECT id FROM ${T('ab_flow_runs')} WHERE trigger_key = $1`, [n.triggerKey]) : []
@@ -873,7 +887,9 @@ export function createFlowEngine(deps: EngineDeps) {
       case 'data.create': {
         const v = await values()
         const id = stableUuid(`${c.run.id}:${c.key}`)
-        if (c.run.dryRun) return { output: toStored({ ...recordOf(t, v as Record<string, unknown>), id, __id: id }), input: { table: t.name, values: v }, simulated: true }
+        // P3: who gets the new row (docs/dev/flows.md "Identity and security"); checked before anything is written
+        const owner = s.owner !== undefined && s.owner !== '' ? await ownerFor(c, t) : null
+        if (c.run.dryRun) return { output: toStored({ ...recordOf(t, v as Record<string, unknown>), id, __id: id, ...(owner ? { owner } : {}) }), input: { table: t.name, values: v, ...(owner ? { owner } : {}) }, simulated: true }
         // a retry of a write that reached another connection (no shared transaction): the row is there already
         const conn = await data.internals.connectorFor(t)
         const exists = await conn.select(data.internals.physical(t), { where: { col: 'id', op: 'eq', value: id }, top: 1, select: ['id'] })
@@ -881,8 +897,17 @@ export function createFlowEngine(deps: EngineDeps) {
           const cur = await runPlan(c.ev, t, { version: 2, table: t.name, filter: { col: 'id', op: 'eq', value: id }, single: true } as QueryPlan)
           return { output: toStored(cur.rows[0] ?? { id }), input: { table: t.name, values: v } }
         }
-        const created = await runWithWork({ chain: [...c.run.chain, `flow:${c.run.flowId}:${id}`].slice(-32) }, () => data.insert(c.ident, t, { ...v, id }))
-        return { output: asRecord(created as Record<string, unknown>), input: { table: t.name, values: v } }
+        const created = await runWithWork({ chain: [...c.run.chain, `flow:${c.run.flowId}:${id}`].slice(-32) }, async () => {
+          const row = await data.insert(c.ident, t, { ...v, id }) as Record<string, unknown>
+          // the new owner in the same transaction, through the guarded cell write (the run-as identity's update rule
+          // applies; the change is in the outbox like any other)
+          if (owner && row.owner !== owner) {
+            if (!(await data.internals.writeCells(c.ident, t, id, { owner }))) throw new StepError(`${t.displayName}: the new row could not be given to its owner (${c.ident.user.name} may not change it).`, true, 'denied')
+            row.owner = owner
+          }
+          return row
+        })
+        return { output: asRecord(created), input: { table: t.name, values: v, ...(owner ? { owner } : {}) } }
       }
       case 'data.update': {
         const id = rowIdOf(await fx(c, s.rowId, 'rowId'))
@@ -908,6 +933,53 @@ export function createFlowEngine(deps: EngineDeps) {
         return { output: { Deleted: true }, input: { table: t.name, rowId: id } }
       }
     }
+  }
+
+  /**
+   * data.create `owner` (P3): one person or team the flow names. The rule of giving a row to someone
+   * (server/core/data.ts assignableOwner, the assign-owner action): the run-as identity itself or a team it belongs to;
+   * an administrator's flow any active user, or any team of this environment. Teams only on tables with team ownership.
+   * Blank (for example Trigger.User of a change the system made): null, the row stays the run-as identity's.
+   */
+  async function ownerFor(c: StepCtx, t: TableDef): Promise<string | null> {
+    const s = c.step as Extract<Step, { kind: 'data.create' }>
+    if ((t.missingSystem ?? []).includes('owner')) throw new StepError(`${t.displayName} has no owner column.`, true)
+    const named = principals(await fx(c, s.owner, 'owner'))
+    if (!named.length) return null
+    if (named.length !== 1) throw new StepError(`owner must name one person or team (an email, a user id, a user record or team:<id>); it gave ${named.join(', ')}.`, true)
+    const who = c.ident
+    const refuse = (): never => { throw new StepError(`${who.user.name}, the identity this flow runs as, may give a new row only to itself or to a team of its own; only an administrator's flow gives rows to other people.`, true, 'denied') }
+    if (/^team:/i.test(named[0])) {
+      const tid = named[0].slice(5)
+      if (!t.teamOwnership) throw new StepError(`${t.displayName} does not have team ownership: its rows belong to people.`, true)
+      if ((who.user.org?.teams ?? []).some((x) => x.id === tid)) return tid
+      if (!who.privileges.isAdmin) refuse()
+      const teams = (await deps.meta().org?.teams.list()) ?? []
+      if (!teams.some((x) => x.id === tid && (!x.environmentId || x.environmentId === env().id))) throw new StepError(`owner: there is no team "${tid.slice(0, 64)}" in this environment.`, true)
+      return tid
+    }
+    const u = named[0].includes('@') ? await deps.meta().users.byEmail(named[0]) : await deps.meta().users.get(named[0])
+    if (!u || u.status === 'disabled') throw new StepError(`owner: there is nobody active "${named[0].slice(0, 80)}" in this environment.`, true)
+    if (u.id !== who.user.id && !who.privileges.isAdmin) refuse()
+    return u.id
+  }
+
+  /**
+   * notify `roles` / `teams` (P3): the people who hold the role, or are members of the team, when the step runs; only
+   * active people of this environment (the notification service resolves teams the same way).
+   */
+  async function roleMembers(refs: string[]): Promise<{ userIds: string[]; unknown: string[] }> {
+    if (!refs.length) return { userIds: [], unknown: [] }
+    const roles = await deps.meta().roles.list()
+    const ids = new Set<string>()
+    const unknown: string[] = []
+    for (const ref of refs) {
+      const r = roles.find((x) => x.id === ref) ?? roles.find((x) => x.name.toLowerCase() === String(ref).toLowerCase())
+      if (r) ids.add(r.id)
+      else unknown.push(`role:${ref}`)
+    }
+    const users = ids.size ? (await deps.meta().users.list()).filter((u) => u.status !== 'disabled' && u.roleIds.some((x) => ids.has(x))) : []
+    return { userIds: users.map((u) => u.id), unknown }
   }
 
   /** principals of `to` / `approvers`: user ids, emails, team:<id> */
@@ -970,14 +1042,23 @@ export function createFlowEngine(deps: EngineDeps) {
     void attempt
     switch (s.kind) {
       case 'notify': {
-        const who = principals(await fx(c, s.to, 'to'))
+        const who = s.to !== undefined && s.to !== '' ? principals(await fx(c, s.to, 'to')) : []
+        // P3: roles and teams named on the step (not by formula): members now
+        for (const tm of s.teams ?? []) who.push(`team:${tm}`)
+        const byRole = await roleMembers((s.roles ?? []).map(String))
         const title = String(fxToJson(await fx(c, s.title, 'title')) ?? '').slice(0, 200)
         const body = s.body ? String(fxToJson(await fx(c, s.body, 'body')) ?? '') : ''
         const link = s.link ? String(fxToJson(await fx(c, s.link, 'link')) ?? '') : ''
         if (link && !link.startsWith('#')) throw new StepError('link must be a link inside Appbuilder that starts with #.', true)
         const ids = await userIdsOf(who)
-        const input = { to: who, title, body, link, channels: s.channels }
-        if (!ids.userIds.length && !ids.teamIds.length) throw new StepError(`Nobody to notify: ${who.join(', ') || 'blank'} matched no user or team.`, true)
+        ids.userIds = [...new Set([...ids.userIds, ...byRole.userIds])]
+        ids.unknown.push(...byRole.unknown)
+        const input = { to: who, ...(s.roles?.length ? { roles: s.roles } : {}), title, body, link, channels: s.channels }
+        if (!ids.userIds.length && !ids.teamIds.length) {
+          // a role or team with nobody in it is not an error (people are assigned later); a formula that names nobody is
+          if (!who.some((x) => !/^team:/i.test(x)) && (s.roles?.length || s.teams?.length) && !byRole.unknown.length) return { output: { Delivered: [], Skipped: [], Nobody: true }, input }
+          throw new StepError(`Nobody to notify: ${[...who, ...(s.roles ?? []).map((r) => `role:${r}`)].join(', ') || 'blank'} matched no user or team.`, true)
+        }
         if (c.run.dryRun) return { output: { Delivered: [], Skipped: [], Simulated: true }, input }
         const svc = deps.notifications()
         if (!svc) throw new StepError('Notifications are not available on this server.', false)
@@ -1116,17 +1197,28 @@ export function createFlowEngine(deps: EngineDeps) {
           fields = {}
           for (const [k, f] of Object.entries(step.fields)) fields[k] = fxToJson(await fx(c, f, `fields.${k}`))
         }
+        // P3: on behalf of whom (docs/dev/flows.md "Identity and security"): the step's requester, then who caused the run
+        const onBehalfOf: string[] = []
+        if (step.requester !== undefined && step.requester !== '') {
+          const named = principals(await fx(c, step.requester, 'requester'))
+          if (named.length !== 1 || /^(team|role):/i.test(named[0])) throw new StepError(`requester must name one person (an email, a user id or a user record); it gave ${named.length ? named.join(', ') : 'nothing'}.`, true)
+          const u = named[0].includes('@') ? await deps.meta().users.byEmail(named[0]) : await deps.meta().users.get(named[0])
+          if (!u || u.status === 'disabled') throw new StepError(`requester: there is nobody active "${named[0].slice(0, 80)}" in this environment.`, true)
+          onBehalfOf.push(u.id)
+        }
+        const caused = causedByOf(run)
+        if (caused && !onBehalfOf.includes(caused)) onBehalfOf.push(caused)
         const definition: Record<string, unknown> = {}
         // P1-E: threshold rules and answer options (with their kinds) can be set on the step too, not only in a policy
         for (const k of ['quorum', 'stages', 'rules', 'responses', 'dueMinutes', 'reminders', 'escalation', 'allowSelfApproval', 'separationOfDuties', 'requireCommentOnReject'] as const) if ((step as unknown as Record<string, unknown>)[k] !== undefined) definition[k] = (step as unknown as Record<string, unknown>)[k]
         approvalReq = {
           environmentId: env().id, runId: run.id, flowId: run.flowId, flowName: run.flowName, stepKey: key, stepName: step.name, waitId, title, ...(details ? { details } : {}),
           approvers, type: step.type ?? 'single', options: step.options?.length ? step.options : ['Approve', 'Reject'], ...(regarding ? { regarding } : {}),
-          requestedBy: run.runAs, ...(timeoutAt ? { dueOn: timeoutAt.toISOString() } : {}), idempotencyKey: `${run.id}:${key}`,
+          requestedBy: run.runAs, ...(onBehalfOf.filter((u) => u !== run.runAs).length ? { onBehalfOf: onBehalfOf.filter((u) => u !== run.runAs) } : {}), ...(timeoutAt ? { dueOn: timeoutAt.toISOString() } : {}), idempotencyKey: `${run.id}:${key}`,
           ...(step.policy ? { policy: step.policy } : {}), ...(fields ? { fields } : {}), ...(Object.keys(definition).length ? { definition } : {}),
           ...(step.type === undefined ? { typeGiven: false } : {}), ...(step.options?.length ? {} : { optionsGiven: false }),
         }
-        input = { title, approvers, type: approvalReq.type, options: approvalReq.options, ...(regarding ? { regarding } : {}), ...(step.policy ? { policy: step.policy } : {}), ...(fields ? { fields } : {}) }
+        input = { title, approvers, type: approvalReq.type, options: approvalReq.options, ...(regarding ? { regarding } : {}), ...(step.policy ? { policy: step.policy } : {}), ...(fields ? { fields } : {}), ...(approvalReq.onBehalfOf ? { onBehalfOf: approvalReq.onBehalfOf } : {}) }
       } else if (step.kind === 'callFlow') {
         const target = await deps.store.resolve(step.flow)
         if (!target) throw new StepError(`There is no flow "${step.flow}".`, true)
@@ -1706,7 +1798,7 @@ export function createFlowEngine(deps: EngineDeps) {
         id, flowId: old.flowId, flowName: flow.name, flowVersion: old.flowVersion, ownerId: flow.ownerId, mode: old.mode, dryRun: old.dryRun, triggerKind: old.triggerKind,
         triggerSummary: `resubmitted (${from === 'start' ? 'from the start' : from === 'failed' ? 'from the failed step' : `from the step ${fromName}`})`.slice(0, 200), trigger: fromStored(old.trigger), runAs: old.runAs, runAsKind: old.runAsKind,
         triggeredBy: by, chain: old.chain, depth: old.depth, callDepth: old.callDepth, resubmittedFrom: old.id, concurrencyKey: old.concurrencyKey, variables,
-        timeoutMinutes: doc.settings?.timeoutMinutes ?? FLOW_LIMITS.runTimeoutMinutes, doc: old.doc, options: old.options,
+        timeoutMinutes: doc.settings?.timeoutMinutes ?? FLOW_LIMITS.runTimeoutMinutes, doc: old.doc, options: { ...old.options, causedBy: causedByOf(old) },
       })
       return { id: res.id }
     })

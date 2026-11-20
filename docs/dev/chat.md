@@ -17,10 +17,13 @@ sections 2 and 5.1 to 5.9.
 | `server/core/chat/settings.ts` | `ab.settings` key `chat`; environment delete and copy hooks |
 | `server/core/chat/ddl.ts` | Schema version 14 (`ab_chat_reports`, `ab_chat_exports`) and the extra indexes |
 | `server/core/live/hub.ts` | The chat topics |
+| `server/core/chat/discussions.ts` | Package E: the Discussions list (record discussions = Comments), read markers |
+| `server/core/approvals/chat-hook.ts` | Package E: approval cards (the sweep, the per-reader resolver) and the timeline event per answer |
+| `src/chat/share.tsx`, `src/chat/cards/ApprovalCard.tsx`, `src/chat/Discussions.tsx`, `src/chat/mentions.ts` | Package E: "Share to chat", approval cards, the Discussions list, chat mentions on the Mentions page |
 
-Not built here: the UI (package B), card pickers and approval cards (package E), per-record discussions (package E),
-email of chat items beyond the existing digest, presence dots in direct conversations (the existing `presence:online`
-topic is administrators only; package B decides), offline sending (chat sending needs a connection).
+Not built: email of chat items beyond the existing digest, presence dots in direct conversations (decided in package E:
+not built, see "Presence" below), offline sending (chat sending needs a connection), answering approvals by typing or by
+replying to an email, a policy-level switch for approval cards.
 
 ## Where chat lives
 
@@ -109,17 +112,22 @@ All under `/api/v1`, a signed-in person (cookie; `X-Appbuilder: 1` on writes), J
 | Route | Body | Answer |
 | --- | --- | --- |
 | `GET /chat/conversations/:id/messages?before=<seq>&after=<seq>&limit=50` | | `{ messages: ChatMessageView[], more, lastSeq, purgedSeq }`: top-level messages (thread replies are not in it), oldest first; `before` pages back, `after` forward; at most 100 |
+| `GET /chat/conversations/:id/messages?around=<seq>&limit=50` | | `{ messages, more, newer, lastSeq, purgedSeq }`: one page around an old message (the message and older ones, then newer ones); `more` = older exist, `newer` = newer exist. Deep links use it instead of paging back. |
 | `POST /chat/conversations/:id/messages` | `{ body, parent?, files?: attachmentIds, cards?: ChatCardRef[], clientId? }` | `{ message, duplicate }`. `clientId` (8 to 80 of `A-Za-z0-9_.:-`) makes a retried send find the first message (`duplicate: true`): send it on every message. |
 | `GET /chat/messages/:id/replies?after=&limit=` | | `{ root, messages, more }` |
 | `PATCH /chat/messages/:id` | `{ body }` | `{ message }` (own messages; "edited") |
 | `DELETE /chat/messages/:id` | | `{ deleted }` (own messages; a "message deleted" line stays) |
 | `POST /chat/messages/:id/reactions` | `{ emoji, on? (default true) }` | `{ message }` |
 | `POST /chat/messages/:id/report` | `{ reason }` | `{ reported }`: administrators are told that a report waits |
-| `GET /chat/conversations/:id/changes?after=<seq>` | | `ChatChanges`: every message whose latest change is after `after` (deleted ones too), the conversation, the members when a member change happened; `reset: true` when `after < purgedSeq` (reload the latest page) |
+| `GET /chat/conversations/:id/changes?after=<seq>` | | `ChatChanges`: every message whose latest change is after `after` (deleted ones too), the conversation, the members when a member change happened; `reset: true` when `after < purgedSeq` (reload the latest page); `more: true` when the answer is one full page (`CHAT_CHANGES_PAGE`, 1,000): ask again after the last `changeSeq` it carries |
 | `POST /chat/conversations/:id/read` | `{ seq }` | `{ lastReadSeq, unread, mentions }`; also marks this conversation's chat mentions and chat notifications up to `seq` read and pushes `chat.unread` to my other tabs |
 | `POST /chat/conversations/:id/typing` | | `{ ok }` (at most one event per person and conversation every 3 s) |
 | `POST /chat/cards/resolve` | `{ messageId, index }` | `ChatCardView` |
 | `GET /chat/search?q=&channel=&from=&before=&page=` | | `{ items: [{ message, conversation: { id, kind, name } }], more }`, 20 per page |
+| `GET /chat/mentions?limit=` | | `{ items: [{ id, IsRead, createdOn, Body, Link, byName, conversation, regardingTable, regardingId }] }`: where I was mentioned in chat (the chat environment, from any environment), messages I can still read only; `Link` = `#chat?c=..&m=..` (the Mentions page opens it) |
+| `POST /chat/mentions/:id/read` | | `{ ok }` (my own chat mentions only) |
+| `GET /chat/discussions?limit=` | | `{ items: DiscussionItem[] }`: see "Record discussions". Runs in the **request's** environment (send `X-Appbuilder-Environment`), unlike the other chat routes |
+| `POST /chat/discussions/read` | `{ table?, row }` | `{ ok, following }`: my Follows row's `LastReadOn` = now (the timeline calls it when a followed record's timeline loads) |
 
 **Message format.** `body` is the comment rich-text subset (`RICH_TEXT_TAGS`), sanitised on the server; mentions are
 `<span data-mention="<userId>">@Name</span>` and `<span data-mention="channel">@channel</span>` (people in channels up to
@@ -147,6 +155,39 @@ available: false, kind }` (the same answer for hidden and missing); a record sho
 the reader may not read (the names are not sent either), the primary column as `title` only when readable; an app when
 the reader may run it; a dashboard's title and description when the reader may view it. Chat tables are never cards.
 Re-resolve a record card when the record's table topic ticks for the reader.
+
+**Approval cards** (package E): `{ kind: 'approval', env, request, assignment, state: 'pending' | 'done' }`. Only the
+system sender posts them (`parseCards` refuses the kind from people): one per pending assignment of the current stage,
+in the person's direct conversation with "Approvals" (`DirectKey` = `system:approvals:<userId>`, one member,
+`system: 'approvals'` on `ChatConversation`, `canPost` false; sends, reactions, reports and deletes there are refused).
+The message has no sender, `Kind = message` (it counts as unread) and the text "Approval needed: <title>". Resolved per
+reader by `server/core/approvals/chat-hook.ts` through the approvals service's own `detail()` AS THE READER (`canSee`;
+the record only as the reader may read it): `ChatApprovalCardView` (title, status, outcome, requester, due, the declared
+fields, options with `requireComment`, `canDecide`, `myAnswer`). Answers go to `POST /approvals/:id/respond` (with the
+card's environment in `X-Appbuilder-Environment`), the inbox's route and checks. The sweep (a worker tick hook, at most
+every second per environment) posts cards for new assignments (delegation, reassignment and escalation make new ones) and
+sets `state: 'done'` when an assignment is no longer waiting (answered anywhere, decided, cancelled, reassigned), which is
+an `edit` push: open cards resolve again. Message ids are derived from (environment, assignment)
+(`approvalCardMessageId`), so a card is posted once across retries, restarts and workers. A person gets no cards when
+they cannot use chat or have approval notifications in the app switched off (`kinds.approval === false`).
+
+## Record discussions
+
+A record's discussion IS its Comments (spec default 5; no channel of kind `record`). The record timeline UI component
+(`src/controls/display/collab.tsx`) shows them with: mentions limited to readers of the record (the composer and the edit
+box use `/collab/mentionable`), **editing one's own comment** (the server's existing rule: update = about the record AND
+written by me; `EditedOn` set, mentions re-extracted; no history kept, as for chat messages), "Share to chat", live
+updates (the collaboration tables' topics), a read marker (`POST /chat/discussions/read` when a followed record's
+timeline loads) and an extension point for other modules' composer actions (`addTimelineAction`, e.g. Notes' "New note").
+Replies to a comment (`ParentComment`) are not shown as threads: the spec asks for one thread per record.
+
+`GET /chat/discussions` (`DiscussionItem`: `table, row, tableName, label, following, mentioned, lastCommentOn,
+lastText, lastBy, unread, link`) lists the records I follow (Follows, owner = me) and the records where a comment
+mentioned me, read through the DataService AS ME: the regarding rule hides comments, mentions and follows of records I
+cannot read, and a record without a readable label is left out. `unread` = comments by others after my
+`Follows.LastReadOn` (following) or after my unread mention; `link` = the newest comment's `Link` (the app it was
+written in, `#u-<app>?record=<id>`), or null. Leak tests: `chat-security.integration.test.ts` "record discussions"
+and "losing read access loses the discussion".
 
 ### Administrators (`/chat/admin/*`)
 
@@ -194,6 +235,19 @@ install-wide: subscribe **without `env`**.
   the chat environment: the subscriptions are checked again at once and end with `{ t: 'unsubscribed', topic, reason }`;
   the person also gets `chat.channels` `removed`.
 - `X-Appbuilder-Live: <connection id>` on writes marks the push `self` on that socket.
+- **One socket per tab** (package E): the chat store subscribes its topics on the page's live connection
+  (`src/platform/live.ts`, obtained with `pageLiveClient()` from `remote-live.ts`); there is no second socket. The
+  client routes `chat` and `typing` pushes by topic, gives chat topics their `subscribed` answer (with the seq),
+  `unsubscribed` and a refused subscription (`error` answering the `sub` id) reach the topic's handlers, and an
+  environment switch keeps install-wide topics (`user:`, `chat:`) and kept ones (a chat card's table topic in another
+  environment, `subscribe(..., { keep: true })`). The browser going offline closes the socket at once.
+
+## Presence
+
+Package E decided **not** to build online dots in direct conversations. The hub's presence (`presence:online`) is for
+administrators; a dot per direct conversation needs a new hub topic whose answer is computed per pair of people (only
+people who share a conversation may learn that the other is online, honouring "Hide my presence"), in
+`server/core/live/**`, for a small gain. Default 10 of the spec stays open for a later package.
 
 ## Notifications
 
@@ -231,4 +285,8 @@ read-only message; reading, search and administrator export work).
   paging, threads, edits, deletes, notifications and the digest check, files, typing, moderation and audit, retention
   with a moved clock, environment copy and delete, the 13 -> 14 upgrade; `APPBUILDER_BENCH=1` adds the 100,000-message
   search run.
-- `scripts/exit-check/p3-chat.mjs`: exit checks 1 to 8, API level.
+- `scripts/exit-check/p3-chat.mjs`: exit checks 1 to 8, API level, and the browser part (packages B and E: 4E share to
+  chat per reader, 6E discussions, 15E approval cards and the timeline, 1E one socket per tab across an environment
+  switch, the Mentions page, a deep link to an old message).
+- `src/chat/socket.test.ts` (chat on the page's live connection), `src/chat/share.test.ts`, `src/chat/timeline.test.ts`
+  ("a deep link to an old message").

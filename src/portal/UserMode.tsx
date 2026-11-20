@@ -14,6 +14,7 @@ import { Empty, PageHeader, fmtRelative, useToast } from './kit'
 import { matches, useSearch } from './Shell'
 import { canRun, closeAppTab, openAppTab, openAppWindow, useWorkspace } from './workspace'
 import { PinnedTiles } from './dashboards/PinnedTiles'
+import { ShareToChatButton } from '@/chat/share'
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -107,6 +108,7 @@ function AppTile({ app }: { app: AppMeta }) {
           <div className="truncate text-sm font-semibold">{app.name}</div>
           <div className="mt-0.5 truncate text-xs text-muted-foreground">{app.description || `Updated ${fmtRelative(app.modifiedOn)}`}</div>
         </div>
+        <ShareToChatButton target={{ kind: 'app', app: app.id }} title={app.name} size="icon-sm" />
         <Button size="xs" onClick={() => openAppTab(app.id)}><Play className="fill-current" /> Open</Button>
         <span className="hidden md:inline-flex">
           <Button size="icon-sm" variant="ghost" title="Open in new window" aria-label={`Open ${app.name} in new window`} data-testid={`launcher-window-${app.id}`} onClick={() => inWindow(app.id)}>

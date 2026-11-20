@@ -5,6 +5,7 @@
  *   - a member name                     ThisItem.Slot_Items_Title, Gallery1.Selected.Slot_Items_Title
  *   - a record field name               Patch(Slot_Items, Defaults(Slot_Items), { Slot_Items_Title: "x" })
  *   - the whole of a text value, or every piece of a comma list in one      DataSource ="Slot_Items", Fields ="Slot_Items_Title, Slot_Items_Status"
+ *   - a piece `<token>:<header>` of such a list (DataTable Columns)          Columns ="Slot_Items_Title:Title, Slot_Items_Status:State"
  * Text values that merely contain a token among other words are left alone (and then reported as unresolved).
  *
  * A token mapped to null (an optional column or slot left out) reads Blank(): the identifier or the whole member access
@@ -18,10 +19,19 @@ const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 const fxName = (n: string): string => (IDENT_RE.test(n) ? n : `'${n.replace(/'/g, "''")}'`)
 const fxString = (s: string): string => `"${s.replace(/"/g, '""')}"`
 
-/** pieces of a text value when it is a comma list of tokens (or one token); null when it is not */
+/** a piece `<token>:<header>` (DataTable Columns: field:Header): the token and the header; null for anything else */
+const HEADED = /^(Slot_[A-Za-z0-9_]+)s*:s*(.*)$/
+function headed(piece: string): { token: string; header: string } | null {
+  const m = HEADED.exec(piece)
+  return m ? { token: m[1], header: m[2] } : null
+}
+
+/** pieces of a text value when it is a comma list of tokens (or one token, or token:Header pieces); null when it is not */
 function listPieces(value: string): string[] | null {
   const pieces = value.split(',').map((x) => x.trim())
   if (!pieces.some((x) => isToken(x))) return null
+  // a piece that holds a token among other words (not token:Header) makes the whole text unrewritable
+  if (pieces.some((x) => x.includes(SLOT_PREFIX) && !IDENT_RE.test(x) && !headed(x))) return null
   return pieces
 }
 
@@ -98,9 +108,11 @@ export function rewriteFormula(src: string, map: ReadonlyMap<string, string | nu
         let ok = true
         for (const piece of pieces) {
           if (!isToken(piece)) { next.push(piece); continue }
-          const r = look(piece)
+          const hd = headed(piece)
+          if (hd && hd.header.includes(SLOT_PREFIX)) { problems.push(`the header "${hd.header.slice(0, 40)}" holds a slot token and cannot be rewritten`); ok = false; continue }
+          const r = look(hd ? hd.token : piece)
           if (!r.known) { ok = false; continue }
-          if (r.to !== null) next.push(r.to)
+          if (r.to !== null) next.push(hd ? `${r.to}:${hd.header}` : r.to)
         }
         if (ok) edits.push({ start: n.start, end: n.end, text: fxString(next.filter((x) => x !== '').join(n.value.includes(', ') ? ', ' : ',')) })
         break
@@ -142,7 +154,7 @@ export function tokensIn(src: string, opts: { noEq?: boolean } = {}): string[] {
     if (n.t === 'id' && isToken(n.name)) out.add(n.name)
     if (n.t === 'member' && isToken(n.name)) out.add(n.name)
     if (n.t === 'rec') for (const f of n.fields) if (isToken(f.name)) out.add(f.name)
-    if (n.t === 'str') for (const piece of n.value.split(',').map((x) => x.trim())) if (isToken(piece)) out.add(piece)
+    if (n.t === 'str') for (const piece of n.value.split(',').map((x) => x.trim())) if (isToken(piece)) out.add(headed(piece)?.token ?? piece)
     for (const c of childrenOf(n)) visit(c)
   }
   visit(p.ast)

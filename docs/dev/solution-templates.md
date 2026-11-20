@@ -76,7 +76,9 @@ Every table is a **slot** (format 1, [templates.md](templates.md) "Package forma
 
 - **Ids**: slot ids and column ids are identifiers; a column id is the column's name when the pack creates the table.
   They are **stable across versions** (renaming one is dropping a table or column and adding another). Slot ids `App`,
-  `Role`, `Flow`, `Policy`, `Dashboard`, `Print`, `Seq` are reserved.
+  `Role`, `Flow`, `Policy`, `Dashboard`, `Print`, `Seq` are reserved. Column ids may not be the name of a system
+  column in any case (`id`, `createdOn`, `modifiedOn`, `createdBy`, `owner`: `SYSTEM_COLUMN_NAMES` of
+  `src/model/names.ts`; `validateTemplate` refuses `Owner` with a plain message): call it `ReportedBy`, `MachineOwner` ...
 - **Names are plain words** (`ProductionLog`, `Opportunities`, default 20). A taken name is a **clash**: the binding step
   shows it with two ways out, use the existing table or install under the proposed prefixed name; the install is
   blocked until the maker chooses. Nothing is ever renamed or overwritten silently.
@@ -121,7 +123,10 @@ Where a token may stand:
 - **in formulas** (UI component properties, app formulas, event conditions and actions, formula columns, flow
   expressions, print formulas): as an identifier, a member (`ThisItem.Slot_Visits_Status`), a record field
   (`{Slot_Visits_Status: "Done"}`), the whole of a text value (`DataSource ="Slot_Visits"`, `NextNumber("Slot_Seq_Passes")`)
-  or every piece of a comma list (`Fields ="Slot_Visits_A, Slot_Visits_B"`);
+  or every piece of a comma list (`Fields ="Slot_Visits_A, Slot_Visits_B"`); a piece may carry a header after a colon,
+  as the DataTable's `Columns` allow (`Columns ="Slot_Visits_PassNumber:Pass number, Slot_Visits_Arrival:Arrived"`: the
+  token is rewritten, the header kept; a header may not hold a token; a left-out column drops its piece). Give the main
+  lists of a pack headers, or they show the spaced-out column names;
 - **in the JSON of flows, approval policies, dashboards, print documents and row rules**: as the whole of a string
   (`"table": "Slot_Visits"`), a comma list of tokens, `<word>:<token>` (`"role:Slot_Role_Reception"`), an object key
   (`"values": { "Slot_Visits_Approval": "..." }`), inside `{...}` of print text (`"Pass {Slot_Visits_PassNumber}"`), or a
@@ -146,7 +151,15 @@ pack may use every app of the pack.
 **Flows** (`payload.flows`): `{ key, name, description?, definition, runRoles? }`. `definition` is a flow definition
 ([flows.md](flows.md)): `trigger`, `steps`, `variables?`, `settings`. Rules:
 - flows **arrive turned off**; after the install an administrator is offered **Switch on these flows** (rule 8). They run
-  as their owner, the administrator who installed the pack;
+  as their owner, the administrator who installed the pack. What that means and what stops it from mattering
+  ([flows.md](flows.md) "Identity and security"):
+  - an **approval** step is on behalf of the person whose change started the run: they are never asked (nor the
+    installer), and the fallback is their manager. Add `"requester": "Trigger.Record.owner"` (or another person the flow
+    reads) when the request is about someone else too (the NCR's inspector when the quality head sends it);
+  - a `data.create` gives the row to the installer unless it says `"owner": "Trigger.User"` (the person whose change
+    started the run): use it whenever an own-rows role should see what a flow raised for them;
+  - **notify a role** with `"roles": ["Slot_Role_<key>"]` (no formula over `RoleAssignments`; a role nobody holds yet is
+    not an error);
 - never `runAs` a service account and never connection references (the safety check strips both, with a warning): use
   steps that need no connection (data, approval, notify, email through the platform's mail, document.generate);
 - name tables, columns, the policy (`"policy": "Slot_Policy_<key>"`), the print template (`"template": "Slot_Print_<key>"`)
@@ -250,8 +263,10 @@ upgrade (the plan says so). Choices are keyed `<kind>:<id>` (`app:app_tpl_…`, 
 **Uninstall** (`POST /templates/installed/:iid/uninstall/plan`, `/uninstall`): removes the pack's apps, flows (active runs
 cancelled), roles, approval policies, dashboards (with their tokens and snapshots), print templates, unused number
 sequences and the solution record; tables it created are removed when empty, kept with data unless an administrator
-ticks "Delete tables with data" and types the install's name; tables it mapped or shares are never touched; refused while
-another installed pack depends on it. Backup first; audit `template.uninstall`.
+ticks "Delete tables with data" and types the install's name; an empty table of the pack that a kept table of the pack
+looks up (a reporting view or summary of it too) is **kept as well**, and the plan says which table looks it up (after
+"Remove sample data" the masters are often empty while the entries are kept); tables it mapped or shares are never
+touched; refused while another installed pack depends on it. Backup first; audit `template.uninstall`.
 
 **Remove sample data** (`POST /templates/installed/:iid/sample/remove`, design route): section 7; audit
 `template.sample.remove`.
@@ -298,10 +313,12 @@ uninstall works the same way.
 - A pack's role sees the shared table (Accounts) only as far as its privileges on that slot say; it never changes what
   other roles see there.
 - The flows of a pack run as the administrator who installed it. Write them so that this is acceptable (they act on the
-  pack's own tables, notify roles, never mail outside).
+  pack's own tables, notify roles, never mail outside), and use `owner` and `requester` (section 5) so that the rows
+  they raise and the approvals they ask for belong to the person who caused them.
 - `checkSafety` strips, with a visible warning, anything a pack may not carry (secrets, people, connections, service
   accounts, unknown payload parts); a built-in pack must not trigger any of it (the pack test would show the warning).
-- Environment copies do not copy the install register yet (a copy with data should; see the open items in
-  [templates.md](templates.md)), so a copied environment's packs cannot be upgraded or uninstalled through the Templates
-  page.
+- An environment copy **with data** copies the install register (`ab_template_installs` in `COPY_DATA_META` of
+  `server/core/environment-ops.ts`, p3-spec 5.11): the copy's Templates page lists its packs and upgrades, removes the
+  sample data of and uninstalls them (its flows arrive off, like every copy). A schema-only copy does not (its SAMPLE and
+  reference rows are not there): there the pack's parts are ordinary components.
 - Scheduled reports are not a pack component yet (no solution hook exists for them): set them up after the install.

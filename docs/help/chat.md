@@ -78,11 +78,51 @@ device or tab count as read everywhere.
 
 Someone typing shows under the conversation ("Asha is typing...").
 
-## Cards
+## Cards and Share to chat
 
 When a record, an app or a dashboard is shared in a conversation, it shows as a card. Each person sees on the card only
 what they may see in Appbuilder themselves: a field you may not read is left out, and a record, app or dashboard you may
-not open shows "Not available". Cards never appear in emails. Sharing from apps and dashboards comes in a later update.
+not open shows "Not available". Cards never appear in emails. A record card follows changes to the record.
+
+To share one yourself, use **Share to chat** (the share button):
+
+- on a **record**: at the top of its timeline (the Record timeline UI component in an app);
+- on an **app**: on its tile in the app launcher;
+- on a **dashboard**: in the dashboard's toolbar.
+
+Pick one of the conversations you may write in, and for a record the fields to show (up to six; the record's name is
+always the card's title). You can add a message. The card holds a reference only: people who may not see a field, the
+record, the app or the dashboard do not get it from the card either.
+
+## Discussions
+
+A record's discussion is its comments, on the record's timeline. In the chat panel, **Discussions** (next to
+**Conversations**) lists the records you follow and the records where someone mentioned you in a comment, newest comment
+first, with the number of comments you have not read yet. Click one to open the record in the app it was discussed in.
+Opening a record's timeline counts its discussion as read. If you lose access to a record, its discussion disappears from
+the list as it does from the timeline.
+
+On the timeline you can **Edit** and **Delete** your own comments. An edited comment says "(edited)"; the earlier text is
+not kept. When you type @ in a comment, the list offers only people who can see the record.
+
+## Approvals in chat
+
+Approval requests waiting for you also arrive as cards in your conversation with **Approvals** (it appears in your list
+the first time). Each card shows the request (its title, who asked, the due date, the fields the request declared) and
+the answer buttons: pick one, add a comment (some answers need one: the card says so, and refuses the answer without
+it), then **Send**. This is the same answer as in **Approvals** (the inbox): delegation, reassignment and every rule of
+the request apply, and an answer cannot be changed afterwards. When the request is decided somewhere else (in the inbox,
+by an email button, or by another approver), the card shows the decision by itself. Nobody can write in the Approvals
+conversation; you cannot answer by typing.
+
+If you switch off approval notifications in the app (**Settings > Notifications**, Approvals), no cards arrive either.
+Each answer also shows on the timeline of the record the request is about, for the people who may see the request.
+
+## Mentions page and old messages
+
+The **Mentions** page lists where you were mentioned in comments and in chat; a chat mention opens the message in chat.
+A link to an old message opens the conversation at that message (with the messages around it); **Jump to the latest**
+brings you back to the newest messages.
 
 ## Notifications and settings of a conversation
 
@@ -116,7 +156,8 @@ remove old messages after a period it chose.
 
 ## What chat does not do
 
-Calls and screen sharing, people outside your company, read receipts per person, presence dots, changing the files of a
-message after sending, sending while offline, exporting a conversation yourself.
+Calls and screen sharing, people outside your company, read receipts per person, presence dots (who is online),
+changing the files of a message after sending, sending while offline, exporting a conversation yourself, answering an
+approval by replying to its email.
 
 Administrators: [chat for administrators](../admin/chat.md).

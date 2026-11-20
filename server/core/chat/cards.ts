@@ -22,6 +22,16 @@ import { canView, dashboardRow } from '../dashboards/compute.ts'
 
 const notAvailable = (kind: ChatCardRef['kind']): ChatCardView => ({ available: false, kind })
 
+/**
+ * approval cards (package E) are resolved by the approvals module (server/core/approvals/chat-hook.ts registers it): the
+ * same visibility rule as the inbox (canSee), in the request's environment, as the reader
+ */
+type ApprovalCardResolver = (userId: string, ref: Extract<ChatCardRef, { kind: 'approval' }>) => Promise<ChatCardView>
+let approvalResolver: ApprovalCardResolver | null = null
+export function setApprovalCardResolver(fn: ApprovalCardResolver | null): void {
+  approvalResolver = fn
+}
+
 /** the reader's security context in another environment, or null (no access, the environment is gone) */
 async function contextIn(s: CoreServices, userId: string, env: string): Promise<UserContext | null> {
   const rec = await s.meta.users.get(userId)
@@ -37,6 +47,7 @@ async function contextIn(s: CoreServices, userId: string, env: string): Promise<
 export async function resolveCardRef(s: CoreServices, userId: string, ref: ChatCardRef): Promise<ChatCardView> {
   const ctx = await contextIn(s, userId, ref.env)
   if (!ctx) return notAvailable(ref.kind)
+  if (ref.kind === 'approval') return approvalResolver ? approvalResolver(userId, ref) : notAvailable('approval')
   return runInEnvironment(ref.env, async (): Promise<ChatCardView> => {
     if (ref.kind === 'record') {
       const t = await s.meta.tables.get(ref.table)

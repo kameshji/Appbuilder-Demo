@@ -8,6 +8,9 @@
  *    definition allows self-approval; with separation of duties, the people who approved the previous stage are dropped;
  *    nobody left -> fallback to the requester's manager, else the environment's administrators (and why is recorded);
  *    delegations active now are followed (up to 5 hops, never back to the requester or in a cycle);
+ *    a flow's request made on behalf of someone (P3: the person whose change started the run, docs/dev/approvals.md
+ *    "Flows") passes them as requesterId (manager references and the fallback start from them) and the flow's own
+ *    identity in alsoSelf: everyone of both is treated as the requester by the rules above;
  *  - stageOutcome: the answers of a stage -> approved, rejected, a custom answer, or still open.
  */
 import {
@@ -191,6 +194,8 @@ export function resolveRef(ref: ParsedRef, org: OrgData, requesterId: string | n
 export interface ResolveOptions {
   org: OrgData
   requesterId: string | null
+  /** P3: more people treated as the requester (never asked unless allowSelfApproval): a flow's identity and whoever its request is on behalf of */
+  alsoSelf?: string[]
   allowSelfApproval?: boolean
   /** people who approved the previous stage (separation of duties) */
   previousApprovers?: Set<string>
@@ -202,7 +207,12 @@ export interface ResolveOptions {
 }
 
 /** the delegate of a person now (following delegations up to 5 hops), or null */
-export function delegateOf(userId: string, o: Pick<ResolveOptions, 'delegations' | 'policyKeys' | 'org' | 'requesterId' | 'allowSelfApproval'>): { userId: string; delegationId: string } | null {
+/** the requester, or one of the people treated as the requester (ResolveOptions.alsoSelf) */
+export function isSelf(id: string, o: Pick<ResolveOptions, 'requesterId' | 'alsoSelf'>): boolean {
+  return id === o.requesterId || !!o.alsoSelf?.includes(id)
+}
+
+export function delegateOf(userId: string, o: Pick<ResolveOptions, 'delegations' | 'policyKeys' | 'org' | 'requesterId' | 'alsoSelf' | 'allowSelfApproval'>): { userId: string; delegationId: string } | null {
   let cur = userId
   let found: { userId: string; delegationId: string } | null = null
   const seen = new Set([userId])
@@ -211,7 +221,7 @@ export function delegateOf(userId: string, o: Pick<ResolveOptions, 'delegations'
     if (!d || seen.has(d.toUser)) break
     const to = o.org.people.get(d.toUser)
     if (!to || to.status === 'disabled') break
-    if (!o.allowSelfApproval && d.toUser === o.requesterId) break
+    if (!o.allowSelfApproval && isSelf(d.toUser, o)) break
     seen.add(d.toUser)
     found = { userId: d.toUser, delegationId: d.id }
     cur = d.toUser
@@ -240,9 +250,9 @@ export function resolveStage(stage: StagePlan, o: ResolveOptions): { assignees: 
       notes.push({ action: 'routing.skipped', userId: id, text: `${p?.name ?? id} is disabled and is not asked.` })
       continue
     }
-    if (!o.allowSelfApproval && id === o.requesterId) {
+    if (!o.allowSelfApproval && isSelf(id, o)) {
       byId.delete(id)
-      notes.push({ action: 'routing.self', userId: id, text: `${p.name} made the request and may not approve it (self-approval is not allowed).` })
+      notes.push({ action: 'routing.self', userId: id, text: id === o.requesterId && o.alsoSelf?.length ? `${p.name} caused this request (the change it is about) and may not approve it (self-approval is not allowed).` : `${p.name} made the request and may not approve it (self-approval is not allowed).` })
       continue
     }
     if (o.separationOfDuties && o.previousApprovers?.has(id)) {
@@ -253,7 +263,7 @@ export function resolveStage(stage: StagePlan, o: ResolveOptions): { assignees: 
     void a
   }
   if (!byId.size) {
-    const blocked = (id: string) => (!o.allowSelfApproval && id === o.requesterId) || (o.separationOfDuties && o.previousApprovers?.has(id)) || o.org.people.get(id)?.status === 'disabled'
+    const blocked = (id: string) => (!o.allowSelfApproval && isSelf(id, o)) || (o.separationOfDuties && o.previousApprovers?.has(id)) || o.org.people.get(id)?.status === 'disabled'
     const mgr = managersOf(o.org, o.requesterId).find((m) => !blocked(m.id))
     if (mgr) {
       byId.set(mgr.id, { userId: mgr.id, source: 'fallback', note: 'Nobody else could be asked: the requester\'s manager decides.' })

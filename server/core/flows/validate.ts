@@ -34,6 +34,8 @@ export interface ValidationContext {
   /** connection references of the flow: ref -> connector kind */
   connections: Map<string, string>
   engine: FxEngine
+  /** P3: the roles of the environment (notify roles); absent: not checked */
+  roles?: { id: string; name: string }[]
   /** actions of a connection reference (null: unknown, not checked) */
   actionsOf?(ref: string): Promise<{ id: string; inputs?: { required?: string[]; properties?: Record<string, unknown> } }[] | null>
 }
@@ -408,6 +410,11 @@ export async function validateFlow(doc: { name?: unknown; description?: unknown;
         if (!t) err(id, 'table', `There is no table "${String(s.table ?? '')}".`)
         if (s.kind === 'data.get' || s.kind === 'data.delete' || s.kind === 'data.update') checkFx(id, 'rowId', s.rowId, lc)
         if (s.kind === 'data.create' || s.kind === 'data.update') checkValues(s as never, lc)
+        // P3: who gets the new row (one person or team; the rule is checked when it runs, with the run-as identity)
+        if (s.kind === 'data.create') {
+          checkFx(id, 'owner', s.owner, lc, false)
+          if (t && s.owner !== undefined && s.owner !== '' && (t.missingSystem ?? []).includes('owner')) err(id, 'owner', `${t.displayName} has no owner column.`)
+        }
         if (t && (s.kind === 'data.create' || s.kind === 'data.update' || s.kind === 'data.delete') && t.readOnly) err(id, 'table', `${t.displayName} is read-only.`)
         if (s.kind === 'data.list') {
           if (s.filter !== undefined && s.filter !== '' && t) {
@@ -450,6 +457,8 @@ export async function validateFlow(doc: { name?: unknown; description?: unknown;
         }
         if (s.type !== undefined && !['single', 'all', 'any', 'sequential', 'quorum'].includes(s.type)) err(id, 'type', 'type must be single, any, all, quorum or sequential.')
         if (s.options !== undefined && (!Array.isArray(s.options) || !s.options.length || s.options.some((o) => typeof o !== 'string' || !o.trim()))) err(id, 'options', 'options must be a list of texts (default Approve, Reject).')
+        // P3: one more person the request is on behalf of (the triggering person always is)
+        checkFx(id, 'requester', s.requester, lc, false)
         if (s.regarding !== undefined) {
           if (!tableOf(ctx, s.regarding?.table)) err(id, 'regarding.table', `There is no table "${String(s.regarding?.table ?? '')}".`)
           checkFx(id, 'regarding.rowId', s.regarding?.rowId, lc)
@@ -460,13 +469,24 @@ export async function validateFlow(doc: { name?: unknown; description?: unknown;
         if (s.minutes !== undefined && (!(Number(s.minutes) > 0) || Number(s.minutes) > FLOW_LIMITS.runTimeoutMinutesMax)) err(id, 'minutes', `minutes must be more than 0 and at most ${FLOW_LIMITS.runTimeoutMinutesMax}.`)
         if (s.until !== undefined && s.until !== '') checkFx(id, 'until', s.until, lc)
         break
-      case 'notify':
-        checkFx(id, 'to', s.to, lc)
+      case 'notify': {
+        // P3: roles and teams by id (or role name): resolved to their members when the step runs
+        const named = (k: 'roles' | 'teams') => {
+          const v = s[k]
+          if (v === undefined) return 0
+          if (!Array.isArray(v) || v.some((x) => typeof x !== 'string' || !x.trim())) { err(id, k, `${k} must be a list of ${k === 'roles' ? 'role' : 'team'} ids.`); return 0 }
+          return v.length
+        }
+        const nRoles = named('roles')
+        const nTeams = named('teams')
+        if (ctx.roles && nRoles) for (const r of s.roles ?? []) if (!ctx.roles.some((x) => x.id === r || x.name.toLowerCase() === r.toLowerCase())) err(id, 'roles', `There is no role "${r}".`)
+        checkFx(id, 'to', s.to, lc, !(nRoles + nTeams))
         checkFx(id, 'title', s.title, lc)
         checkFx(id, 'body', s.body, lc, false)
         checkFx(id, 'link', s.link, lc, false)
         if (!Array.isArray(s.channels) || !s.channels.length || s.channels.some((c) => c !== 'inApp' && c !== 'email')) err(id, 'channels', 'channels must list inApp and/or email.')
         break
+      }
       case 'email':
         checkFx(id, 'to', s.to, lc)
         checkFx(id, 'cc', s.cc, lc, false)

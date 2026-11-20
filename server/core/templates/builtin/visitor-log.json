@@ -427,7 +427,7 @@
                     "AnchorH": "=Anchor.Stretch",
                     "AnchorV": "=Anchor.Stretch",
                     "Items": "=Slot_Visits",
-                    "Columns": "=\"Slot_Visits_PassNumber, Slot_Visits_Visitor, Slot_Visits_Status, Slot_Visits_Approval, Slot_Visits_Arrival\""
+                    "Columns": "=\"Slot_Visits_PassNumber:Pass number, Slot_Visits_Visitor:Visitor, Slot_Visits_Status:Status, Slot_Visits_Approval:Approval, Slot_Visits_Arrival:Arrival\""
                   },
                   "children": []
                 },
@@ -908,6 +908,6 @@
   },
   "signature": {
     "alg": "sha256",
-    "digest": "215e02c21fc245ba49a1ec9d993b59d2300c987bd7fdb5f070059d400c0bd765"
+    "digest": "19081e201dae9a0b52107c1c87b8e045d796c36afe2f89fa1cca52943555040c"
   }
 }

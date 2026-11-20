@@ -17,7 +17,7 @@ usually ask for (inspection results, NCRs with their disposition and approval, m
 | Phone apps (3) | **Shop floor** (operators: scan the machine's QR code, log production with a photo, record a stoppage; works offline), **Inspection** (inspectors: scan the lot, result, measured value, photo, signature, defects; works offline), **Maintenance** (technicians: my open requests, acknowledge, close with cause, action and signature; preventive tasks; report a breakdown; works offline). |
 | Desktop apps (4) | **Supervisor console** (today, production log, downtime, work orders, shift handover), **Quality desk** (inspections with defects, NCRs and sending them for approval, inspection plans, defect types; prints), **Maintenance planner** (requests, plans, tasks, machine status, MTTR and MTBF), **Plant setup** (lines, machines and their QR labels, shifts, downtime reasons). |
 | Flows (10, arrive off) | Raise an NCR for a failed inspection; NCR disposition approval; Breakdown creates a maintenance request; Route and escalate a maintenance request (technician of the machine, else the Maintenance role; plant manager after 30 minutes without acknowledgement); External repair cost approval (above Rs 25,000); Create preventive maintenance tasks (daily 06:00); Daily OEE PDF to the plant managers (daily 07:00); Remind owners of overdue NCR actions (09:30, Monday to Saturday); Tell the next supervisor about a handover; Remind supervisors to write the handover (05:45, 13:45, 21:45). Times are India time (Asia/Kolkata). |
-| Approval policies (2) | NCR disposition (the Quality role, not the person who asked), External repair cost (the Plant manager role). |
+| Approval policies (2) | NCR disposition (the Quality role; never the inspector whose failed inspection raised the NCR nor the person who sent it for approval: when nobody else in Quality is left, the inspector's manager decides), External repair cost (the Plant manager role; never the person who asked for it). |
 | Dashboards (3) | **Plant overview** (the built-in Production overview: OEE gauge, good quantity, scrap rate, availability/performance/quality by shift, good by day, downtime Pareto, output by machine; plus first-pass yield, inspections, NCRs, defects by type, MTTR, open requests, PM compliance, schedule adherence), **Shift board**, **Quality and maintenance**. |
 | Print templates (6) | Inspection report (the built-in one, bound to the pack), Daily OEE summary (the built-in one over the pack's production log, for yesterday), NCR, Maintenance work order, Shift handover sheet, Machine QR labels. |
 | Roles (5) | Operator, Supervisor, Quality, Maintenance, Plant manager (who sees what: below). |
@@ -37,10 +37,11 @@ so a maker translates them in one place. Appbuilder itself does not switch langu
    `ProductionLog` (or any other name the pack uses), choose **use the pack's prefixed name** (`MfgProductionLog`) or
    map it. Tick **Add the SAMPLE rows** to try it out. Review the plan, **Install**.
 2. **Switch on the flows** you want (the last step of the install, or Flows later). They run as the administrator who
-   installed the pack.
-3. **Assign people to roles** (Admin console > Users): the pack carries no people. Put each supervisor's operators in a
-   **team** with the supervisor (Admin console > Organisation): the supervisor's "team" scope means rows of the team's
-   members.
+   installed the pack, but what they raise belongs to the person who caused it (below).
+3. **Assign people to roles** (Admin console > Users): the pack carries no people. Give every inspector a **manager**
+   (Admin console > Users > Edit > Manager): when nobody else in Quality may approve an inspector's NCR, the manager
+   does. Put each supervisor's operators in a **team** with the supervisor (Admin console > Organisation): the
+   supervisor's "team" scope means rows of the team's members.
 4. **Plant setup**: replace the SAMPLE lines and machines with yours (code, ideal cycle time in seconds, the technician
    who gets its breakdowns), check the shifts (start and end hour, planned minutes), the downtime reasons and defect
    types. Then **Remove sample data** (Templates > Installed).
@@ -64,8 +65,11 @@ so a maker translates them in one place. Appbuilder itself does not switch langu
 | Maintenance | reads all | none | adds, reads and edits all | adds, reads and edits all | none | reads; machines: edits (status, technician) |
 | Plant manager | reads and edits all | reads all; NCRs: edits | reads and edits all; repair cost approval | plans: all; tasks: reads | reads | adds and edits all |
 
-Administrators see everything. The flows run as the installing administrator, so the requests and NCRs they create
-belong to that administrator (an operator sees the requests they reported themselves, not those a breakdown created).
+Administrators see everything. The flows run as the installing administrator, but what they raise belongs to the person
+who caused it: the NCR raised from a failed inspection belongs to the inspector, the maintenance request raised from a
+breakdown to the operator who reported the stoppage (so an operator sees both the requests they reported and those
+their breakdowns raised). Approvals asked by the flows are on behalf of that person: nobody approves what their own
+entry caused, and the person who sends an NCR for approval does not approve it either.
 
 ## How the numbers are computed
 
@@ -108,9 +112,11 @@ reference row you edited (a downtime reason you renamed) is kept.
 - WhatsApp alerts: the flows notify in the app and by email. Add a WhatsApp step to a flow yourself
   ([WhatsApp](whatsapp.md)) once your connection is set up.
 - The shift handover is on the desktop (Supervisor console), not in a phone app.
-- List column headings in the apps are the column names (spaced), not the display names.
 - Escalation after 30 minutes and the Rs 25,000 limit are fixed in the flow and the rules; edit them there.
-- After **Remove sample data**, a pack table left empty (for example Lines, if you added none) blocks **Uninstall
-  keeping tables** while a table you keep looks it up: add your own rows first, or tick **Delete tables with data**.
+- **Uninstall keeping tables** keeps a pack table that is empty (after **Remove sample data**, Inspection plans for
+  example) when a table you keep looks it up; the plan says so. Delete it yourself afterwards if you do not need it.
+- The daily OEE PDF still reads the Plant manager role's assignments by formula (an email step cannot name a role yet);
+  the notifications use the role itself.
+- One photo per inspection and per production entry (an image column holds one image).
 - Data Matrix labels need Chrome on Android or a handheld scanner; QR and Code 128 work on every phone.
 - Not tried on a real phone yet: the checks ran in Chrome's phone emulation.

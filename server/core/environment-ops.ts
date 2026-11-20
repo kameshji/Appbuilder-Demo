@@ -151,7 +151,10 @@ const COPY_META = ['ab_roles', 'ab_role_tables', 'ab_tables', 'ab_apps', 'ab_sol
   'ab_print_templates', 'ab_print_template_versions', 'ab_print_settings',
   // P2-C dashboards: definitions and the dashboard settings (never view tokens, snapshots or their runs)
   'ab_dashboards', 'ab_dashboard_settings']
-const COPY_DATA_META = ['ab_data_files', 'ab_attachments', 'ab_counters', 'ab_shares']
+// P3-M2 follow-up (p3-spec 5.11 default): a copy with data takes the template install register along (same ids as the
+// apps, flows, tables, solutions and rows it names), so the copy's Templates page can upgrade and uninstall its packs; a
+// schema-only copy does not (its SAMPLE and reference rows are not there)
+const COPY_DATA_META = ['ab_data_files', 'ab_attachments', 'ab_counters', 'ab_shares', 'ab_template_installs']
 
 async function columnsOf(db: SqlDb, schema: string, table: string): Promise<string[]> {
   const rows = await db.query<{ column_name: string }>(

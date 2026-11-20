@@ -82,3 +82,38 @@ jobs:
         run: npm test
 
       - run: npm run build
+
+  # H-B: the cross-instance isolation suite (hosting exit check 2): three installs of this tree as separate processes on
+  # Unix sockets, behind a host-routing proxy, with their own databases and roles. It changes the cluster (roles, REVOKE
+  # CONNECT on postgres / template1 from PUBLIC), so it runs in its own job with its own PostgreSQL and the service
+  # container's superuser (APPBUILDER_HB_ADMIN_DB); the test job above skips it.
+  isolation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci-root-only-not-a-secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Isolation suite (vitest; prints the table)
+        env:
+          # throwaway superuser of the service container above; it only lives for this job
+          APPBUILDER_HB_ADMIN_DB: postgres://postgres:ci-root-only-not-a-secret@127.0.0.1:5432/postgres
+        run: npx vitest run server/core/hosting/isolation

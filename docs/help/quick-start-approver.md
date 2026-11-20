@@ -8,6 +8,7 @@ how, on a PC or on your phone.
 - **The bell** at the top shows "Approval needed: ...". Click it to open the request.
 - **An email** with the buttons **Approve** and **Reject** (and any other answers).
 - The **Approvals** page in the left menu (on a phone: the menu button at the top left), tab **To approve**.
+- **Chat**: a card in your conversation with **Approvals**, with the answer buttons (see below).
 
 ## Answering on the Approvals page
 
@@ -38,6 +39,13 @@ requester; when they answer, it is back in your list.
 
 Each email button works once and for a few days. If it says the link expired or was used, open **Approvals** instead.
 
+## Answering in chat
+
+Open chat and the conversation **Approvals**. Each request waiting for you is a card: pick an answer, add a comment
+(the card refuses an answer that needs one without it), then click **Send**. It is the same answer as on the Approvals
+page: it cannot be changed afterwards, and a request decided elsewhere shows its decision on the card by itself. You
+cannot answer by typing a message. More in [chat](chat.md#approvals-in-chat).
+
 ## Going away
 
 On **Approvals > Delegations**, type the email of the colleague who decides for you, and the dates. What waits for you
@@ -45,7 +53,8 @@ moves to them while you are away and comes back if still open when you return. Y
 
 ## What the requester sees
 
-Who has answered and what, on the Approvals page (**Sent by me**) and on the record's timeline. Every action is kept.
+Who has answered and what, on the Approvals page (**Sent by me**) and on the record's timeline (one line per answer,
+with its comment). Every action is kept.
 
 ## Good habits
 

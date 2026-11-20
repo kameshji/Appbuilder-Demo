@@ -27,7 +27,7 @@ import { environmentSchema, runInEnvironment } from '../env-context.ts'
 import { errText, isUuid, log, rowUid, uid } from '../util.ts'
 import { SYS } from '../../../src/platform/system-tables.ts'
 import { LIVE_CLIENT_HEADER } from '../../../src/platform/live-protocol.ts'
-import { CHAT_LIMITS, chatLink } from '../../../src/platform/chat-protocol.ts'
+import { CHAT_CHANGES_PAGE, CHAT_LIMITS, chatLink } from '../../../src/platform/chat-protocol.ts'
 import type {
   ChatCardRef, ChatChanges, ChatConversation, ChatFile, ChatKind, ChatMemberRole, ChatMemberView, ChatMessageView, ChatNotifyLevel, ChatPushMessage,
 } from '../../../src/platform/chat-protocol.ts'
@@ -79,6 +79,8 @@ export const READ_ONLY_MESSAGE = 'An administrator made you read-only in chat: y
 export const INSTALL_READ_ONLY_MESSAGE = 'This install is read-only: chat can be read and searched, but nothing can be sent or changed.'
 /** attachments uploaded for a message not sent yet: row id of the draft (per conversation) */
 export const draftRowId = (channelId: string): string => `draft-${channelId}`
+/** DirectKey prefix of each person's conversation with the system sender "Approvals" (package E) */
+export const SYSTEM_KEY_APPROVALS = 'system:approvals:'
 
 /** in-memory sliding window per key */
 class Window {
@@ -224,8 +226,12 @@ export function createChatService(s: CoreServices, live: LiveHub | null, opts: C
     return rows.map((r) => ({ user: str(r.User), role: r.MemberRole === 'owner' ? 'owner' : 'member', notifyLevel: (['all', 'mentions', 'none'].includes(str(r.NotifyLevel)) ? str(r.NotifyLevel) : 'mentions') as ChatNotifyLevel, muted: r.Muted === true, joinedOn: iso(r.JoinedOn) }))
   }
 
+  /** a conversation from Appbuilder itself (the "Approvals" sender): nobody posts in it */
+  const systemKindOf = (ch: Row): 'approvals' | null => (str(ch.DirectKey).startsWith(SYSTEM_KEY_APPROVALS) ? 'approvals' : null)
+
   function canPost(cx: ChatCx, c: Conv): boolean {
     if (!c.mem || c.ch.ArchivedOn || cx.readOnly || installReadOnly()) return false
+    if (systemKindOf(c.ch)) return false
     return c.ch.PostingPolicy !== 'owners' || c.mem.role === 'owner'
   }
 
@@ -241,13 +247,15 @@ export function createChatService(s: CoreServices, live: LiveHub | null, opts: C
     }
     if (memberCount === undefined) memberCount = Number((await dbx.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${T(cx.env, SYS.channelMembers)} WHERE "Channel" = $1`, [c.ch.id]))[0]?.n ?? 0)
     const others = (members ?? []).filter((m) => m.id !== cx.id).map((m) => m.name)
-    const name = kind === 'channel' ? str(c.ch.Name) : kind === 'group' && str(c.ch.Name) && str(c.ch.Name) !== 'group' ? str(c.ch.Name) : others.join(', ') || cx.name
+    const sys = systemKindOf(c.ch)
+    const name = sys ? 'Approvals' : kind === 'channel' ? str(c.ch.Name) : kind === 'group' && str(c.ch.Name) && str(c.ch.Name) !== 'group' ? str(c.ch.Name) : others.join(', ') || cx.name
     return {
       id: str(c.ch.id), kind, name, description: str(c.ch.Description), isPrivate: c.ch.IsPrivate !== false, archived: !!c.ch.ArchivedOn,
       postingPolicy: c.ch.PostingPolicy === 'owners' ? 'owners' : 'everyone', lastSeq: num(c.ch.LastSeq), purgedSeq: num(c.ch.PurgedSeq), lastMessageOn: iso(c.ch.LastMessageOn),
       memberCount, ...(kind !== 'channel' ? { members } : {}),
       me: c.mem ? { role: c.mem.role, lastReadSeq: c.mem.lastReadSeq, notifyLevel: c.mem.notifyLevel, muted: c.mem.muted, joinedOn: c.mem.joinedOn } : null,
       unread: extra.unread ?? 0, mentions: extra.mentions ?? 0, canPost: canPost(cx, c),
+      ...(sys ? { system: sys } : {}),
     }
   }
 
@@ -360,10 +368,19 @@ export function createChatService(s: CoreServices, live: LiveHub | null, opts: C
   }
 
   /** history of a conversation (top-level messages), 50 per page, always from the server */
-  async function history(cx: ChatCx, channelId: string, o: { before?: number | null; after?: number | null; limit?: number }): Promise<{ messages: ChatMessageView[]; more: boolean; lastSeq: number; purgedSeq: number }> {
+  async function history(cx: ChatCx, channelId: string, o: { before?: number | null; after?: number | null; around?: number | null; limit?: number }): Promise<{ messages: ChatMessageView[]; more: boolean; newer?: boolean; lastSeq: number; purgedSeq: number }> {
     const d = db()
     const c = await conv(d, cx, channelId)
     const limit = Math.max(1, Math.min(CHAT_LIMITS.pageSize * 2, Math.trunc(o.limit ?? CHAT_LIMITS.pageSize) || CHAT_LIMITS.pageSize))
+    if (o.around !== undefined && o.around !== null) {
+      // a deep link to an old message: one page around it (the message and older ones, then newer ones), so the client
+      // never pages back through the whole conversation; `more`: older ones exist, `newer`: newer ones exist
+      const half = Math.max(1, Math.floor(limit / 2))
+      const older = await d.query<Row>(`SELECT * FROM ${T(cx.env, SYS.messages)} WHERE "Channel" = $1 AND "ParentMessage" IS NULL AND "Seq" <= $2 ORDER BY "Seq" DESC LIMIT $3`, [c.ch.id, o.around, half + 1])
+      const later = await d.query<Row>(`SELECT * FROM ${T(cx.env, SYS.messages)} WHERE "Channel" = $1 AND "ParentMessage" IS NULL AND "Seq" > $2 ORDER BY "Seq" ASC LIMIT $3`, [c.ch.id, o.around, limit - half + 1])
+      const rows = [...older.slice(0, half).reverse(), ...later.slice(0, limit - half)]
+      return { messages: await messageViews(d, cx.env, rows), more: older.length > half, newer: later.length > limit - half, lastSeq: num(c.ch.LastSeq), purgedSeq: num(c.ch.PurgedSeq) }
+    }
     let rows: Row[]
     if (o.after !== undefined && o.after !== null) {
       rows = await d.query<Row>(`SELECT * FROM ${T(cx.env, SYS.messages)} WHERE "Channel" = $1 AND "ParentMessage" IS NULL AND "Seq" > $2 ORDER BY "Seq" ASC LIMIT $3`, [c.ch.id, o.after, limit + 1])
@@ -413,12 +430,15 @@ export function createChatService(s: CoreServices, live: LiveHub | null, opts: C
     const c = await conv(d, cx, channelId)
     const purged = num(c.ch.PurgedSeq)
     const reset = after < purged
-    const rows = reset ? [] : await d.query<Row>(`SELECT * FROM ${T(cx.env, SYS.messages)} WHERE "Channel" = $1 AND "ChangeSeq" > $2 ORDER BY "ChangeSeq" ASC, "Seq" ASC LIMIT 1000`, [c.ch.id, after])
+    const got = reset ? [] : await d.query<Row>(`SELECT * FROM ${T(cx.env, SYS.messages)} WHERE "Channel" = $1 AND "ChangeSeq" > $2 ORDER BY "ChangeSeq" ASC, "Seq" ASC LIMIT ${CHAT_CHANGES_PAGE + 1}`, [c.ch.id, after])
+    const more = got.length > CHAT_CHANGES_PAGE
+    const rows = got.slice(0, CHAT_CHANGES_PAGE)
     const messages = await messageViews(d, cx.env, rows)
     const memberChange = messages.some((m) => m.kind === 'system' && m.event?.type === 'members')
     const out: ChatChanges = {
       channelId: str(c.ch.id), lastSeq: num(c.ch.LastSeq), purgedSeq: purged, reset, messages,
       conversation: await view(d, cx, c, c.mem ? await unreadOf(d, cx, str(c.ch.id), c.mem.lastReadSeq) : {}),
+      ...(more ? { more: true } : {}),
     }
     if (memberChange || reset) out.members = await listMembers(cx, channelId)
     return out
@@ -863,6 +883,7 @@ export function createChatService(s: CoreServices, live: LiveHub | null, opts: C
         return
       }
       if (!c.mem) throw denied('Join the channel first.')
+      if (systemKindOf(c.ch)) throw denied('Nobody posts in this conversation: Appbuilder sends its cards here. Answer an approval with the buttons of its card.')
       if (c.ch.ArchivedOn) throw denied('The conversation is archived: nothing can be posted.')
       if (c.ch.PostingPolicy === 'owners' && c.mem.role !== 'owner') throw denied('Only the owners of this channel can post in it.')
       if (parentId) {
@@ -1000,7 +1021,7 @@ export function createChatService(s: CoreServices, live: LiveHub | null, opts: C
       if (!c.mem) throw denied('Join the channel first.')
       if (c.ch.ArchivedOn) throw denied('The conversation is archived.')
       const msg = await messageRow(tx, cx.env, messageId, true)
-      if (msg.DeletedOn || msg.Kind === 'system') throw invalid('This message cannot take reactions.')
+      if (msg.DeletedOn || msg.Kind === 'system' || !msg.createdBy) throw invalid('This message cannot take reactions.')
       const changed = on
         ? (await tx.query(`INSERT INTO ${T(cx.env, SYS.messageReactions)} ("id", "createdOn", "modifiedOn", "createdBy", "owner", "Message", "Emoji") VALUES ($1, now(), now(), $2, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id`, [rowUid(), cx.id, msg.id, emoji])).length
         : (await tx.query(`DELETE FROM ${T(cx.env, SYS.messageReactions)} WHERE "Message" = $1 AND "owner" = $2 AND "Emoji" = $3 RETURNING id`, [msg.id, cx.id, emoji])).length
@@ -1179,7 +1200,7 @@ export function createChatService(s: CoreServices, live: LiveHub | null, opts: C
   async function report(cx: ChatCx, messageId: string, b: Record<string, unknown>): Promise<{ reported: true }> {
     const d = db()
     const { msg } = await readableMessage(d, cx, messageId)
-    if (msg.Kind === 'system' || msg.DeletedOn) throw invalid('This message cannot be reported.')
+    if (msg.Kind === 'system' || msg.DeletedOn || !msg.createdBy) throw invalid('This message cannot be reported.')
     const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 1000) : ''
     if (!reason) throw invalid('Say why you report the message.', 'reason')
     await d.exec(
@@ -1278,6 +1299,120 @@ export function createChatService(s: CoreServices, live: LiveHub | null, opts: C
     }
   }
 
+  /* -------------------------------------------------------------- Appbuilder's own conversations (approval cards, package E) */
+
+  /** the person's direct conversation with the system sender "Approvals" (made on first use; one per person) */
+  async function approvalsConversation(env: ChatEnv, userId: string): Promise<{ id: string; created: boolean }> {
+    const key = `${SYSTEM_KEY_APPROVALS}${userId}`
+    const r = await db().tx(async (tx) => {
+      await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`chat.direct.${env.id}.${key}`])
+      const found = await tx.query<{ id: string }>(`SELECT id FROM ${T(env, SYS.channels)} WHERE "DirectKey" = $1`, [key])
+      if (found[0]) return { id: found[0].id, created: false }
+      const nid = rowUid()
+      await tx.exec(
+        `INSERT INTO ${T(env, SYS.channels)} ("id", "createdOn", "modifiedOn", "createdBy", "owner", "Name", "Description", "Kind", "IsPrivate", "DirectKey", "LastSeq", "PurgedSeq", "PostingPolicy")
+         VALUES ($1, now(), now(), $2, $2, 'Approvals', 'Approval requests waiting for you, with their answer buttons.', 'direct', true, $3, 0, 0, 'owners')`, [nid, userId, key],
+      )
+      await addMemberRows(tx, env, nid, userId, [userId], 'member', 'all')
+      return { id: nid, created: true }
+    })
+    if (r.created) pushChannels([userId], r.id, 'added')
+    return r
+  }
+
+  /**
+   * posts a card from Appbuilder (no sender) into one of its conversations, once per id (a retry or a second sweep finds
+   * the first). Card references only, never values; the text is the notification-safe title.
+   */
+  async function postSystemCard(env: ChatEnv, channelId: string, o: { id: string; text: string; card: ChatCardRef }): Promise<{ posted: boolean; seq: number }> {
+    const d = db()
+    let seq = 0
+    let posted = false
+    await d.tx(async (tx) => {
+      const ch = (await tx.query<Row>(`SELECT id FROM ${T(env, SYS.channels)} WHERE id = $1 FOR UPDATE`, [channelId]))[0]
+      if (!ch) throw notFound()
+      if ((await tx.query(`SELECT 1 FROM ${T(env, SYS.messages)} WHERE id = $1`, [o.id])).length) return
+      seq = await nextSeq(tx, env, channelId, { messageOn: true })
+      await insertMessage(tx, env, { id: o.id, channel: channelId, seq, by: null, kind: 'message', body: `<p>${esc(o.text)}</p>`, text: o.text, cards: JSON.stringify([o.card]) })
+      posted = true
+    })
+    if (!posted) return { posted: false, seq: 0 }
+    await publish(env, channelId, seq, 'message', o.id)
+    const members = (await membersOf(d, env, channelId)).map((m) => m.user)
+    await pushUnreadTo(env, channelId, seq, members)
+    return { posted: true, seq }
+  }
+
+  /** a system card's reference changed (an approval card answered or decided): a new change seq, pushed as an edit */
+  async function updateSystemCard(env: ChatEnv, messageId: string, card: ChatCardRef): Promise<boolean> {
+    const d = db()
+    const msg0 = (await d.query<Row>(`SELECT id, "Channel", "createdBy" FROM ${T(env, SYS.messages)} WHERE id = $1`, [messageId]))[0]
+    if (!msg0 || msg0.createdBy) return false
+    const cid = str(msg0.Channel)
+    let seq = 0
+    await d.tx(async (tx) => {
+      await tx.query(`SELECT id FROM ${T(env, SYS.channels)} WHERE id = $1 FOR UPDATE`, [cid])
+      const msg = (await tx.query<Row>(`SELECT id, "Cards", "DeletedOn" FROM ${T(env, SYS.messages)} WHERE id = $1 FOR UPDATE`, [messageId]))[0]
+      if (!msg || msg.DeletedOn) return
+      const next = JSON.stringify([card])
+      if (str(msg.Cards) === next) return
+      seq = await nextSeq(tx, env, cid)
+      await tx.exec(`UPDATE ${T(env, SYS.messages)} SET "Cards" = $2, "modifiedOn" = now(), "ChangeSeq" = $3 WHERE id = $1`, [messageId, next, seq])
+    })
+    if (!seq) return false
+    await publish(env, cid, seq, 'edit', messageId)
+    return true
+  }
+
+  /** system cards still pending (approval cards waiting for an answer), for the sweep after a restart */
+  async function pendingSystemCards(env: ChatEnv): Promise<{ id: string; card: ChatCardRef }[]> {
+    const rows = await db().query<Row>(
+      `SELECT m.id, m."Cards" FROM ${T(env, SYS.messages)} m JOIN ${T(env, SYS.channels)} c ON c.id = m."Channel"
+        WHERE c."DirectKey" LIKE $1 AND m."createdBy" IS NULL AND m."Kind" = 'message' AND m."DeletedOn" IS NULL AND m."Cards" LIKE '%"state":"pending"%'`,
+      [`${SYSTEM_KEY_APPROVALS}%`],
+    )
+    const out: { id: string; card: ChatCardRef }[] = []
+    for (const r of rows) {
+      const c = parseJsonList((() => { try { return JSON.parse(str(r.Cards)) } catch { return [] } })())[0] as ChatCardRef | undefined
+      if (c && c.kind === 'approval') out.push({ id: str(r.id), card: c })
+    }
+    return out
+  }
+
+  /** which of these message ids exist (the sweep posts a card once) */
+  async function existingMessages(env: ChatEnv, ids: string[]): Promise<Set<string>> {
+    if (!ids.length) return new Set()
+    return new Set((await db().query<{ id: string }>(`SELECT id FROM ${T(env, SYS.messages)} WHERE id = ANY($1::text[])`, [ids])).map((r) => r.id))
+  }
+
+  /* -------------------------------------------------------------- chat mentions for the Mentions page (package E) */
+
+  /** where I was mentioned in chat (messages I can still read), newest first, with the link that opens the message */
+  async function myMentions(cx: ChatCx, limit = 50): Promise<{ id: string; IsRead: boolean; createdOn: string; Body: string; Link: string; byName: string | null; conversation: string; regardingTable: string; regardingId: string }[]> {
+    const d = db()
+    const rows = await d.query<Row>(
+      `SELECT mn.id, mn."IsRead", mn."createdOn", m.id AS "_mid", m."BodyText", m."Channel", m."Seq", m."createdBy", c."Kind", c."Name", c."IsPrivate", c."ArchivedOn",
+              EXISTS (SELECT 1 FROM ${T(cx.env, SYS.channelMembers)} x WHERE x."Channel" = c.id AND x."User" = $1) AS "_member"
+         FROM ${T(cx.env, SYS.mentions)} mn JOIN ${T(cx.env, SYS.messages)} m ON m.id = mn."regardingId" JOIN ${T(cx.env, SYS.channels)} c ON c.id = m."Channel"
+        WHERE mn."MentionedUser" = $1 AND mn."regardingTable" = $2 AND m."DeletedOn" IS NULL
+        ORDER BY mn."createdOn" DESC, mn.id DESC LIMIT $3`, [cx.id, SYS.messages, Math.max(1, Math.min(200, limit))],
+    )
+    const map = await people()
+    return rows
+      // the conversation's read rule, once more (a member, or an open channel)
+      .filter((r) => r._member === true || (r.Kind === 'channel' && r.IsPrivate === false && !r.ArchivedOn))
+      .map((r) => ({
+        id: str(r.id), IsRead: r.IsRead === true, createdOn: iso(r.createdOn) ?? '', Body: preview(str(r.BodyText), 280), Link: chatLink(str(r.Channel), num(r.Seq)),
+        byName: r.createdBy ? map.get(str(r.createdBy))?.name ?? null : null, conversation: r.Kind === 'channel' ? `#${str(r.Name)}` : r.Kind === 'group' ? 'a group conversation' : 'a direct message',
+        regardingTable: SYS.messages, regardingId: str(r._mid),
+      }))
+  }
+
+  async function markMentionRead(cx: ChatCx, mentionId: string): Promise<{ ok: true }> {
+    await db().exec(`UPDATE ${T(cx.env, SYS.mentions)} SET "IsRead" = true, "ReadOn" = now() WHERE id = $1 AND "MentionedUser" = $2 AND "regardingTable" = $3`, [mentionId, cx.id, SYS.messages])
+    return { ok: true }
+  }
+
   /* -------------------------------------------------------------- administrators: metadata, never messages */
 
   /** a conversation for an administrator action (any conversation; never its messages) */
@@ -1297,6 +1432,8 @@ export function createChatService(s: CoreServices, live: LiveHub | null, opts: C
     history, replies, changes, send, edit, removeMessage, react, markRead, typingNow, upload, discardDraft, search, mentionable, peopleSearch, report,
     // internals for admin.ts, cards.ts, export.ts, the digest
     adminConv, membersOf, messageViews, nextSeq, systemMessage, publish, touched, pushChannels, people, nameOf, digestRelevance, readableMessage, chatAdmins, T,
+    // Appbuilder's own conversations and the Mentions page (package E)
+    approvalsConversation, postSystemCard, updateSystemCard, pendingSystemCards, existingMessages, myMentions, markMentionRead,
     accessChanged: (channelId: string, userIds?: string[]) => live?.chatAccessChanged(channelId, userIds),
   }
 }

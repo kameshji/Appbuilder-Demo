@@ -204,6 +204,37 @@ refuse the save (422 with `problems`); warnings are returned with the saved flow
   changed and imported with explicit confirmation; audited `flow.run_as_service`). Every data step goes through the
   DataService as that identity: row and column security, WITH CHECK, validation rules, events and the outbox apply. A
   change made by the system (no person) does not start a `triggeringUser` flow (a failed run explains why).
+* **Who caused a run** (P3): `ab_flow_runs.options.causedBy` is the person whose change started a table trigger (the outbox
+  event's actor), who pressed the button (manual and test runs); a child run and a resubmit keep their run's value;
+  schedules, web requests and decided approvals have none (a change made by the system has none either). Runs created
+  before it was recorded fall back to `triggered_by` (`causedByOf` in `engine.ts`). It never changes what a run may
+  read or write (that is the run-as identity); it is used for exactly the three things below.
+* **Approvals on behalf of the person who caused the run** (P3, the security fix found by the Manufacturing pack): a flow
+  that runs as its owner used to ask for approval "as the owner", so the person whose entry caused the request could
+  approve it. Now the approval step passes `onBehalfOf` to the approvals service: the step's optional `requester` (a
+  formula giving one active person: an email, a user id or a user record such as `Trigger.Record.owner`; evaluated as
+  the run-as identity, so it can only name someone the flow could read about), then the person who caused the run. For
+  routing they are the requester: manager, department and manager-chain references and the fallback start from the
+  first of them, and **none of them, nor the run-as identity, is asked** unless the definition sets `allowSelfApproval`
+  (separation of duties applies to them as to the requester). `requester` can only add a person to that list, never take
+  the triggering person off it. What does not change: `requested_by` stays the run-as identity (who sees the request,
+  withdraws it, answers "need more info" and is told the decision), so the triggering person gets no new access. A
+  `requester` that names nobody, or several people, fails the step with the reason. Flows whose triggering person is
+  their owner (and schedules) route exactly as before.
+* **Rows on behalf of someone** (P3): `data.create` takes `owner` (a formula: one person, a user record such as
+  `Trigger.User`, or `team:<id>`; blank keeps the default). The rule is the one of giving a row to someone elsewhere
+  (`assignableOwner` in `server/core/data.ts`, the assign-owner action): the run-as identity itself or a team of its own;
+  an **administrator's** flow any active person, or a team of this environment on a table with team ownership;
+  anything else fails the step ("only an administrator's flow gives rows to other people"). It is checked before the
+  row is written; the owner is then set in the same transaction through the guarded cell write (the run-as identity's
+  update rule and WITH CHECK apply; the change is in the outbox, loop protection included). `createdBy` stays the
+  run-as identity. So a pack's flow (it runs as the installing administrator) can give the maintenance request it
+  raises to the operator who reported the breakdown; a maker's flow cannot hand rows to other people.
+* **Notify roles and teams** (P3): the notify step takes `roles` (role ids, or names) and `teams` (team ids), resolved
+  when the step runs to the **active** people who hold the role or are in the team (disabled people and people without
+  access to the environment are not notified); `to` is then optional. A role or team with nobody in it is not an error
+  (the output says `Nobody: true`); an unknown role is a save-time problem. In packs, `"roles": ["Slot_Role_<key>"]`
+  binds to the pack's role, so no flow has to read `RoleAssignments` by formula.
 * **Saving**: makers save their own flows, administrators any; a flow that runs as a service account can only be changed by
   an administrator. Changing `runAs` or the owner needs `confirmRunAs: true` (409 otherwise) and is audited
   (`flow.run_as_changed`, `flow.owner_changed`). Attaching a connection (a new or changed reference) needs the right to
@@ -265,7 +296,8 @@ have moved on since the backup, so resuming them could act twice or on stale ans
 * **Approvals (package C)**: implement `ApprovalsService` (`server/core/flows/contracts.ts`) and call
   `services.flows.setApprovals(impl)` at start. `request(env, ApprovalRequest, identity) -> { id }` is called inside the
   step's transaction (C's rows commit with it) with `idempotencyKey = <run>:<step path>` and the `waitId`; `cancel?(env, id,
-  'cancelled' | 'timedOut')` when the run is cancelled or the step timed out. When decided, call
+  'cancelled' | 'timedOut')` when the run is cancelled or the step timed out (P3: `request` also carries `onBehalfOf`, see
+  "Identity and security"; additive, optional). When decided, call
   `services.flows.resumeWait(env, waitId, { kind: 'approval', outcome, responses?, comments?, completedOn? })`: idempotent,
   `{ resumed: false }` when the step no longer waits. The step's output: `{ Outcome, Responses, ApprovalId, CompletedOn,
   Comments }`.
@@ -289,7 +321,8 @@ name the row `rowId` (the step's own `id` is its id) and approval `regarding.row
 `coalesce`; settings take `triggerOnOwnChanges` and `maxRunsPerMinute`; the email step may name a `connection`; the http
 step needs its `auth` connection (it holds the allowed hosts: package D's HTTP connector refuses calls without one);
 `RunFlow(flow, inputs [, { Wait, Timeout, Result }])` is the app function (the formula language has no dotted function
-names, so `Flow.Run` is not offered).
+names, so `Flow.Run` is not offered). P3: approval `requester`, data.create `owner`, notify `roles` / `teams` (`to`
+optional with them), run options `causedBy`.
 
 ## Throughput (sandbox)
 

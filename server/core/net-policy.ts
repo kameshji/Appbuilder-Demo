@@ -119,6 +119,13 @@ export function hostProblem(host: string, env: NodeJS.ProcessEnv = process.env):
   if (METADATA_NAMES.has(h)) return `"${host}" is a cloud metadata service; Appbuilder does not connect to it.`
   if (deniedByList(h, env)) return `${host} is on this server's list of refused addresses (APPBUILDER_OUTBOUND_DENY); Appbuilder does not connect to it.`
   const bare = h.replace(/^\[|\]$/g, '')
+  // H-B: a path is a local socket (the PostgreSQL and MySQL drivers connect to a Unix socket or named pipe for a host
+  // such as /var/run/postgresql or \\.\pipe\...), and "localhost" names are this machine without asking DNS: both are
+  // loopback, refused with APPBUILDER_OUTBOUND_PRIVATE=deny before any driver sees them
+  if (/[/\\]/.test(bare) || bare === 'localhost' || bare.endsWith('.localhost')) {
+    if (deniedClasses(env).includes('loopback')) return `${host} is ${/[/\\]/.test(bare) ? 'a local socket path' : 'this machine (loopback)'}; this server does not connect to its own machine.`
+    return null
+  }
   if (net.isIP(bare) || /^::ffff:/.test(bare)) {
     const c = classifyAddress(bare)
     if (deniedClasses(env).includes(c)) return `${host} is a ${c} address; Appbuilder does not connect to it.`

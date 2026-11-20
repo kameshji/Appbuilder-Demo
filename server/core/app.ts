@@ -41,6 +41,7 @@ import { templateRoutes } from './templates/routes.ts'
 import { pwaRoutes } from './pwa.ts'
 import { offlineRoutes } from './offline.ts'
 import { chatRoutes } from './chat/routes.ts'
+import { notesRoutes } from './notes/routes.ts'
 
 export interface AppServer {
   services: CoreServices
@@ -141,6 +142,8 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   templateRoutes(router, services)
   // P3-A: chat (routes, chat topics on the hub, digest relevance, retention job)
   chatRoutes(router, services, live, { env })
+  // P3-N: notes (the NOTE_TAGS sanitiser, mentions in notes, the Notes page's routes)
+  notesRoutes(router, services)
   if (opts.boot !== false) {
     await services.boot()
     if (services.ready()) {

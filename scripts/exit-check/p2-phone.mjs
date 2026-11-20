@@ -979,7 +979,7 @@ async function offlineTables(appId) {
   // offline: plans this device never ran are answered from the kept rows
   await offlineAndSettled()
   await typeInto(`${ctl('Q')} input`, 'Part 01')
-  await page.waitForFunction(() => /F:80/.test(document.querySelector('[data-testid="control-LblFound"]')?.textContent ?? ''), { timeout: 15000 }).catch(() => {})
+  await page.waitForFunction(() => /F:80(?!\d)/.test(document.querySelector('[data-testid="control-LblFound"]')?.textContent ?? ''), { timeout: 15000 }).catch(() => {})
   const f1 = await text('LblFound')
   const first = await text('LblFirst')
   check(/^F:80$/.test(f1) && /^1st:Part 0101$/.test(first), 'offline: a new search over Parts is answered from the kept rows (count and first match)', `${f1} ${first}`)

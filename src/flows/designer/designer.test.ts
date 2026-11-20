@@ -338,3 +338,16 @@ describe('version diff, run overlay, RunFlow helper', () => {
     expect(appendCall('=false', 'RunFlow("A", {})')).toBe('=RunFlow("A", {})')
   })
 })
+
+describe('P3 step fields: data.create owner, approval requester', () => {
+  it('are formulas of their step, so renaming a step rewrites them', () => {
+    const mk = { id: 'mk', name: 'MakeTask', kind: 'data.create', table: 'T', values: { A: 'Steps.Who.Output.Id' }, owner: 'Steps.Who.Output.Email' } as unknown as Step
+    const ask = { id: 'ask', name: 'Ask', kind: 'approval', title: '"x"', approvers: '"role:Q"', requester: 'Steps.Who.Output.Email' } as unknown as Step
+    expect(stepFx(mk).map((f) => f.field)).toEqual(['values.A', 'owner'])
+    expect(stepFx(ask).map((f) => f.field)).toContain('requester')
+    const doc = { trigger: { type: 'manual', inputs: [] }, steps: [{ id: 'who', name: 'Who', kind: 'compose', value: '1' } as Step, mk, ask] } as never
+    const r = renameStep(doc, 'who', 'Person')
+    expect(JSON.stringify(r.doc)).toContain('"owner":"Steps.Person.Output.Email"')
+    expect(JSON.stringify(r.doc)).toContain('"requester":"Steps.Person.Output.Email"')
+  })
+})

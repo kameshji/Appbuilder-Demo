@@ -5,6 +5,7 @@
  */
 import { API_BASE, CSRF_HEADER } from '@/platform/http'
 import { LIVE_CLIENT_HEADER } from '@/platform/live-protocol'
+import { environmentHeaders } from '@/platform/environments'
 import type {
   ChatCardRef, ChatCardView, ChatChanges, ChatConversation, ChatFile, ChatMemberRole, ChatMemberView, ChatMessageView,
   ChatNotifyLevel, ChatPerson, CHAT_LIMITS,
@@ -34,7 +35,17 @@ export interface ChatMe {
   emoji: string[]
 }
 
-export interface HistoryPage { messages: ChatMessageView[]; more: boolean; lastSeq: number; purgedSeq: number }
+/** more: older messages exist; newer: (around= pages only) newer messages exist */
+export interface HistoryPage { messages: ChatMessageView[]; more: boolean; newer?: boolean; lastSeq: number; purgedSeq: number }
+
+/** a chat mention for the Mentions page (GET /chat/mentions): Link opens the message (#chat?c=..&m=..) */
+export interface ChatMentionItem { id: string; IsRead: boolean; createdOn: string; Body: string; Link: string; byName: string | null; conversation: string; regardingTable: string; regardingId: string }
+
+/** a record discussion I follow or was mentioned on (GET /chat/discussions, in the page's environment) */
+export interface DiscussionItem {
+  table: string; row: string; tableName: string; label: string; following: boolean; mentioned: boolean
+  lastCommentOn: string | null; lastText: string; lastBy: string | null; unread: number; link: string | null
+}
 export interface RepliesPage { root: ChatMessageView; messages: ChatMessageView[]; more: boolean }
 export interface SearchHit { message: ChatMessageView; conversation: { id: string; kind: ChatConversation['kind']; name: string } }
 
@@ -46,7 +57,7 @@ export function setLiveIdSource(fn: () => string | null): void {
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
-async function call<T>(method: Method, path: string, body?: unknown, o: { raw?: Blob; type?: string; query?: Record<string, string | number | undefined | null> } = {}): Promise<T> {
+async function call<T>(method: Method, path: string, body?: unknown, o: { raw?: Blob; type?: string; query?: Record<string, string | number | undefined | null>; env?: boolean } = {}): Promise<T> {
   const q = o.query ? Object.entries(o.query).filter(([, v]) => v !== undefined && v !== null && v !== '') : []
   const qs = q.length ? `?${new URLSearchParams(q.map(([k, v]) => [k, String(v)])).toString()}` : ''
   const headers: Record<string, string> = { [CSRF_HEADER]: '1' }
@@ -54,6 +65,7 @@ async function call<T>(method: Method, path: string, body?: unknown, o: { raw?: 
   else if (body !== undefined) headers['Content-Type'] = 'application/json'
   const id = method === 'GET' ? null : liveId()
   if (id) headers[LIVE_CLIENT_HEADER] = id
+  if (o.env) Object.assign(headers, environmentHeaders())
   let res: Response
   try {
     res = await fetch(`${API_BASE}${path}${qs}`, { method, credentials: 'same-origin', cache: 'no-store', headers, body: o.raw ?? (body !== undefined ? JSON.stringify(body) : undefined) })
@@ -87,7 +99,7 @@ export const chatApi = {
   removeMember: (id: string, userId: string) => call<{ removed: boolean }>('DELETE', `/chat/conversations/${enc(id)}/members/${enc(userId)}`),
   mentionable: (id: string, q: string) => call<{ users: ChatPerson[] }>('GET', `/chat/conversations/${enc(id)}/mentionable`, undefined, { query: { q } }),
   people: (q: string) => call<{ users: ChatPerson[] }>('GET', '/chat/people', undefined, { query: { q } }),
-  history: (id: string, o: { before?: number; after?: number; limit?: number } = {}) => call<HistoryPage>('GET', `/chat/conversations/${enc(id)}/messages`, undefined, { query: o }),
+  history: (id: string, o: { before?: number; after?: number; around?: number; limit?: number } = {}) => call<HistoryPage>('GET', `/chat/conversations/${enc(id)}/messages`, undefined, { query: o }),
   send: (id: string, b: { body: string; parent?: string | null; files?: string[]; cards?: ChatCardRef[]; clientId: string }) => call<{ message: ChatMessageView; duplicate: boolean }>('POST', `/chat/conversations/${enc(id)}/messages`, { ...b, parent: b.parent ?? undefined }),
   replies: (messageId: string, o: { after?: number; limit?: number } = {}) => call<RepliesPage>('GET', `/chat/messages/${enc(messageId)}/replies`, undefined, { query: o }),
   edit: (messageId: string, body: string) => call<{ message: ChatMessageView }>('PATCH', `/chat/messages/${enc(messageId)}`, { body }),
@@ -101,6 +113,11 @@ export const chatApi = {
   discardFile: (fileId: string) => call<unknown>('DELETE', `/chat/files/${enc(fileId)}`),
   resolveCard: (messageId: string, index: number) => call<ChatCardView>('POST', '/chat/cards/resolve', { messageId, index }),
   search: (o: { q: string; channel?: string; page?: number }) => call<{ items: SearchHit[]; more: boolean }>('GET', '/chat/search', undefined, { query: o }),
+  mentions: () => call<{ items: ChatMentionItem[] }>('GET', '/chat/mentions'),
+  mentionRead: (id: string) => call<{ ok: true }>('POST', `/chat/mentions/${enc(id)}/read`),
+  /** record discussions live in the page's environment (Follows, Comments, Mentions): the environment header goes along */
+  discussions: () => call<{ items: DiscussionItem[] }>('GET', '/chat/discussions', undefined, { env: true }),
+  discussionRead: (table: string | undefined, row: string) => call<{ ok: true; following: boolean }>('POST', '/chat/discussions/read', { table, row }, { env: true }),
 }
 
 /* ------------------------------------------------------------------ administrators (Admin console > Chat) */

@@ -19,7 +19,8 @@ import { useEffect, useReducer, useState, useSyncExternalStore } from 'react'
 import { platform } from '@/platform'
 import type { Row, TableDef } from '@/platform/contracts'
 import type { QueryPlan } from '@/platform/query'
-import { labelPlans, labelStoreKey, mergeLabels, missingIds, primaryOf, type LabelEntry } from './lookups'
+import type { QueryState } from '@/platform/query-cache'
+import { answerMaySet, labelPlans, labelStoreKey, mergeLabels, missingIds, primaryOf, type AnswerOrder, type LabelEntry } from './lookups'
 
 const MAX_PLANS = 40
 
@@ -38,8 +39,34 @@ const labels = new Map<string, Map<string, LabelEntry>>()
 const rowsById = new Map<string, Row | null>()
 /** id -> the query cache key of the full-row plan that asked for it (the evaluator's dependency) */
 const rowKeys = new Map<string, string>()
+/**
+ * Several components write the same entries from different answers (their plans hold different ids). Per entry the
+ * stamp of the answer that set it: an older answer never overrides a newer one, so two answers that disagree for a
+ * moment (one refetched after a delete, one still showing its previous rows) cannot flip an entry back and forth on
+ * every render (each flip notified every list: a render loop).
+ */
+const labelOrder = new Map<string, Map<string, number>>()
+const rowOrder = new Map<string, number>()
+const answerStamps = new Map<string, { version: number; at: number }>()
+let stampSeq = 0
 let version = 0
 const listeners = new Set<() => void>()
+
+/** the stamp of an answer (grows with every new answer seen); null while it is provisional */
+function stampOf(st: QueryState): number | null {
+  if (st.status !== 'ready' || st.refreshing || st.error) return null
+  const s = answerStamps.get(st.key)
+  if (s && s.version === st.version) return s.at
+  const at = ++stampSeq
+  answerStamps.set(st.key, { version: st.version, at })
+  return at
+}
+function orderOf(table: string): Map<string, number> {
+  const k = labelStoreKey(storeUser, table)
+  let m = labelOrder.get(k)
+  if (!m) labelOrder.set(k, (m = new Map()))
+  return m
+}
 
 function userNow(): string {
   return safe(() => platform.getState().session?.user?.id ?? '', '')
@@ -51,6 +78,9 @@ function checkUser(): void {
   labels.clear()
   rowsById.clear()
   rowKeys.clear()
+  labelOrder.clear()
+  rowOrder.clear()
+  answerStamps.clear()
   version++
 }
 function mapOf(table: string): Map<string, LabelEntry> {
@@ -157,10 +187,14 @@ export function useLookupRequests(requests: LabelRequest[], opts: { full?: boole
     if (opts.full) for (const id of a.ids) rowKeys.set(id, st.key)
     if (st.status === 'ready') {
       const primary = primaryOf(def)?.name ?? def.primaryColumn
-      if (mergeLabels(mapOf(def.name), a.ids, st.rows, primary)) changed = true
+      const at = stampOf(st)
+      if (mergeLabels(mapOf(def.name), a.ids, st.rows, primary, { order: orderOf(def.name), at })) changed = true
       if (opts.full) {
         const got = new Map(st.rows.map((row) => [String(row.__id ?? row.id ?? ''), row]))
+        const from: AnswerOrder = { order: rowOrder, at }
         for (const id of a.ids) {
+          if (!answerMaySet(from, id, rowsById.has(id))) continue
+          if (at !== null) rowOrder.set(id, at)
           const row = got.get(id) ?? null
           if (rowsById.get(id) !== row) {
             rowsById.set(id, row)
@@ -170,7 +204,8 @@ export function useLookupRequests(requests: LabelRequest[], opts: { full?: boole
       }
     } else if (st.status === 'error') {
       // refused (a hidden primary column, no access) or no connection for a table not kept offline: neutral placeholder
-      if (mergeLabels(mapOf(def.name), a.ids, [], primaryOf(def)?.name ?? def.primaryColumn)) changed = true
+      // (provisional: it fills what is not known yet, it does not override a label another answer gave)
+      if (mergeLabels(mapOf(def.name), a.ids, [], primaryOf(def)?.name ?? def.primaryColumn, { order: orderOf(def.name), at: null })) changed = true
     }
   }
   const keys = me.asked.map((a) => a.key).join('\u0001')

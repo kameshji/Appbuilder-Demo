@@ -130,3 +130,35 @@ describe('rule 8 for packs', () => {
     expect(Object.keys(r.pkg.payload.sample!)).toEqual(['Visitors', 'Visits'])
   })
 })
+
+describe('pack gaps found by the Manufacturing pack', () => {
+  it('a column named like a system column (owner, Id ...) is refused up front, with the list from the platform', async () => {
+    const { SYSTEM_COLUMN_NAMES } = await import('../model/names.ts')
+    const p = clone(builtin('visitor-log'))
+    const visits = p.slots.find((s) => s.id === 'Visits')!
+    visits.columns.push({ id: 'Owner', label: 'Owner', types: ['text'], required: false, create: { type: 'text' } })
+    const problems = validateTemplate(p).join(' ')
+    expect(problems).toMatch(/Visits\.Owner/)
+    for (const n of SYSTEM_COLUMN_NAMES) expect(problems).toContain(n)
+    visits.columns[visits.columns.length - 1].id = 'createdon'
+    expect(validateTemplate(p).join(' ')).toMatch(/Visits\.createdon/)
+    visits.columns[visits.columns.length - 1].id = 'VisitOwner'
+    expect(validateTemplate(p)).toEqual([])
+  })
+
+  it('list columns with headers: Slot_<slot>_<column>:Header pieces are rewritten (a left-out column drops its piece)', async () => {
+    const { rewriteFormula, tokensIn } = await import('./rewrite.ts')
+    const map = new Map<string, string | null>([['Slot_Visits_PassNumber', 'PassNo'], ['Slot_Visits_Arrival', 'ArrivedOn'], ['Slot_Visits_Note', null]])
+    expect(rewriteFormula('="Slot_Visits_PassNumber:Pass number, Slot_Visits_Arrival:Arrived at, Slot_Visits_Note:Note"', map)).toMatchObject({ out: '="PassNo:Pass number, ArrivedOn:Arrived at"', problems: [] })
+    expect(tokensIn('="Slot_Visits_PassNumber:Pass number, id"')).toEqual(['Slot_Visits_PassNumber'])
+    // a header may not hold a token, and words around a token are still refused
+    expect(rewriteFormula('="Slot_Visits_PassNumber:Slot_Visits_Arrival"', map).problems.join(' ')).toMatch(/cannot be rewritten|header/)
+    expect(rewriteFormula('="Pass Slot_Visits_PassNumber, Slot_Visits_Arrival"', map).problems.join(' ')).toMatch(/mixes slot tokens/)
+    // the built-in packs use headers in their lists, and the pack check accepts them
+    for (const f of ['visitor-log', 'manufacturing']) {
+      const p = builtin(f)
+      expect(JSON.stringify(p.payload.apps), f).toMatch(/Slot_[A-Za-z]+_[A-Za-z]+:[A-Z][a-z]/)
+      expect(checkTemplateFormulas(p), f).toEqual([])
+    }
+  })
+})

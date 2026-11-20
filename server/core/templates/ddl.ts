@@ -10,8 +10,8 @@
  *                          install), the solution of a Linked install, and the uninstall (who, when, what was kept).
  *
  * Rows are never deleted: an uninstall sets status 'uninstalled'. A Linked template is installed at most once per
- * environment (partial unique index). The register is not copied with an environment copy (environment-ops.ts lists the
- * tables it copies) and never travels in a solution.
+ * environment (partial unique index). An environment copy WITH DATA copies the register (environment-ops.ts
+ * COPY_DATA_META; a schema-only copy does not); it never travels in a solution.
  */
 import type { SqlDb } from '../contracts.ts'
 

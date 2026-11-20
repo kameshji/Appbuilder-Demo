@@ -13,8 +13,8 @@ import { clearNotice, closeConversation, closeThreadPane, openConversation, setP
  *
  * Narrow (the dock, a phone): the conversation list and the conversation are two screens; wide (the pop-out window at
  * 680 px and more): side by side. A thread replaces the conversation with a back button. Keyboard: arrows in the list,
- * Alt+Up / Alt+Down for the previous / next conversation, Escape goes back. `live` (the platform's connection) is
- * accepted for compatibility; chat speaks to the hub on its own socket (socket.ts says why).
+ * Alt+Up / Alt+Down for the previous / next conversation, Escape goes back. `live` is accepted for compatibility; chat
+ * subscribes its topics on the page's one live connection itself (store.ts, src/platform/live.ts).
  */
 export function ChatPanel({ variant, phone = false }: { variant: 'dock' | 'window'; live?: LiveApi | null; phone?: boolean }) {
   const status = useChat((s) => s.status)

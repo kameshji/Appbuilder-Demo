@@ -395,7 +395,13 @@ between is not caught for database connections. Connection hosts can only be set
 network addresses" switch and the heartbeat's "in this network" switch; `APPBUILDER_OUTBOUND_DENY` adds host names
 (`*.domain` allowed) nothing may connect to. A hosted install (`APPBUILDER_HOSTED=1`) always runs with `deny` and refuses
 its own public host name (tests: `server/core/hosting/hosting.test.ts`, which also lists every server file that opens a
-connection, so a new one fails until it is reviewed).
+connection, so a new one fails until it is reviewed). With `deny`, a host that is a path (a Unix socket or named pipe, such
+as `/var/run/postgresql`) and `localhost` / `*.localhost` count as loopback and are refused before a driver sees them
+(since H-B). **Known gap (H-B, open):** a database connection whose host is a *name* that resolves to loopback or a private
+address is refused when it is saved or tested, but it is still stored, and listing its tables later connects to that
+address (the driver resolves the name itself; the isolation suite shows it). Until the database connectors check the
+resolved address before every connection, a hosted install's administrator can reach PostgreSQL's port on the server by
+such a name; the role and password of another install are still needed to sign in (see hosting).
 
 **HTTP connections (P1)** are stricter, because flows and events call them with data from users: every request and every
 redirect must go to a host on the connection's allow-list (required; `*` refused), loopback and private addresses need

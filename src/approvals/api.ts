@@ -3,19 +3,20 @@
  * Approvals panel UI component and RequestApproval() in apps.
  */
 import { PlatformError } from '@/platform'
-import { API_BASE, CSRF_HEADER } from '@/platform/http'
+import { API_BASE, CSRF_HEADER, ENVIRONMENT_HEADER } from '@/platform/http'
 import { environmentHeaders } from '@/platform/environments'
 import { rememberErrorReference } from '@/platform/errorMessages'
 import type { ApprovalDetail, ApprovalPolicy, ApprovalRequestInfo, ApprovalSettings, DelegationInfo, RequestStatus } from '@/platform/approvals'
 
 export type ApprovalError = PlatformError & { status?: number; field?: string }
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+/** env: the request's own environment (an approval card in chat may come from another environment than the page's) */
+async function call<T>(method: string, path: string, body?: unknown, env?: string): Promise<T> {
   let res: Response
   try {
     res = await fetch(`${API_BASE}${path}`, {
       method, credentials: 'same-origin', cache: 'no-store',
-      headers: { [CSRF_HEADER]: '1', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...environmentHeaders() },
+      headers: { [CSRF_HEADER]: '1', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...environmentHeaders(), ...(env ? { [ENVIRONMENT_HEADER]: env } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch {
@@ -49,7 +50,8 @@ export const approvalsApi = {
   },
   get: (id: string) => call<{ request: ApprovalDetail }>('GET', `/approvals/${enc(id)}`),
   create: (b: { id?: string; policy?: string; approvers?: string[] | string; title: string; details?: string; fields?: Record<string, unknown>; regarding?: { table?: string; rowId: string }; source?: 'app' | 'api' }) => call<{ id: string; created: boolean }>('POST', '/approvals', b),
-  respond: (id: string, response: string, comment?: string) => call<{ status: RequestStatus; outcome: string | null }>('POST', `/approvals/${enc(id)}/respond`, { response, comment }),
+  /** the inbox, the record's Approvals panel and the approval cards in chat all answer here (one rule, on the server) */
+  respond: (id: string, response: string, comment?: string, env?: string) => call<{ status: RequestStatus; outcome: string | null }>('POST', `/approvals/${enc(id)}/respond`, { response, comment }, env),
   respondMany: (ids: string[], response: string, comment?: string) => call<{ results: { id: string; ok: boolean; status?: string; error?: string }[] }>('POST', '/approvals/respond-many', { ids, response, comment }),
   answerInfo: (id: string, comment: string) => call<{ ok: true }>('POST', `/approvals/${enc(id)}/info`, { comment }),
   cancel: (id: string, reason?: string) => call<{ ok: true }>('POST', `/approvals/${enc(id)}/cancel`, { reason }),

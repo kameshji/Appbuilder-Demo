@@ -61,7 +61,8 @@ code for 0.7.0 where Phase 2 touched it, otherwise for 0.6.0.
 | [Approvals](dev/approvals.md) (routing, security, email links, flows, the visual editor) | current |
 | [Chat: server, HTTP and live API](dev/chat.md) | current (Phase 3 packages A and B) |
 | [Tasks: reminders, digest, repeats, shares, shared schedule fields](dev/tasks.md) | current |
-| [Hosting support in the server](dev/hosting.md): rules for links, cookies, outbound connections, classifying routes and job types | current |
+| [Notes: the editor, the server sanitiser, sharing, record cards](dev/notes.md); for people: [Notes](help/notes.md), [notes for teams](guide/notes.md) | current |
+| [Hosting support in the server](dev/hosting.md): rules for links, cookies, outbound connections, classifying routes and job types; `node scripts/exit-check/h-isolation.mjs` runs the cross-instance isolation suite (evidence for the release gate, not a security review) | current |
 | [Solution templates (authoring)](dev/solution-templates.md): writing a pack (format 2): tables, tokens, apps, flows, approvals, dashboards, print templates, roles, number sequences, reference and SAMPLE rows, dependencies, upgrades, the pack test | current |
 | [Templates catalogue](dev/templates.md): package format, slots and binding, integrity, plan and install paths, Linked upgrades, uninstall | current |
 | [WhatsApp connector](dev/whatsapp.md): connection, actions, opt-in store, webhook, notification channel; what is unverified without a Meta account | current |

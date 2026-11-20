@@ -39,6 +39,7 @@ import { TileEditor } from './TileEditor'
 import { DashboardSettingsSheet } from './DashboardSettings'
 import { ViewerRolesDialog } from './ViewerRoles'
 import { openDrill } from './drillTo'
+import { ShareToChatButton } from '@/chat/share'
 
 const sel = 'h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30'
 const ROW_PX = 80
@@ -269,6 +270,7 @@ function DashboardView({ info, settings, onSaved }: { info: DashboardInfo; setti
         <div className="ml-auto flex items-center gap-2">
           {stamp && <span className="hidden text-xs text-muted-foreground sm:inline" data-testid="dashboard-stamp">Updated {stamp.at.toLocaleTimeString()} · {stamp.ms} ms</span>}
           <Button variant="outline" size="sm" onClick={() => void refresh()} aria-label="Refresh" data-testid="dashboard-refresh"><RefreshCw /></Button>
+          {!editing && <ShareToChatButton target={{ kind: 'dashboard', dashboard: info.id }} title={info.def.title || info.name} variant="outline" size="icon-sm" />}
           {mode === 'server' && !editing && <Button variant="outline" size="sm" onClick={() => setPanel('snapshots')} aria-label="Email snapshots" title="Email this dashboard as a PDF on a schedule" data-testid="dashboard-snapshots"><Mail /><span className="hidden lg:inline"> Email</span></Button>}
           {mode === 'server' && info.canEdit && !editing && <Button variant="outline" size="sm" onClick={() => setPanel('tokens')} aria-label="TV and kiosk screens" title="View tokens: show this dashboard on a screen without signing in" data-testid="dashboard-tokens"><KeyRound /><span className="hidden lg:inline"> Screens</span></Button>}
           {info.canEdit && <Button variant="outline" size="sm" onClick={() => setShowRoles(true)} title={viewerSummary(roles, allRoles)} aria-label="Who can see this dashboard" data-testid="dashboard-viewers"><Users /><span className="hidden lg:inline"> Who can see this</span></Button>}

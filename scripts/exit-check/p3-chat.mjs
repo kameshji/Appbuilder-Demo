@@ -41,6 +41,14 @@
  * response bytes) that follows a change of the record, thread, reaction, edit, delete, report, the pop-out, a non-member
  * (list, search, address), the phone screen with a keyboard inset, Admin console > Chat (report queue, read-only person,
  * member removal, archive, the export with its typed reason, retention) and the audit log, light and dark themes.
+ * Package E (checks 4E, 6E, 15E, 1E): a record shared to a channel from the record timeline's "Share to chat" where one
+ * reader lacks a column and another the row (DOM and response bytes); a discussion on the timeline with a mention whose
+ * picker offers readers only, an edit of one's own comment, live on a second reader's timeline, listed under
+ * Discussions with its unread count and opening the record; an approval card answered in chat (a comment-required
+ * answer refused, the requester unable to approve their own) and the same request decided in the inbox; a card that
+ * updates live when the request is decided in the inbox; the answer on the record timeline; chat on ONE WebSocket per
+ * tab (counted) across an environment switch; the Mentions page opening a chat mention; a deep link to an old message
+ * (one page around it, not paging back).
  *
  * Settings: APPBUILDER_TEST_DB (dot-source .sandbox/env.ps1) or EXIT_DB_HOST / EXIT_DB_PORT / EXIT_DB_USER /
  * EXIT_DB_PASSWORD / EXIT_MAINT_DB; EXIT_DB_NAME (appbuilder_exit_p3a); EXIT_PORT (5196); EXIT_SCALE (100000);
@@ -368,7 +376,8 @@ async function browserPart({ C, ids, admin }) {
     await openConv(B, arch)
     const first = (await textsIn(B)).length
     await front(B)
-    await B.click(T('chat-older'))
+    // a DOM click: scrolling the button into view would start the automatic load of older messages first (a race)
+    await B.$eval(T('chat-older'), (e) => e.click())
     await waitFn(B, () => document.querySelectorAll('[data-testid="chat-messages"] [data-testid="chat-message"]').length >= 100, null, 10000)
     const second = (await textsIn(B)).length
     B.off('request', onReq)
@@ -745,6 +754,282 @@ async function browserPart({ C, ids, admin }) {
     await A.click(T('portal-theme-toggle'))
     ok('1B', dark && lightBg !== darkBg, 'chat follows the light and dark themes', `${lightBg} / ${darkBg}`)
 
+
+    /* ============================================================== package E: records and approvals in chat */
+    // a table, three readers: Bina reads everything, Chetan all rows without Cost, Omar only his own rows
+    const vt = await api(admin, 'POST', '/tables', { displayName: 'Valves', name: 'ExitValves', columns: [{ displayName: 'Code', type: 'text' }, { displayName: 'Cost', type: 'text' }] })
+    const vFull = await api(admin, 'POST', '/roles', { name: 'Valves in full', apps: 'all', privileges: [{ table: vt.id, create: true, read: 'all', update: 'all', delete: 'none' }] })
+    const vNoCost = await api(admin, 'POST', '/roles', { name: 'Valves without cost', apps: 'all', privileges: [{ table: vt.id, create: false, read: 'all', update: 'none', delete: 'none', columns: { Cost: 'none' } }] })
+    const vOwn = await api(admin, 'POST', '/roles', { name: 'Own valves', apps: 'all', privileges: [{ table: vt.id, create: true, read: 'own', update: 'own', delete: 'none' }] })
+    await api(admin, 'PATCH', `/users/${ids.bina}`, { roleIds: [full.id, vFull.id] })
+    await api(admin, 'PATCH', `/users/${ids.chet}`, { roleIds: [partial.id, vNoCost.id] })
+    await api(admin, 'PATCH', `/users/${ids.omar}`, { roleIds: [vOwn.id] })
+    const valve = (await api(admin, 'POST', `/data/${vt.id}/rows`, { values: { Code: 'V-17', Cost: 'VALVE-COST-5521' } })).row.id
+    // an app with the Record timeline UI component on the valve of the link (#u-<app>?record=<id>)
+    const desk = await api(admin, 'POST', '/apps', { name: 'Valves desk', width: 1280, height: 800 })
+    const deskDef = (await api(admin, 'GET', `/apps/${desk.id}`)).definition
+    deskDef.dataSources = ['ExitValves']
+    deskDef.screens[0].children.push({ id: 'n_vtl', name: 'ValveTimeline', type: 'RecordTimeline', props: { X: '=20', Y: '=20', Width: '=640', Height: '=740', Record: '=LookUp(ExitValves, id = Param("record"))' }, children: [] })
+    await api(admin, 'PUT', `/apps/${desk.id}`, { definition: deskDef })
+    // Bina's new tab counts the live sockets it opens (chat must use the page's one connection)
+    const BE = await newPage(ctxB)
+    await BE.evaluateOnNewDocument(() => {
+      const W = window.WebSocket
+      window.__ws = { opened: 0, open: 0 }
+      window.WebSocket = class extends W {
+        constructor(u, p) {
+          super(u, p)
+          if (String(u).includes('/api/v1/live')) {
+            window.__ws.opened++
+            window.__ws.open++
+            this.addEventListener('close', () => { window.__ws.open-- })
+          }
+        }
+      }
+    })
+    const deskUrl = `${BASE}/#u-${desk.id}?record=${valve}`
+    await front(BE)
+    await BE.goto(deskUrl, { waitUntil: 'domcontentloaded' })
+    await BE.waitForSelector(`${T('record-timeline')} ${T('timeline-composer')}`, { timeout: 30000 })
+    await dockReady(BE)
+    await settle()
+
+    /* ---------------------------------------- 4E: share the record from its timeline; each reader gets their own card */
+    await front(BE)
+    await BE.click(`${T('record-timeline')} ${T('chat-share-button')}`)
+    await BE.waitForSelector(T('chat-share-dialog'), { timeout: 10000 })
+    await BE.waitForSelector(`${T('chat-share-conv')}[data-conv="${open}"]`, { timeout: 10000 })
+    const offeredConvs = await BE.$$eval(T('chat-share-conv'), (els) => els.map((e) => e.getAttribute('data-conv')))
+    await front(BE)
+    await BE.click(`${T('chat-share-conv')}[data-conv="${open}"]`)
+    // every field offered goes on the card (the primary column, Code, is the card's title and is not offered)
+    const offeredFields = await BE.$$eval(T('chat-share-field'), (els) => els.map((e) => e.getAttribute('data-field')))
+    for (const f of offeredFields) {
+      const on = await BE.$eval(`${T('chat-share-field')}[data-field="${f}"] button`, (e) => e.getAttribute('data-state') === 'checked').catch(() => false)
+      if (!on) { await front(BE); await BE.click(`${T('chat-share-field')}[data-field="${f}"] button`) }
+    }
+    await front(BE)
+    await BE.type(T('chat-share-note'), 'valve card from the timeline')
+    const shareReq = []
+    const onShare = (r) => { if (r.method() === 'POST' && r.url().includes(`/chat/conversations/${open}/messages`)) shareReq.push(r.postData() ?? '') }
+    BE.on('request', onShare)
+    await front(BE)
+    await BE.click(T('chat-share-send'))
+    await BE.waitForSelector(T('chat-share-done'), { timeout: 15000 })
+    BE.off('request', onShare)
+    await front(BE)
+    await BE.keyboard.press('Escape')
+    await openConv(BE, open)
+    await waitFn(BE, () => [...document.querySelectorAll('[data-testid="chat-message"]')].some((e) => e.textContent.includes('valve card from the timeline') && e.querySelector('[data-testid="chat-card"][data-state="available"]')), null, 15000).catch(() => null)
+    const chetCards = []
+    const omarCards = []
+    const onC = async (r) => { if (r.url().includes('/chat/cards/resolve')) chetCards.push(await r.text().catch(() => '')) }
+    const onO = async (r) => { if (r.url().includes('/chat/cards/resolve')) omarCards.push(await r.text().catch(() => '')) }
+    Cp.on('response', onC)
+    O.on('response', onO)
+    await dockReady(Cp)
+    await openConv(Cp, open)
+    await dockReady(O)
+    await openConv(O, open)
+    await waitText(Cp, 'valve card from the timeline', 15000)
+    await waitText(O, 'valve card from the timeline', 15000)
+    const cardOf = (page) => page.evaluate(() => {
+      const m = [...document.querySelectorAll('[data-testid="chat-message"]')].find((e) => e.textContent.includes('valve card from the timeline'))
+      const c = m?.querySelector('[data-testid="chat-card"]')
+      return c ? { state: c.getAttribute('data-state'), text: c.textContent, fields: [...c.querySelectorAll('[data-testid="chat-card-field"]')].map((f) => f.getAttribute('data-field')) } : null
+    })
+    await waitFn(Cp, () => [...document.querySelectorAll('[data-testid="chat-message"]')].some((e) => e.textContent.includes('valve card from the timeline') && e.querySelector('[data-testid="chat-card"][data-state="available"]')), null, 15000).catch(() => null)
+    await waitFn(O, () => [...document.querySelectorAll('[data-testid="chat-message"]')].some((e) => e.textContent.includes('valve card from the timeline') && e.querySelector('[data-testid="chat-card"][data-state="unavailable"]')), null, 15000).catch(() => null)
+    await sleep(400)
+    const cc = await cardOf(Cp)
+    const oc = await cardOf(O)
+    Cp.off('response', onC)
+    O.off('response', onO)
+    const valveFor = (list) => list.filter((b) => b.includes('V-17') || b.includes('"available":false'))
+    ok('4E', offeredConvs.includes(open) && !offeredConvs.includes(side) && shareReq.length === 1 && !shareReq[0].includes('VALVE-COST') && !shareReq[0].includes('V-17'),
+      '"Share to chat" on the record timeline offers the conversations the sharer may post to; the message carries a reference, never a value (request bytes)', `${offeredConvs.length} offered`)
+    const binaCard = await cardOf(BE)
+    ok('4E', binaCard?.state === 'available' && binaCard.text.includes('VALVE-COST-5521'), 'the sharer (a full reader) sees the chosen fields on the card', `Bina: "${binaCard?.text?.trim()}"; fields offered ${offeredFields.join(', ')}`)
+    ok('4E', cc?.state === 'available' && cc.text.includes('V-17') && !cc.text.includes('VALVE-COST') && !cc.fields.includes('Cost') && chetCards.length > 0 && chetCards.every((b) => !b.includes('VALVE-COST') && !b.includes('"Cost"')),
+      'a reader without the Cost column gets the card without it (DOM and response bytes)', `Chetan: "${cc?.text?.trim()}"`)
+    ok('4E', oc?.state === 'unavailable' && !(await O.content()).includes('V-17') && omarCards.length > 0 && omarCards.every((b) => !b.includes('V-17') && !b.includes('VALVE-COST')) && valveFor(omarCards).length > 0,
+      'a reader without access to the row gets "Not available" and no value (DOM and response bytes)', `Omar: ${omarCards[omarCards.length - 1]}`)
+
+    /* ---------------------------------------- 6E: a discussion: mention (readers only), edit, live, Discussions list */
+    const CT = await newPage(ctxC)
+    await front(CT)
+    await CT.goto(deskUrl, { waitUntil: 'domcontentloaded' })
+    await CT.waitForSelector(`${T('record-timeline')} ${T('timeline-composer')}`, { timeout: 30000 })
+    await settle()
+    await front(BE)
+    await BE.click(`${T('record-timeline')} ${T('timeline-composer')}`)
+    await BE.type(`${T('record-timeline')} ${T('timeline-composer')}`, 'Please check the seal @')
+    await BE.waitForSelector(T('mention-list'), { timeout: 10000 })
+    await sleep(500)
+    const pickable = await BE.$$eval(`${T('mention-list')} button`, (els) => els.map((e) => e.textContent))
+    await front(BE)
+    await BE.type(`${T('record-timeline')} ${T('timeline-composer')}`, 'Chet')
+    await BE.waitForSelector(`${T('mention-list')} [data-testid="mention-${ids.chet}"]`, { timeout: 10000 })
+    await front(BE)
+    await BE.click(`${T('mention-list')} [data-testid="mention-${ids.chet}"]`)
+    await front(BE)
+    await BE.type(`${T('record-timeline')} ${T('timeline-composer')}`, 'today')
+    await front(BE)
+    await BE.click(T('timeline-send'))
+    const liveTl = await waitFn(CT, () => [...document.querySelectorAll('[data-testid="timeline-comment"]')].some((e) => e.textContent.includes('Please check the seal')), null, 15000).then(() => true, () => false)
+    ok('6E', pickable.some((t) => t.includes('Chetan Rao')) && !pickable.some((t) => t.includes('Omar Ali')) && liveTl,
+      'a comment on the record timeline mentions a reader (the picker offers only people who can read the record) and reaches the other reader\'s timeline live', `offered: ${pickable.map((t) => t.replace(/\S+@\S+/, '').trim()).join(', ')}`)
+    // Chetan's Discussions list: the record, with an unread comment; a click opens the record
+    await front(Cp)
+    await toList(Cp)
+    await front(Cp)
+    await Cp.click(T('chat-tab-discussions'))
+    const listed = await Cp.waitForSelector(`${T('chat-discussion')}[data-row="${valve}"]`, { timeout: 15000 }).then(() => true, () => false)
+    const unreadD = listed ? await Cp.$eval(`${T('chat-discussion')}[data-row="${valve}"]`, (e) => Number(e.getAttribute('data-unread'))) : -1
+    const omarD = await api(C.omar, 'GET', '/chat/discussions')
+    // the edit of one's own comment: "(edited)", live on the other reader's timeline
+    const mineSel = await BE.evaluate(() => [...document.querySelectorAll('[data-testid="timeline-comment"]')].find((e) => e.textContent.includes('Please check the seal'))?.getAttribute('data-id'))
+    await front(BE)
+    await BE.click(`${T('timeline-comment')}[data-id="${mineSel}"] ${T('timeline-edit-action')}`)
+    await BE.waitForSelector(T('timeline-edit-input'), { timeout: 5000 })
+    await BE.$eval(T('timeline-edit-input'), (e) => e.select())
+    await front(BE)
+    await BE.type(T('timeline-edit-input'), 'Please check the seal and the gasket @')
+    await BE.waitForSelector(`${T('mention-list')} [data-testid="mention-${ids.chet}"]`, { timeout: 10000 })
+    await front(BE)
+    await BE.click(`${T('mention-list')} [data-testid="mention-${ids.chet}"]`)
+    await front(BE)
+    await BE.click(T('timeline-edit-save'))
+    const editedLive = await waitFn(CT, () => [...document.querySelectorAll('[data-testid="timeline-comment"]')].some((e) => e.textContent.includes('and the gasket') && e.querySelector('[data-testid="timeline-edited"]')), null, 15000).then(() => true, () => false)
+    const chetOnly = await CT.$$eval(T('timeline-edit-action'), (els) => els.length)
+    ok('6E', listed && unreadD >= 1 && !JSON.stringify(omarD).includes('Please check the seal') && editedLive && chetOnly === 0,
+      'the discussion is listed under Discussions for the mentioned reader with its unread count (not for a person who cannot read the record); the author\'s edit shows "(edited)" live on the other reader\'s timeline, which offers no Edit of someone else\'s comment', `unread ${unreadD}`)
+    await front(Cp)
+    await Cp.click(`${T('chat-discussion')}[data-row="${valve}"]`)
+    const opened = await waitFn(Cp, (u) => location.hash.includes(`record=${u}`), valve, 10000).then(() => true, () => false)
+    ok('6E', opened, 'a click on the discussion opens the record in the app it was discussed in', await Cp.evaluate(() => location.hash))
+    await CT.close()
+
+    /* ---------------------------------------- 15E: an approval card answered in chat, the inbox, the timeline */
+    await api(admin, 'POST', '/approvals/policies', { name: 'Valve repairs', definition: { type: 'single', approvers: ['chet@example.test'], requireCommentOnReject: true } })
+    const ar = await api(C.bina, 'POST', '/approvals', { policy: 'Valve repairs', title: 'Repair valve V-17', fields: { Estimate: 18000 }, regarding: { table: vt.id, rowId: valve } })
+    await front(Cp)
+    await Cp.goto(`${BASE}/#u`, { waitUntil: 'domcontentloaded' })
+    await Cp.waitForSelector(T('chat-button'), { timeout: 30000 })
+    await dockReady(Cp)
+    await toList(Cp)
+    // back to the Conversations tab (6E left the Discussions tab open)
+    await front(Cp)
+    await Cp.$eval(T('chat-tab-conversations'), (e) => e.click())
+    await Cp.waitForSelector(`${T('chat-tab-conversations')}[aria-selected="true"]`, { timeout: 5000 })
+    const apConv = await Cp.waitForSelector('[data-conv][data-name="Approvals"]', { timeout: 30000 }).then((h) => h.evaluate((e) => e.getAttribute('data-conv')), () => null)
+    if (!apConv) throw new Error(`no Approvals conversation in chat: ${JSON.stringify(await q('SELECT a.status, a.user_id = $1 AS chet, a.stage_idx, r.status AS rs, r.current_stage FROM env_default.ab_approval_assignments a JOIN env_default.ab_approval_requests r ON r.id = a.request_id', [ids.chet]))} channels ${JSON.stringify(await q("SELECT \"DirectKey\" FROM env_default.sys_channels WHERE \"DirectKey\" LIKE 'system:%'"))}`)
+    await openConv(Cp, apConv)
+    const cardSel = `${T('chat-card')}[data-kind="approval"]`
+    await Cp.waitForSelector(`${cardSel}[data-status="pending"][data-can-decide="1"]`, { timeout: 20000 })
+    const cannotPost = await has(Cp, T('chat-cannot-post'))
+    // Reject needs a comment (the policy): refused by the server, shown on the card
+    await front(Cp)
+    await Cp.click(`${cardSel} ${T('chat-approval-answer')}[data-answer="Reject"]`)
+    await front(Cp)
+    await Cp.click(`${cardSel} ${T('chat-approval-send')}`)
+    const refusal = await Cp.waitForSelector(`${cardSel} ${T('chat-approval-error')}`, { timeout: 10000 }).then((h) => h.evaluate((e) => e.textContent), () => '')
+    const selfAnswer = await C.bina.req('POST', `/approvals/${ar.id}/respond`, { response: 'Approve' })
+    const binaConvs = (await api(C.bina, 'GET', '/chat/conversations')).items
+    await front(Cp)
+    await Cp.click(`${cardSel} ${T('chat-approval-answer')}[data-answer="Approve"]`)
+    await front(Cp)
+    await Cp.type(`${cardSel} ${T('chat-approval-comment')}`, 'approved from chat')
+    await front(Cp)
+    await Cp.click(`${cardSel} ${T('chat-approval-send')}`)
+    const approvedCard = await Cp.waitForSelector(`${cardSel}[data-status="approved"]`, { timeout: 15000 }).then(() => true, () => false)
+    const inbox = await api(C.chet, 'GET', `/approvals/${ar.id}`)
+    await front(Cp)
+    await Cp.goto(`${BASE}/#u-approvals?id=${ar.id}`, { waitUntil: 'domcontentloaded' })
+    const inboxShows = await waitFn(Cp, () => /Repair valve V-17/.test(document.body.innerText) && /approved/i.test(document.body.innerText), null, 20000).then(() => true, () => false)
+    ok('15E', cannotPost && /comment is required/i.test(refusal) && selfAnswer.status === 403 && !binaConvs.some((c) => c.system === 'approvals') && approvedCard && inbox.request.status === 'approved' && inbox.request.history.filter((h) => h.action === 'responded').length === 1 && inboxShows,
+      'an approval card in the approver\'s "Approvals" conversation: a rejection without the required comment is refused, the requester cannot approve their own, the approval from the card is the same decision in the inbox (one answer in its history)', `refusal "${refusal.trim()}"; requester ${selfAnswer.status}`)
+    // decided elsewhere: a second request answered in the inbox; the open card follows live
+    const ar2 = await api(C.bina, 'POST', '/approvals', { policy: 'Valve repairs', title: 'Replace valve V-18', regarding: { table: vt.id, rowId: valve } })
+    await front(Cp)
+    await Cp.goto(`${BASE}/#u`, { waitUntil: 'domcontentloaded' })
+    await Cp.waitForSelector(T('chat-button'), { timeout: 30000 })
+    await dockReady(Cp)
+    await openConv(Cp, apConv)
+    const card2 = await waitFn(Cp, (t) => [...document.querySelectorAll('[data-testid="chat-card"][data-kind="approval"]')].some((e) => e.textContent.includes(t) && e.getAttribute('data-status') === 'pending'), 'Replace valve V-18', 30000).then(() => true, () => false)
+    await api(C.chet, 'POST', `/approvals/${ar2.id}/respond`, { response: 'Approve' })
+    const followedLive = await waitFn(Cp, (t) => [...document.querySelectorAll('[data-testid="chat-card"][data-kind="approval"]')].some((e) => e.textContent.includes(t) && e.getAttribute('data-status') === 'approved'), 'Replace valve V-18', 20000).then(() => true, () => false)
+    ok('15E', card2 && followedLive, 'a card updates live when its request is decided elsewhere (here: answered in the inbox)')
+    // the answer on the record timeline (who, what, comment), for the requester
+    await front(BE)
+    await BE.goto(deskUrl, { waitUntil: 'domcontentloaded' })
+    // the same address: reload, so the timeline is read again
+    await BE.reload({ waitUntil: 'domcontentloaded' })
+    await BE.waitForSelector(T('record-timeline'), { timeout: 30000 })
+    const answerEv = await waitFn(BE, () => [...document.querySelectorAll('[data-testid="timeline-approval-answer"][data-response="Approve"]')].map((e) => e.textContent).find((t) => t.includes('approved from chat')), null, 15000).then((h) => h.jsonValue(), () => '')
+    const omarTl = await C.omar.req('GET', `/collab/timeline?table=${vt.id}&row=${valve}`)
+    ok('15E', answerEv.includes('Chetan Rao') && answerEv.includes('approved from chat') && omarTl.status === 404 && !omarTl.text.includes('approved from chat'),
+      'each answer is on the record timeline (who, what, when, comment) for people who may see the approval', answerEv.trim().slice(0, 160))
+
+    /* ---------------------------------------- 1E: one WebSocket per tab, across an environment switch */
+    await dockReady(BE)
+    await openConv(BE, maint)
+    const env2 = await api(admin, 'POST', '/environments', { name: 'Exit second', type: 'sandbox' })
+    await api(admin, 'PUT', `/environments/${env2.id}/access/${ids.bina}`, {})
+    const before1 = await BE.evaluate(() => ({ ...window.__ws }))
+    await front(BE)
+    await BE.goto(`${BASE}/#u`, { waitUntil: 'domcontentloaded' })
+    // a reload: the new environment is in the list the page loads
+    await BE.reload({ waitUntil: 'domcontentloaded' })
+    await BE.waitForSelector(T('env-picker'), { timeout: 30000 })
+    await front(BE)
+    await BE.click(T('env-picker'))
+    await BE.waitForSelector(T(`env-item-${env2.id}`), { visible: true, timeout: 10000 })
+    await front(BE)
+    await BE.click(T(`env-item-${env2.id}`))
+    await waitFn(BE, (n) => document.querySelector('[data-testid="env-current"]')?.textContent?.includes(n), 'Exit second', 20000)
+    await settle()
+    await dockReady(BE)
+    await openConv(BE, maint)
+    await api(C.chet, 'POST', `/chat/conversations/${maint}/messages`, { body: '<p>after the environment switch</p>', clientId: 'env-switch-check-1' })
+    const afterSwitch = await waitText(BE, 'after the environment switch', 15000).then(() => true, () => false)
+    const ws1 = await BE.evaluate(() => ({ ...window.__ws }))
+    ok('1E', before1.open === 1 && ws1.open === 1 && afterSwitch && (await BE.$eval(T('chat-panel'), (e) => e.getAttribute('data-live'))) === 'open',
+      'chat runs on the page\'s ONE WebSocket (counted in the tab) and keeps working live across an environment switch', `before: ${before1.opened} opened / ${before1.open} open; after the switch: ${ws1.opened} opened / ${ws1.open} open`)
+    // back to Default for what follows
+    await front(BE)
+    await BE.click(T('env-picker'))
+    await BE.waitForSelector(T('env-item-default'), { visible: true, timeout: 10000 })
+    await front(BE)
+    await BE.click(T('env-item-default'))
+    await settle()
+
+    /* ---------------------------------------- 1E: the Mentions page opens a chat mention */
+    await front(Cp)
+    await Cp.goto(`${BASE}/#u-mentions`, { waitUntil: 'domcontentloaded' })
+    await Cp.waitForSelector(`${T('mention-row')}[data-kind="chat"]`, { timeout: 20000 })
+    const mentionText = await Cp.$eval(`${T('mention-row')}[data-kind="chat"]`, (e) => e.textContent)
+    await front(Cp)
+    await Cp.click(`${T('mention-row')}[data-kind="chat"]`)
+    const mentionOpened = await Cp.waitForSelector(`${T('chat-dock')} ${T('chat-conversation')}[data-id="${maint}"]`, { timeout: 15000 }).then(() => true, () => false)
+    const mFocus = await waitFn(Cp, (s) => window.__abChat?.state().focus?.seq === s, mentionSeq, 10000).then(() => true, () => false)
+    ok('1E', mentionText.includes('please check pump 4') && mentionOpened && mFocus, 'the Mentions page lists the chat mention with its text and opens the message in chat', mentionText.trim().slice(0, 120))
+
+    /* ---------------------------------------- 1E: a deep link to an old message loads the page around it */
+    const deepReq = []
+    const onDeep = (r) => { if (r.url().includes(`/chat/conversations/${arch}/messages`)) deepReq.push(r.url().replace(/^.*\?/, '?')) }
+    await front(B)
+    B.on('request', onDeep)
+    await B.goto(`${BASE}/#chat?c=${arch}&m=6`, { waitUntil: 'domcontentloaded' })
+    await B.waitForSelector(T('chat-button'), { timeout: 30000 })
+    const deepShown = await B.waitForSelector(`${T('chat-message')}[data-seq="6"]`, { timeout: 20000 }).then(() => true, () => false)
+    const deepFocus = await waitFn(B, () => window.__abChat?.state().focus?.seq === 6, null, 10000).then(() => true, () => false)
+    await sleep(500)
+    B.off('request', onDeep)
+    const newerBar = await has(B, T('chat-newer-bar'))
+    ok('1E', deepShown && deepFocus && deepReq.some((u) => /around=6/.test(u)) && deepReq.length <= 3 && newerBar,
+      'a deep link to an old message (seq 6 of 301) loads one page around it instead of paging back; newer messages are a click away', deepReq.join(' '))
+
     ok('B', errors.length === 0, 'no script errors in any page', errors.slice(0, 3).join(' | '))
   } catch (e) {
     failures++
@@ -937,7 +1222,7 @@ try {
   ok(5, ended >= 0 && ended < 5000 && gone, 'a removed member stops receiving its messages within 5 s and loses search hits at once', `${ended} ms`)
   record(5, 'the full leak suite (every route, every persona)', 'SKIP', 'not run by this script: npx vitest run server/core/chat/chat-security.integration')
 
-  record(6, 'per-record discussions (Comments in chat\'s Discussions list)', 'SKIP', 'package E')
+  record(6, 'per-record discussions (Comments in chat\'s Discussions list)', 'SKIP', 'API level: server/core/chat/chat-security.integration.test.ts (package E); on screen: the 6E checks of the browser part')
 
   /* ---------------------------------------------------------------- 7 */
   log(`check 7: search over ${SCALE} messages`)

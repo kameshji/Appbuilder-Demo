@@ -3,12 +3,14 @@
  * server's answer for them (POST /chat/cards/resolve): the fields their column security allows, "not available" for a
  * row they may not read, an app they may not run or a dashboard they may not view. Nothing here comes from the
  * browser's own data. A record card asks again when its table changes for the reader (table topic).
- * Package E adds the "Share to chat" pickers; it may restyle this file.
+ * Package E: "Share to chat" (share.tsx) makes record, app and dashboard cards; approval cards (ApprovalCard.tsx) come
+ * from the system sender "Approvals" only.
  */
 import { useEffect } from 'react'
 import { AppWindow, LayoutDashboard, Loader2, Lock, Rows3 } from 'lucide-react'
 import type { ChatCardRef } from '@/platform/chat-protocol'
 import { cardKey, resolveCard, useChat, watchCardTable } from '../store'
+import { ApprovalCard } from './ApprovalCard'
 
 function show(v: unknown, type: string): string {
   if (v === null || v === undefined || v === '') return '-'
@@ -22,7 +24,12 @@ function show(v: unknown, type: string): string {
   return String(v)
 }
 
-export function ChatCard({ messageId, index, card }: { messageId: string; index: number; card: ChatCardRef }) {
+export function ChatCard({ messageId, index, card, version = 0 }: { messageId: string; index: number; card: ChatCardRef; version?: number }) {
+  if (card.kind === 'approval') return <ApprovalCard messageId={messageId} index={index} card={card} version={version} />
+  return <ReferenceCard messageId={messageId} index={index} card={card} />
+}
+
+function ReferenceCard({ messageId, index, card }: { messageId: string; index: number; card: Exclude<ChatCardRef, { kind: 'approval' }> }) {
   const key = cardKey(messageId, index)
   const v = useChat((s) => s.cards[key])
   useEffect(() => {
@@ -59,6 +66,7 @@ export function ChatCard({ messageId, index, card }: { messageId: string; index:
       </div>
     )
   }
+  if (v.kind === 'approval') return null
   if (v.kind === 'app') {
     return (
       <a className={`${box} hover:bg-muted`} href={`#u-${encodeURIComponent(v.app)}`} data-testid="chat-card" data-state="available" data-kind="app">

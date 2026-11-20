@@ -10,8 +10,11 @@
  *    newer push, and applying the same change twice changes nothing (exactly once on screen).
  *  - top-level messages are ordered by `seq`; thread replies live with their thread (only threads that are open).
  *  - only the pages the person scrolled through are held (older pages on demand): never the whole conversation.
+ *  - a deep link to an old message loads one page AROUND it (package E): the window then is not the newest part of the
+ *    conversation (`hasNewer`); messages newer than the window are not inserted (they would leave a hole) until the
+ *    person pages forward or jumps to the latest page.
  */
-import type { ChatChanges, ChatMessageView, ChatPushMessage } from '@/platform/chat-protocol'
+import { CHAT_CHANGES_PAGE, type ChatChanges, type ChatMessageView, type ChatPushMessage } from '@/platform/chat-protocol'
 
 export interface ThreadState {
   rootId: string
@@ -29,6 +32,8 @@ export interface Timeline {
   items: ChatMessageView[]
   /** older messages exist on the server (page back with before=<items[0].seq>) */
   hasOlder: boolean
+  /** the window was loaded around an old message: newer messages exist (page forward with after=<last seq>) */
+  hasNewer: boolean
   /** the change counter applied so far */
   applied: number
   /** history up to this seq was removed by retention */
@@ -38,7 +43,7 @@ export interface Timeline {
 }
 
 export function emptyTimeline(channelId: string): Timeline {
-  return { channelId, loaded: false, items: [], hasOlder: false, applied: 0, purgedSeq: 0, threads: {} }
+  return { channelId, loaded: false, items: [], hasOlder: false, hasNewer: false, applied: 0, purgedSeq: 0, threads: {} }
 }
 
 /** the newer of two versions of one message (same or newer changeSeq wins; ties keep the incoming one) */
@@ -70,9 +75,27 @@ export function upsertSorted(list: ChatMessageView[], m: ChatMessageView): ChatM
   return out
 }
 
-/** a history page: 'latest' (the newest page, also a reload) or 'older' (paging back) */
-export function applyHistory(t: Timeline, page: { messages: ChatMessageView[]; more: boolean; lastSeq: number; purgedSeq: number }, dir: 'latest' | 'older'): Timeline {
-  let items = dir === 'latest' && !t.loaded ? [] : t.items
+/**
+ * a history page: 'latest' (the newest page, also a reload), 'older' (paging back), 'around' (a deep link to an old
+ * message: replaces the window; `newer` says newer messages exist) or 'newer' (paging forward from such a window)
+ */
+export function applyHistory(t: Timeline, page: { messages: ChatMessageView[]; more: boolean; newer?: boolean; lastSeq: number; purgedSeq: number }, dir: 'latest' | 'older' | 'around' | 'newer'): Timeline {
+  if (dir === 'around') {
+    let items: ChatMessageView[] = []
+    for (const m of page.messages) if (!m.parentId) items = upsertSorted(items, m)
+    return {
+      ...t, loaded: true, items, hasOlder: page.more, hasNewer: !!page.newer, applied: Math.max(t.applied, page.lastSeq),
+      purgedSeq: Math.max(t.purgedSeq, page.purgedSeq),
+    }
+  }
+  if (dir === 'newer') {
+    let items = t.items
+    for (const m of page.messages) if (!m.parentId) items = upsertSorted(items, m)
+    return { ...t, items, hasNewer: page.more, purgedSeq: Math.max(t.purgedSeq, page.purgedSeq) }
+  }
+  // the latest page joins a window loaded around an old message only when they touch; otherwise it replaces it
+  const detached = dir === 'latest' && t.hasNewer && !(t.items.length && page.messages.length && page.messages[0].seq <= t.items[t.items.length - 1].seq + 1)
+  let items = (dir === 'latest' && !t.loaded) || detached ? [] : t.items
   for (const m of page.messages) if (!m.parentId) items = upsertSorted(items, m)
   // a reload of the latest page while older pages were held keeps them (they are still right: changes are merged)
   const hasOlder = dir === 'older' ? page.more : t.loaded && t.items.length && page.messages.length && t.items[0].seq < page.messages[0].seq ? t.hasOlder : page.more
@@ -80,7 +103,8 @@ export function applyHistory(t: Timeline, page: { messages: ChatMessageView[]; m
     ...t,
     loaded: true,
     items,
-    hasOlder,
+    hasOlder: detached ? page.more : hasOlder,
+    hasNewer: dir === 'latest' ? false : t.hasNewer,
     applied: dir === 'latest' ? Math.max(t.applied, page.lastSeq) : t.applied,
     purgedSeq: Math.max(t.purgedSeq, page.purgedSeq),
   }
@@ -88,8 +112,10 @@ export function applyHistory(t: Timeline, page: { messages: ChatMessageView[]; m
 
 /** the window of loaded top-level messages: a message older than it is not inserted (it would leave a hole) */
 function insideWindow(t: Timeline, m: ChatMessageView): boolean {
-  if (!t.hasOlder || !t.items.length) return true
-  return m.seq >= t.items[0].seq
+  if (!t.items.length) return true
+  if (t.hasOlder && m.seq < t.items[0].seq) return false
+  if (t.hasNewer && m.seq > t.items[t.items.length - 1].seq) return false
+  return true
 }
 
 /**
@@ -145,7 +171,7 @@ export function applyPush(t: Timeline, p: ChatPushMessage): PushOutcome {
 }
 
 /** the server returns at most this many messages per /changes answer */
-export const CHANGES_PAGE = 1000
+export const CHANGES_PAGE = CHAT_CHANGES_PAGE
 
 /**
  * a /changes answer (gap recovery, reconnect): reset means reload the latest page. A full page (CHANGES_PAGE
@@ -157,7 +183,8 @@ export function applyChanges(t: Timeline, ch: ChatChanges): { t: Timeline; reloa
   if (ch.reset) return { t: emptyTimeline(t.channelId), reload: true, more: false }
   let next = t
   for (const m of ch.messages) next = upsertMessage(next, m)
-  const more = ch.messages.length >= CHANGES_PAGE
+  // the server says so (package E); an older server: a full page means there may be more
+  const more = ch.more ?? ch.messages.length >= CHANGES_PAGE
   const reached = more ? Math.max(...ch.messages.map((m) => m.changeSeq)) : ch.lastSeq
   return { t: { ...next, applied: Math.max(next.applied, reached), purgedSeq: Math.max(next.purgedSeq, ch.purgedSeq) }, reload: false, more }
 }

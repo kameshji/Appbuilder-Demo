@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { ConfirmDialog, Empty, Field, Panel, Segmented, errMsg, fmtDate, fmtRelative, useToast } from './kit'
 import { useCaps } from './security'
+import { getJson } from './serverApi'
 import { PasswordInput } from './PasswordFields'
 import { SignInTable, isCancelled, useReauth } from './Identity'
 import {
@@ -176,10 +177,17 @@ export function EmailSection({ title }: { title: TitleFn }) {
   const [testResult, setTestResult] = useState('')
   const [log, setLog] = useState<{ items: MailLogEntry[]; total: number } | null>(null)
   const [remove, setRemove] = useState(false)
+  /** hosting: the public address locked by the operator (APPBUILDER_PUBLIC_URL), also before a relay is set up */
+  const [lockedUrl, setLockedUrl] = useState<string | null>(null)
   const load = () => {
-    getEmailSettings().then((r) => {
+    const lock = getJson<{ publicUrl: string | null; locked: boolean }>('/install/public-address')
+      .then((r) => (r.locked && r.publicUrl ? r.publicUrl : null))
+      .catch(() => null) // an older server: nothing is locked
+    Promise.all([getEmailSettings(), lock]).then(([r, locked]) => {
+      setLockedUrl(locked)
       setCur(r.settings)
-      setF(r.settings ?? { ...EMPTY_SMTP, publicUrl: location.origin })
+      const base = r.settings ?? { ...EMPTY_SMTP, publicUrl: location.origin }
+      setF(locked ? { ...base, publicUrl: locked } : base)
     }).catch((e) => { setCur(null); fail(e) })
     emailLog().then(setLog).catch(() => setLog(null))
   }
@@ -277,7 +285,9 @@ export function EmailSection({ title }: { title: TitleFn }) {
           <Field label="Reply-to (optional)" htmlFor="smtp-reply"><Input id="smtp-reply" type="email" value={f.replyTo} onChange={(e) => set({ replyTo: e.target.value })} /></Field>
           <Field label="Install name (in every email)" htmlFor="smtp-install"><Input id="smtp-install" value={f.installName} onChange={(e) => set({ installName: e.target.value })} data-testid="smtp-install-name" /></Field>
         </div>
-        <Field label="Public address" htmlFor="smtp-url" hint="Where people open Appbuilder; links in emails start with it."><Input id="smtp-url" value={f.publicUrl} onChange={(e) => set({ publicUrl: e.target.value })} placeholder="https://apps.example.com" data-testid="smtp-url" /></Field>
+        <Field label="Public address" htmlFor="smtp-url" hint={lockedUrl ? 'Set by the operator of this server (APPBUILDER_PUBLIC_URL): every link the install sends starts with it, and it cannot be changed here.' : 'Where people open Appbuilder; links in emails start with it.'}>
+          <Input id="smtp-url" value={lockedUrl ?? f.publicUrl} disabled={!!lockedUrl} readOnly={!!lockedUrl} onChange={(e) => set({ publicUrl: e.target.value })} placeholder="https://apps.example.com" data-testid="smtp-url" />
+        </Field>
         <div className="flex gap-2">
           <Button size="sm" disabled={busy || !f.host || !f.fromAddress} onClick={() => void save()} data-testid="smtp-save">{busy && <Spinner />} Save</Button>
           {cur && <Button size="sm" variant="outline" onClick={() => setRemove(true)}>Remove</Button>}

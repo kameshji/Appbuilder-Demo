@@ -78,6 +78,11 @@ export interface ChatConversation {
   mentions: number
   /** may the reader post (member, not archived, posting policy, not read-only in chat) */
   canPost: boolean
+  /**
+   * a conversation from Appbuilder itself (package E): 'approvals' is each person's direct conversation with the system
+   * sender "Approvals", which carries approval cards. Nobody posts in it; its cards are answered with their buttons.
+   */
+  system?: 'approvals'
 }
 
 /** a card reference stored in a message (never values; resolved per reader with POST /chat/cards/resolve) */
@@ -85,6 +90,36 @@ export type ChatCardRef =
   | { kind: 'record'; env: string; table: string; row: string; fields: string[] }
   | { kind: 'app'; env: string; app: string; screen?: string }
   | { kind: 'dashboard'; env: string; dashboard: string }
+  /**
+   * an approval request (package E): only the system sender "Approvals" posts these (never a person: parseCards on the
+   * server refuses the kind), one per assignment of the approver; `state` is 'pending' until the assignment or the
+   * request is no longer waiting for this person, then 'done' (the card is pushed as an edit so readers resolve again)
+   */
+  | { kind: 'approval'; env: string; request: string; assignment: string; state: 'pending' | 'done' }
+
+/** an approval card as its reader may see it (the same visibility rule as the inbox: canSee) */
+export interface ChatApprovalCardView {
+  available: true
+  kind: 'approval'
+  env: string
+  request: string
+  title: string
+  /** pending, info, approved, rejected, completed, cancelled, expired */
+  status: string
+  outcome: string | null
+  requestedByName: string | null
+  dueOn: string | null
+  /** the fields the requester declared (shown to everyone who may see the request, as in the inbox) */
+  fields: { name: string; value: unknown }[]
+  /** the record, only when THIS reader may read it */
+  record: { tableName: string; title: string } | null
+  /** the answers offered; requireComment: the server refuses the answer without a comment */
+  options: { label: string; kind: string; requireComment: boolean }[]
+  /** the reader holds a pending assignment of the current stage (and the request waits for answers) */
+  canDecide: boolean
+  /** the reader's own answer, once given */
+  myAnswer: { response: string; comment: string | null; at: string | null } | null
+}
 
 /** POST /chat/cards/resolve answer */
 export type ChatCardView =
@@ -92,6 +127,7 @@ export type ChatCardView =
   | { available: true; kind: 'record'; env: string; table: string; tableName: string; row: string; title: string | null; fields: { name: string; displayName: string; type: string; value: unknown }[] }
   | { available: true; kind: 'app'; env: string; app: string; name: string; description: string; screen?: string }
   | { available: true; kind: 'dashboard'; env: string; dashboard: string; name: string; description: string }
+  | ChatApprovalCardView
 
 export interface ChatFile { id: string; name: string; mime: string; size: number; url: string }
 
@@ -142,7 +178,12 @@ export interface ChatChanges {
   conversation: ChatConversation
   /** the members now, when a member change happened after `after` */
   members?: ChatMemberView[]
+  /** the answer is one full page (CHAT_CHANGES_PAGE messages): ask again after the last changeSeq it carries */
+  more?: boolean
 }
+
+/** the most messages one /changes answer carries */
+export const CHAT_CHANGES_PAGE = 1000
 
 export interface ChatMemberView { id: string; name: string; role: ChatMemberRole; joinedOn: string | null }
 

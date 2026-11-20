@@ -10,6 +10,13 @@
  *   get a synthetic { t: 'resync' } message (the platform then invalidates the table).
  * - Session ends (4401) and forced password changes (4403) are reported to the platform, which checks the session over
  *   HTTP; no reconnect loop against a dead session.
+ * - Chat (P3 package E moved chat onto this one socket): `chat` and `typing` pushes are routed by topic; `unsubscribed`
+ *   (the server ended a subscription) and an `error` answering a subscription reach that topic's handlers; chat topics
+ *   (`chat:*`) also get the `subscribed` answer with its seq (the chat store compares it with what it applied and asks
+ *   /changes). Install-wide topics (no env: user:, chat:) and topics subscribed with `keep` survive an environment
+ *   switch (resetEnvTopics); only environment-bound topics are dropped.
+ * - The browser going offline closes the socket at once (a cut network shows as offline instead of after the
+ *   heartbeat); it reconnects when the browser is back online.
  * - When the socket is unavailable the platform degrades to periodic refetch (status 'degraded'); the UI says so.
  */
 import type {
@@ -66,7 +73,14 @@ interface Topic {
   /** last seq seen (table topics) */
   last?: number
   acked: boolean
+  /** the id of the last `sub` sent (answers and refusals are matched by it) */
+  subId?: string
+  /** survives an environment switch (install-wide topics always do) */
+  keep: boolean
 }
+
+/** chat topics get the `subscribed` answer (with the conversation's seq) instead of the table-style resync */
+const isChatTopic = (topic: string) => topic.startsWith('chat:')
 
 const OPEN = 1
 const keyOf = (topic: string, env?: string) => `${env ?? ''}\u0001${topic}`
@@ -91,6 +105,7 @@ export class LiveClient {
   private timer: unknown = null
   private degradeTimer: unknown = null
   private topics = new Map<string, Topic>()
+  private bySub = new Map<string, string>()
   private presence = new Map<string, { scope: string; env: string; state: PresenceState }>()
   private locks = new Map<string, { scope: string; env: string }>()
   private pending = new Map<string, (m: ServerMessage) => void>()
@@ -154,13 +169,44 @@ export class LiveClient {
     this.setStatus('off')
   }
 
-  /** drop every subscription, presence and lock (environment switch, sign-out) */
+  /** drop every subscription, presence and lock (sign-out) */
   resetTopics(): void {
     for (const t of this.topics.values()) this.raw({ t: 'unsub', topic: t.topic, env: t.env })
     for (const p of this.presence.values()) this.raw({ t: 'presence', scope: p.scope, env: p.env, state: null })
     this.topics.clear()
+    this.bySub.clear()
     this.presence.clear()
     this.locks.clear()
+  }
+
+  /**
+   * an environment switch: environment-bound topics (table:, env, app:, presence: of the old environment), presence and
+   * locks are dropped; install-wide topics (user:, chat:) and topics subscribed with `keep` stay subscribed
+   */
+  resetEnvTopics(): void {
+    for (const [key, t] of [...this.topics]) {
+      if (t.env === undefined || t.keep) continue
+      this.raw({ t: 'unsub', topic: t.topic, env: t.env })
+      if (t.subId) this.bySub.delete(t.subId)
+      this.topics.delete(key)
+    }
+    for (const p of this.presence.values()) this.raw({ t: 'presence', scope: p.scope, env: p.env, state: null })
+    this.presence.clear()
+    this.locks.clear()
+  }
+
+  /** test and exit-check hook: drop the connection as a network cut would (it reconnects as usual) */
+  drop(): void {
+    const ws = this.ws
+    if (!ws) return
+    try {
+      ws.close(4000, 'dropped')
+    } catch { /* ignore */ }
+  }
+
+  /** the server's epoch of the current (or last) connection */
+  serverEpoch(): string | null {
+    return this.epoch
   }
 
   status(): LiveStatus {
@@ -193,22 +239,26 @@ export class LiveClient {
 
   /* -------------------------------------------------------------- topics */
 
-  /** subscribe a handler; the topic is subscribed on the server while at least one handler wants it */
-  subscribe(topic: string, env: string | undefined, handler: LiveHandler): () => void {
+  /**
+   * subscribe a handler; the topic is subscribed on the server while at least one handler wants it. `keep`: the topic
+   * survives an environment switch (a chat card's table in another environment); install-wide topics (no env) always do.
+   */
+  subscribe(topic: string, env: string | undefined, handler: LiveHandler, o: { keep?: boolean } = {}): () => void {
     const key = keyOf(topic, env)
     let t = this.topics.get(key)
     if (!t) {
-      t = { topic, env, handlers: new Set(), acked: false }
+      t = { topic, env, handlers: new Set(), acked: false, keep: !!o.keep }
       this.topics.set(key, t)
       this.sendSub(t)
-    }
+    } else if (o.keep) t.keep = true
     t.handlers.add(handler)
     return () => {
       const cur = this.topics.get(key)
-      if (!cur) return
+      if (!cur || !cur.handlers.has(handler)) return
       cur.handlers.delete(handler)
       if (!cur.handlers.size) {
         this.topics.delete(key)
+        if (cur.subId) this.bySub.delete(cur.subId)
         this.raw({ t: 'unsub', topic, env })
       }
     }
@@ -278,7 +328,10 @@ export class LiveClient {
 
   private sendSub(t: Topic) {
     t.acked = false
-    this.raw({ t: 'sub', id: `s${++this.seq}`, topic: t.topic, env: t.env })
+    if (t.subId) this.bySub.delete(t.subId)
+    t.subId = `s${++this.seq}`
+    this.bySub.set(t.subId, keyOf(t.topic, t.env))
+    this.raw({ t: 'sub', id: t.subId, topic: t.topic, env: t.env })
   }
 
   private connect() {
@@ -368,6 +421,29 @@ export class LiveClient {
       return
     }
     if (m.t === 'subscribed') return this.onAck(m)
+    // the server refused a subscription (not-found, denied, too many): its handlers decide
+    if (m.t === 'error' && typeof m.id === 'string' && this.bySub.has(m.id)) {
+      const t = this.topics.get(this.bySub.get(m.id)!)
+      this.bySub.delete(m.id)
+      if (t) {
+        t.subId = undefined
+        this.deliver(t, m)
+      }
+      this.deliverAll(m)
+      return
+    }
+    // the server ended a subscription (removed from a conversation, lost access): the handlers decide
+    if (m.t === 'unsubscribed') {
+      for (const t of this.topics.values()) {
+        if (t.topic !== m.topic || (m.env !== undefined && t.env !== m.env)) continue
+        if (t.subId) this.bySub.delete(t.subId)
+        t.subId = undefined
+        t.acked = false
+        this.deliver(t, m)
+      }
+      this.deliverAll(m)
+      return
+    }
     if (m.t === 'resync') {
       for (const t of this.topics.values()) this.deliver(t, { t: 'resync', reason: m.reason })
       return
@@ -377,7 +453,7 @@ export class LiveClient {
     if (m.t === 'table' || m.t === 'presence' || m.t === 'env' || m.t === 'app') {
       topic = m.topic
       env = m.env
-    } else if (m.t === 'user') topic = m.topic
+    } else if (m.t === 'user' || m.t === 'chat' || m.t === 'typing') topic = m.topic
     else if (m.t === 'lock') {
       topic = `presence:${m.scope}`
       env = m.env
@@ -421,6 +497,8 @@ export class LiveClient {
     const t = this.topics.get(keyOf(m.topic, m.env))
     if (!t) return
     t.acked = true
+    // chat: the handlers compare the conversation's seq with what they applied (and fetch /changes)
+    if (isChatTopic(t.topic)) return this.deliver(t, m)
     if (typeof m.seq !== 'number') return
     // ahead of what we saw: changes happened while we were away
     if (t.last !== undefined && m.seq !== t.last) this.deliver(t, { t: 'resync', reason: 'missed changes' })
@@ -454,7 +532,24 @@ export class LiveClient {
     }
     const onOffline = () => {
       this.offline = true
-      if (this.started) this.setStatus('degraded', 'You are offline.')
+      if (!this.started) return
+      // a cut network: close now (the server notices by its heartbeat); reconnect when the browser is back online
+      const ws = this.ws
+      this.ws = null
+      this.hello = null
+      if (ws) {
+        ws.onclose = null
+        try {
+          ws.close(4000, 'offline')
+        } catch { /* ignore */ }
+      }
+      for (const [id, fn] of this.pending) {
+        this.pending.delete(id)
+        fn({ t: 'error', id, code: 'unavailable', message: 'The connection closed.' })
+      }
+      this.clear(this.timer)
+      this.timer = null
+      this.setStatus('degraded', 'You are offline.')
     }
     const onVisible = () => {
       if (document.visibilityState === 'visible') this.reconnectNow()

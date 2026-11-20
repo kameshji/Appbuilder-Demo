@@ -35,6 +35,12 @@ export interface ApprovalRequest {
   regarding?: { tableId: string; rowId: string }
   /** the run-as identity (who asks) */
   requestedBy: string | null
+  /**
+   * P3 (additive): the people the request is made on behalf of: the step's `requester` (when set) and the person whose
+   * change, button press or call started the run (none for schedules, web requests and decided approvals). C routes from
+   * the first (manager references, the fallback) and asks none of them nor requestedBy unless self-approval is allowed.
+   */
+  onBehalfOf?: string[]
   /** when the step times out (ISO), if it has a timeout */
   dueOn?: string
   /** `<runId>:<stepKey>`: the same request twice must give the same approval */

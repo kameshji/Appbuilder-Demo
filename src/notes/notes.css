@@ -1,0 +1,44 @@
+/* Notes (P3-N): the note body, in the editor and read-only (docs/dev/notes.md) */
+.note-body { outline: none; overflow-wrap: anywhere; line-height: 1.55; font-size: 0.95rem; }
+.note-body:empty::before { content: attr(data-placeholder); color: var(--muted-foreground); pointer-events: none; }
+.note-body h1 { font-size: 1.5rem; font-weight: 700; margin: 0.7em 0 0.3em; line-height: 1.25; }
+.note-body h2 { font-size: 1.25rem; font-weight: 650; margin: 0.65em 0 0.3em; line-height: 1.3; }
+.note-body h3 { font-size: 1.08rem; font-weight: 600; margin: 0.6em 0 0.25em; }
+.note-body p { margin: 0.3em 0; }
+.note-body ul { list-style: disc; padding-left: 1.5em; margin: 0.3em 0; }
+.note-body ol { list-style: decimal; padding-left: 1.6em; margin: 0.3em 0; }
+.note-body li { margin: 0.1em 0; }
+.note-body ul[data-type="checklist"] { list-style: none; padding-left: 0.1em; }
+.note-body ul[data-type="checklist"] > li { position: relative; padding-left: 1.9em; min-height: 1.6em; }
+.note-body ul[data-type="checklist"] > li::before {
+  content: ''; position: absolute; left: 0.1em; top: 0.22em; width: 1.1em; height: 1.1em; border: 1.5px solid var(--muted-foreground);
+  border-radius: 4px; box-sizing: border-box; cursor: pointer;
+}
+.note-body ul[data-type="checklist"] > li[data-checked="true"]::before { background: var(--primary); border-color: var(--primary); }
+.note-body ul[data-type="checklist"] > li[data-checked="true"]::after {
+  content: ''; position: absolute; left: 0.47em; top: 0.38em; width: 0.32em; height: 0.6em; border: solid white; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.note-body ul[data-type="checklist"] > li[data-checked="true"] { color: var(--muted-foreground); text-decoration: line-through; }
+.note-body table { border-collapse: collapse; margin: 0.5em 0; max-width: 100%; display: block; overflow-x: auto; }
+.note-body th, .note-body td { border: 1px solid var(--border); padding: 4px 8px; min-width: 4em; vertical-align: top; }
+.note-body th { background: var(--muted); font-weight: 600; text-align: left; }
+.note-body blockquote { border-left: 3px solid var(--border); padding-left: 0.8em; color: var(--muted-foreground); margin: 0.4em 0; }
+.note-body pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--muted); padding: 0.5em 0.7em; border-radius: 6px; white-space: pre-wrap; font-size: 0.85rem; }
+.note-body code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--muted); padding: 0 0.25em; border-radius: 3px; font-size: 0.88em; }
+.note-body a { color: var(--primary); text-decoration: underline; text-underline-offset: 2px; }
+.note-body .note-mention { background: color-mix(in oklch, var(--primary) 12%, transparent); color: var(--primary); border-radius: 4px; padding: 0 0.25em; font-weight: 500; white-space: nowrap; }
+.note-body .note-card { display: inline-block; border: 1px solid var(--border); background: var(--card); border-radius: 6px; padding: 0 0.45em; font-size: 0.9em; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+.note-body .note-card::before { content: '\2197'; margin-right: 0.3em; color: var(--muted-foreground); }
+.note-body .note-card-off { color: var(--muted-foreground); font-style: italic; }
+.note-body .note-img { max-width: 100%; height: auto; border-radius: 6px; display: inline-block; }
+.note-body img:not([src]) { min-width: 6em; min-height: 3em; border: 1px dashed var(--border); }
+.note-body mark, .note-hit { background: color-mix(in oklch, var(--primary) 22%, transparent); color: inherit; border-radius: 2px; }
+
+/* print or "Save as PDF" from the browser: only the note */
+@media print {
+  html, body, #root, #root * { overflow: visible !important; }
+  body * { visibility: hidden !important; }
+  .note-print, .note-print * { visibility: visible !important; }
+  .note-print { position: absolute; left: 0; top: 0; width: 100%; padding: 0 !important; }
+  .note-noprint { display: none !important; }
+}

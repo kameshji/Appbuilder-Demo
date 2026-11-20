@@ -117,7 +117,7 @@ export function collabRoutes(router: ApiRouter, s: CoreServices): void {
     }
     const items = (await withLabels(user, res.rows)).map((r) => {
       const cm = byId.get(String(r.Comment ?? ''))
-      return { ...r, Body: cm?.Body ?? null, Link: cm?.Link ?? null, byName: cm ? people.get(String(cm.createdBy ?? '')) ?? null : null }
+      return { ...r, Body: cm?.Body ?? null, Link: cm?.Link ?? (!r.Comment && String(r.regardingTable) === SYS.activities ? `#u-notes?n=${encodeURIComponent(String(r.regardingId))}` : null), byName: cm ? people.get(String(cm.createdBy ?? '')) ?? null : null }
     })
     return { items }
   }, { auth: 'user' })

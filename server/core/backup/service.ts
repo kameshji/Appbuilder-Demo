@@ -39,6 +39,7 @@ import {
 import { copyColumns, parseCopyLine, preDataSql, qi, readCopyLines, copyInto } from './dbdump.ts'
 import { findPgTools, toolProblem } from './pgtools.ts'
 import { DEFAULT_RETENTION, decideRetention, type RetentionPolicy } from './retention.ts'
+import { hostingFor, isInside } from '../hosting/settings.ts'
 
 export const BACKUP_JOB = 'backup.run'
 export const RESTORE_TEST_JOB = 'backup.restore-test'
@@ -252,12 +253,25 @@ export function createBackupService(deps: BackupServiceDeps) {
     cached = c
   }
   const defaultFolder = () => path.join(s().config.workspaceDir, 'backups')
-  const folderOf = (c: StoredConfig): string => path.resolve(env.APPBUILDER_BACKUP_DIR || c.folder || defaultFolder())
+  /**
+   * H-B: APPBUILDER_INSTANCE_DIR (a hosted install): the one folder the install writes to. Backup folders typed in the
+   * Admin console must be inside it, and the PostgreSQL tools folder (it names programs the server runs) belongs to the
+   * operator: a stored value is ignored and it cannot be changed here. Unset (on-premises): unchanged.
+   */
+  const instanceDir = (): string | null => {
+    const fromEnv = env.APPBUILDER_INSTANCE_DIR?.trim()
+    return hostingFor(s()).instanceDir ?? (fromEnv ? path.resolve(fromEnv) : null)
+  }
+  const folderAllowed = (p: string | null | undefined): boolean => !p || !instanceDir() || isInside(p, instanceDir()!)
+  const pgBinOf = (c: StoredConfig): string | null => (instanceDir() ? null : c.pgBinPath)
+  const folderOf = (c: StoredConfig): string => path.resolve(env.APPBUILDER_BACKUP_DIR || (folderAllowed(c.folder) ? c.folder : null) || defaultFolder())
 
   /** a folder the server may write archives to: absolute, not served by the web server, not inside an environment folder */
   async function checkFolder(raw: string, what: string): Promise<string> {
     if (!path.isAbsolute(raw)) throw new HttpError(422, 'invalid', `The ${what} must be an absolute path (for example D:\\Backups\\Appbuilder or /srv/backups/appbuilder).`, 'folder')
     const p = path.resolve(raw)
+    // before anything is created or written there
+    if (!folderAllowed(p)) throw new HttpError(422, 'invalid', `The ${what} must be inside this install's folder (${instanceDir()}): a hosted install writes nowhere else.`, 'folder')
     const cfg = s().config
     const inside = (child: string, parent: string) => { const r = path.relative(parent, child); return r === '' || (!r.startsWith('..') && !path.isAbsolute(r)) }
     if (inside(p, cfg.distDir) || inside(cfg.distDir, p)) throw new HttpError(422, 'invalid', `The ${what} must not be inside the web folder (${cfg.distDir}).`, 'folder')
@@ -274,7 +288,7 @@ export function createBackupService(deps: BackupServiceDeps) {
   }
 
   async function settingsView(c: StoredConfig = cached): Promise<BackupSettings> {
-    const tools = await findPgTools(c.pgBinPath)
+    const tools = await findPgTools(pgBinOf(c))
     let serverMajor: number | null = null
     try {
       const r = await db().query<{ n: string }>("SELECT current_setting('server_version_num') AS n")
@@ -282,7 +296,7 @@ export function createBackupService(deps: BackupServiceDeps) {
     } catch { /* no database */ }
     const problem = serverMajor === null ? null : toolProblem(tools.dump, 'pg_dump', serverMajor)
     return {
-      enabled: c.enabled, folder: folderOf(c), folderFromEnv: !!env.APPBUILDER_BACKUP_DIR, defaultFolder: defaultFolder(), method: c.method, pgBinPath: c.pgBinPath,
+      enabled: c.enabled, folder: folderOf(c), folderFromEnv: !!env.APPBUILDER_BACKUP_DIR, defaultFolder: defaultFolder(), method: c.method, pgBinPath: pgBinOf(c),
       tools: {
         pgDump: tools.dump ? { path: tools.dump.path, version: tools.dump.version } : null,
         pgRestore: tools.restore ? { path: tools.restore.path, version: tools.restore.version } : null,
@@ -322,6 +336,7 @@ export function createBackupService(deps: BackupServiceDeps) {
       next.method = input.method
     }
     if (input.pgBinPath !== undefined) {
+      if (input.pgBinPath && instanceDir()) bad('In a hosted install the PostgreSQL tools folder is set by the operator of the server and cannot be changed here.', 'pgBinPath')
       if (input.pgBinPath && !path.isAbsolute(input.pgBinPath)) bad('The PostgreSQL tools folder must be an absolute path.', 'pgBinPath')
       next.pgBinPath = input.pgBinPath || null
     }
@@ -574,7 +589,7 @@ export function createBackupService(deps: BackupServiceDeps) {
       if (testHooks.failBackup) throw new Error(testHooks.failBackup)
       const sources = await envSources(i.scope)
       const res = await createArchive(conn(), {
-        id, kind: i.scope === 'install' ? 'install' : 'environment', environments: sources, file, method: cfg.method, pgBin: cfg.pgBinPath,
+        id, kind: i.scope === 'install' ? 'install' : 'environment', environments: sources, file, method: cfg.method, pgBin: pgBinOf(cfg),
         passphrase: i.passphrase ?? null,
         secretKey: includeKey ? readKeyHex() : null,
         trigger: i.trigger, ...(i.note ? { note: i.note } : {}), createdBy: i.by,
@@ -601,7 +616,7 @@ export function createBackupService(deps: BackupServiceDeps) {
         id, file: fileName, kind: i.scope === 'install' ? 'install' : 'environment', trigger: i.trigger, method: res.manifest.method, bytes: res.bytes,
         encrypted: !!i.passphrase, includesKey: res.manifest.includesKey, ms: Date.now() - started, rows: v.rows,
       })
-      if (cfg.offsite.enabled && cfg.offsite.folder) await copyOffsite(id, file, res.sha256, cfg.offsite.folder)
+      if (cfg.offsite.enabled && cfg.offsite.folder && folderAllowed(cfg.offsite.folder)) await copyOffsite(id, file, res.sha256, cfg.offsite.folder)
     } catch (e) {
       const why = errMessage(e)
       log('error', `backup ${id} (${i.scope}) failed: ${why}`)
@@ -1717,7 +1732,7 @@ export function createBackupService(deps: BackupServiceDeps) {
     log('info', `taking an install backup before upgrading the database from schema version ${from} to ${SCHEMA_VERSION}: ${file}`)
     const started = Date.now()
     await createArchive(connInfo, {
-      id, kind: 'install', environments: sources, file, method: cfg.method, pgBin: cfg.pgBinPath, passphrase: null, secretKey: null,
+      id, kind: 'install', environments: sources, file, method: cfg.method, pgBin: pgBinOf(cfg), passphrase: null, secretKey: null,
       trigger: 'pre-migration', note: `before upgrading from schema version ${from} to ${SCHEMA_VERSION}`, createdBy: null,
       appVersion: await appVersion(), schemaVersion: from, dirs: (eid) => s().environments.dirs(eid),
     })

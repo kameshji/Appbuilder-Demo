@@ -35,13 +35,13 @@
       "file": "visitor-log.json",
       "id": "builtin.visitor-log",
       "version": "1.0.0",
-      "sha256": "215e02c21fc245ba49a1ec9d993b59d2300c987bd7fdb5f070059d400c0bd765"
+      "sha256": "19081e201dae9a0b52107c1c87b8e045d796c36afe2f89fa1cca52943555040c"
     },
     {
       "file": "manufacturing.json",
       "id": "builtin.manufacturing",
       "version": "1.0.0",
-      "sha256": "d05d031a9319c022f17e42a4a3e7a3f4b81c1937cff7fc6b6bdfa47bf4b4e1ee"
+      "sha256": "f74ccb3067b70398e302c4a187e39e0dbbbb590121b3737e6203f44b1dadbad0"
     }
   ]
 }

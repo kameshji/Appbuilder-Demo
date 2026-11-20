@@ -23,7 +23,8 @@
 import { HttpError } from '../contracts.ts'
 import type { DataService, MetaStore, NotificationService, RawRow, SqlDb } from '../contracts.ts'
 import type { TableDef } from '../../../src/platform/contracts.ts'
-import { REGARDING, SYS, richTextToPlain, sanitizeRichText } from '../../../src/platform/system-tables.ts'
+import { REGARDING, SYS, richTextToPlain } from '../../../src/platform/system-tables.ts'
+import { sanitizeNoteHtml } from '../../../src/notes/sanitize.ts'
 import { civilIn, nextDue, parseRecurrence } from '../../../src/platform/recurrence.ts'
 import { currentEnvironment } from '../env-context.ts'
 import { errText } from '../util.ts'
@@ -84,10 +85,18 @@ export function createTasks(deps: TaskDeps) {
   const tables = () => deps.meta().tables.list()
   const activitiesDef = async (): Promise<TableDef | undefined> => (await tables()).find((t) => t.id === SYS.activities)
 
-  /** the rich-text cleaner of Body; the Notes service (package N) installs its stricter NOTE_TAGS one here */
-  let noteSanitizer: (html: string) => string = (html) => sanitizeRichText(html, NOTE_BODY_MAX)
+  /**
+   * the rich-text cleaner of Body: the NOTE_TAGS allow-list of src/notes/sanitize.ts (P3-N) from the start, so every
+   * services instance is safe; the Notes service (server/core/notes/service.ts) installs it again through setNoteSanitizer
+   */
+  let noteSanitizer: (html: string) => string = (html) => sanitizeNoteHtml(html)
   function setNoteSanitizer(fn: (html: string) => string): void {
     noteSanitizer = fn
+  }
+  /** P3-N: what the Notes service does after a note is written, inside the write's unit of work (mentions) */
+  let noteAfterWrite: ((op: 'create' | 'update', row: RawRow, old: RawRow | null) => Promise<void>) | null = null
+  function setNoteHooks(h: { afterWrite(op: 'create' | 'update', row: RawRow, old: RawRow | null): Promise<void> }): void {
+    noteAfterWrite = (op, row, old) => h.afterWrite(op, row, old)
   }
 
   /* ---------------------------------------------------------------- write hooks (called by collab.ts) */
@@ -121,6 +130,7 @@ export function createTasks(deps: TaskDeps) {
    * next occurrence, exactly once. Never throws for a rule that cannot continue (ended, invalid): the completion stands.
    */
   async function afterActivityWrite(op: 'create' | 'update', row: RawRow, old: RawRow | null): Promise<void> {
+    if (str(row.Type) === 'Note' && noteAfterWrite) await noteAfterWrite(op, row, old)
     if (op !== 'update' || str(row.Status) !== 'Done' || str(old?.Status) === 'Done' || blank(row.Recurrence) || str(row.Type) !== 'Task') return
     const def = await activitiesDef()
     if (!def) return
@@ -348,6 +358,6 @@ export function createTasks(deps: TaskDeps) {
     }
   }
 
-  return { runReminders, runDigest, beforeActivityWrite, afterActivityWrite, beforeShareWrite, afterActivityDelete, sweepShares, setNoteSanitizer, registerJobs, installReadOnly }
+  return { runReminders, runDigest, beforeActivityWrite, afterActivityWrite, beforeShareWrite, afterActivityDelete, sweepShares, setNoteSanitizer, setNoteHooks, registerJobs, installReadOnly }
 }
 

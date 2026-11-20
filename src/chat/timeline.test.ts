@@ -174,3 +174,42 @@ describe('helpers', () => {
     expect(firstUnread(items, 4, 'me')).toBeUndefined()
   })
 })
+
+describe('a deep link to an old message: the page around it (package E)', () => {
+  it('replaces the window, ignores newer messages until paged forward, and rejoins the latest page', () => {
+    let t = loaded([9951, 9952, 9953], true, 10000)
+    t = applyHistory(t, { ...page([120, 121, 122], true, 10000), newer: true }, 'around')
+    expect(seqs(t)).toEqual([120, 121, 122])
+    expect(t.hasOlder).toBe(true)
+    expect(t.hasNewer).toBe(true)
+    // a new message arrives live: it is newer than the window, so it would leave a hole: not inserted, but applied
+    const r = applyPush({ ...t, applied: 10000 }, push(10001, 'message', msg(10001)))
+    expect(r.kind).toBe('applied')
+    if (r.kind === 'applied') {
+      expect(seqs(r.t)).toEqual([120, 121, 122])
+      expect(r.t.applied).toBe(10001)
+      t = r.t
+    }
+    // an edit of a message inside the window still applies
+    t = upsertMessage(t, msg(121, { changeSeq: 10002, text: 'edited' }))
+    expect(t.items[1].text).toBe('edited')
+    // paging forward
+    t = applyHistory(t, page([123, 124], true), 'newer')
+    expect(seqs(t)).toEqual([120, 121, 122, 123, 124])
+    expect(t.hasNewer).toBe(true)
+    // the latest page far away replaces the window (it does not leave a hole); it touches: it joins
+    const far = applyHistory(t, page([9999, 10000, 10001], true, 10001), 'latest')
+    expect(seqs(far)).toEqual([9999, 10000, 10001])
+    expect(far.hasNewer).toBe(false)
+    expect(far.hasOlder).toBe(true)
+    const near = applyHistory(t, page([125, 126], true, 126), 'latest')
+    expect(seqs(near)).toEqual([120, 121, 122, 123, 124, 125, 126])
+    expect(near.hasNewer).toBe(false)
+  })
+  it('a /changes answer says when there is more (the server signal), else a full page means more', () => {
+    const t = loaded([1, 2, 3], false, 3)
+    expect(applyChanges(t, changes(3, [msg(4)], 10, { more: true })).more).toBe(true)
+    expect(applyChanges(t, changes(3, [msg(4)], 4)).more).toBe(false)
+    expect(applyChanges(t, changes(3, [msg(4)], 4, { more: true })).t.applied).toBe(4)
+  })
+})

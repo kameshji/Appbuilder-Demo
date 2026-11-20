@@ -534,11 +534,20 @@ export interface WorkspaceState {
 
 export type { QueryOptions, QueryState } from './query-cache.ts'
 
+/**
+ * Hosting (H-C): every write of a read-only install is refused with HTTP 503 and one of these codes; the message names
+ * the reason (and the operator's note). Reads, sign-in and exports go on.
+ */
+export type ReadOnlyErrorCode = 'install_read_only' | 'licence_read_only'
+export const READ_ONLY_ERROR_CODES: readonly ReadOnlyErrorCode[] = ['install_read_only', 'licence_read_only']
+
 export class PlatformError extends Error {
   /** rate_limited = 429 (login / password throttle), method_not_allowed = 405, password_change_required = 403 (the account must set a new password first) */
   code: 'not-found' | 'denied' | 'invalid' | 'conflict' | 'storage' | 'unauthenticated' | 'unavailable' | 'rate_limited' | 'method_not_allowed' | 'password_change_required'
     /** package I: sign-in needs the second step; the action needs a fresh password or code; two-step verification must be set up first */
     | 'mfa_required' | 'reauth_required' | 'mfa_enrolment_required'
+    /** hosting (H-C): 503, the install is read-only (suspended, payment, maintenance) or its licence could not be verified */
+    | ReadOnlyErrorCode
   /** the server's request id of the failed call (X-Request-Id): shown as "Reference: ..." so support can find it in the log */
   requestId?: string
   constructor(code: PlatformError['code'], message: string) {

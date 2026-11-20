@@ -309,6 +309,7 @@ Every step also takes `id`, `name`, `description`, `runAfter` (`[{ step, when: [
 | --- | --- | --- | --- |
 | `table` | table name | yes | The table. |
 | `values` | { column: Fx } | yes | Column values. |
+| `owner` | Fx (one person or team) |  | Who the new row belongs to (default: the run-as identity), for example Trigger.User: the person whose change started the run. Allowed: the run-as identity itself or a team of its own; a flow of an administrator: any active person, or a team on a table with team ownership. |
 
 **Output:** the new row
 
@@ -395,6 +396,7 @@ Every step also takes `id`, `name`, `description`, `runAfter` (`[{ step, when: [
 | `regarding` | { table, rowId: Fx } |  | The record the approval is about. |
 | `policy` | text |  | An approval policy (name or id): approvers, stages, thresholds, reminders, escalation. |
 | `fields` | Record<label, Fx> |  | Fields shown to approvers (also to those who cannot open the record); threshold rules read them. |
+| `requester` | Fx (one person) |  | One more person the request is on behalf of (for example Trigger.Record.owner). Always on behalf of the person whose change or button press started the run: they, the identity of the flow and this person are never asked (unless allowSelfApproval), and manager references and the fallback start from this person (else from the triggering person). |
 | `quorum` | number |  | type quorum: how many must approve. |
 | `stages` | { name?, approvers, mode?, quorum?, condition? }[] |  | type sequential: the stages. |
 | `dueMinutes` | number |  | Due this long after the request; reminders and escalation count from it. |
@@ -418,7 +420,9 @@ Every step also takes `id`, `name`, `description`, `runAfter` (`[{ step, when: [
 
 | Field | Type | Required | What it is |
 | --- | --- | --- | --- |
-| `to` | Fx | yes | Email, user id, team, or a table of them. |
+| `to` | Fx |  | Email, user id, team:<id>, or a table of them (optional with roles or teams). |
+| `roles` | role ids or names[] |  | Everyone who holds one of these roles when the step runs (active people only); a role with nobody in it is not an error. |
+| `teams` | team ids[] |  | The members of these teams when the step runs. |
 | `title` | Fx | yes | Title. |
 | `body` | Fx | yes | Text. |
 | `link` | Fx |  | A link inside Appbuilder (#...). |

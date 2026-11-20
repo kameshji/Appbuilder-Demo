@@ -113,6 +113,20 @@ Source, Status), `ApprovalId`, `CompletedOn`, `Comments`. A run cancelled or a s
 The `approvalDecided` trigger (`policy`, `statuses` filters; trigger key `appr:<flow>:<request>`; `Trigger.Request`,
 `Trigger.Responses`) starts from the decided job. The stub of the flow suite stays for its unit tests.
 
+**On behalf of the person who caused the run** (P3; the Manufacturing pack showed that a flow running as the
+installing administrator let the inspector approve the NCR raised from their own failed inspection). The flow passes
+`onBehalfOf`: the step's `requester` (one active person the flow names) and the person whose change or button press
+started the run ([flows.md](flows.md) "Identity and security"). The service keeps them in the request's copy of the
+definition (`definition.onBehalfOf`; no table change) and treats them as the requester **for routing only**: manager,
+department and chain references and the fallback start from the first of them; none of them, nor `requested_by` (the
+flow's identity), is asked, delegated to, reassigned to or escalated to unless `allowSelfApproval`
+(`ResolveOptions.alsoSelf` and `isSelf` in `routing.ts`; `behalfOf` / `selfOf` / `routeFrom` in `service.ts`).
+`requested_by` keeps its meaning (who sees the request, withdraws it, answers "need more info", is told the decision),
+so nobody gains access. Separation of duties is unchanged (the previous stage's approvers are dropped). Requests from
+apps and the API have no `onBehalfOf` and route as before. Tests: `server/core/flows/flows-identity.integration.test.ts`
+(not asked, refused, the fallback is the triggering person's manager, `requester`),
+`server/core/templates/manufacturing.integration.test.ts` (the NCR).
+
 **Exit check 1 with the real service** (`approvals-exit.integration.test.ts`): the purchase flow over a simulated week,
 two server restarts (one with decisions' resume jobs still queued), a reminder, an escalation to the manager's manager
 who has delegated (so the deputy is asked), a delegation that starts mid-way and moves a waiting second approval

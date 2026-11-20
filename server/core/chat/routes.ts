@@ -17,6 +17,10 @@
  *   GET    /chat/messages/:id/replies   PATCH /chat/messages/:id { body }   DELETE /chat/messages/:id
  *   POST   /chat/messages/:id/reactions { emoji, on }   POST /chat/messages/:id/report { reason }
  *   POST   /chat/cards/resolve { messageId, index }     GET /chat/search?q=&channel=&from=&before=&page=   GET /chat/people?q=
+ *   GET    /chat/conversations/:id/messages?around=<seq>   one page around an old message (deep links; package E)
+ *   GET    /chat/mentions   POST /chat/mentions/:id/read   chat mentions for the Mentions page (package E)
+ *   GET    /chat/discussions   POST /chat/discussions/read   records I follow or was mentioned on, in the request's
+ *                                                       environment (discussions.ts; package E)
  *   /chat/admin/*: settings, read-only people, conversations (metadata), members, archive, delete, moderation, reports,
  *   export, retention (administrators of the chat environment; moving chat: install administrators)
  */
@@ -35,6 +39,8 @@ import type { ChatCx, ChatService } from './service.ts'
 import { createChatAdmin } from './admin.ts'
 import type { ChatAdmin } from './admin.ts'
 import { resolveCard } from './cards.ts'
+import { discussionRoutes } from './discussions.ts'
+import { registerApprovalChat } from '../approvals/chat-hook.ts'
 
 export const CHAT_RETENTION_JOB = 'chat.retention'
 
@@ -98,7 +104,7 @@ export function chatRoutes(router: ApiRouter, s: CoreServices, live: LiveHub | n
   add('DELETE', '/chat/conversations/:id/members/:userId', async (cx, ctx) => chat.removeMember(cx, cx.env, ctx.params.id, ctx.params.userId))
 
   /* messages */
-  add('GET', '/chat/conversations/:id/messages', async (cx, ctx) => chat.history(cx, ctx.params.id, { before: qnum(ctx, 'before'), after: qnum(ctx, 'after'), limit: qnum(ctx, 'limit') ?? undefined }))
+  add('GET', '/chat/conversations/:id/messages', async (cx, ctx) => chat.history(cx, ctx.params.id, { before: qnum(ctx, 'before'), after: qnum(ctx, 'after'), around: qnum(ctx, 'around'), limit: qnum(ctx, 'limit') ?? undefined }))
   add('POST', '/chat/conversations/:id/messages', async (cx, ctx) => chat.send(cx, ctx.params.id, body(ctx)))
   add('GET', '/chat/conversations/:id/changes', async (cx, ctx) => chat.changes(cx, ctx.params.id, qnum(ctx, 'after') ?? 0))
   add('POST', '/chat/conversations/:id/read', async (cx, ctx) => chat.markRead(cx, ctx.params.id, body(ctx).seq))
@@ -116,6 +122,9 @@ export function chatRoutes(router: ApiRouter, s: CoreServices, live: LiveHub | n
   add('GET', '/chat/search', async (cx, ctx) => chat.search(cx, { q: ctx.query.get('q'), channel: ctx.query.get('channel'), from: ctx.query.get('from'), before: ctx.query.get('before'), page: qnum(ctx, 'page') ?? 0 }))
   add('GET', '/chat/people', async (cx, ctx) => ({ users: await chat.peopleSearch(cx, (ctx.query.get('q') ?? '').slice(0, 100)) }))
   add('DELETE', '/chat/files/:id', async (cx, ctx) => chat.discardDraft(cx, ctx.params.id))
+  /* package E: chat mentions for the Mentions page (from any environment), and reading one */
+  add('GET', '/chat/mentions', async (cx, ctx) => ({ items: await chat.myMentions(cx, qnum(ctx, 'limit') ?? 50) }))
+  add('POST', '/chat/mentions/:id/read', async (cx, ctx) => chat.markMentionRead(cx, ctx.params.id))
 
   /* files: the upload is refused before it is read when it says it is larger than the limit */
   router.add('POST', '/chat/conversations/:id/files', run(async (cx, ctx) => {
@@ -174,5 +183,8 @@ export function chatRoutes(router: ApiRouter, s: CoreServices, live: LiveHub | n
   if (!INSTALL_SCHEDULES.some((x) => x.id === 'sched_chat_retention')) {
     INSTALL_SCHEDULES.push({ id: 'sched_chat_retention', name: 'Chat retention', description: 'Every night: removes chat messages older than the retention periods set in Admin console > Chat (none by default).', cron: '17 2 * * *', jobType: CHAT_RETENTION_JOB, payload: {}, enabled: true })
   }
+  /* package E: per-record discussions (Comments) in chat's Discussions list; approval cards and the timeline answers */
+  discussionRoutes(router, s)
+  registerApprovalChat(s, chat)
   return { chat, admin }
 }

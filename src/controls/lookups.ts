@@ -112,26 +112,49 @@ export function labelText(v: unknown): string {
 export type LabelEntry = string | null
 
 /**
+ * Where an answer comes from, for a store that several answers write (lookupLabels.ts: every list folds its own plans'
+ * answers into one shared map). `order` holds, per id, the stamp of the answer that last set it. `at` is this answer's
+ * stamp (a number that grows with every new answer seen), or null for a provisional one (the previous rows while a
+ * refetch runs, a failed refresh, an error).
+ */
+export interface AnswerOrder { order: Map<string, number>; at: number | null }
+
+/** may this answer set the store's entry of `id`? (a provisional answer only fills what is not known yet) */
+export function answerMaySet(from: AnswerOrder, id: string, known: boolean): boolean {
+  if (from.at === null) return !known
+  return (from.order.get(id) ?? -1) <= from.at
+}
+
+/**
  * Fold one answer into a label map: every returned row gets its label; every asked id that did not come back is null
  * (not readable, deleted). Returns whether anything changed.
+ *
+ * With `from` (a shared store): an answer never overrides one seen after it, and a provisional answer only fills ids
+ * not known yet. Two answers that disagree about an id (one already refetched after a delete, one still showing its
+ * previous rows) then settle on one value instead of overwriting each other on every render.
  */
-export function mergeLabels(map: Map<string, LabelEntry>, asked: string[], rows: Row[], primary: string): boolean {
+export function mergeLabels(map: Map<string, LabelEntry>, asked: string[], rows: Row[], primary: string, from?: AnswerOrder): boolean {
   let changed = false
   const got = new Set<string>()
+  const put = (id: string, v: LabelEntry) => {
+    if (from) {
+      if (!answerMaySet(from, id, map.has(id))) return
+      if (from.at !== null) from.order.set(id, from.at)
+    }
+    if (map.get(id) !== v) {
+      map.set(id, v)
+      changed = true
+    }
+  }
   for (const r of rows) {
     const id = String(r.__id ?? r.id ?? '')
     if (!id) continue
     got.add(id)
-    const label = labelText(r[primary])
-    if (map.get(id) !== label) {
-      map.set(id, label)
-      changed = true
-    }
+    put(id, labelText(r[primary]))
   }
   for (const id of asked) {
-    if (got.has(id) || map.get(id) === null) continue
-    map.set(id, null)
-    changed = true
+    if (got.has(id)) continue
+    put(id, null)
   }
   return changed
 }

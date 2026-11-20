@@ -2794,7 +2794,7 @@
                     "AnchorH": "=Anchor.Stretch",
                     "AnchorV": "=Anchor.Stretch",
                     "Items": "=Sort(Filter(Slot_ProductionLog, Slot_ProductionLog_LoggedOn >= Today() && owner = User().Id), Slot_ProductionLog_LoggedOn, SortOrder.Descending)",
-                    "Columns": "=\"Slot_ProductionLog_Machine, Slot_ProductionLog_Shift, Slot_ProductionLog_Good, Slot_ProductionLog_Scrap, Slot_ProductionLog_LoggedOn\"",
+                    "Columns": "=\"Slot_ProductionLog_Machine:Machine, Slot_ProductionLog_Shift:Shift, Slot_ProductionLog_Good:Good quantity, Slot_ProductionLog_Scrap:Rejected quantity, Slot_ProductionLog_LoggedOn:Logged on\"",
                     "CardColumns": "=\"Slot_ProductionLog_Machine, Slot_ProductionLog_Shift, Slot_ProductionLog_Good, Slot_ProductionLog_Scrap\"",
                     "EmptyText": "=\"Nothing logged today yet\""
                   },
@@ -3112,7 +3112,7 @@
                     "AnchorH": "=Anchor.Stretch",
                     "AnchorV": "=Anchor.Stretch",
                     "Items": "=Sort(Filter(Slot_Inspections, Slot_Inspections_InspectedOn >= Today() && owner = User().Id), Slot_Inspections_InspectedOn, SortOrder.Descending)",
-                    "Columns": "=\"Slot_Inspections_Number, Slot_Inspections_Batch, Slot_Inspections_Result, Slot_Inspections_InspectedOn\"",
+                    "Columns": "=\"Slot_Inspections_Number:Number, Slot_Inspections_Batch:Batch or lot, Slot_Inspections_Result:Result, Slot_Inspections_InspectedOn:Inspected on\"",
                     "CardColumns": "=\"Slot_Inspections_Number, Slot_Inspections_Result, Slot_Inspections_Batch\"",
                     "EmptyText": "=\"No inspections today yet\"",
                     "OnSelect": "=Set(varInspection, MyInspections.Selected); Navigate(DefectScreen)"
@@ -3271,7 +3271,7 @@
                     "AnchorH": "=Anchor.Stretch",
                     "AnchorV": "=Anchor.Stretch",
                     "Items": "=Filter(Slot_InspectionDefects, Slot_InspectionDefects_Inspection = Coalesce(varInspection.id, \"-\"))",
-                    "Columns": "=\"Slot_InspectionDefects_Defect, Slot_InspectionDefects_Severity, Slot_InspectionDefects_Qty\"",
+                    "Columns": "=\"Slot_InspectionDefects_Defect:Defect, Slot_InspectionDefects_Severity:Severity, Slot_InspectionDefects_Qty:Quantity\"",
                     "EmptyText": "=\"No defects recorded\""
                   },
                   "children": []
@@ -3377,7 +3377,7 @@
                     "AnchorV": "=Anchor.Stretch",
                     "Visible": "=If(IsBlank(MaintTabs.SelectedText), \"Requests\", MaintTabs.SelectedText) = \"Requests\"",
                     "Items": "=Sort(Filter(Slot_MaintenanceRequests, Slot_MaintenanceRequests_Status <> \"Closed\" && (Slot_MaintenanceRequests_AssignedTo = User().Id || IsBlank(Slot_MaintenanceRequests_AssignedTo))), Slot_MaintenanceRequests_ReportedOn, SortOrder.Descending)",
-                    "Columns": "=\"Slot_MaintenanceRequests_Number, Slot_MaintenanceRequests_Machine, Slot_MaintenanceRequests_Problem, Slot_MaintenanceRequests_Priority, Slot_MaintenanceRequests_Status\"",
+                    "Columns": "=\"Slot_MaintenanceRequests_Number:Number, Slot_MaintenanceRequests_Machine:Machine, Slot_MaintenanceRequests_Problem:Problem, Slot_MaintenanceRequests_Priority:Priority, Slot_MaintenanceRequests_Status:Status\"",
                     "CardColumns": "=\"Slot_MaintenanceRequests_Machine, Slot_MaintenanceRequests_Problem, Slot_MaintenanceRequests_Priority, Slot_MaintenanceRequests_Status\"",
                     "EmptyText": "=\"No open requests for you\"",
                     "OnSelect": "=Set(varRequest, RequestList.Selected); EditForm(RequestForm); Navigate(RequestScreen)"
@@ -3397,7 +3397,7 @@
                     "AnchorV": "=Anchor.Stretch",
                     "Visible": "=MaintTabs.SelectedText = \"PM tasks\"",
                     "Items": "=Sort(Filter(Slot_PMTasks, Slot_PMTasks_Status = \"Open\" && Slot_PMTasks_DueDate <= DateAdd(Today(), 7, \"Days\")), Slot_PMTasks_DueDate, SortOrder.Ascending)",
-                    "Columns": "=\"Slot_PMTasks_Number, Slot_PMTasks_Machine, Slot_PMTasks_DueDate, Slot_PMTasks_Status\"",
+                    "Columns": "=\"Slot_PMTasks_Number:Number, Slot_PMTasks_Machine:Machine, Slot_PMTasks_DueDate:Due date, Slot_PMTasks_Status:Status\"",
                     "CardColumns": "=\"Slot_PMTasks_Machine, Slot_PMTasks_DueDate, Slot_PMTasks_Status\"",
                     "EmptyText": "=\"No preventive maintenance due this week\"",
                     "OnSelect": "=Set(varTask, TaskList.Selected); EditForm(TaskForm); Navigate(TaskScreen)"
@@ -3852,7 +3852,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Filter(Slot_ProductionLog, Slot_ProductionLog_LoggedOn >= Today()), Slot_ProductionLog_LoggedOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_ProductionLog_Machine, Slot_ProductionLog_Shift, Slot_ProductionLog_Good, Slot_ProductionLog_Scrap, Slot_ProductionLog_Rework, Slot_ProductionLog_RunMin, Slot_ProductionLog_PlannedMin, Slot_ProductionLog_Operator, Slot_ProductionLog_LoggedOn\""
+                        "Columns": "=\"Slot_ProductionLog_Machine:Machine, Slot_ProductionLog_Shift:Shift, Slot_ProductionLog_Good:Good quantity, Slot_ProductionLog_Scrap:Rejected quantity, Slot_ProductionLog_Rework:Of which reworked, Slot_ProductionLog_RunMin:Run minutes, Slot_ProductionLog_PlannedMin:Planned minutes, Slot_ProductionLog_Operator:Operator, Slot_ProductionLog_LoggedOn:Logged on\""
                       },
                       "children": []
                     },
@@ -3884,7 +3884,7 @@
                         "AnchorH": "=Anchor.End",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Filter(Slot_Downtime, IsBlank(Slot_Downtime_EndedOn)), Slot_Downtime_StartedOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_Downtime_Machine, Slot_Downtime_Reason, Slot_Downtime_ReasonDetail, Slot_Downtime_StartedOn\"",
+                        "Columns": "=\"Slot_Downtime_Machine:Machine, Slot_Downtime_Reason:Reason, Slot_Downtime_ReasonDetail:Detail, Slot_Downtime_StartedOn:Started on\"",
                         "EmptyText": "=\"No machine is stopped\""
                       },
                       "children": []
@@ -3917,7 +3917,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_ProductionLog, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_ProductionLog_LoggedOn, Slot_ProductionLog_Shift, Slot_ProductionLog_Machine, Slot_ProductionLog_Good, Slot_ProductionLog_Scrap, Slot_ProductionLog_RunMin, Slot_ProductionLog_PlannedMin, Slot_ProductionLog_Operator\"",
+                        "Columns": "=\"Slot_ProductionLog_LoggedOn:Logged on, Slot_ProductionLog_Shift:Shift, Slot_ProductionLog_Machine:Machine, Slot_ProductionLog_Good:Good quantity, Slot_ProductionLog_Scrap:Rejected quantity, Slot_ProductionLog_RunMin:Run minutes, Slot_ProductionLog_PlannedMin:Planned minutes, Slot_ProductionLog_Operator:Operator\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -4016,7 +4016,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_Downtime, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_Downtime_StartedOn, Slot_Downtime_Machine, Slot_Downtime_Reason, Slot_Downtime_ReasonDetail, Slot_Downtime_Minutes, Slot_Downtime_EndedOn\"",
+                        "Columns": "=\"Slot_Downtime_StartedOn:Started on, Slot_Downtime_Machine:Machine, Slot_Downtime_Reason:Reason, Slot_Downtime_ReasonDetail:Detail, Slot_Downtime_Minutes:Minutes, Slot_Downtime_EndedOn:Ended on\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -4115,7 +4115,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_WorkOrders, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_WorkOrders_Number, Slot_WorkOrders_Product, Slot_WorkOrders_Quantity, Slot_WorkOrders_Line, Slot_WorkOrders_DueDate, Slot_WorkOrders_Status\"",
+                        "Columns": "=\"Slot_WorkOrders_Number:Number, Slot_WorkOrders_Product:Product, Slot_WorkOrders_Quantity:Quantity, Slot_WorkOrders_Line:Line, Slot_WorkOrders_DueDate:Due date, Slot_WorkOrders_Status:Status\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -4214,7 +4214,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_ShiftHandovers, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_ShiftHandovers_HandoverDate, Slot_ShiftHandovers_Shift, Slot_ShiftHandovers_Line, Slot_ShiftHandovers_FromSupervisor, Slot_ShiftHandovers_ToSupervisor, Slot_ShiftHandovers_Status\"",
+                        "Columns": "=\"Slot_ShiftHandovers_HandoverDate:Date, Slot_ShiftHandovers_Shift:Outgoing shift, Slot_ShiftHandovers_Line:Line, Slot_ShiftHandovers_FromSupervisor:Handed over by, Slot_ShiftHandovers_ToSupervisor:Handed over to, Slot_ShiftHandovers_Status:Status\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -4427,7 +4427,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_Inspections, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_Inspections_Number, Slot_Inspections_InspectedOn, Slot_Inspections_Product, Slot_Inspections_Batch, Slot_Inspections_Stage, Slot_Inspections_Result, Slot_Inspections_Inspector\"",
+                        "Columns": "=\"Slot_Inspections_Number:Number, Slot_Inspections_InspectedOn:Inspected on, Slot_Inspections_Product:Product, Slot_Inspections_Batch:Batch or lot, Slot_Inspections_Stage:Stage, Slot_Inspections_Result:Result, Slot_Inspections_Inspector:Inspector\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -4538,7 +4538,7 @@
                             "Height": "=268",
                             "AnchorV": "=Anchor.Stretch",
                             "Items": "=Filter(Slot_InspectionDefects, Slot_InspectionDefects_Inspection = Coalesce(InspTable.Selected.id, \"-\"))",
-                            "Columns": "=\"Slot_InspectionDefects_Defect, Slot_InspectionDefects_DefectType, Slot_InspectionDefects_Severity, Slot_InspectionDefects_Qty, Slot_InspectionDefects_Action\"",
+                            "Columns": "=\"Slot_InspectionDefects_Defect:Defect, Slot_InspectionDefects_DefectType:Defect type, Slot_InspectionDefects_Severity:Severity, Slot_InspectionDefects_Qty:Quantity, Slot_InspectionDefects_Action:Action\"",
                             "EmptyText": "=\"No defects\""
                           },
                           "children": []
@@ -4573,7 +4573,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_NCRs, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_NCRs_Number, Slot_NCRs_Product, Slot_NCRs_Batch, Slot_NCRs_Defect, Slot_NCRs_Disposition, Slot_NCRs_Status, Slot_NCRs_Approval, Slot_NCRs_DueDate\"",
+                        "Columns": "=\"Slot_NCRs_Number:Number, Slot_NCRs_Product:Product, Slot_NCRs_Batch:Batch or lot, Slot_NCRs_Defect:What is wrong, Slot_NCRs_Disposition:Disposition, Slot_NCRs_Status:Status, Slot_NCRs_Approval:Disposition approval, Slot_NCRs_DueDate:Action due\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -4703,7 +4703,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_InspectionPlans, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_InspectionPlans_Name, Slot_InspectionPlans_Product, Slot_InspectionPlans_Stage, Slot_InspectionPlans_Characteristic, Slot_InspectionPlans_Min, Slot_InspectionPlans_Max, Slot_InspectionPlans_Unit, Slot_InspectionPlans_Active\"",
+                        "Columns": "=\"Slot_InspectionPlans_Name:Name, Slot_InspectionPlans_Product:Product, Slot_InspectionPlans_Stage:Stage, Slot_InspectionPlans_Characteristic:Characteristic, Slot_InspectionPlans_Min:Minimum, Slot_InspectionPlans_Max:Maximum, Slot_InspectionPlans_Unit:Unit, Slot_InspectionPlans_Active:Active\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -4802,7 +4802,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_DefectTypes, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_DefectTypes_Name, Slot_DefectTypes_Code, Slot_DefectTypes_DefaultSeverity, Slot_DefectTypes_Active\"",
+                        "Columns": "=\"Slot_DefectTypes_Name:Name, Slot_DefectTypes_Code:Code, Slot_DefectTypes_DefaultSeverity:Usual severity, Slot_DefectTypes_Active:Active\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -5041,7 +5041,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_MaintenanceRequests, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_MaintenanceRequests_Number, Slot_MaintenanceRequests_Machine, Slot_MaintenanceRequests_Problem, Slot_MaintenanceRequests_Priority, Slot_MaintenanceRequests_Status, Slot_MaintenanceRequests_AssignedTo, Slot_MaintenanceRequests_ReportedOn, Slot_MaintenanceRequests_Escalated\"",
+                        "Columns": "=\"Slot_MaintenanceRequests_Number:Number, Slot_MaintenanceRequests_Machine:Machine, Slot_MaintenanceRequests_Problem:Problem, Slot_MaintenanceRequests_Priority:Priority, Slot_MaintenanceRequests_Status:Status, Slot_MaintenanceRequests_AssignedTo:Assigned to, Slot_MaintenanceRequests_ReportedOn:Reported on, Slot_MaintenanceRequests_Escalated:Escalated\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -5156,7 +5156,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_PMPlans, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_PMPlans_Name, Slot_PMPlans_Machine, Slot_PMPlans_EveryDays, Slot_PMPlans_NextDue, Slot_PMPlans_AssignedTo, Slot_PMPlans_Active\"",
+                        "Columns": "=\"Slot_PMPlans_Name:Name, Slot_PMPlans_Machine:Machine, Slot_PMPlans_EveryDays:Every, Slot_PMPlans_NextDue:Next due, Slot_PMPlans_AssignedTo:Technician, Slot_PMPlans_Active:Active\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -5255,7 +5255,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_PMTasks, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_PMTasks_Number, Slot_PMTasks_Machine, Slot_PMTasks_DueDate, Slot_PMTasks_AssignedTo, Slot_PMTasks_Status, Slot_PMTasks_CompletedOn\"",
+                        "Columns": "=\"Slot_PMTasks_Number:Number, Slot_PMTasks_Machine:Machine, Slot_PMTasks_DueDate:Due date, Slot_PMTasks_AssignedTo:Technician, Slot_PMTasks_Status:Status, Slot_PMTasks_CompletedOn:Completed on\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -5354,7 +5354,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_Machines, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_Machines_Code, Slot_Machines_Name, Slot_Machines_Line, Slot_Machines_Status, Slot_Machines_Technician\"",
+                        "Columns": "=\"Slot_Machines_Code:Code, Slot_Machines_Name:Name, Slot_Machines_Line:Line, Slot_Machines_Status:Status, Slot_Machines_Technician:Maintenance technician\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -5520,7 +5520,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_Machines, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_Machines_Code, Slot_Machines_Name, Slot_Machines_Line, Slot_Machines_IdealCycleSec, Slot_Machines_Status, Slot_Machines_Technician\"",
+                        "Columns": "=\"Slot_Machines_Code:Code, Slot_Machines_Name:Name, Slot_Machines_Line:Line, Slot_Machines_IdealCycleSec:Ideal cycle, Slot_Machines_Status:Status, Slot_Machines_Technician:Maintenance technician\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -5634,7 +5634,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_Lines, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_Lines_Name, Slot_Lines_Code, Slot_Lines_Area, Slot_Lines_Active\"",
+                        "Columns": "=\"Slot_Lines_Name:Name, Slot_Lines_Code:Code, Slot_Lines_Area:Area, Slot_Lines_Active:Active\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -5733,7 +5733,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_Shifts, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_Shifts_Code, Slot_Shifts_Name, Slot_Shifts_StartHour, Slot_Shifts_EndHour, Slot_Shifts_BreakMin, Slot_Shifts_PlannedMin\"",
+                        "Columns": "=\"Slot_Shifts_Code:Code, Slot_Shifts_Name:Name, Slot_Shifts_StartHour:Starts at, Slot_Shifts_EndHour:Ends at, Slot_Shifts_BreakMin:Breaks, Slot_Shifts_PlannedMin:Planned minutes\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -5832,7 +5832,7 @@
                         "AnchorH": "=Anchor.Stretch",
                         "AnchorV": "=Anchor.Stretch",
                         "Items": "=Sort(Slot_DowntimeReasons, createdOn, SortOrder.Descending)",
-                        "Columns": "=\"Slot_DowntimeReasons_Name, Slot_DowntimeReasons_Category, Slot_DowntimeReasons_Code, Slot_DowntimeReasons_Planned, Slot_DowntimeReasons_Active\"",
+                        "Columns": "=\"Slot_DowntimeReasons_Name:Name, Slot_DowntimeReasons_Category:Category, Slot_DowntimeReasons_Code:Code, Slot_DowntimeReasons_Planned:Planned stop, Slot_DowntimeReasons_Active:Active\"",
                         "Searchable": "=true"
                       },
                       "children": []
@@ -5942,29 +5942,23 @@
                 "Slot_NCRs_Defect": "Coalesce(Trigger.Record.Slot_Inspections_Notes, \"Inspection \" & Trigger.Record.Slot_Inspections_Number & \" failed\")",
                 "Slot_NCRs_Status": "\"Open\"",
                 "Slot_NCRs_DueDate": "DateAdd(Today(), 7, \"Days\")"
-              }
+              },
+              "owner": "Trigger.User"
             },
             {
-              "id": "tellc",
-              "name": "TellQualityIfAny",
-              "kind": "condition",
-              "if": "CountRows(Filter(RoleAssignments, Role = \"Slot_Role_Quality\")) > 0",
-              "then": [
-                {
-                  "id": "tell",
-                  "name": "TellQuality",
-                  "kind": "notify",
-                  "to": "ForAll(FirstN(Filter(RoleAssignments, Role = \"Slot_Role_Quality\"), 100), {Id: ThisRecord.User})",
-                  "title": "\"NCR \" & Steps.Ncr.Output.Slot_NCRs_Number & \": inspection \" & Trigger.Record.Slot_Inspections_Number & \" failed\"",
-                  "body": "\"Batch \" & Coalesce(Trigger.Record.Slot_Inspections_Batch, \"-\") & \". Choose a disposition and send it for approval in the Quality desk.\"",
-                  "link": "\"#u-\" & \"Slot_App_QualityDesk\"",
-                  "channels": [
-                    "inApp",
-                    "email"
-                  ]
-                }
+              "id": "tell",
+              "name": "TellQuality",
+              "kind": "notify",
+              "title": "\"NCR \" & Steps.Ncr.Output.Slot_NCRs_Number & \": inspection \" & Trigger.Record.Slot_Inspections_Number & \" failed\"",
+              "body": "\"Batch \" & Coalesce(Trigger.Record.Slot_Inspections_Batch, \"-\") & \". Choose a disposition and send it for approval in the Quality desk.\"",
+              "link": "\"#u-\" & \"Slot_App_QualityDesk\"",
+              "channels": [
+                "inApp",
+                "email"
               ],
-              "else": []
+              "roles": [
+                "Slot_Role_Quality"
+              ]
             }
           ],
           "settings": {
@@ -5978,7 +5972,7 @@
       {
         "key": "ApproveNcr",
         "name": "NCR disposition approval",
-        "description": "An NCR sent for approval asks the quality head; the answer and comment are written back on the NCR.",
+        "description": "An NCR sent for approval asks the Quality role; the inspector whose failed inspection raised it and the person who sent it may not approve it (their manager decides when nobody else is left). The answer is written back on the NCR.",
         "definition": {
           "trigger": {
             "type": "table",
@@ -6017,7 +6011,8 @@
                 "Disposition": "Trigger.Record.Slot_NCRs_Disposition",
                 "Quantity": "Trigger.Record.Slot_NCRs_Quantity",
                 "Batch": "Trigger.Record.Slot_NCRs_Batch"
-              }
+              },
+              "requester": "Trigger.Record.owner"
             },
             {
               "id": "set",
@@ -6043,7 +6038,7 @@
       {
         "key": "BreakdownRequest",
         "name": "Breakdown creates a maintenance request",
-        "description": "A stoppage with the reason Breakdown creates a high-priority maintenance request for the machine and links it to the stoppage.",
+        "description": "A stoppage with the reason Breakdown creates a high-priority maintenance request for the machine and links it to the stoppage. The request belongs to the operator who reported it.",
         "definition": {
           "trigger": {
             "type": "table",
@@ -6066,7 +6061,8 @@
                 "Slot_MaintenanceRequests_Priority": "\"High\"",
                 "Slot_MaintenanceRequests_ReportedOn": "Trigger.Record.Slot_Downtime_StartedOn",
                 "Slot_MaintenanceRequests_ReportedBy": "Trigger.Record.owner"
-              }
+              },
+              "owner": "Trigger.User"
             },
             {
               "id": "link",
@@ -6138,26 +6134,19 @@
               ],
               "else": [
                 {
-                  "id": "tellmc",
-                  "name": "TellMaintenanceIfAny",
-                  "kind": "condition",
-                  "if": "CountRows(Filter(RoleAssignments, Role = \"Slot_Role_Maintenance\")) > 0",
-                  "then": [
-                    {
-                      "id": "tellm",
-                      "name": "TellMaintenance",
-                      "kind": "notify",
-                      "to": "ForAll(FirstN(Filter(RoleAssignments, Role = \"Slot_Role_Maintenance\"), 100), {Id: ThisRecord.User})",
-                      "title": "\"Breakdown: \" & Trigger.Record.Slot_MaintenanceRequests_Machine & \" (\" & Trigger.Record.Slot_MaintenanceRequests_Number & \")\"",
-                      "body": "Trigger.Record.Slot_MaintenanceRequests_Problem & \". Acknowledge it in the Maintenance app.\"",
-                      "link": "\"#u-\" & \"Slot_App_MaintenancePhone\"",
-                      "channels": [
-                        "inApp",
-                        "email"
-                      ]
-                    }
+                  "id": "tellm",
+                  "name": "TellMaintenance",
+                  "kind": "notify",
+                  "title": "\"Breakdown: \" & Trigger.Record.Slot_MaintenanceRequests_Machine & \" (\" & Trigger.Record.Slot_MaintenanceRequests_Number & \")\"",
+                  "body": "Trigger.Record.Slot_MaintenanceRequests_Problem & \". Acknowledge it in the Maintenance app.\"",
+                  "link": "\"#u-\" & \"Slot_App_MaintenancePhone\"",
+                  "channels": [
+                    "inApp",
+                    "email"
                   ],
-                  "else": []
+                  "roles": [
+                    "Slot_Role_Maintenance"
+                  ]
                 }
               ]
             },
@@ -6191,26 +6180,19 @@
                   }
                 },
                 {
-                  "id": "tellpmc",
-                  "name": "TellPlantManagerIfAny",
-                  "kind": "condition",
-                  "if": "CountRows(Filter(RoleAssignments, Role = \"Slot_Role_PlantManager\")) > 0",
-                  "then": [
-                    {
-                      "id": "tellpm",
-                      "name": "TellPlantManager",
-                      "kind": "notify",
-                      "to": "ForAll(FirstN(Filter(RoleAssignments, Role = \"Slot_Role_PlantManager\"), 100), {Id: ThisRecord.User})",
-                      "title": "\"Not acknowledged in 30 minutes: \" & Trigger.Record.Slot_MaintenanceRequests_Number & \" on \" & Trigger.Record.Slot_MaintenanceRequests_Machine",
-                      "body": "Trigger.Record.Slot_MaintenanceRequests_Problem",
-                      "link": "\"#u-\" & \"Slot_App_MaintenanceDesk\"",
-                      "channels": [
-                        "inApp",
-                        "email"
-                      ]
-                    }
+                  "id": "tellpm",
+                  "name": "TellPlantManager",
+                  "kind": "notify",
+                  "title": "\"Not acknowledged in 30 minutes: \" & Trigger.Record.Slot_MaintenanceRequests_Number & \" on \" & Trigger.Record.Slot_MaintenanceRequests_Machine",
+                  "body": "Trigger.Record.Slot_MaintenanceRequests_Problem",
+                  "link": "\"#u-\" & \"Slot_App_MaintenanceDesk\"",
+                  "channels": [
+                    "inApp",
+                    "email"
                   ],
-                  "else": []
+                  "roles": [
+                    "Slot_Role_PlantManager"
+                  ]
                 }
               ],
               "else": []
@@ -6487,26 +6469,19 @@
           },
           "steps": [
             {
-              "id": "tellc",
-              "name": "TellSupervisorsIfAny",
-              "kind": "condition",
-              "if": "CountRows(Filter(RoleAssignments, Role = \"Slot_Role_Supervisor\")) > 0",
-              "then": [
-                {
-                  "id": "tell",
-                  "name": "TellSupervisors",
-                  "kind": "notify",
-                  "to": "ForAll(FirstN(Filter(RoleAssignments, Role = \"Slot_Role_Supervisor\"), 100), {Id: ThisRecord.User})",
-                  "title": "\"Shift ends in 15 minutes: write the handover\"",
-                  "body": "\"Open the Supervisor console > Shift handover.\"",
-                  "link": "\"#u-\" & \"Slot_App_SupervisorConsole\"",
-                  "channels": [
-                    "inApp",
-                    "email"
-                  ]
-                }
+              "id": "tell",
+              "name": "TellSupervisors",
+              "kind": "notify",
+              "title": "\"Shift ends in 15 minutes: write the handover\"",
+              "body": "\"Open the Supervisor console > Shift handover.\"",
+              "link": "\"#u-\" & \"Slot_App_SupervisorConsole\"",
+              "channels": [
+                "inApp",
+                "email"
               ],
-              "else": []
+              "roles": [
+                "Slot_Role_Supervisor"
+              ]
             }
           ],
           "settings": {
@@ -11591,6 +11566,6 @@
   },
   "signature": {
     "alg": "sha256",
-    "digest": "d05d031a9319c022f17e42a4a3e7a3f4b81c1937cff7fc6b6bdfa47bf4b4e1ee"
+    "digest": "f74ccb3067b70398e302c4a187e39e0dbbbb590121b3737e6203f44b1dadbad0"
   }
 }

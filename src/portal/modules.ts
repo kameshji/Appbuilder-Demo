@@ -178,11 +178,11 @@ export const MODULES: readonly ModuleEntry[] = [
     details: ['See and send the reports you receive, unsubscribe from them, or subscribe yourself to a table you can read.'],
   },
   {
-    key: 'notes', label: 'Notes', icon: StickyNote, modes: ['user'], status: 'soon', phase: 'P3',
+    key: 'notes', label: 'Notes', icon: StickyNote, modes: ['user'], status: 'live', route: { page: 'u', id: 'notes' }, phase: 'P3',
     tagline: 'Rich-text notes, private or shared.',
     details: [
-      'Write notes with headings, lists, tables and images; share them with people or teams.',
-      'Attach a note to any record so the context stays with the data.',
+      'Write notes with headings, lists, checklists, tables, images and files; mention people and link records; share them with people or teams to read or edit.',
+      'Write a note about a record so the context stays with the data: people who can read the record see it on its timeline.',
     ],
   },
   {

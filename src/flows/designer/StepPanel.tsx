@@ -247,9 +247,11 @@ function KindForm({ s, set }: { s: AnyStep; set(p: Record<string, unknown>, key?
     }
     case 'notify': {
       const ch = (s.channels as string[]) ?? ['inApp']
+      const groups = !!((s.roles as string[] | undefined)?.length || (s.teams as string[] | undefined)?.length)
       return (
         <Section title="Notify">
-          <PeoplePicker stepId={s.id} field="to" label="To" required value={s.to as string} onChange={(v) => set({ to: v }, `${s.id}:to`)} testId="notify-to" />
+          <PeoplePicker stepId={s.id} field="to" label="To" required={!groups} value={s.to as string} onChange={(v) => set({ to: v || undefined }, `${s.id}:to`)} testId="notify-to" />
+          <RolesAndTeams s={s} set={set} />
           {fx('title', 'Title', { required: true })}
           {fx('body', 'Message', { multiline: true })}
           {fx('link', 'Link (inside Appbuilder, #...)')}
@@ -283,6 +285,56 @@ function KindForm({ s, set }: { s: AnyStep; set(p: Record<string, unknown>, key?
     )
     default: return <RawStep s={s} />
   }
+}
+
+/** notify: roles and teams whose members are notified when the step runs (P3; stored as ids, a role named by its name is shown ticked) */
+function RolesAndTeams({ s, set }: { s: AnyStep; set(p: Record<string, unknown>, key?: string): void }) {
+  const ro = useDesigner((st) => st.readOnly)
+  const roles = usePlatform((p) => p.roles)
+  const { teams } = useDesignerData()
+  const sorted = useMemo(() => [...roles].sort((a, b) => a.name.localeCompare(b.name)), [roles])
+  const sel = (k: 'roles' | 'teams') => (s[k] as string[] | undefined) ?? []
+  const has = (k: 'roles' | 'teams', id: string, name: string) => sel(k).some((x) => x === id || x.toLowerCase() === name.toLowerCase())
+  const toggle = (k: 'roles' | 'teams', id: string, name: string, on: boolean) => {
+    const rest = sel(k).filter((x) => x !== id && x.toLowerCase() !== name.toLowerCase())
+    const next = on ? [...rest, id] : rest
+    set({ [k]: next.length ? next : undefined })
+  }
+  return (
+    <Labeled label="And everyone with these roles or in these teams" hint="Found when the step runs: the active people who hold the role, or are in the team, at that moment. A role that nobody holds yet is not an error.">
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs" data-testid="notify-roles">
+        {sorted.map((r) => <label key={r.id} className="flex items-center gap-1"><input type="checkbox" disabled={ro} checked={has('roles', r.id, r.name)} onChange={(e) => toggle('roles', r.id, r.name, e.target.checked)} data-testid={`notify-role-${r.id}`} />{r.name}</label>)}
+      </div>
+      {teams.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs" data-testid="notify-teams">
+          {teams.map((tm) => <label key={tm.id} className="flex items-center gap-1"><input type="checkbox" disabled={ro} checked={has('teams', tm.id, tm.code)} onChange={(e) => toggle('teams', tm.id, tm.code, e.target.checked)} data-testid={`notify-team-${tm.id}`} />Team {tm.name}</label>)}
+        </div>
+      )}
+      <FieldError stepId={s.id} field="roles" />
+      <FieldError stepId={s.id} field="teams" />
+    </Labeled>
+  )
+}
+
+/** data.create: who the new row belongs to (P3; docs/dev/flows.md "Identity and security") */
+function OwnerChooser({ s, set }: { s: AnyStep; set(p: Record<string, unknown>, key?: string): void }) {
+  const doc = useDesigner((st) => st.doc)
+  const ro = useDesigner((st) => st.readOnly)
+  const trig = doc.trigger as { type: string }
+  const hasUser = trig.type === 'table' || trig.type === 'manual'
+  const cur = typeof s.owner === 'string' && s.owner.trim() ? s.owner.trim() : ''
+  const mode = !cur ? 'flow' : cur === 'Trigger.User' ? 'trigger' : 'formula'
+  return (
+    <Section title="Owner of the new row" hint="Who the row belongs to, for roles that see their own rows. Only an administrator's flow gives rows to other people; any flow may give them to its own identity or a team of it.">
+      <select className={inputCls} value={mode} disabled={ro} data-testid="f-owner-mode" onChange={(e) => set({ owner: e.target.value === 'flow' ? undefined : e.target.value === 'trigger' ? 'Trigger.User' : (cur && cur !== 'Trigger.User' ? cur : 'Trigger.Record.owner') })}>
+        <option value="flow">The identity the flow runs as</option>
+        {(hasUser || mode === 'trigger') && <option value="trigger">The person whose change or button press started the run</option>}
+        <option value="formula">Someone else (a formula)</option>
+      </select>
+      {mode === 'formula' && <FxField stepId={s.id} field="owner" label="Owner (a person or team:<id>)" formulaOnly value={cur} onChange={(v) => set({ owner: v || undefined }, `${s.id}:owner`)} testId="f-owner" />}
+      <FieldError stepId={s.id} field="owner" />
+    </Section>
+  )
 }
 
 function DataForm({ s, set, t }: { s: AnyStep; set(p: Record<string, unknown>, key?: string): void; t: ReturnType<typeof tableByName> }) {
@@ -335,6 +387,7 @@ function DataForm({ s, set, t }: { s: AnyStep; set(p: Record<string, unknown>, k
           <FieldError stepId={s.id} field="values" exact />
         </Section>
       )}
+      {s.kind === 'data.create' && <OwnerChooser s={s} set={set} />}
     </>
   )
 }

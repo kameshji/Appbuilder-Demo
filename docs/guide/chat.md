@@ -31,8 +31,15 @@ cannot read the conversation is refused with the reason, and the mention list on
 
 **Cards.** A record, an app or a dashboard shared in a conversation is a reference, never a copy: each reader sees on
 the card what their own roles allow (a hidden column is left out, a hidden record shows "Not available"), and the card
-follows changes to the record. Buttons to share from apps and dashboards come in a later update; until then cards come
-from the API (`cards` of a message, [chat API](../dev/chat.md#http-api)).
+follows changes to the record. People share with **Share to chat**: on the Record timeline UI component (the record),
+on an app's tile in the launcher, and in a dashboard's toolbar; the API takes the same references (`cards` of a message,
+[chat API](../dev/chat.md#http-api)).
+
+**Approvals.** Every person asked to approve gets a card in their own conversation with the system sender "Approvals",
+with the request's answer buttons. The card answers through the same approvals service as the inbox, so your policy's
+rules (comment required, delegation, self-approval, separation of duties) hold there too. The card shows the fields you
+declare on the approval step or in `RequestApproval`; the record itself only to people who may read it. People who
+switched off approval notifications in the app get no cards. Each answer also shows on the record's timeline.
 
 ## Chat and your apps
 
@@ -41,7 +48,10 @@ from the API (`cards` of a message, [chat API](../dev/chat.md#http-api)).
 - Apps and flows can read chat tables (Channels, Channel members, Messages, Message reactions) through formulas and
   queries only as far as the signed-in person may; nobody writes them except chat itself. Prefer sending people
   notifications (`SendNotification`) over building chat into apps.
-- Discussions about a single record stay in the record's comments (its timeline), not in chat.
+- Discussions about a single record stay in the record's comments (its timeline), not in a channel: chat's
+  **Discussions** list shows the records a person follows or was mentioned on. Put a Record timeline on your record
+  screens so people can comment, mention, edit their own comments and share the record. Other modules can add an action
+  to the timeline's composer (for developers: `addTimelineAction` in `src/controls/display/collab.tsx`).
 
 ## Limits
 
@@ -50,5 +60,6 @@ from the API (`cards` of a message, [chat API](../dev/chat.md#http-api)).
 
 ## Not supported
 
-Calls, screen sharing, people outside your organisation, bots, read receipts per person, presence dots, members
-exporting a conversation, moving chat to another environment once it holds messages.
+Calls, screen sharing, people outside your organisation, bots other than the system sender "Approvals", read receipts
+per person, presence dots, members exporting a conversation, moving chat to another environment once it holds messages,
+answering approvals by typing or by replying to an email, a policy-level switch for approval cards.

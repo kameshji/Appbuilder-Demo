@@ -9,6 +9,7 @@ import type { ConnectionManager, ConnectionRecord, Connector, ConnectorEnv, Conn
 import type { ConnectionRef, ConnectorKind } from '../../src/platform/contracts.ts'
 import { errText } from './util.ts'
 import { currentEnvironment } from './env-context.ts'
+import { assertOutboundHost } from './net-policy.ts'
 
 export const DEFAULT_CONNECTION_ID = 'conn_default'
 export const FILES_CONNECTION_ID = 'conn_files'
@@ -43,6 +44,12 @@ export function createConnectionManager(getMeta: () => MetaStore, env: Connector
     const key = `${environment.id}:${connectionId}`
     const rec = await getMeta().connections.get(connectionId)
     if (!rec) throw new HttpError(404, 'not-found', `Connection "${connectionId}" does not exist.`)
+    // Every use of an external database connection checks its host against the outbound policy again, cached or not:
+    // a name can start resolving to a loopback or private address after it was saved (and a connection saved before
+    // this check existed must not be usable). The default database is the install's own and is exempt.
+    if ((rec.connector === 'postgres' || rec.connector === 'mysql') && rec.id !== DEFAULT_CONNECTION_ID && rec.settings?.host) {
+      await assertOutboundHost(String(rec.settings.host), 'Connection')
+    }
     const fp = fingerprint(rec)
     const hit = cache.get(key)
     if (hit && hit.fp === fp) return hit.connector

@@ -48,3 +48,4 @@ Appbuilder directly unless your administrator tells you to.
 Some things people ask about are not built yet, for example approvals inbox screens, dashboards, chat, WhatsApp
 messages, a Hindi screen language and printing as PDF. Entries marked **Soon** in the left menu are planned; they open a short note
 and do nothing else. If something you need is missing, tell your administrator.
+| Write, share and find notes | [Notes](notes.md) |

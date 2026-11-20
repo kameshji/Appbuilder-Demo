@@ -43,7 +43,7 @@ type Row = Record<string, unknown>
 export interface FlowsDeps {
   db(): SqlDb | null
   meta(): MetaStore
-  data(): DataService & { internals: { connectorFor(t: TableDef): Promise<Connector>; physical(t: TableDef): TableDef } }
+  data(): DataService & { internals: { connectorFor(t: TableDef): Promise<Connector>; physical(t: TableDef): TableDef; writeCells(ctx: UserContext | null, t: TableDef, rowId: string, changes: Record<string, unknown>): Promise<number> } }
   forUser(user: UserDef): Promise<UserContext>
   kernel: Kernel
   notifications(): NotificationService | undefined
@@ -438,6 +438,7 @@ export function createFlows(deps: FlowsDeps) {
       tables: await deps.meta().tables.list(),
       flows: all.filter((f) => f.id !== selfId).map((f) => ({ id: f.id, name: f.name, trigger: f.trigger, calls: resolveCalls(all, callsOf(f.steps)) })),
       selfId, selfName: String(doc.name ?? 'this flow'), connections: new Map(conns.map((c) => [c.ref, c.connector ?? ''])), engine: engine.engine(),
+      roles: (await deps.meta().roles.list()).map((r) => ({ id: r.id, name: r.name })),
       ...(actions ? {
         actionsOf: async (ref: string) => {
           const id = ids.get(ref)

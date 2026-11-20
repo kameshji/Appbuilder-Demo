@@ -11,7 +11,7 @@ import { ConversationInfo } from './ConversationInfo'
 import { ReportDialog } from './dialogs'
 import { pendingFor } from './optimistic'
 import { firstUnread } from './timeline'
-import { closeThreadPane, convOf, joinConversation, loadOlder, loadReplies, setAtBottom, useChat } from './store'
+import { closeThreadPane, convOf, joinConversation, jumpToLatest, loadNewer, loadOlder, loadReplies, setAtBottom, useChat } from './store'
 
 export function TypingLine({ channelId }: { channelId: string }) {
   const typing = useChat((s) => s.typing[channelId])
@@ -28,7 +28,8 @@ function CannotPost({ c }: { c: ChatConversation }) {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   let text = 'You cannot post here.'
-  if (me?.readOnlyReason === 'install') text = 'This install is read-only: chat can be read but not written.'
+  if (c.system === 'approvals') text = 'Appbuilder sends the approval requests waiting for you here. Answer each with the buttons on its card.'
+  else if (me?.readOnlyReason === 'install') text = 'This install is read-only: chat can be read but not written.'
   else if (me?.readOnly) text = 'An administrator made you read-only in chat: you can read, not post or react.'
   else if (c.archived) text = 'This conversation is archived: it can be read, not written.'
   else if (!c.me) text = 'You are not in this channel yet.'
@@ -48,10 +49,13 @@ function CannotPost({ c }: { c: ChatConversation }) {
 }
 
 /** the scrolling list of one place (the conversation's top-level messages, or a thread's replies) */
-function MessageList({ c, items, hasOlder, onOlder, loadingOlder, inThread, lastReadSeq, threadRoot }: {
+function MessageList({ c, items, hasOlder, onOlder, loadingOlder, inThread, lastReadSeq, threadRoot, hasNewer = false, loadingNewer = false }: {
   c: ChatConversation
   items: ChatMessageView[]
   hasOlder: boolean
+  /** the window was loaded around an old message: newer ones exist (package E) */
+  hasNewer?: boolean
+  loadingNewer?: boolean
   onOlder?(): Promise<boolean>
   loadingOlder: boolean
   inThread?: boolean
@@ -161,6 +165,16 @@ function MessageList({ c, items, hasOlder, onOlder, loadingOlder, inThread, last
           </Fragment>
         ))}
         {mine.map((p) => <PendingItem key={p.clientId} p={p} onFix={(text) => setComposerDraft(c.id, parentId, text)} />)}
+        {!inThread && hasNewer && (
+          <div className="flex justify-center gap-2 py-2" data-testid="chat-newer-bar">
+            {loadingNewer ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> : (
+              <>
+                <Button variant="ghost" size="xs" onClick={() => void loadNewer(c.id)} data-testid="chat-newer">Show newer messages</Button>
+                <Button variant="outline" size="xs" onClick={() => void jumpToLatest(c.id)} data-testid="chat-latest"><ArrowDown /> Jump to the latest</Button>
+              </>
+            )}
+          </div>
+        )}
       </div>
       {newBelow && (
         <Button size="xs" className="absolute bottom-2 left-1/2 -translate-x-1/2 shadow-md" onClick={toBottom} data-testid="chat-jump"><ArrowDown /> New messages</Button>
@@ -237,7 +251,7 @@ export function Conversation({ id, onBack, narrow }: { id: string; onBack?(): vo
         </>
       ) : (
         <>
-          <MessageList key={`m:${id}`} c={c} items={t.items} hasOlder={t.hasOlder} onOlder={() => loadOlder(id)} loadingOlder={!!busy[`${id}:older`]} lastReadSeq={c.me?.lastReadSeq ?? 0} />
+          <MessageList key={`m:${id}`} c={c} items={t.items} hasOlder={t.hasOlder} onOlder={() => loadOlder(id)} loadingOlder={!!busy[`${id}:older`]} lastReadSeq={c.me?.lastReadSeq ?? 0} hasNewer={t.hasNewer} loadingNewer={!!busy[`${id}:newer`]} />
           <TypingLine channelId={id} />
           {c.canPost ? <Composer key={`c:${id}:${composerKey}`} conversation={c} onEditLast={() => editLastFn?.()} autoFocus={!narrow} /> : <CannotPost c={c} />}
         </>

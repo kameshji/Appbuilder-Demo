@@ -23,10 +23,10 @@ server and every command load that file first (lines `KEY=value`, `#` comments; 
 | `APPBUILDER_SETUP` | `closed` (hosted default) | `/api/v1/setup/*` answers 404, also before setup; no setup code is printed. Setup is done with the commands below. |
 | `APPBUILDER_DB_POOL` | `6` (hosted default; 10 otherwise) | Connections of the system database pool. With the job worker's LISTEN connection, a backup and the commands, set `ALTER DATABASE ... CONNECTION LIMIT 12`. |
 | `APPBUILDER_JOBS_POLL_MS` | `5000` (hosted default; 1000 otherwise) | The job worker's polling fallback. Database notifications still wake it at once; an idle install used 0.2 % of a core instead of 0.3 % in the measurements. |
-| `APPBUILDER_INSTANCE_DIR` | `/srv/appbuilder/<org>` | The one folder the install writes to. The workspace, `APPBUILDER_LOG_DIR`, `APPBUILDER_BACKUP_DIR` and `APPBUILDER_SETUP_CODE_FILE` must be inside it, or the server does not start. |
+| `APPBUILDER_INSTANCE_DIR` | `/srv/appbuilder/<org>` | The one folder the install writes to. The workspace, `APPBUILDER_LOG_DIR`, `APPBUILDER_BACKUP_DIR` and `APPBUILDER_SETUP_CODE_FILE` must be inside it, or the server does not start. In Admin console > Backups a backup or off-site folder outside it is refused, and the PostgreSQL tools folder cannot be set (it names programs the server runs; set `APPBUILDER_PG_BIN` instead). |
 | `APPBUILDER_WORKSPACE` | `/srv/appbuilder/<org>/workspace` | As on-premises: `server.json`, `.secret-key`, environments' files, logs. |
 | `APPBUILDER_BACKUP_DIR` | `/srv/appbuilder/<org>/backups` | As on-premises. |
-| `APPBUILDER_OUTBOUND_DENY` | the install's own host (added by itself) | Comma-separated host names (`*.domain` allowed) or addresses nothing may connect to. Add `*.<domain>` to refuse sibling installs by name. |
+| `APPBUILDER_OUTBOUND_DENY` | `*.<domain>`, the server's own public addresses (the install's own host is added by itself) | Comma-separated host names (`*.domain` allowed) or addresses nothing may connect to. Set `*.<domain>` so a connector, database connection or flow aimed at a sibling install is refused by name, and add the server's public IPv4 and IPv6 addresses. Without them such a call would go out to the server's public address and come back in through the proxy with TLS and host routing, as any outside client's request does: not a path around isolation, but nothing a hosted install needs. |
 | `APPBUILDER_READ_ONLY` | not set | `1` or `suspended`, `payment`, `maintenance`, `licence`: read-only from start (see [Read-only](#read-only)); `APPBUILDER_READ_ONLY_MESSAGE` adds one line. |
 | `APPBUILDER_SHUTDOWN_MS` | `15000` (hosted default; 5000 otherwise) | How long a stopping server waits before it exits. Longer than the job worker's 10 seconds of grace, so running jobs are handed back cleanly. |
 | `APPBUILDER_TRUST_PROXY`, `APPBUILDER_SECURE_COOKIE` | `1` (hosted defaults) | As on-premises behind a reverse proxy. |
@@ -76,6 +76,26 @@ could not be verified for more than 3 days). Set it with `appbuilder read-only o
 With an `https://` public address every Appbuilder cookie carries the `__Host-` prefix, so one install's pages cannot set a
 cookie another install receives (`a.<domain>` and `b.<domain>` are the same site to a browser). When you switch an existing
 install to it, people sign in once more and a remembered device asks for the second step once; nothing else changes.
+
+## Isolation evidence
+
+`node scripts/exit-check/h-isolation.mjs` (developers and CI; [testing](../dev/testing.md#isolation-suite-hosting-exit-check-2))
+starts three installs with these settings behind a host-routing proxy and attacks one from another: host names and
+forwarding headers, cookies, sessions, API keys, view tokens, every kind of email link, tickets, the live socket, database
+roles (including a check that a database created without `REVOKE ... FROM PUBLIC` is detected), outbound connections,
+folders, backups and the read-only state. It is evidence for the release gate, not a security review; an outside review is
+still wanted. Database roles must be created as it does: `NOSUPERUSER NOCREATEDB NOCREATEROLE`, `CONNECTION LIMIT 12`,
+`statement_timeout` 60 s, the database owned by the role with `REVOKE ALL ... FROM PUBLIC` and `GRANT CONNECT, TEMPORARY`
+to the role, and once per cluster `REVOKE CONNECT ON DATABASE postgres, template1 FROM PUBLIC`. A role can still change its
+own `statement_timeout` in a session (PostgreSQL has no per-role ceiling); the connection limit holds.
+
+Known open finding: a database connection to a host *name* that resolves to the server itself is refused when saved or
+tested but can still be used to list tables, which connects to that address (see the security model, "Outbound
+connections"). Until it is fixed, keep PostgreSQL's `pg_hba.conf` to password authentication for the install roles on
+127.0.0.1 (never `trust`), and do not run other unauthenticated services on the server's loopback.
+
+The fleet's mail relay: hosted installs refuse loopback and private addresses, so a relay on the server itself
+(`127.0.0.1:25`) is refused too. Use a relay on a public address, or a later package adds a narrow exception for it.
 
 ## Not part of this yet
 

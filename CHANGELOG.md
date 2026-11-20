@@ -7,6 +7,11 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 Phase 3 (Collaboration and templates), in progress. Schema version 14. Specifications: docs/plan/p3-spec.md, docs/plan/hosting-spec.md.
 
 ### Added
+- **Notes.** A Notes page in User mode with rich text (headings, lists, checklists, tables, images, files), autosave with a conflict choice, mentions that notify, record cards that show each reader only what they may see, and sharing with people and teams to read or edit. A quick note button in the header; notes about a record appear on its timeline. Every note body is cleaned on the server by a strict allow-list. Online only.
+- **Chat: cards, discussions, approvals.** Share to chat for records, apps and dashboards; approval cards in a personal Approvals conversation, answered through the approvals service and updated live; a timeline event per approval answer; record Discussions in the chat panel; editing your own comment on the timeline. Chat uses the page's single live connection; chat mentions appear on the Mentions page; deep links load the messages around an old message.
+- **Flows.** Create a row can set the owner (an administrator's flow can give it to the person who triggered the run); Notify can target roles and teams; the approval step takes an optional requester.
+- **Templates.** List headers in packs; system column names refused up front; uninstall keeping tables also keeps empty pack tables a kept table looks up; environment copies with data carry the install register.
+- **Hosting: isolation suite** (`node scripts/exit-check/h-isolation.mjs`, and a CI job): three real installs side by side, 113 checks of host routing, cookies, tokens and links, database roles, outbound connections, files and the read-only state. The Admin console shows a locked public address read-only.
 - **Chat is live.** Open and private channels, direct and group conversations with threads, reactions, files, mentions, typing and per-reader record, app and dashboard cards, in the dock, its own window or full screen on a phone, live across tabs and recovering after a dropped connection. Admin console > Chat: who creates channels, retention per kind, read-only people, reported messages, conversation metadata, and the export of one conversation with a typed reason that its members are told about.
 - **Tasks.** Reminders fire once (also across a restart) and a daily overdue digest; repeating tasks; sharing a task with people; My tasks works at phone width. New system table `ActivityShares` and Activities columns for notes (no schema version change). One shared schedule and recipient editor for Reports, dashboard Snapshots and task repeats.
 - **Manufacturing pack** (built-in solution template 1.0.0): 16 tables, 7 apps (3 phone apps with offline entry), 10 flows, 3 dashboards on the OEE measures, 6 print templates, 5 roles, fictional SAMPLE data you can remove. The daily OEE PDF is a scheduled flow and needs an Email connection.
@@ -16,16 +21,22 @@ Phase 3 (Collaboration and templates), in progress. Schema version 14. Specifica
 - **Sort by a lookup.** Lists can be sorted by a lookup column's name on the server (DataTable headers, the phone card Sort by, auto apps). A record the viewer cannot read sorts as blank; a hidden name column is refused; tables on MySQL, data files and Google Sheets say they cannot be sorted this way.
 - Plans: a GST calculation specification draft for a practising accountant to review (docs/plan/gst-spec-draft.md); nothing of ledgers or GST is built before the sign-off.
 
+### Fixed
+- **The whole app could go blank after many rows changed at once** (for example Remove sample data with several apps open). Two lists that showed the same lookup could overwrite each other's name for a record forever while their data was refreshing, an endless re-render. A refreshing or failed answer now only fills names not known yet, and a complete answer never overwrites a newer one. Present since 0.7.0.
+
 ### Removed
 - **Breaking:** the Data API v1 read route `POST /api/v1/data/:table/query` is removed (404). Use `POST /api/v1/query` with a Query v2 plan. The row write routes are unchanged. The browser's small-table cache and offline answers use Query v2.
 
 ### Security
+- **Self-approval through a flow.** An approval asked by a flow is now on behalf of the person whose change or button press started it: that person (and the flow's identity) is never asked, and the fallback is their manager. Before, the person who caused a request (for example an NCR raised from their own failed inspection) could approve it.
+- A database connection whose host name resolves to a loopback, private or otherwise refused address is no longer stored, and every use of an external database connection checks its host again (found by the isolation suite: it was refused on save and test but stayed usable through other routes).
+- The sign-in throttle keys on the client address behind the trusted proxy (it keyed on the proxy, so anyone could lock a known account out for everyone). Hosted installs refuse socket-path and localhost database and mail hosts, and backup or tools folders outside the install's own directory.
 - The communication system tables were writable through the data API (any user could create channels or add members with any role), and environment administrators read every message through Query v2. Chat tables are now written by the chat service only and read by membership for everyone, administrators included. Nothing wrote to these tables before, so nothing was exposed.
 
 ### Known gaps
-- Chat: no presence dots; a chat mention on the Mentions page has no link (the bell does); chat uses a second live connection per tab; WhatsApp for chat is untested.
-- Manufacturing pack: an approver is not stopped from approving a request raised from their own entry (flows run as the installer); a request raised by a flow belongs to the installer; uninstall keeping tables is refused after Remove sample data; list column headers cannot be set in a pack.
-- Hosting: behind a proxy the sign-in throttle keys on the proxy's address; a backup folder typed in the Admin console is not confined to the install's directory; Unix-socket behaviour is tested in CI only. The fleet tool, licence service and isolation suite are not built yet.
+- Chat: no presence dots; WhatsApp for chat is untested. Notes: online only; printing uses the browser; record cards do not open the record.
+- Manufacturing pack: one photo per inspection; the daily OEE PDF still reads role assignments by formula and needs an Email connection.
+- Hosting: Unix-socket behaviour, per-install OS users, file permissions between installs and resource limits are tested in CI or need a real Linux server; a mail relay on the same machine is refused by the hosted outbound policy. The fleet tool and the licence service are not built yet.
 - Solution templates: scheduled reports and Word print templates cannot go in a pack; environment copies do not carry the install register; a dependency's tables cannot be chosen in the install dialog; deploying a pack's solution to another environment is untested.
 
 ## [0.7.0] - 2026-11-20

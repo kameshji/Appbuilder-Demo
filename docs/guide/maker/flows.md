@@ -219,6 +219,16 @@ With `Wait`, the flow's **Respond** step puts its answer in the global variable 
 * **Who the flow acts as.** A flow that runs as its owner uses the owner's rights, also when someone else starts it (only
   people whose role you allow under **Run permissions**). A flow that runs as the person who starts it can do only what
   that person could do by hand.
+* **Approvals know who caused them.** A flow that runs as its owner still asks for approval on behalf of the person whose
+  change (or button press) started it: that person is never asked to approve it, and when nobody else may, their
+  manager decides. To name one more person the request is about (say the row's owner, `Trigger.Record.owner`), fill in
+  the approval step's **Requester**; it can only add a person who may not approve, never remove one.
+* **Who owns the rows a flow creates.** By default the flow's identity. **Create a row > Owner of the new row** can give
+  it to the person whose change started the run (`Trigger.User`) or to someone else, so a role that sees "own rows"
+  sees it. Only a flow that runs as an administrator may give rows to other people; any flow may give them to its own
+  identity or a team of its own.
+* **Notify a role or a team.** In **Notify**, tick roles or teams: everyone who holds the role (or is in the team) when
+  the step runs is told; people who are disabled are not. A role nobody holds yet is not an error.
 * **A flow does not trigger itself** unless its trigger says so (then at most 3 times per record).
 * **Waiting costs nothing.** An approval can wait a week; the server can restart in between.
 * **Solutions.** Add flows to a solution like apps and tables. In another environment they arrive turned off, and the import

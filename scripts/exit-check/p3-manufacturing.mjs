@@ -22,9 +22,12 @@
  *     rows, the plan (no problem, nothing removed, flows arrive off, backup line), Install, Switch on every flow;
  *  2. the operator's phone: sign in, open Shop floor from its start address, scan the machine QR code with the camera,
  *     log production with a photo while offline (row and photo wait), reconnect: the row arrives exactly once;
- *  3. an inspection that fails (with a defect) raises an NCR; the disposition is sent for approval; the quality head
- *     approves in the browser; the answer is written back on the NCR;
- *  4. a breakdown stoppage creates a maintenance request routed to the machine's technician (notified); a request on a
+ *  3. an inspection that fails (with a defect) raises an NCR (it belongs to the inspector); the disposition is sent for
+ *     approval; the inspector cannot approve it (not asked, refused), the quality head approves in the browser; the
+ *     answer is written back on the NCR; a second NCR of the inspector sent by the quality head goes to the inspector's
+ *     manager (the fallback), who approves;
+ *  4. a breakdown stoppage creates a maintenance request (it belongs to the operator who reported it) routed to the
+ *     machine's technician (notified); a request on a
  *     machine without a technician goes to the Maintenance role; 30 minutes later (flow clock) the unacknowledged one
  *     is escalated to the plant manager and the acknowledged one is not;
  *  5. the preventive maintenance schedule (run now) creates the tasks of the plans that are due, once;
@@ -40,7 +43,8 @@
  *     (plan screen); the target has the apps, the flows off;
  * 11. local changes (the Supervisor console's title, the Plant overview, a downtime reason); upgrade to 1.1.0 keeps the
  *     app and the reference row, replaces the dashboard (chosen on the screen), adds the new column and reference row;
- * 12. "Remove sample data" removes exactly the SAMPLE rows; uninstall keeps the tables with data;
+ * 12. "Remove sample data" removes exactly the SAMPLE rows; uninstall keeps the tables with data, and the emptied pack
+ *     tables they look up (no masters of the plant's own added first);
  * 13. before/after: everything that existed is byte-equal; audit entries; no script errors in the browser.
  *
  * Settings: EXIT_DB_HOST (127.0.0.1), EXIT_DB_PORT (5435), EXIT_DB_USER (abdev), EXIT_DB_PASSWORD (abdev-sandbox-only),
@@ -220,7 +224,7 @@ async function templatesPage(page) {
   await page.goto(`${BASE}/#home`, { waitUntil: 'domcontentloaded' })
   await sleep(200)
   await page.goto(`${BASE}/#templates`, { waitUntil: 'domcontentloaded' })
-  await waitFor(page, T('templates-page'), 30000)
+  await waitFor(page, T('templates-page'), 30000).catch(async (e) => { log(`the Templates page did not open: ${page.url()} | ${(await page.evaluate(() => document.body.innerText)).replace(/\s+/g, ' ').slice(0, 600)} | errors ${errors.slice(-3).join(' | ')}`); throw e })
   await page.waitForFunction(() => !document.querySelector('[data-testid="templates-page"] .animate-spin'), { timeout: 30000 })
   await sleep(300)
 }
@@ -343,6 +347,8 @@ try {
 
   // the first day in the plant (manual by design): roles, a team, the machine's technician, the Email connection
   for (const p of Object.values(who)) await api('PATCH', `/users/${p.id}`, { roleIds: [roleId(p.role)] })
+  // the inspector reports to the plant manager (the fallback approver of an NCR nobody else in Quality may approve)
+  await api('PATCH', `/users/${who.qc.id}`, { managerId: who.pm.id })
   await api('POST', '/teams', { name: 'Shift A team', code: 'SHIFTA', memberIds: [who.op.id, who.sup.id] })
   await api('POST', '/connections', { name: 'Mail', connector: 'email', settings: {} })
   const p2 = (await rowsOf('Machines', `"Code" = 'SAMPLE-P2'`))[0]
@@ -443,6 +449,10 @@ try {
   check(ncr.Status === 'Open' && /^NCR\//.test(ncr.Number) && (await notified(who.qh.email, /NCR .*failed/)).length === 1, 'the failed inspection raised an NCR (flow) and the quality role was notified', `${ncr.Number}`)
   await api('PATCH', `/data/NCRs/rows/${ncr.id}`, { changes: { Disposition: 'Rework', RootCause: 'Punch worn', Status: 'Awaiting approval' } }, who.qc.api)
   const areq = await until(async () => (await q(`SELECT id FROM ${S}.ab_approval_requests WHERE regarding_id = $1`, [ncr.id]).catch(() => q(`SELECT id FROM ${S}.ab_approval_requests WHERE title LIKE $1`, [`NCR ${ncr.Number}%`])))[0], 'the NCR approval request')
+  const askedFor = async (id) => (await q(`SELECT u.email, a.source FROM ${S}.ab_approval_assignments a JOIN ab.users u ON u.id = a.user_id WHERE a.request_id = $1 AND a.status = 'pending' ORDER BY u.email`, [id])).map((x) => `${x.email}:${x.source}`)
+  const asked1 = await until(async () => { const a = await askedFor(areq.id); return a.length ? a : null }, 'the people asked')
+  const selfTry = await who.qc.api.req('POST', `/approvals/${areq.id}/respond`, { response: 'Approve' })
+  check(ncr.owner === who.qc.id && asked1.join() === `${who.qh.email}:role` && selfTry.status >= 400, 'the NCR belongs to the inspector; the inspector is not asked to approve the NCR raised from their own failed inspection (an answer is refused); the other Quality person is', `asked ${asked1.join(', ')}; inspector's answer ${selfTry.status}`)
   const qhPage = await newPage()
   await signIn(qhPage, who.qh)
   await qhPage.goto(`${BASE}/#u-approvals?id=${areq.id}`, { waitUntil: 'domcontentloaded' })
@@ -452,6 +462,17 @@ try {
   const ncr2 = await until(async () => { const r = (await rowsOf('NCRs', 'id = $1', [ncr.id]))[0]; return r.Approval === 'Approved' ? r : null }, 'the approval written back')
   check(ncr2.Status === 'Approved' && ncr2.Approval === 'Approved', 'the quality head approved the disposition in the browser; the flow wrote Approved back on the NCR')
   await qhPage.close()
+  // the inspector's second NCR, sent for approval by the quality head: neither may approve it; the inspector's manager decides
+  const insp2 = (await api('POST', '/data/Inspections/rows', { values: { Plan: plan.id, Machine: 'SAMPLE-P2', Batch: 'LOT-2212', Stage: 'In-process', Measured: 10.15, SampleSize: 5, Result: 'Pass', Notes: 'Hole oversize again' } }, who.qc.api)).row
+  const ncrB = await until(async () => (await rowsOf('NCRs', '"Inspection" = $1', [insp2.id]))[0], 'the second NCR')
+  await api('PATCH', `/data/NCRs/rows/${ncrB.id}`, { changes: { Disposition: 'Scrap', RootCause: 'Material', Status: 'Awaiting approval' } }, who.qh.api)
+  const breq = await until(async () => (await q(`SELECT id FROM ${S}.ab_approval_requests WHERE regarding_id = $1`, [ncrB.id]))[0], 'the second NCR approval request')
+  const asked2 = await until(async () => { const a = await askedFor(breq.id); return a.length ? a : null }, 'the fallback approver')
+  const bySelf = await who.qc.api.req('POST', `/approvals/${breq.id}/respond`, { response: 'Approve' })
+  const bySender = await who.qh.api.req('POST', `/approvals/${breq.id}/respond`, { response: 'Approve' })
+  const byManager = await who.pm.api.req('POST', `/approvals/${breq.id}/respond`, { response: 'Approve' })
+  const ncrB2 = await until(async () => { const r = (await rowsOf('NCRs', 'id = $1', [ncrB.id]))[0]; return r.Approval === 'Approved' ? r : null }, 'the second approval written back')
+  check(asked2.join() === `${who.pm.email}:fallback` && bySelf.status >= 400 && bySender.status >= 400 && byManager.status === 200 && ncrB2.Approval === 'Approved', 'sent for approval by the quality head, the inspector\'s second NCR goes to the inspector\'s manager (fallback): the inspector and the sender are refused, the plant manager approves', `asked ${asked2.join(', ')}; inspector ${bySelf.status}, sender ${bySender.status}, manager ${byManager.status}`)
 
   /* 4. maintenance routing and escalation */
   let now = new Date()
@@ -459,7 +480,7 @@ try {
   await api('POST', '/data/Downtime/rows', { values: { Machine: 'SAMPLE-P2', StartedOn: new Date().toISOString(), Reason: 'Breakdown', Notes: 'Ram does not return' } }, who.op.api)
   const mr1 = await until(async () => (await rowsOf('MaintenanceRequests', `"Machine" = 'SAMPLE-P2' AND "Number" NOT LIKE 'SAMPLE%'`))[0], 'the maintenance request from the breakdown')
   const routed = await until(async () => { const r = (await rowsOf('MaintenanceRequests', 'id = $1', [mr1.id]))[0]; return r.AssignedTo ? r : null }, 'the routing')
-  check(routed.AssignedTo === who.tech.id && routed.Priority === 'High' && (await notified(who.tech.email, /Breakdown: SAMPLE-P2/)).length === 1 && (await rowsOf('Downtime', `"MaintenanceRequest" = $1`, [mr1.id])).length === 1, 'a breakdown stoppage created a high-priority maintenance request, linked to the stoppage, assigned to and notified to the machine\'s technician', routed.Number)
+  check(routed.AssignedTo === who.tech.id && routed.Priority === 'High' && routed.owner === who.op.id && (await notified(who.tech.email, /Breakdown: SAMPLE-P2/)).length === 1 && (await rowsOf('Downtime', `"MaintenanceRequest" = $1`, [mr1.id])).length === 1, 'a breakdown stoppage created a high-priority maintenance request that belongs to the operator who reported it, linked to the stoppage, assigned to and notified to the machine\'s technician', routed.Number)
   const mr2 = (await api('POST', '/data/MaintenanceRequests/rows', { values: { Machine: 'SAMPLE-P1', Problem: 'Coolant pump noisy', Kind: 'Repair', Priority: 'Medium' } }, who.op.api)).row
   await until(async () => (await notified(who.tech.email, new RegExp(`\\(${mr2.Number.replace(/\//g, '\\/')}\\)`))).length, 'the Maintenance role notified')
   await api('PATCH', `/data/MaintenanceRequests/rows/${mr2.id}`, { changes: { Status: 'Acknowledged' } }, who.tech.api)
@@ -542,7 +563,7 @@ try {
   const qcPm = await qv(who.qc.api, 'PMPlans', ['id'])
   const techNcr = await who.tech.api.req('POST', '/data/NCRs/rows', { values: { Defect: 'x', Status: 'Open' } })
   const allCount = (await q(`SELECT count(*)::int AS n FROM ${S}."${logTable.source}"`))[0].n
-  check(opMr2.data.rows?.length === 1 && supLog.data.rows?.length === 1 && qcLog.data.rows?.length === allCount && denied(qcPm.status) && denied(techNcr.status), 'operator sees the one request they reported; supervisor the team\'s production rows only; quality all production rows but not the PM plans; maintenance cannot write NCRs', `operator MR ${opMr2.data.rows?.length}, supervisor ${supLog.data.rows?.length}, quality ${qcLog.data.rows?.length}/${allCount}, PM plans ${qcPm.status}, NCR ${techNcr.status}`)
+  check(opMr2.data.rows?.length === 2 && opMr2.data.rows.some((r) => r.id === mr1.id) && supLog.data.rows?.length === 1 && qcLog.data.rows?.length === allCount && denied(qcPm.status) && denied(techNcr.status), 'operator sees the request they reported and the one raised from their own breakdown; supervisor the team\'s production rows only; quality all production rows but not the PM plans; maintenance cannot write NCRs', `operator MR ${opMr2.data.rows?.length}, supervisor ${supLog.data.rows?.length}, quality ${qcLog.data.rows?.length}/${allCount}, PM plans ${qcPm.status}, NCR ${techNcr.status}`)
 
   /* 10. deploy to production */
   try {
@@ -602,14 +623,8 @@ try {
   unreg()
 
   /* 12. Remove sample data; uninstall keeping tables */
-  // the plant's own masters by now (a real plant replaces the SAMPLE line, machine, work order and plans with its own);
-  // without them those tables are empty after the removal and the uninstall refuses (see the maker page: an empty pack
-  // table that a kept table looks up)
-  const line = (await api('POST', '/data/Lines/rows', { values: { Name: 'Press line A', Code: 'PLA' } })).row
-  await api('POST', '/data/Machines/rows', { values: { Code: 'PR-101', Name: '100 t press', Line: line.id, IdealCycleSec: 24 } })
-  await api('POST', '/data/WorkOrders/rows', { values: { Quantity: 1000, Line: line.id, DueDate: new Date().toISOString().slice(0, 10), Status: 'Released' } })
-  await api('POST', '/data/InspectionPlans/rows', { values: { Name: 'Bracket hole diameter', Characteristic: 'Hole diameter', Unit: 'mm', Min: 7.95, Max: 8.05 } })
-  await api('POST', '/data/PMPlans/rows', { values: { Name: 'PR-101 monthly lubrication', Machine: 'PR-101', EveryDays: 30, NextDue: new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10) } })
+  // no masters of the plant's own are added: after the removal, Inspection plans (and others) are empty while the kept
+  // Inspections look them up; uninstall keeping tables keeps them too
   const sampleIds = (await q(`SELECT sample_rows FROM ${S}.ab_template_installs WHERE id = $1`, [mfg.id]))[0].sample_rows
   const sampleCount = Object.values(sampleIds).reduce((n, l) => n + l.length, 0)
   await templatesPage(page)
@@ -624,12 +639,15 @@ try {
   await rowDialog(page, `tpl-uninstall-${mfg.id}`, 'tpl-uninstall')
   const items = await text(page, T('tpl-uninstall-items'))
   check(/Shop floor/.test(items) && /kept with its/.test(items), 'uninstall: the apps, flows, roles, policies, dashboards and print templates go; tables with data are kept', items.replace(/\s+/g, ' ').slice(0, 200))
+  const uplan = await api('POST', `/templates/installed/${mfg.id}/uninstall/plan`, {})
+  const plansItem = uplan.items.find((i) => i.kind === 'table' && i.name === 'Inspection plans')
+  check(!uplan.problems.length && (await rowsOf('InspectionPlans')).length === 0 && plansItem?.action === 'kept' && /looks it up/.test(plansItem.note) && !(await page.$eval(T('tpl-uninstall-go'), (b) => b.disabled)), 'after "Remove sample data", uninstall keeping tables is allowed: the emptied Inspection plans table is kept because the kept Inspections table looks it up (the plan says so)', plansItem ? `${plansItem.action}: ${plansItem.note}` : 'no item')
   const uproblems = await page.$(T('tpl-uninstall-problems')) ? await text(page, T('tpl-uninstall-problems')) : ''
   if (uproblems) log(`uninstall dialog says: ${uproblems.replace(/\s+/g, ' ').slice(0, 300)}`)
   if (await page.$eval(T('tpl-uninstall-go'), (b) => b.disabled)) log(`uninstall dialog: ${(await text(page, T('tpl-uninstall'))).replace(/\s+/g, ' ').slice(0, 900)}`)
   await click(page, T('tpl-uninstall-go'))
   await page.waitForFunction(() => !document.querySelector('[data-testid="tpl-uninstall"]'), { timeout: 90000 })
-  check(!(await appDef(appId('ShopFloor'))) && !(await q(`SELECT 1 FROM ${S}.ab_flows WHERE id = ANY($1)`, [flowIds])).length && (await tableOf('MfgProductionLog')) && (await tableOf('NCRs')), 'uninstalled: apps and flows gone, MfgProductionLog and NCRs (with data) kept')
+  check(!(await appDef(appId('ShopFloor'))) && !(await q(`SELECT 1 FROM ${S}.ab_flows WHERE id = ANY($1)`, [flowIds])).length && (await tableOf('MfgProductionLog')) && (await tableOf('NCRs')) && (await tableOf('InspectionPlans')), 'uninstalled: apps and flows gone, MfgProductionLog and NCRs (with data) kept, and the empty Inspection plans they look up')
 
   /* 13. nothing that existed changed */
   const after = await snapshot()
