@@ -10,7 +10,7 @@
  * - values: numbers (or numeric text), dates as Date or "YYYY-MM-DD", blanks as null;
  * - text is escaped; no script, no external reference, no foreignObject; fonts: opts.font (default a system sans stack).
  */
-import type { ChartSpec, Mark } from './geometry.ts'
+import type { ChartSpec, LegendItem, Mark } from './geometry.ts'
 import { chartScene } from './geometry.ts'
 import type { ThemeName } from './palette.ts'
 import { resolveHex } from './palette.ts'
@@ -23,6 +23,8 @@ export interface SvgOptions {
   background?: boolean
 }
 
+/** legend lines drawn at most; entries beyond them are left out */
+const LEGEND_LINES = 3
 const esc = (s: string): string => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
 const n = (v: number): string => (Number.isFinite(v) ? String(Math.round(v * 100) / 100) : '0')
 
@@ -49,7 +51,27 @@ export function renderChartSvg(spec: ChartSpec, rows: Record<string, unknown>[],
   // legend: one line of items above the plot (only when there is more than one entry)
   const probe = chartScene({ ...spec, width: W, height: H }, rows)
   const showLegend = spec.legend !== false && probe.legend.length > 1
-  const legendH = showLegend ? 20 : 0
+  // items that do not fit on one line wrap onto the next (at most LEGEND_LINES; never dropped silently before that)
+  const legendLines: { label: string; color: LegendItem['color']; x: number }[][] = []
+  if (showLegend) {
+    let line: { label: string; color: LegendItem['color']; x: number }[] = []
+    let x = 4
+    for (const it of probe.legend) {
+      if (it.hidden) continue
+      const label = fitText(it.label, 11, Math.min(160, Math.max(20, W - 8 - 26)))
+      const w = 14 + textWidth(label, 11) + 12
+      if (line.length && x + w > W) {
+        legendLines.push(line)
+        line = []
+        x = 4
+      }
+      line.push({ label, color: it.color, x })
+      x += w
+    }
+    if (line.length) legendLines.push(line)
+    legendLines.length = Math.min(legendLines.length, LEGEND_LINES)
+  }
+  const legendH = showLegend ? 20 + Math.max(0, legendLines.length - 1) * 15 : 0
   const scene = chartScene({ ...spec, width: W, height: Math.max(30, H - titleH - legendH) }, rows)
   const parts: string[] = []
   const font = opts.font ?? "system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans', 'Noto Sans Devanagari', Arial, sans-serif"
@@ -58,16 +80,12 @@ export function renderChartSvg(spec: ChartSpec, rows: Record<string, unknown>[],
   if (opts.background !== false) parts.push(`<rect width="${W}" height="${H}" fill="${resolveHex('bg', theme)}"/>`)
   if (titleH) parts.push(`<text x="4" y="15" font-size="13" font-weight="600" fill="${resolveHex('text', theme)}">${esc(fitText(spec.title!, 13, W - 8))}</text>`)
   if (showLegend) {
-    let x = 4
-    const y = titleH + 10
-    for (const it of scene.legend) {
-      if (it.hidden) continue
-      const label = fitText(it.label, 11, 160)
-      const w = 14 + textWidth(label, 11) + 12
-      if (x + w > W) break
-      parts.push(`<rect x="${n(x)}" y="${n(y - 4)}" width="9" height="9" rx="2" fill="${resolveHex(it.color, theme)}"/><text x="${n(x + 13)}" y="${n(y)}" font-size="11" dominant-baseline="central" fill="${resolveHex('muted', theme)}">${esc(label)}</text>`)
-      x += w
-    }
+    legendLines.forEach((line, i) => {
+      const y = titleH + 10 + i * 15
+      for (const { label, color, x } of line) {
+        parts.push(`<rect x="${n(x)}" y="${n(y - 4)}" width="9" height="9" rx="2" fill="${resolveHex(color, theme)}"/><text x="${n(x + 13)}" y="${n(y)}" font-size="11" dominant-baseline="central" fill="${resolveHex('muted', theme)}">${esc(label)}</text>`)
+      }
+    })
   }
   parts.push(`<g transform="translate(0 ${titleH + legendH})">`)
   if (scene.empty) parts.push(`<text x="${n(W / 2)}" y="${n(scene.height / 2)}" font-size="12" text-anchor="middle" fill="${resolveHex('muted', theme)}">${esc(scene.empty)}</text>`)

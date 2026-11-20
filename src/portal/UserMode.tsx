@@ -13,6 +13,7 @@ import { AddToHome } from '@/phone/AddToHome'
 import { Empty, PageHeader, fmtRelative, useToast } from './kit'
 import { matches, useSearch } from './Shell'
 import { canRun, closeAppTab, openAppTab, openAppWindow, useWorkspace } from './workspace'
+import { PinnedTiles } from './dashboards/PinnedTiles'
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -129,6 +130,7 @@ export function MyApps() {
     <div data-testid="page-my-apps">
       <PageHeader icon={LayoutGrid} title="My apps" subtitle={`${apps.length} ${apps.length === 1 ? 'app' : 'apps'} you can use`} />
       <AddToHome />
+      {!q.trim() && <PinnedTiles />}
       {apps.length === 0 ? (
         <Empty icon={LayoutGrid} title="No apps for you yet" description="Apps appear here when an administrator adds them to one of your security roles." />
       ) : (

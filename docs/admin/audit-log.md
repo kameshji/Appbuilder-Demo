@@ -42,6 +42,7 @@ the folder), `environment.delete_failed`, `environment.access_grant` (user, emai
 | Data files | `file.add`, `file.replace`, `file.delete` |
 | Attachments | `attachment.upload`, `attachment.delete` |
 | Connections | `connection.create`, `connection.update`, `connection.default`, `connection.delete` |
+| Dashboards | `dashboard.create`, `dashboard.update`, `dashboard.delete` (with the counts of view tokens and snapshots removed with it), `dashboard.settings`; view tokens: `dashboard.token.create` (label, the public prefix, view-as account, expiry; never the token), `dashboard.token.revoke`, `dashboard.token.run_as_service` (an administrator chose a service account); email snapshots: `dashboard.snapshot.create`, `dashboard.snapshot.update`, `dashboard.snapshot.delete`, `dashboard.snapshot.run` ("Send now"; `forEveryone: false` when a recipient sent themselves a copy). `dashboard.snapshot.unsubscribe` (the email's link, no sign-in) is written to the install log, not to the environment's table. Pinning tiles is a personal setting and is not audited. |
 | Apps and packages | `app.create`, `app.duplicate`, `app.delete`, `app.import`, `solution.create`, `solution.import` (an import as copies), `solution.install` and `solution.upgrade` (an import or deployment with stable ids: version, `fromVersion`, counts of new/changed/removed, the items, `destructive`, `backup: none` or `taken`), `solution.delete` |
 
 This list comes from the code and a run of a live server; the test suite checks that sign-in, failed sign-in, row

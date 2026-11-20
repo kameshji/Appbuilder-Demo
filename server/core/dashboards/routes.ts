@@ -11,7 +11,7 @@
  *   POST   /dashboards/query           { queries: [{ id, plan }], timeoutMs? } -> { results: [...] }
  *
  * Second wave: view tokens (tokens.ts: management and the two token-only routes /dashboards/kiosk...) and scheduled
- * snapshots (snapshots.ts). The batch runner and its cache are in batch.ts, who may view / edit and the server-side
+ * snapshots (snapshots.ts); personal pinned tiles, GET / PUT /dashboards/pins (pins.ts). The batch runner and its cache are in batch.ts, who may view / edit and the server-side
  * compute of a stored definition in compute.ts.
  */
 import type { ApiRouter } from '../router.ts'
@@ -26,6 +26,7 @@ import { MAX_BATCH, TILE_TIMEOUT_MS, runBatch } from './batch.ts'
 import { canEdit, canView, parseSettings } from './compute.ts'
 import { removeDashboardTokens, tokenRoutes } from './tokens.ts'
 import { createSnapshots, removeDashboardSnapshots, snapshotRoutes } from './snapshots.ts'
+import { pinRoutes } from './pins.ts'
 
 export { CACHE_TTL_MS, MAX_BATCH, QUERY_CONCURRENCY, TILE_TIMEOUT_MS, cacheStats, clearDashboardCache, runBatch } from './batch.ts'
 export type { BatchResult } from './batch.ts'
@@ -150,4 +151,6 @@ export function dashboardRoutes(router: ApiRouter, services: CoreServices): void
   // second wave: view tokens (management and the two token-only routes) and scheduled snapshots
   tokenRoutes(router, services)
   snapshotRoutes(router, services, createSnapshots(services))
+  // personal pinned tiles (the caller's own list in ab.user_settings)
+  pinRoutes(router, services)
 }

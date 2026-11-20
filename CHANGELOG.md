@@ -17,13 +17,16 @@ Phase 2 (Reach), wave 1. Schema version 11.
 - **Studio: phone preview.** Preview shows phone and tablet apps in a device frame (phone 360x800, 390x844, 412x915; tablet 800x1280; rotate) with the touch rules and the phone layout applied. A new **Check on phone** button shows a QR code of the app's phone address (not in demo mode). Not yet clicked through in a browser.
 
 - **Dashboards: layout, access and settings.** Tiles are moved and resized by dragging (mouse, touch, pen; step buttons and arrow keys as the keyboard alternative), with a 6-column tablet layout below 1024 px. **Who can see this** chooses the viewer roles. A tile can open an app and pass the clicked values (`Param`). Administrators get a Settings screen for fiscal year, week start, shifts, time zone, locale and currency.
-- **Dashboards on the server** (schema version 12): dashboards travel in solutions and environment copies; **view tokens** for a TV or kiosk (one dashboard, shown as one fixed account under its own row and column security, revocable, optional expiry, rate-limited); **scheduled email snapshots** (a PDF computed for each recipient with their own access); MTBF helpers. The API is complete; the screens for tokens, the kiosk page and snapshots are not built yet.
+- **Dashboards on the server** (schema version 12): dashboards travel in solutions and environment copies; **view tokens** for a TV or kiosk (one dashboard, shown as one fixed account under its own row and column security, revocable, optional expiry, rate-limited); **scheduled email snapshots** (a PDF computed for each recipient with their own access); MTBF helpers.
 - **Phones: signature, offline tables, drafts.** New **Signature pad** UI component and Form `SignatureFields` (a PNG in an image column, saved offline like a photo; `Patch(..., {Col: Pad.FileToken})` works). Offline-entry apps can mark tables **Available offline** (2,000 rows by default, at most 10,000, optional filter), downloaded as the signed-in user and used offline for dropdowns, type-ahead, lookups and lists. Unsaved forms survive a reload as an encrypted draft. The Android Back gesture closes bottom sheets. Chrome phone emulation only.
+
+- **Dashboards: screens for the wall, email and Home.** **Screens** creates and revokes TV / kiosk view tokens; a new token is shown once, with its warnings and a ready-made address that shows the dashboard full screen without sign-in and without cookies. **Email** schedules PDF snapshots (send now, history per recipient; each recipient gets their own access, people who cannot open the dashboard get nothing). Tiles can be pinned to **My dashboard** on My apps and the Dev home (per person, at most 24, computed with your own access).
 
 ### Changed
 - Notifications (toasts) appear at the bottom centre, no longer the bottom right where they covered the buttons of side panels and tiles.
 
 ### Fixed
+- Chart legends that did not fit on one line dropped the remaining series (seen in a narrow PDF chart); they now wrap onto up to three lines.
 - The record timeline's **Document** button listed print templates of other tables when the timeline's Table property was blank; it now offers only templates of the record's table.
 - **Approvals and Dashboards no longer switch the shell to User mode when opened from the Dev menu.** Both pages are in both menus; they now stay in the mode you are in, and the mode switch still works from them.
 - The flow email step sent a field the Email action refused.
@@ -34,7 +37,7 @@ Phase 2 (Reach), wave 1. Schema version 11.
 - Tests: four tests that only passed on Linux (a path built from a URL, the executable bit of an extracted file, single-word host names that Windows resolves slowly) now pass on Windows too.
 
 ### Known gaps in this wave
-- Dashboards: no screens yet for view tokens, the TV page and email snapshots (API only); no pinned tiles on Home; drill-through opens an app, not a chosen screen; the tile editor cannot edit row calculations, nested conditions or series styling.
+- Dashboards: drill-through opens an app, not a chosen screen; the kiosk page does not cycle ranges or pages; a kiosk address holds its token (browser history of the screen); the tile editor cannot edit row calculations, nested conditions or series styling.
 - Phones: nothing is tested on real devices; QR scanning needs a browser with a built-in reader; no cold-start offline; no Android back-button handling for bottom sheets; the save bar moves when the offline strip appears.
 - Print templates offer only four of the 15 chart kinds the PDF engine can draw.
 

@@ -7,6 +7,7 @@
  *   #run-<appId>      the running app (debug window / player, standalone window)
  *   #u                User mode: the app launcher ("My apps")
  *   #u-<appId>        User mode with that app open as a tab
+ *   #u-kiosk?t=<token> the dashboard TV / kiosk page (a view token; App.tsx shows it without the platform or a session)
  *   #soon-<key>       placeholder page of a planned module (src/portal/modules.ts), in the current mode
  *   #settings         the user's Settings page (full window, in the current mode); #settings-<section> opens a section
  *   #admin            the Admin console (Dev mode, administrators); #admin-<section> opens a section

@@ -17,6 +17,13 @@ Open **Dashboards** in the menu and pick a dashboard. You see the dashboards sha
 - **Up to date.** Tiles refresh by themselves when the data changes, and on the dashboard's refresh interval; the time of the last update
   is at the top right.
 - **On a tablet** the tiles are shown in six columns, on a **phone** one below the other.
+- **Pin a tile.** The pin icon in a tile's title bar puts it on **My dashboard** at the top of **My apps**. There you see it with your own
+  numbers; the arrows change the order, the cross unpins it, and the dashboard's name opens the whole dashboard. A pin whose dashboard or
+  tile was removed, or that you can no longer open, says "No longer available": choose **Remove**.
+- **By email.** **Email** at the top sends the dashboard to you as a PDF on a schedule (**New snapshot**), or once (**Send me a copy** on a
+  snapshot you receive). The PDF has the numbers your own access allows. Every email has an unsubscribe link.
+- **On a TV.** A screen that shows a dashboard without anyone signed in was set up by the dashboard's owner or an administrator
+  (**Screens**). If it says "This screen's view token does not work", ask them for a new address.
 - **Settings.** **Settings** on the dashboard list shows the time zone, fiscal year, week start, shifts, locale and currency that the
   date ranges and numbers follow. Only administrators can change them.
 

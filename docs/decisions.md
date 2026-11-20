@@ -676,3 +676,9 @@ table rebuilds its indexes (1,000,000 rows: 17 s); deleted rows take space until
 **Decision.** Rows of tables marked "available offline" are downloaded with the normal Query v2 endpoint as the signed-in user (security exactly as online, no server change) and answered offline by the reference executor. They are capped (2,000 by default, 10,000 at most) inside the existing 25 MB encrypted budget, which was not raised: phones evict storage and a larger cache exposes more on a stolen unlocked phone. Form drafts use the same per-user sealed store, never localStorage, and an Edit draft keeps its original version so a changed record goes through the existing conflict panel.
 
 **Consequences.** Cold-start offline and a QR fallback decoder stay out, pending owner decisions. Details: `docs/dev/phone.md`.
+
+## D40. Pinned tiles are a per-user setting; the kiosk page runs before the platform starts (P2 wave 1 gaps, Nov 2026)
+
+**Decision.** Pins are ids only in `ab.user_settings` under `dashboard-pins:<environment>` (no table; schema stays 12) and are computed in the browser as the viewer through the normal batch endpoint. A pin the person can no longer open says nothing about its dashboard; a new pin must be openable. The kiosk page is mounted by `App.tsx` before `platform.init()`, so it never reads or uses the browser's session; it makes only the two token routes' requests with `credentials: 'omit'` and a Bearer header, and keeps the token in the URL fragment. Rejected: the kiosk inside the shell with the platform's fetch wrapper, which sends the session cookie and the CSRF header.
+
+**Consequences.** The token is readable in the kiosk browser's address bar and history; a reverse proxy that logs `Authorization` headers would capture it. The snapshot screen copies the reports' schedule and recipient fields instead of sharing one component (to be extracted). Details: `docs/dev/dashboards.md`.

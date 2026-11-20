@@ -116,6 +116,8 @@ The full description is [Sign-in and identity](sign-in-and-identity.md). In shor
   once), bound to one dashboard and one "view as" account (the creator, or a service account chosen by an administrator, audited);
   they only read that dashboard and run its own tiles, compiled by the server, with that account's row and column security; revocable at
   once, optional expiry, rate limits, re-checked on every request ([dashboards](dashboards.md#view-tokens-tv-and-kiosk-screens)).
+  The kiosk page (`#u-kiosk?t=`) keeps the token in the URL fragment, sends it only as `Authorization: Bearer` with `credentials: 'omit'`
+  (no cookie, no CSRF header) and never reads the browser's session.
 - **Sign-in log** (`ab.signin_log`): every sign-in, failed attempt, second step and API key failure, with reason, method,
   address and browser. Users see their own; install administrators everybody's.
 

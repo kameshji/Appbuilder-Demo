@@ -2,6 +2,8 @@
  * Dashboards backend for the browser (P2-C). Server mode: /api/v1/dashboards (stored definitions, settings, the batch
  * query endpoint, one round trip per refresh). Demo mode: definitions in browser storage, every plan through
  * platform.tables.query (the reference executor over the rows the current user may read), so one viewer works in both.
+ * View tokens and email snapshots exist only on the server; pinned tiles are kept in browser storage in demo mode. The kiosk
+ * page does NOT use this module (it must not send the session cookie or the CSRF header): see KioskPage.tsx.
  */
 import { PlatformError, platform } from '@/platform'
 import type { ColumnType } from '@/platform'
@@ -11,9 +13,10 @@ import type { QueryPlan } from '@/platform/query'
 import type { QueryValue } from '@/platform/http'
 import { rowsFromWire } from '@/platform/query-wire'
 import type { FxRecord } from '@/contracts'
-import type { DashboardDef, DashboardInfo } from '@/dashboards/types'
+import type { DashboardDef, DashboardInfo, TileDef } from '@/dashboards/types'
 import { checkDashboardDef } from '@/dashboards/types'
-import type { CalendarSettings } from '@/dashboards/dates'
+import type { CalendarSettings, RangePreset } from '@/dashboards/dates'
+import type { ReportSchedule } from '../actionsApi'
 import { DEFAULT_CALENDAR } from '@/dashboards/dates'
 
 export interface DashboardSettings extends CalendarSettings { locale: string; currency: string }
@@ -55,6 +58,47 @@ function demoSettings(): DashboardSettings {
   } catch { return DEFAULT_SETTINGS }
 }
 const isServer = () => platform.getState().mode === 'server'
+const needServer = (what: string) => { if (!isServer()) throw new PlatformError('unavailable', `${what} need the server (start Appbuilder with npm start).`) }
+
+/* view tokens, snapshots and pins: the server's shapes (server/core/dashboards/tokens.ts, snapshots.ts, pins.ts) */
+export interface ViewTokenInfo {
+  id: string; dashboardId: string; label: string; prefix: string
+  viewAs: { kind: 'creator' | 'service'; userId: string; name: string | null }
+  createdBy: string; createdOn: string; expiresOn: string | null; lastUsedOn: string | null; revokedOn: string | null
+  status: 'active' | 'revoked' | 'expired'
+}
+export interface NewViewToken extends ViewTokenInfo { token: string; warnings: string[] }
+export interface SnapshotDefInfo { name: string; schedule: ReportSchedule; recipients: { userIds: string[]; teamIds: string[] }; range?: RangePreset; filters?: Record<string, string>; optOut?: string[] }
+export interface SnapshotInfo {
+  id: string; dashboardId: string; name: string; ownerId: string; enabled: boolean; def: SnapshotDefInfo; scheduleText: string; nextRunAt: string | null
+  lastRun: { id: string; startedOn: string; status: string; message: string | null } | null; createdOn: string; modifiedOn: string; canEdit: boolean
+}
+export interface SnapshotInput { name?: string; schedule: ReportSchedule; recipients?: { userIds: string[]; teamIds: string[] }; range?: RangePreset | null; filters?: Record<string, string>; enabled?: boolean }
+export interface SnapshotRun {
+  id: string; startedOn: string; finishedOn: string | null; status: string; trigger: string; message: string | null
+  recipients: { userId: string; status: 'sent' | 'skipped' | 'failed'; mailId?: string; pages?: number; reason?: string }[]
+}
+export interface PinRef { dashboardId: string; tileId: string }
+export type PinView =
+  | { dashboardId: string; tileId: string; available: true; dashboardName: string; range: RangePreset; tile: TileDef }
+  | { dashboardId: string; tileId: string; available: false }
+export const MAX_PINS = 24
+const DEMO_PINS_KEY = 'appbuilder-dashboard-pins'
+const pinKey = (p: PinRef) => `${p.dashboardId}\u0000${p.tileId}`
+function demoPins(): PinRef[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(DEMO_PINS_KEY) ?? '[]') as unknown
+    return Array.isArray(v) ? v.filter((x): x is PinRef => !!x && typeof x.dashboardId === 'string' && typeof x.tileId === 'string').slice(0, MAX_PINS) : []
+  } catch { return [] }
+}
+function demoResolvePins(items: PinRef[]): PinView[] {
+  const all = demoAll()
+  return items.map((p) => {
+    const d = all.find((x) => x.id === p.dashboardId)
+    const tile = d?.def.tiles.find((t) => t.id === p.tileId)
+    return d && tile ? { ...p, available: true as const, dashboardName: d.name, range: d.def.range, tile } : { ...p, available: false as const }
+  })
+}
 const me = () => platform.getState().session?.user.id ?? platform.getState().currentUserId ?? 'me'
 
 function tableTypes(name: string): Record<string, ColumnType> {
@@ -103,6 +147,55 @@ export const dashboardsApi = {
     if (isServer()) return (await call<{ settings: DashboardSettings }>('PUT', '/dashboards/settings', { settings: s })).settings
     try { localStorage.setItem(DEMO_SETTINGS_KEY, JSON.stringify(s)) } catch { throw new PlatformError('storage', 'The browser storage is full.') }
     return s
+  },
+  /* ---------------------------------------------------------------- view tokens (server only) */
+  async tokens(id: string): Promise<ViewTokenInfo[]> {
+    needServer('View tokens')
+    return (await call<{ items: ViewTokenInfo[] }>('GET', `/dashboards/${encodeURIComponent(id)}/tokens`)).items
+  },
+  async createToken(id: string, body: { label: string; expiresOn?: string | null; viewAs?: 'creator' | { serviceAccount: string } }): Promise<NewViewToken> {
+    needServer('View tokens')
+    return call<NewViewToken>('POST', `/dashboards/${encodeURIComponent(id)}/tokens`, body)
+  },
+  async revokeToken(id: string, tokenId: string): Promise<void> {
+    needServer('View tokens')
+    await call('DELETE', `/dashboards/${encodeURIComponent(id)}/tokens/${encodeURIComponent(tokenId)}`)
+  },
+  /* ---------------------------------------------------------------- email snapshots (server only) */
+  async snapshots(id: string): Promise<SnapshotInfo[]> {
+    needServer('Email snapshots')
+    return (await call<{ items: SnapshotInfo[] }>('GET', `/dashboards/${encodeURIComponent(id)}/snapshots`)).items
+  },
+  async createSnapshot(id: string, body: SnapshotInput): Promise<SnapshotInfo> {
+    needServer('Email snapshots')
+    return call<SnapshotInfo>('POST', `/dashboards/${encodeURIComponent(id)}/snapshots`, body)
+  },
+  async updateSnapshot(sid: string, body: Partial<SnapshotInput>): Promise<SnapshotInfo> {
+    return call<SnapshotInfo>('PATCH', `/dashboards/snapshots/${encodeURIComponent(sid)}`, body)
+  },
+  async removeSnapshot(sid: string): Promise<void> {
+    await call('DELETE', `/dashboards/snapshots/${encodeURIComponent(sid)}`)
+  },
+  async runSnapshot(sid: string): Promise<{ jobId: string }> {
+    return call<{ jobId: string }>('POST', `/dashboards/snapshots/${encodeURIComponent(sid)}/run`)
+  },
+  async snapshotRuns(sid: string): Promise<SnapshotRun[]> {
+    return (await call<{ items: SnapshotRun[] }>('GET', `/dashboards/snapshots/${encodeURIComponent(sid)}/runs`)).items
+  },
+  /* ---------------------------------------------------------------- pinned tiles (server: ab.user_settings; demo: browser storage) */
+  async pins(): Promise<PinView[]> {
+    if (isServer()) return (await call<{ items: PinView[] }>('GET', '/dashboards/pins')).items
+    return demoResolvePins(demoPins())
+  },
+  /** the whole list (pin, unpin, reorder) */
+  async savePins(items: PinRef[]): Promise<PinView[]> {
+    if (isServer()) return (await call<{ items: PinView[] }>('PUT', '/dashboards/pins', { items: items.map((p) => ({ dashboardId: p.dashboardId, tileId: p.tileId })) })).items
+    if (items.length > MAX_PINS) throw new PlatformError('invalid', `You can pin at most ${MAX_PINS} tiles.`)
+    const had = new Set(demoPins().map(pinKey))
+    for (const p of items) if (!had.has(pinKey(p)) && !demoAll().some((d) => d.id === p.dashboardId && d.def.tiles.some((t) => t.id === p.tileId))) throw new PlatformError('not-found', 'Tile not found.')
+    const clean = [...new Map(items.map((p) => [pinKey(p), { dashboardId: p.dashboardId, tileId: p.tileId }])).values()]
+    try { localStorage.setItem(DEMO_PINS_KEY, JSON.stringify(clean)) } catch { throw new PlatformError('storage', 'The browser storage is full.') }
+    return demoResolvePins(clean)
   },
   /** every plan of a refresh in one round trip (server) or through the local executor (demo) */
   async query(queries: { id: string; plan: QueryPlan }[]): Promise<TileResult[]> {

@@ -154,8 +154,38 @@ field (for example "A ends before it starts. Tick "Ends the next day" if it runs
 sent until they are fixed. Overlapping shifts are only a warning: "This shift" then picks the first in the list. The settings apply to every
 dashboard of the environment. In demo mode they are kept in the browser.
 
-**Not available:** pinning a tile to the Home page or a personal "My dashboard". It needs a per-user setting stored on the server, and
-this version keeps personal settings only in the browser.
+## TV and kiosk screens
+
+To show a dashboard on a screen where nobody signs in (a TV on the shop floor, a wall display), open it and choose **Screens** (top bar;
+the owner while a maker, and administrators; needs the server). Give the screen a label, choose when the token stops working and, as an
+administrator, whose view the screen shows: **Me** (exactly what you see) or a **service account**. Choose **Create view token**. Any
+warning comes first, in amber: as an administrator "Me" means every row, so for a screen in a shared place choose a service account with
+a narrow role (its role must be in **Who can see this dashboard**). Then copy the address (**Copy address**) and open it in the screen's
+browser, full screen. The address and token are shown **only this once**.
+
+The screen shows the dashboard full size with no menus, no sign-in and no links into the app, refreshes on the dashboard's own interval
+(every minute when it has none), keeps the last data on screen through a network drop, and hides the mouse pointer. It always uses the
+dashboard's own date range and no filters. Whoever has the address sees what the token's account sees, until you **Revoke** the token
+(Screens, the token's row: the screen then says "This screen's view token does not work" at its next refresh and shows no data) or it
+expires. Details and the remaining risks: [../../admin/dashboards.md](../../admin/dashboards.md#view-tokens-tv-and-kiosk-screens).
+
+## Email snapshots
+
+**Email** (top bar of a dashboard; needs the server and email set up) sends the dashboard as a PDF on a schedule. **New snapshot**: a
+name, when (daily, weekdays, weekly, monthly, hourly or only by hand, with a time and time zone, like scheduled reports), the
+recipients (makers and administrators can add people and teams; everyone else can subscribe only themselves), the date range (the
+dashboard's own or another preset) and the dashboard's filter values. **Each recipient gets the dashboard computed with their own
+access**; someone who cannot open the dashboard gets nothing, and **History** says why for every recipient. **Send now** sends at once
+("Send me a copy" when you are only a recipient); **Pause** stops the schedule; **Edit** and the bin icon change or delete it. Every
+email has an unsubscribe link.
+
+## Pinned tiles ("My dashboard")
+
+The pin icon on a tile (when viewing, not on text tiles) pins it to **My dashboard**, a small grid at the top of **My apps** (User mode)
+and of the Dev mode home page. Pinned tiles show your own data (each is computed with your access, with its dashboard's date range and
+no filters), link to their dashboard, can be moved earlier or later with the arrows and unpinned with the cross. At most 24. When a
+dashboard or tile is deleted, or you can no longer open the dashboard, the pin shows "No longer available" with **Remove**. Pins are
+yours alone and are kept on the server (in demo mode, in the browser).
 
 ## The Visual UI component (apps)
 

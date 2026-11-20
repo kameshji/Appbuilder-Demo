@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Loader2, TriangleAlert } from 'lucide-react'
 import { platform } from '@/platform'
 import { AuthGate, Portal } from '@/portal'
@@ -10,20 +10,28 @@ import { ChatWindow } from '@/chat/ChatWindow'
 import { startPreferenceEffects } from '@/portal/theme'
 import { ConnectionBar } from '@/phone/ConnectionBar'
 import { OfflineStart, offlineAtStart, rememberServerMode } from '@/phone/OfflineStart'
+import { KioskPage } from '@/portal/dashboards/KioskPage'
 
 export default function App() {
   const [state, setState] = useState<{ phase: 'loading' | 'ready' | 'error' | 'offline'; error?: string }>({ phase: 'loading' })
   const route = useRoute()
+  // P2-C: the kiosk / TV page (#u-kiosk?t=<view token>) runs without the platform: no session, no shell, no sign-in
+  const kiosk = route.page === 'u' && 'id' in route && route.id === 'kiosk'
+  const started = useRef(false)
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
 
   useEffect(() => startPreferenceEffects(), [])
 
   useEffect(() => {
-    let alive = true
+    if (kiosk || started.current) return
+    // once per page (StrictMode runs effects twice; the kiosk page may later navigate into the app)
+    started.current = true
     // P2-A: a browser that used the server before must not fall back to demo mode just because it is offline now
     offlineAtStart()
       .then((off) => {
         if (off) {
-          if (alive) setState({ phase: 'offline' })
+          if (mounted.current) setState({ phase: 'offline' })
           return new Promise<never>(() => {})
         }
         return platform.init()
@@ -31,13 +39,12 @@ export default function App() {
       .then(() => {
         rememberServerMode(platform.getState().mode)
         linkPlatform()
-        if (alive) setState({ phase: 'ready' })
+        if (mounted.current) setState({ phase: 'ready' })
       })
-      .catch((e: unknown) => alive && setState({ phase: 'error', error: errorMessage(e) }))
-    return () => {
-      alive = false
-    }
-  }, [])
+      .catch((e: unknown) => mounted.current && setState({ phase: 'error', error: errorMessage(e) }))
+  }, [kiosk])
+
+  if (kiosk) return <KioskPage />
 
   if (state.phase === 'loading') {
     return (

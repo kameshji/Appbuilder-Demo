@@ -19,8 +19,9 @@ security-trimmed; no separate BI model. Maker guide: [../guide/maker/dashboards.
 | `src/dashboards/viewer.ts` | `buildBatch` (all tiles -> one batch, filters and cross-filter) and `assemble` (answers -> tile rows / errors) |
 | `src/dashboards/manufacturing.ts` | Minimal plant tables, OEE / scrap / FPY / downtime Pareto / MTTR / schedule adherence presets, MTBF (two queries + `mtbfRows`), the "Production overview" template, SAMPLE data |
 | `src/dashboards/editor.ts` | The tile editor's logic: tile operations, the simple condition and calculation builders, defaults per column type, `validateTile`, summaries, `applyTile` |
-| `src/portal/dashboards/` | `api.ts` (server and demo backends), `DashboardsPage.tsx` (list, viewer, layout editor), `TileEditor.tsx` and `ConditionBuilder.tsx` (the tile editor) |
-| `server/core/dashboards/` | `ddl.ts` (schema version 11 step: `ab_dashboards`, `ab_dashboard_settings`; version 12 step: `ab_dashboard_tokens`, `ab_dashboard_snapshots`, `ab_dashboard_snapshot_runs`), `routes.ts` (CRUD, settings, the batch endpoint), `batch.ts` (the batch runner and its cache), `compute.ts` (who may view / edit, settings, a stored dashboard compiled and run on the server for one identity), `tokens.ts` (view tokens), `snapshots.ts` and `render.ts` (scheduled email snapshots, the PDF), `alm.ts` (solutions) |
+| `src/dashboards/kiosk.ts` | The kiosk page's pure parts: the `#u-kiosk?t=` address, reading the token from the fragment, refresh and retry timing, problem texts, `kioskTiles` (the server's answers -> tile rows) |
+| `src/portal/dashboards/` | `api.ts` (server and demo backends, view tokens, snapshots, pins), `DashboardsPage.tsx` (list, viewer, layout editor; exports `Tile` and `Grid`), `TileEditor.tsx` and `ConditionBuilder.tsx` (the tile editor), `ViewTokens.tsx` (TV and kiosk screens), `Snapshots.tsx` (email snapshots), `KioskPage.tsx` (the kiosk / TV page), `PinnedTiles.tsx` ("My dashboard") |
+| `server/core/dashboards/` | `ddl.ts` (schema version 11 step: `ab_dashboards`, `ab_dashboard_settings`; version 12 step: `ab_dashboard_tokens`, `ab_dashboard_snapshots`, `ab_dashboard_snapshot_runs`), `routes.ts` (CRUD, settings, the batch endpoint), `batch.ts` (the batch runner and its cache), `compute.ts` (who may view / edit, settings, a stored dashboard compiled and run on the server for one identity), `tokens.ts` (view tokens), `snapshots.ts` and `render.ts` (scheduled email snapshots, the PDF), `pins.ts` (personal pinned tiles in `ab.user_settings`), `alm.ts` (solutions) |
 
 `src/charts` and `src/dashboards` are shared with the server: relative imports with `.ts` extensions, no React, DOM or packages
 (`src/charts/charts.test.ts` checks the chart folder).
@@ -93,8 +94,8 @@ bypass the outbox (bulk SQL loads).
 
 **Not done:** automatic use of summary tables (the rule would be: same source, plan groups and filters only on the summary's group columns,
 measures sum / count / min / max of summarised columns, and the reader reads every source row; restricted users therefore never qualify);
-the "create summary table" hint; the client screens for view tokens and snapshots (the API below is done); the Dashboard UI component and
-saved visuals; personal pinned tiles and the Home page; pivot tables.
+the "create summary table" hint; the Dashboard UI component and saved visuals; pivot tables. (The screens for view tokens, the kiosk
+page, email snapshots and personal pinned tiles exist: see "Screens of the second wave" below.)
 
 ## Server-side compute (second wave)
 
@@ -279,6 +280,9 @@ cross-filter applied; undo inside the editor.
 | `server/core/dashboards/dashboards.integration.test.ts` | the batch as administrator / own-rows user / row-rule user / no access, hidden columns, cache per user and its invalidation, CRUD and roles, settings |
 | `server/core/dashboards/dashboards-wave2.test.ts` | `checkChoices` refusals, the token format, the snapshot PDF of the template (blocks, deterministic bytes) |
 | `server/core/dashboards/dashboards-wave2.integration.test.ts` | view tokens (secret once, hash only, view-as row security, every refusal, revoke, expiry, disabled identities, lost viewer role, locked environment, rate limits, audit), snapshots with the fake SMTP server (per recipient, skipped with reasons, PDF, unsubscribe, cleanup), solutions (plan, deploy, upgrade, locked production, removal, a failing import leaving nothing), environment copy, schema 11 -> 12 |
+| `server/core/dashboards/pins.integration.test.ts` | pinned tiles: own list only, other users' pins never returned or changed, no detail about dashboards the caller cannot open, validation, gone tiles and dashboards, a locked environment |
+| `src/dashboards/kiosk.test.ts` | the kiosk address and fragment, timing, problems, `kioskTiles`, a source check of the kiosk page's requests |
+| `scripts/exit-check/p2-dashboard-screens.mjs` | headless, against a real server: settings, viewer roles, drill-through, view tokens, the kiosk page (cookie-less and next to a signed-in user, headers and URLs as the server received them, offline, revoke), snapshots with the PDF, pins |
 | `src/dashboards/mtbf.test.ts` | MTBF against hand computation, total and per machine, through the reference executor |
 | `scripts/exit-check/p2-dashboard.mjs` | exit check 3 at 1,000,000 rows (API and browser), cross-filter, keyboard, data table, phone width |
 | `scripts/docs-shots/dashboards.mjs` | template, layout editing by clicking and persistence, range and filter, demo mode |
@@ -289,5 +293,66 @@ cross-filter applied; undo inside the editor.
 - **Drill-through.** `TileDef.drill?: { appId, params?: { name, field }[] }` (at most 8), validated strictly by `checkDashboardDef`. `src/dashboards/drill.ts` builds `#u-<appId>?name=value`; the app reads values with `Param("name")`. There is no address for a screen. A tile uses drill or cross-filter, not both.
 - **Viewer roles.** Saved with `PATCH /dashboards/:id`; the server refuses unknown role ids, so the client cleans them (`src/dashboards/access.ts`).
 - **Settings screen.** `GET/PUT /dashboards/settings`. The server drops invalid values silently, so `src/dashboards/settings.ts` validates first. A shift past midnight is stored as end < start. Demo mode keeps settings in `localStorage`.
-- **Tests.** `src/dashboards/grid.test.ts`, `screens.test.ts`; browser: `scripts/exit-check/p2-dashboard-layout.mjs` (demo mode).
-- **Not done.** Screens for view tokens, the kiosk page and email snapshots (the API exists, above); pinning tiles to Home (needs a per-user server setting); choosing a screen for drill-through.
+- **Tests.** `src/dashboards/grid.test.ts`, `screens.test.ts`; browser: `scripts/exit-check/p2-dashboard-layout.mjs` (demo mode) and, against a
+  real server, `scripts/exit-check/p2-dashboard-screens.mjs` (settings saved and reloaded, read only for a non-administrator and PUT 403,
+  viewer roles saved and a user without the role getting 404, a drill-through chosen in the tile editor kept by the server's
+  `checkDashboardDef` and a bad parameter name refused with 422). Nothing had to be fixed for these on a real server.
+- **Not done.** Choosing a screen for drill-through.
+
+## Screens of the second wave (client)
+
+**TV and kiosk screens** (`ViewTokens.tsx`, the dashboard's "Screens" button; owner while a maker, administrators; server mode only).
+Lists the tokens (label, the public prefix, view-as account, created, expires, last used, status) and creates one: label, expiry (never,
+1 / 7 / 30 / 90 / 365 days, or the end of a chosen day), "show it as" me or (administrators) an active service account. The new token is
+shown once: the server's `warnings` first (amber, `role=alert`), then the ready-made address and Copy buttons; it lives only in the
+component's state and is gone when the sheet closes or "I copied it" is pressed. Revoke asks inline (a dialog would open behind the sheet).
+
+**Kiosk page** (`KioskPage.tsx`, `src/dashboards/kiosk.ts`). Address `<origin>/#u-kiosk?t=<token>` (`kioskAddress`); the route parses as
+User mode with id `kiosk`, and `App.tsx` renders the page **before** `platform.init()` and outside `AuthGate`, so no session is read, no
+shell, no live connection and nothing of a signed-in person is loaded (the init runs later only if the tab navigates into the app).
+Requests: `GET /dashboards/kiosk` (every 5 minutes, and after a failure) and `POST /dashboards/kiosk/query` `{ dashboardId }` on the
+dashboard's interval (default 60 s), each a plain `fetch` with `credentials: 'omit'`, `cache: 'no-store'`, `referrerPolicy: 'no-referrer'`
+and only `Authorization: Bearer` (no CSRF or environment header; the platform's fetch wrapper is not used). The answers go through
+`kioskTiles` (the same `buildBatch` with the server's range and clock, only to type the result columns, then `assemble`). 401 (revoked,
+expired, wrong), 403 (the account can no longer open it) and 404 (deleted) clear everything and show a full-page message, retrying every
+minute or two so a re-enabled screen recovers; offline, 429 (honouring `Retry-After`) and 5xx keep the last data with a small note and
+retry with backoff (10 s doubling to 2 min); `online` and `visibilitychange` ask at once. Tiles are `Tile` with `bare` (no table view,
+export, drill-through or pin, no pointer interaction); rows grow to fill the screen height; the cursor hides after 3 s. The service worker
+gives the page the cached shell like any navigation and never answers `/api/` (except icons and manifests), and it ignores POSTs. Not done:
+cycling through ranges or pages, choosing a range or filter on the screen (the dashboard's own range is always used), a theme parameter
+(the page follows the browser's light / dark preference).
+
+**Email snapshots** (`Snapshots.tsx`, the dashboard's "Email" button, anyone who can open the dashboard; server mode only). List
+(schedule text, next run, last run), create / edit (name, schedule, recipients, date range preset or the dashboard's own, the dashboard's
+filter values, enabled), pause / resume, delete (inline confirmation), "Send now" ("Send me a copy" for a recipient who is not the
+owner) and the history with every recipient's result and skip reason. `ScheduleFields` and `RecipientFields` repeat the scheduled
+reports' fields from `src/portal/Reports.tsx` line by line (same shapes, rules and wording): the reports' editor is inline in its dialog,
+not a component, and this change was not allowed to touch `Reports.tsx`. Extracting both into one shared component is a follow-up.
+
+**Pinned tiles** (`pins.ts`, `PinnedTiles.tsx`). A pin button on each tile of the viewer (not on text tiles) adds `{ dashboardId,
+tileId }` to the person's list; "My dashboard" on the User mode launcher (`MyApps`) and on the Dev home (`Home.tsx`) draws the pinned
+tiles in a small grid, hidden when there are none or while searching.
+
+| Route | Who | Body -> answer |
+| --- | --- | --- |
+| `GET /dashboards/pins` | signed-in users, their own list only | `{ items: PinView[], max: 24 }` |
+| `PUT /dashboards/pins` | signed-in users, their own list only | `{ items: [{ dashboardId, tileId }] }` (the whole list) -> as GET |
+
+`PinView` is `{ dashboardId, tileId, available: true, dashboardName, range, tile }` for a tile of a dashboard the caller can open, else
+`{ dashboardId, tileId, available: false }` and nothing more (not even whether the dashboard exists). Storage: one `ab.user_settings` row
+per user and environment, key `dashboard-pins:<environment id>`, value `{ items }` (ids only; no new table, schema version unchanged).
+PUT validates ids (`[A-Za-z0-9_-]{1,80}`), drops duplicates, refuses more than 24 (422); a pin not already in the list must name a tile
+of a dashboard the caller can open (404 "Tile not found." otherwise, the same answer for missing and not allowed); pins already in the list
+are kept as they are, so "no longer available" ones can be reordered or removed. Not a design route: a locked environment accepts it. Not
+audited (a personal setting). The tiles are computed in the browser as the viewer: each pin is a one-tile definition with its
+dashboard's range (no dashboard filters), compiled by `buildBatch` and sent through `POST /dashboards/query` in requests of at most 40
+plans, then `assemble`d; refreshed on load, by the refresh button and every 5 minutes. Demo mode keeps the list in `localStorage`
+(`appbuilder-dashboard-pins`). Pins do not travel in solutions or environment copies (user settings never do).
+
+Tests: `server/core/dashboards/pins.integration.test.ts` (own list only, another user's pins never returned or changed, a pin to a
+dashboard I cannot open returns nothing about it, validation, deleted tile / dashboard, lost and regained access, a locked environment),
+`src/dashboards/kiosk.test.ts` (the address, the fragment, timing, problems, `kioskTiles`, and a source check of `KioskPage.tsx`: one
+`fetch`, `credentials: 'omit'`, no CSRF / environment header, no storage, console or title writes of the token), and
+`scripts/exit-check/p2-dashboard-screens.mjs` (headless Chrome against a server started in the script, every request the server receives
+recorded: the kiosk in a cookie-less context and next to a signed-in user, no Cookie / CSRF header and the token in no URL or Referer,
+offline and back, cursor, revoke; snapshots with the fake SMTP server and the PDF; pins; the wave-2 screens above).

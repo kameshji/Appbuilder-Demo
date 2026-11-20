@@ -35,6 +35,27 @@ definition and run that dashboard's own tiles (with a date range, the dashboard'
 the rest of the API. At most 120 requests a minute per token and 20 active tokens per dashboard; 30 wrong tokens from one address in
 5 minutes block that address for a while. A locked production environment keeps showing token dashboards.
 
+**The screen (kiosk page).** Owners and administrators create and revoke tokens on the dashboard (**Screens**); the screen opens
+`<public address>/#u-kiosk?t=<token>`. That page runs without the app's shell and without signing in: it does not read the browser's
+session, so it shows the token's view even when someone else is signed in to the same browser, and its two requests (`GET
+/api/v1/dashboards/kiosk`, `POST /api/v1/dashboards/kiosk/query`) are sent without cookies and without the CSRF header, with the token only
+in `Authorization: Bearer`. It does not store the token anywhere (no browser storage; the tab title is the dashboard's name, never the
+token). A revoked, expired or wrong token, an account that can no longer open the dashboard, or a deleted dashboard clears the screen to
+a full-page message, and the page keeps asking every minute or two. The service worker serves the page's shell from its cache like any
+page and never caches the API.
+
+What each party can learn from a running screen:
+
+- **Someone looking at the screen** sees the dashboard as the token's account sees it, its name and when it was last updated; not the
+  token (the address bar is normally hidden in full-screen mode, but if it is shown, the token is in it).
+- **The screen browser's history, bookmarks and session restore** keep the whole address with the token: anyone who can use that
+  browser can copy it. Use a browser profile that only the screen uses.
+- **The server's and a proxy's logs** see `/` and the two API paths, never the token (the part after `#` is not sent and it is not in
+  `Referer`); the server keeps the token only as a hash. `Authorization` headers are not logged by Appbuilder; check that a reverse
+  proxy in front of it does not log them either.
+- **A person signed in to the same browser** keeps their own session (the kiosk page neither uses nor changes it), but they can read the
+  screen tab's address, so they can learn the token. They cannot use their own session to widen what the screen shows.
+
 **What remains a risk.**
 
 - Whoever has the token sees what its account sees, from anywhere the server is reachable, until it is revoked or expires: treat it like
@@ -61,6 +82,15 @@ recipient's copy is computed **with that recipient's own access** and attached a
 gets nothing and the run history (`GET .../snapshots/<id>/runs`) says why. People who are not makers or administrators can only
 subscribe themselves; every email has an unsubscribe link. Email must be set up (Admin console > Email); without a public address the
 email has no link to the dashboard and no unsubscribe link.
+
+The **Email** button on a dashboard is the screen for this (list, create, edit, pause, delete, "Send now", the history per recipient).
+
+## Pinned tiles
+
+People can pin tiles of dashboards they can open to "My dashboard" (My apps and the Dev home). The list is a personal setting in
+`ab.user_settings` (key `dashboard-pins:<environment>`, ids only, at most 24); nobody can read or change another person's pins, and a pin
+of a dashboard someone can no longer open says only "No longer available". The pinned tiles are computed with the person's own access
+through the normal dashboard query endpoint. Not audited, not in solutions or environment copies.
 
 ## Performance
 

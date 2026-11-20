@@ -166,3 +166,17 @@ describe('renderChartSvg', () => {
     for (const decl of cssVariables('dark').split('; ')) expect(css).toContain(decl.replace(/;$/, ''))
   })
 })
+
+describe('renderChartSvg legend', () => {
+  const rows = [{ Line: 'A', Availability: 0.9, Performance: 0.8, Quality: 0.95 }]
+  const spec = (width: number) => ({ kind: 'bar' as const, width, height: 220, title: 'OEE', category: 'Line', series: [{ key: 'Availability' }, { key: 'Performance' }, { key: 'Quality' }] })
+  const labels = (svg: string) => ['Availability', 'Performance', 'Quality'].filter((l) => svg.includes(`>${l}</text>`))
+  it('wraps onto a second line in a narrow chart: no series is dropped', () => {
+    expect(labels(renderChartSvg(spec(600), rows))).toHaveLength(3)
+    const narrow = renderChartSvg(spec(200), rows)
+    expect(labels(narrow)).toEqual(['Availability', 'Performance', 'Quality'])
+    // the plot moved down by the extra legend line, so the lines do not overlap the bars
+    const shift = (svg: string) => Number(/<g transform="translate\(0 (\d+)\)">/.exec(svg)![1])
+    expect(shift(narrow)).toBeGreaterThan(shift(renderChartSvg(spec(600), rows)))
+  })
+})

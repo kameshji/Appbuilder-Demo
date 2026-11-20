@@ -9,7 +9,7 @@
  * (ViewerRoles.tsx) and the tiles (TileEditor.tsx). The environment's settings are DashboardSettings.tsx.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Download, ExternalLink, Factory, GripVertical, LayoutDashboard, Minus, Pencil, Plus, RefreshCw, Save, Settings2, Table2, Trash2, TriangleAlert, Users, X } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Download, ExternalLink, Factory, GripVertical, KeyRound, LayoutDashboard, Mail, Minus, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Settings2, Table2, Trash2, TriangleAlert, Users, X } from 'lucide-react'
 import { platform, usePlatform } from '@/platform'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -31,8 +31,10 @@ import type { ChartSpec, Scene, SeriesSpec } from '@/charts/geometry'
 import { VizView, exportCsv, exportPng, exportSvg, useBoxSize } from '@/controls/display/viz'
 import { ConfirmDialog, Empty, PageHeader, errMsg, useToast } from '../kit'
 import { useCaps } from '../security'
-import { dashboardsApi, DEFAULT_SETTINGS } from './api'
-import type { DashboardSettings } from './api'
+import { dashboardsApi, DEFAULT_SETTINGS, MAX_PINS } from './api'
+import type { DashboardSettings, PinRef } from './api'
+import { ViewTokensSheet } from './ViewTokens'
+import { SnapshotsSheet } from './Snapshots'
 import { TileEditor } from './TileEditor'
 import { DashboardSettingsSheet } from './DashboardSettings'
 import { ViewerRolesDialog } from './ViewerRoles'
@@ -159,6 +161,23 @@ function DashboardView({ info, settings, onSaved }: { info: DashboardInfo; setti
   /** the tile query editor: a tile to edit, or null for a new one */
   const [editor, setEditor] = useState<{ tile: TileDef | null } | null>(null)
   const { toast, fail } = useToast()
+  const mode = usePlatform((s) => s.mode)
+  const [panel, setPanel] = useState<'tokens' | 'snapshots' | null>(null)
+  // pinned tiles: the viewer's whole list (pins of other dashboards stay as they are)
+  const [pins, setPins] = useState<PinRef[] | null>(null)
+  useEffect(() => { dashboardsApi.pins().then((p) => setPins(p.map((x) => ({ dashboardId: x.dashboardId, tileId: x.tileId }))), () => setPins(null)) }, [])
+  const isPinned = (tid: string) => !!pins?.some((p) => p.dashboardId === info.id && p.tileId === tid)
+  const togglePin = async (t: TileDef) => {
+    if (!pins) return
+    const was = isPinned(t.id)
+    const next = was ? pins.filter((p) => !(p.dashboardId === info.id && p.tileId === t.id)) : [...pins, { dashboardId: info.id, tileId: t.id }]
+    if (next.length > MAX_PINS) { toast(`You can pin at most ${MAX_PINS} tiles. Unpin one on your home page first.`, 'error'); return }
+    try {
+      const saved = await dashboardsApi.savePins(next)
+      setPins(saved.map((x) => ({ dashboardId: x.dashboardId, tileId: x.tileId })))
+      toast(was ? 'Unpinned from My dashboard.' : 'Pinned to My dashboard (on your home page).', 'success')
+    } catch (e) { fail(e) }
+  }
   const seq = useRef(0)
   const calendar = useMemo(() => ({ timeZone: settings.timeZone, fiscalYearStart: settings.fiscalYearStart, weekStart: settings.weekStart, shifts: settings.shifts }), [settings])
   const defaults = useMemo(() => ({ locale: settings.locale, currency: settings.currency, timeZone: settings.timeZone }), [settings])
@@ -250,6 +269,8 @@ function DashboardView({ info, settings, onSaved }: { info: DashboardInfo; setti
         <div className="ml-auto flex items-center gap-2">
           {stamp && <span className="hidden text-xs text-muted-foreground sm:inline" data-testid="dashboard-stamp">Updated {stamp.at.toLocaleTimeString()} · {stamp.ms} ms</span>}
           <Button variant="outline" size="sm" onClick={() => void refresh()} aria-label="Refresh" data-testid="dashboard-refresh"><RefreshCw /></Button>
+          {mode === 'server' && !editing && <Button variant="outline" size="sm" onClick={() => setPanel('snapshots')} aria-label="Email snapshots" title="Email this dashboard as a PDF on a schedule" data-testid="dashboard-snapshots"><Mail /><span className="hidden lg:inline"> Email</span></Button>}
+          {mode === 'server' && info.canEdit && !editing && <Button variant="outline" size="sm" onClick={() => setPanel('tokens')} aria-label="TV and kiosk screens" title="View tokens: show this dashboard on a screen without signing in" data-testid="dashboard-tokens"><KeyRound /><span className="hidden lg:inline"> Screens</span></Button>}
           {info.canEdit && <Button variant="outline" size="sm" onClick={() => setShowRoles(true)} title={viewerSummary(roles, allRoles)} aria-label="Who can see this dashboard" data-testid="dashboard-viewers"><Users /><span className="hidden lg:inline"> Who can see this</span></Button>}
           {info.canEdit && !editing && <Button variant="outline" size="sm" onClick={() => setEditing(true)} data-testid="dashboard-edit"><Pencil /> Edit</Button>}
           {editing && <>
@@ -276,6 +297,7 @@ function DashboardView({ info, settings, onSaved }: { info: DashboardInfo; setti
                 onStep={(d) => step(t.id, d)}
                 onOpen={() => drill(t)}
                 onConfigure={() => setEditor({ tile: t })}
+                pinned={isPinned(t.id)} onPin={pins && t.kind !== 'text' ? () => void togglePin(t) : undefined}
                 onPick={(row) => {
                   if (editing) return
                   if (t.drill) { drill(t, row); return }
@@ -289,6 +311,8 @@ function DashboardView({ info, settings, onSaved }: { info: DashboardInfo; setti
           </Grid>
         )}
       </div>
+      {panel === 'tokens' && <ViewTokensSheet info={info} onClose={() => setPanel(null)} />}
+      {panel === 'snapshots' && <SnapshotsSheet info={info} def={def} onClose={() => setPanel(null)} />}
       {showRoles && <ViewerRolesDialog roles={allRoles} selected={roles} editing={editing} onChange={setRoles} onClose={() => setShowRoles(false)} />}
       {editor && <TileEditor def={def} tile={editor.tile} range={range} calendar={calendar} onClose={() => setEditor(null)} onApply={(d) => { setDef(d); setEditor(null) }}
         renderTile={(t, d) => <Tile tile={t} data={d} calendar={calendar} defaults={defaults} editing={false} selected={null} onEdit={() => {}} onPick={() => {}} />} />}
@@ -330,7 +354,8 @@ interface Chrome { canDrag: boolean; dragging: boolean; grip: DragProps; corner:
  * and the drag survives leaving the handle; the tile snaps to whole cells, the tiles it lands on are pushed down and the
  * rest rises to close gaps (grid.ts `place`), previewed live; releasing keeps it, Escape or a cancelled touch drops it.
  */
-function Grid({ def, editing, onLayout, children }: { def: DashboardDef; editing: boolean; onLayout(items: GridItem[]): void; children(t: TileDef, chrome: Chrome): React.ReactNode }) {
+export function Grid({ def, editing, onLayout, children, rowPx = ROW_PX }: { def: DashboardDef; editing: boolean; onLayout(items: GridItem[]): void; children(t: TileDef, chrome: Chrome): React.ReactNode; rowPx?: number }) {
+  const rowH = rowPx
   const [ref, size] = useBoxSize<HTMLDivElement>()
   const mode = layoutModeFor(size.width)
   const cols = columnsFor(mode)
@@ -360,7 +385,7 @@ function Grid({ def, editing, onLayout, children }: { def: DashboardDef; editing
       e.preventDefault()
       e.stopPropagation()
       try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* the drag still follows the pointer over the handle */ }
-      session.current = { id, kind, pointerId: e.pointerId, x0: e.clientX, y0: e.clientY, steps: cellSteps(ref.current.clientWidth, GRID_COLS, GAP_PX, ROW_PX), start, items: base }
+      session.current = { id, kind, pointerId: e.pointerId, x0: e.clientX, y0: e.clientY, steps: cellSteps(ref.current.clientWidth, GRID_COLS, GAP_PX, rowH), start, items: base }
       setDrag({ id, items: base })
     },
     onPointerMove: (e) => {
@@ -390,12 +415,12 @@ function Grid({ def, editing, onLayout, children }: { def: DashboardDef; editing
         </p>
       )}
       <div ref={ref} className="grid gap-3" data-testid="dashboard-grid" data-layout={mode === 'desktop' ? 'grid' : mode} data-dragging={drag ? 'true' : undefined}
-        style={mode === 'phone' ? { gridTemplateColumns: '1fr' } : { gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gridAutoRows: `${ROW_PX}px` }}>
+        style={mode === 'phone' ? { gridTemplateColumns: '1fr' } : { gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gridAutoRows: `${rowH}px` }}>
         {tiles.map((t) => {
           const L = at.get(t.id)!
           const dragging = drag?.id === t.id
           return (
-            <div key={t.id} style={mode === 'phone' ? { height: Math.max(3, t.layout.h) * ROW_PX } : { gridColumn: `${L.x + 1} / span ${L.w}`, gridRow: `${L.y + 1} / span ${L.h}` }}
+            <div key={t.id} style={mode === 'phone' ? { height: Math.max(3, t.layout.h) * rowH } : { gridColumn: `${L.x + 1} / span ${L.w}`, gridRow: `${L.y + 1} / span ${L.h}` }}
               className={cn('relative min-h-0 min-w-0', dragging && 'z-10 opacity-90 shadow-lg')}>
               {children(t, { canDrag, dragging, grip: handlers(t.id, 'move'), corner: handlers(t.id, 'resize') })}
             </div>
@@ -408,10 +433,15 @@ function Grid({ def, editing, onLayout, children }: { def: DashboardDef; editing
 
 /* ------------------------------------------------------------------ a tile */
 
-function Tile({ tile, data, calendar, defaults, editing, selected, onEdit, onPick, onConfigure, onStep, onOpen, chrome }: {
+/**
+ * One tile. `bare`: read only and without the tile's own buttons (table view, export, drill-through, pin) and without
+ * pointer interaction on the chart: the kiosk page and the pinned tiles on Home use it. `onPin`: the viewer's pin button.
+ */
+export function Tile({ tile, data, calendar, defaults, editing, selected, onEdit, onPick, onConfigure, onStep, onOpen, chrome, bare = false, pinned, onPin, titleClass }: {
   tile: TileDef; data?: TileData; calendar: CalendarSettings; defaults: { locale: string; currency: string; timeZone: string }
   editing: boolean; selected: string | null; onEdit(f: (t: TileDef) => TileDef | null): void; onPick(row: Record<string, unknown>): void; onConfigure?(): void
   onStep?(d: { dx?: number; dy?: number; dw?: number; dh?: number }): void; onOpen?(): void; chrome?: Chrome
+  bare?: boolean; pinned?: boolean; onPin?(): void; titleClass?: string
 }) {
   const [tableView, setTableView] = useState(false)
   const appName = usePlatform((s) => (tile.drill ? s.apps.find((a) => a.id === tile.drill!.appId)?.name : undefined))
@@ -435,11 +465,16 @@ function Tile({ tile, data, calendar, defaults, editing, selected, onEdit, onPic
             onKeyDown={(e) => { const k = keys[e.key]; if (!k || !onStep) return; e.preventDefault(); if (e.shiftKey) move(0, 0, k[0], k[1]); else move(k[0], k[1], 0, 0) }}
             data-testid={`tile-${tile.id}-grip`}><GripVertical className="size-4" /></button>
         )}
-        <h2 className={cn('min-w-0 flex-1 truncate text-sm font-medium', editing && 'basis-16')}>{tile.title}</h2>
-        {!editing && tile.drill && onOpen && (
+        <h2 className={cn('min-w-0 flex-1 truncate text-sm font-medium', editing && 'basis-16', titleClass)}>{tile.title}</h2>
+        {!editing && !bare && onPin && (
+          <button type="button" className={cn('rounded p-1 hover:bg-muted', pinned ? 'text-primary' : 'text-muted-foreground')} aria-pressed={!!pinned}
+            aria-label={pinned ? `Unpin ${tile.title || 'the tile'} from My dashboard` : `Pin ${tile.title || 'the tile'} to My dashboard`} title={pinned ? 'Pinned to My dashboard (click to unpin)' : 'Pin to My dashboard (on your home page)'}
+            onClick={onPin} data-testid={`tile-${tile.id}-pin`}>{pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}</button>
+        )}
+        {!editing && !bare && tile.drill && onOpen && (
           <button type="button" className="rounded p-1 text-muted-foreground hover:bg-muted" aria-label={`Open ${appName ?? 'the app'}`} title={`Open ${appName ?? 'the app'}`} onClick={onOpen} data-testid={`tile-${tile.id}-open`}><ExternalLink className="size-3.5" /></button>
         )}
-        {!editing && tile.kind !== 'text' && tile.kind !== 'table' && data && !data.error && <>
+        {!editing && !bare && tile.kind !== 'text' && tile.kind !== 'table' && data && !data.error && <>
           <button type="button" className="rounded p-1 text-muted-foreground hover:bg-muted" aria-pressed={tableView} aria-label={tableView ? 'Show the chart' : 'Show the data as a table'} onClick={() => setTableView((v) => !v)} data-testid={`tile-${tile.id}-tableview`}><Table2 className="size-3.5" /></button>
           <ExportMenu title={tile.title} get={() => scene.current} rows={rows} />
         </>}
@@ -462,7 +497,7 @@ function Tile({ tile, data, calendar, defaults, editing, selected, onEdit, onPic
           : !data ? <div className="flex size-full items-center justify-center"><Spinner /></div>
           : data.error ? <div className="flex size-full flex-col items-center justify-center gap-1 text-center text-xs text-muted-foreground" role="alert" data-testid={`tile-${tile.id}-error`}><TriangleAlert className="size-4 text-destructive" />{data.status === 503 ? 'The query took too long. ' : ''}{data.error}</div>
           : tile.kind === 'table' ? <TableTile tile={tile} rows={rows} defaults={defaults} onPick={onPick} />
-          : <VizView spec={spec} rows={rows} interactive={!editing} tableView={tableView} testId={`tile-${tile.id}-viz`} onPick={(d) => d.row && onPick(d.row)} onScene={(s, sp) => { scene.current = { scene: s, spec: sp } }} />}
+          : <VizView spec={spec} rows={rows} interactive={!editing && !bare} tableView={tableView} testId={`tile-${tile.id}-viz`} onPick={(d) => d.row && onPick(d.row)} onScene={(s, sp) => { scene.current = { scene: s, spec: sp } }} />}
       </div>
       {editing && chrome?.canDrag && (
         <span {...chrome.corner} style={{ touchAction: 'none' }} className="absolute bottom-0 right-0 z-10 flex size-7 cursor-se-resize items-end justify-end p-1.5" aria-hidden data-testid={`tile-${tile.id}-resize`}><span className="size-3 rounded-br border-b-2 border-r-2 border-primary/70" /></span>

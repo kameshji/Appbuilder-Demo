@@ -8,6 +8,7 @@ import { AppMenu } from './AppMenu'
 import { RunChoice } from './UserMode'
 import { ImportDialog, NewAppDialog, StartWithDataDialog } from './dialogs'
 import { matches, useSearch } from './Shell'
+import { PinnedTiles } from './dashboards/PinnedTiles'
 
 function greeting(): string {
   const h = new Date().getHours()
@@ -97,6 +98,8 @@ export function Home() {
         <StartCard testId="start-with-data-button" icon={Database} accent="bg-emerald-500/12 text-emerald-600 dark:text-emerald-400" title="Start with data" text="Pick or create a table and get a ready-made list and edit form." onClick={() => setDlg('data')} />
         <StartCard testId="import-package-button" icon={FileUp} accent="bg-amber-500/12 text-amber-600 dark:text-amber-400" title="Import package" text="Bring in an app package from a file or pasted YAML." onClick={() => setDlg('import')} />
       </section>
+
+      {!q.trim() && <div className="mt-9"><PinnedTiles /></div>}
 
       <section aria-label="Recent apps" className="mt-9">
         <div className="mb-3 flex items-center">
