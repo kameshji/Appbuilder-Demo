@@ -13,11 +13,13 @@
  *   POST /templates/installed/:iid/uninstall          { confirm, deleteTables?, confirmText?, proceedWithoutBackup? }
  *   POST /templates/installed/:iid/upgrade/plan       Linked: { choices?: { 'app:<id>' | 'table:<id>': 'keep' | 'replace' } }
  *   POST /templates/installed/:iid/upgrade            { confirm, choices?, proceedWithoutBackup? }
+ *   POST /templates/installed/:iid/flows              format 2: { enable: [flow ids] } "Switch on these flows" (administrators)
+ *   POST /templates/installed/:iid/sample/remove      format 2: "Remove sample data" (exactly the SAMPLE rows this install added)
  */
 import type { Ctx, Router, Services } from '../contracts.ts'
 import { HttpError } from '../contracts.ts'
 import type { SlotBinding, TemplateUseRequest } from '../../../src/templates/format.ts'
-import { describeTemplate, installTemplate, listCatalogue, listInstalls, planTemplate, planUninstall, planUpgrade, uninstallTemplate, upgradeTemplate } from './service.ts'
+import { describeTemplate, enableInstallFlows, installTemplate, listCatalogue, listInstalls, planTemplate, planUninstall, planUpgrade, removeSampleData, uninstallTemplate, upgradeTemplate } from './service.ts'
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const body = (ctx: Ctx): Record<string, unknown> => (isObj(ctx.body) ? ctx.body : {})
@@ -63,7 +65,7 @@ export function readUseRequest(b: Record<string, unknown>): TemplateUseRequest {
 
 const choicesOf = (v: unknown): Record<string, 'keep' | 'replace'> => {
   const out: Record<string, 'keep' | 'replace'> = {}
-  if (isObj(v)) for (const [k, c] of Object.entries(v).slice(0, 500)) if (c === 'keep' || c === 'replace') out[k.slice(0, 100)] = c
+  if (isObj(v)) for (const [k, c] of Object.entries(v).slice(0, 500)) if (c === 'keep' || c === 'replace') out[k.slice(0, 160)] = c
   return out
 }
 
@@ -83,4 +85,6 @@ export function templateRoutes(router: Router, s: Services): void {
     const b = body(ctx)
     return upgradeTemplate(s, ctx, ctx.params.iid, { confirm: b.confirm, choices: choicesOf(b.choices), proceedWithoutBackup: b.proceedWithoutBackup === true })
   }, { auth: 'maker', design: true })
+  router.add('POST', '/api/v1/templates/installed/:iid/flows', async (ctx) => ({ install: await enableInstallFlows(s, ctx, ctx.params.iid, body(ctx)) }), { auth: 'maker' })
+  router.add('POST', '/api/v1/templates/installed/:iid/sample/remove', async (ctx) => removeSampleData(s, ctx, ctx.params.iid), { auth: 'maker', design: true })
 }

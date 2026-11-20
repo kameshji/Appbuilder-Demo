@@ -123,7 +123,7 @@ describe.skipIf(!PG_URL)(PG_URL ? 'templates catalogue (PostgreSQL)' : `template
     const r = await h.admin.get('/templates')
     expect(r.status).toBe(200)
     const kinds = new Set(r.data.items.map((x: { kind: string }) => x.kind))
-    expect([...kinds].sort()).toEqual(['app', 'component', 'dataModel', 'screen'])
+    expect([...kinds].sort()).toEqual(['app', 'component', 'dataModel', 'screen', 'solution'])
     for (const t of r.data.items) expect(t.integrity, t.id).toBe('builtin')
     const d = await h.admin.get('/templates/builtin.customers-contacts')
     expect(d.status).toBe(200)

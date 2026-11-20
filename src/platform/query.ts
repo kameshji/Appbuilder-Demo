@@ -149,8 +149,15 @@ export type NumExprV2 =
  *  - date / datetime: by instant, NULL before every date (first ascending, last descending).
  * Ties are always broken by the table's natural order, ascending, even for descending keys:
  * (createdOn asc, id asc) - see QueryPlan.
+ *
+ * `via` (P3-C, docs/dev/query-v2.md 5b): sort by a column of the row the lookup column `col` points at (a list sorted by
+ * a lookup's label: `via.col` is the target's primary column), read AS THE CALLER. A blank lookup, an id whose row is
+ * missing (or in the recycle bin) and a row the caller may not read all give the blank key of `via.col`'s kind, so they
+ * sort exactly like a blank label and tie with each other; their ties are broken by the natural order of the row
+ * itself, which says nothing about the target. Row plans only (not before an aggregate); at most
+ * QUERY_MAX_LOOKUP_SORT_KEYS such keys.
  */
-export interface SortKeyV2 { col: string; dir: 'asc' | 'desc' }
+export interface SortKeyV2 { col: string; dir: 'asc' | 'desc'; via?: { table: string; col: string } }
 
 export type MeasureFn = 'sum' | 'avg' | 'min' | 'max' | 'count' | 'countDistinct'
 
@@ -284,6 +291,8 @@ export interface QueryV2Request { plan: QueryPlan }
 export const QUERY_MAX_PAGE_SIZE = 500
 /** a rows plan without `page` may return at most this many rows (otherwise 422: page it) */
 export const QUERY_MAX_UNPAGED_ROWS = 5000
+/** sort keys through a lookup (`SortKeyV2.via`) per plan: each is one join to the target in the statement */
+export const QUERY_MAX_LOOKUP_SORT_KEYS = 3
 /** an aggregate may produce at most this many groups (otherwise 422) */
 export const QUERY_MAX_GROUPS = 5000
 /** rows read by the fallback executor of connectors without SQL pushdown (truncated beyond) */

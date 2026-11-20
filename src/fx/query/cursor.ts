@@ -54,8 +54,9 @@ export function compareKeys(a: KeyValue[], b: KeyValue[], dirs: ('asc' | 'desc')
   return 0
 }
 
+/** the sort spec of a cursor: `col:dir`, a key through a lookup as `col>Table.Col:dir` (P3-C) */
 export function sortSpec(sort: SortKeyV2[] | undefined): string {
-  return (sort ?? []).map((k) => `${k.col}:${k.dir}`).join(',')
+  return (sort ?? []).map((k) => `${k.col}${k.via ? `>${k.via.table}.${k.via.col}` : ''}:${k.dir}`).join(',')
 }
 
 function toBase64Url(text: string): string {
@@ -78,9 +79,16 @@ export function cursorFromKeys(plan: QueryPlan, keys: KeyValue[], createdOn: str
   return 'c2.' + toBase64Url(JSON.stringify({ s: sortSpec(plan.sort), k: keys, c: createdOn, i: id }))
 }
 
-/** the cursor that points just after `row` in `plan`'s order */
-export function encodeCursor(plan: QueryPlan, row: FxRecord, schema: TableSchemaInfo): string {
+/**
+ * the cursor that points just after `row` in `plan`'s order. `viaKey` gives the normalised key of a sort key through a
+ * lookup (the reference executor resolves the target row); without it such a plan can't be encoded here.
+ */
+export function encodeCursor(plan: QueryPlan, row: FxRecord, schema: TableSchemaInfo, viaKey?: (k: SortKeyV2, row: FxRecord) => KeyValue): string {
   const keys = (plan.sort ?? []).map((k) => {
+    if (k.via) {
+      if (!viaKey) throw new CursorError(`sorting by ${k.col} through ${k.via.table} needs the lookup's rows`)
+      return viaKey(k, row)
+    }
     const kind = schema.columns[k.col]
     if (kind === undefined) throw new CursorError(`unknown column ${k.col}`)
     return sortKeyValue(kind, Object.prototype.hasOwnProperty.call(row, k.col) ? row[k.col]! : null)

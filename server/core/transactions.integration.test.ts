@@ -6,6 +6,7 @@
  * ROLLBACK); while a unit of work runs, its DDL is invisible to other connections. Also: the environment layout of
  * created tables. Creates and drops its own database.
  */
+import { planBody } from './testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -101,7 +102,7 @@ describe.skipIf(!PG_URL)('units of work (PostgreSQL)', () => {
     expect((await q("SELECT to_regclass('public.t_projects') AS t"))[0]).toEqual({ t: null })
     expect((await q<{ n: number }>('SELECT count(*)::int AS n FROM ab.users'))[0].n).toBe(1)
     for (const title of ['One', 'Two']) expect((await A.post('/data/Projects/rows', { values: { Title: title, Budget: 12.5 } })).status).toBe(200)
-    const rows = (await A.post('/data/Projects/query', { orderBy: [{ col: 'Code', dir: 'asc' }] })).data.rows
+    const rows = (await A.post('/query', planBody('Projects', { orderBy: [{ col: 'Code', dir: 'asc' }] }))).data.rows
     expect(rows.map((r: any) => [r.Title, r.Budget, r.Code])).toEqual([['One', 12.5, 'P-0001'], ['Two', 12.5, 'P-0002']])
     // the sample app and its tables were seeded by the setup into the same schema
     expect((await snapshot()).physical).toEqual(expect.arrayContaining(['t_projects']))
@@ -222,6 +223,6 @@ describe.skipIf(!PG_URL)('units of work (PostgreSQL)', () => {
     expect(r.status).toBe(422)
     const info = await q<{ t: string }>("SELECT data_type AS t FROM information_schema.columns WHERE table_schema = 'env_default' AND table_name = 't_projects' AND column_name = 'Title'")
     expect(info[0].t).toBe('character varying')
-    expect((await A.post('/data/Projects/query', { where: { col: 'Title', op: 'eq', value: 'NOT A NUMBER' } })).data.rows.length).toBe(1)
+    expect((await A.post('/query', planBody('Projects', { where: { col: 'Title', op: 'eq', value: 'NOT A NUMBER' } }))).data.rows.length).toBe(1)
   }, 60000)
 })

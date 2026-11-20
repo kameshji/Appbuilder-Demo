@@ -3,6 +3,7 @@
  *   APPBUILDER_TEST_DB=postgres://abdev:abdev-sandbox-only@127.0.0.1:5433/appbuilder_test npx vitest run server/routes/meta
  * Skipped when APPBUILDER_TEST_DB is unset. Creates a fresh database and drops it afterwards.
  */
+import { planBody } from '../../core/testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -89,7 +90,7 @@ describe.skipIf(!URL_ENV)('metadata API integration (PostgreSQL)', () => {
     const tables = (boot.data.tables as { id: string; name: string; system?: boolean }[]).filter((t) => !t.system)
     expect(tables.map((t) => t.name).sort()).toEqual(['Contacts', 'Orders'])
     const contacts = tables.find((t) => t.name === 'Contacts')!
-    const rows = await A.post(`/data/${contacts.id}/query`, {})
+    const rows = await A.post('/query', planBody(contacts.id))
     expect(rows.status).toBe(200)
     expect(rows.data.rows.length).toBeGreaterThan(3)
     expect(rows.data.rows[0].owner).toBeTruthy()

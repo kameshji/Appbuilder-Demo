@@ -5,6 +5,7 @@
  * mentions and notifications, polymorphic integrity (delete cascade, table delete, orphan sweep), number sequences under
  * concurrency (gap-free), the migration of an existing environment and the environment copy with data.
  */
+import { planBody } from './testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PG_URL, SKIP_PG } from './testdb.ts'
 import { Client, startHarness } from './kernel-testkit.ts'
@@ -174,8 +175,8 @@ describe.skipIf(!PG_URL)(PG_URL ? 'core data model (PostgreSQL)' : `core data mo
       // aggregate and search see nothing either
       const agg = await c.cy.post('/query', { plan: { version: 2, table: t, aggregate: { groupBy: [], measures: [{ name: 'n', fn: 'count' }] } } })
       expect(agg.data.rows[0].n, t).toBe(0)
-      const v1 = await c.cy.post(`/data/${t}/query`, { count: true })
-      expect(v1.data.total, t).toBe(0)
+      const v1 = await c.cy.post('/query', planBody(t, { count: true }))
+      expect(v1.data.count, t).toBe(0)
     }
     const search = await c.cy.post('/query', { plan: { version: 2, table: 'Activities', search: { text: 'Secret', columns: ['Subject'] } } })
     expect(search.data.rows).toHaveLength(0)

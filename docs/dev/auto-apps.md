@@ -48,7 +48,7 @@ rule (`docs/dev/phone.md`): nothing is wider than the design, and wider phones w
 | text, email, phone, url | input (validated) | yes | subtitle if no choice column |
 | autonumber | read-only, after required fields; left out in New | yes | - |
 | choice | select | yes | subtitle |
-| lookup | searchable picker over the server (the target is added as a data source) | yes, by label (not sortable) when the target is readable | subtitle when required |
+| lookup | searchable picker over the server (the target is added as a data source) | yes, by label when the target is readable; sortable by that label on the server (P3-C) when both tables are in the default database | subtitle when required |
 | number, decimal, currency | numeric input | yes | a line (numbers and dates first) |
 | date, datetime | date picker (native on touch) | yes | a line |
 | boolean | switch | yes | - |
@@ -86,7 +86,7 @@ that keep deleted rows (`src/runtime/UndoDelete.tsx`); the dialog text says whet
 
 `plan.issues` (`blocked`, `skipped`, `limited`, `note`), most serious first, shown in the dialog: tables not found, not
 readable or named like a built-in enum (`Color`); tables without columns; unknown column types; lookups to missing or
-unreadable tables; how lookups are picked and listed (not sortable); long text and files only in the form; calculated columns; no text column
+unreadable tables; how lookups are picked, listed and sorted (by label; "cannot be sorted" only for a target or table outside the default database, or a target without a sortable name column); long text and files only in the form; calculated columns; no text column
 (no search box); child tables that cannot be read; junction tables (their related list shows their own columns only);
 lookups to the table itself; more than two parent links; tables in connections that cannot run queries (lists capped at
 5,000 rows); read-only tables (no New, no Delete, a view form).
@@ -102,11 +102,16 @@ lookups to the table itself; more than two parent links; tables in connections t
   wider than the design, anchors), and the app running in a runtime store without a DOM (home, list, New, Back, the
   delete confirmation, the related screen, OnStart variables).
 - `scripts/exit-check/p2-autoapp.mjs`: see its header. Lookups (this package): Products has 2,500 rows; a new order
-  picks Customer and Product by typing (server search), the list shows both by name and never an id, the Customer header
-  is not sortable (with a reason), the card sort leaves it out, the list search finds orders by the customer's name, the
-  desktop pick is done with the keyboard only, and with no connection the picker says "Products is not available
-  offline". Last run: 48 checks pass (server mode desktop and phone, the Studio, the table page, a user without the
-  Maker role, demo mode). Phones are Chrome's emulation, not real devices.
+  picks Customer and Product by typing (server search), the list shows both by name and never an id, the list search
+  finds orders by the customer's name, the desktop pick is done with the keyboard only, and with no connection the picker
+  says "Products is not available offline". Sorting by a lookup (P3-C): the Customer and Product headers are sortable;
+  sorting by Product (the 36 seeded orders point at products spread over the 2,500) orders the list by the product names
+  both ways; the phone card's "Sort by Customer" orders the cards by the customer's name; and (section G) the user without
+  the Maker role, who may read only the products named below "Product 0600", sorts orders by Product: the 28 orders whose
+  product they cannot read (shown "Not available") or that have none come first ascending, no hidden name reaches the
+  screen or the HTTP answer, and the same plan over HTTP is timed (median 15.8 ms for a page of 100 on the sandbox).
+  Last run: 52 checks pass (server mode desktop and phone, the Studio, the table page, a user without the Maker role,
+  demo mode). Phones are Chrome's emulation, not real devices.
 
 ## Lookups
 
@@ -114,13 +119,18 @@ The Form's lookup field is a searchable picker that queries the target on the se
 Gallery / phone cards show a lookup as the target row's primary column (batched label requests): see
 [frontend.md "Lookup fields and labels"](frontend.md#lookup-fields-and-labels). So the generator lists lookup columns
 whose target the maker can read (`listColumnsOf(..., lookupOk)`, `relatedColumnsOf`: a related list leaves out only the
-lookup back to the record), makes a required lookup the phone card's subtitle, and says in the dialog (a note, no longer
-a limitation) that lists cannot be sorted by a lookup (the server would order by record id) while the search box finds
-it by name. Lookups to tables the maker cannot read stay out of lists (they could only show "Not available").
+lookup back to the record), makes a required lookup the phone card's subtitle, and says in the dialog (a note) that lists
+sort by the lookup's name on the server, as each viewer may read it (a record they cannot read sorts as blank), and that
+the search box finds it by that name (P3-C, `lookupSortSupport` in `src/controls/lookups.ts`). When the table or the
+target is stored outside the default database, or the target has no sortable name column, the note says the list cannot
+be sorted by it and why; the screen summary then says "sort by any column but some lookups". Lookups to tables the maker
+cannot read stay out of lists (they could only show "Not available").
 
 ## Known gaps (UI components and runtime, not changed here)
 
-- Sorting a list by a lookup column on the server (needs a sort through a lookup path in Query v2; not in the plan).
+- Sorting by a lookup whose table and target live in an external PostgreSQL connection works on the server, but the
+  generator's note and a non-maker's DataTable cannot tell that connection is PostgreSQL (only makers see connections),
+  so they say it cannot be sorted there.
 - Generated colours are fixed (no theme-aware colour tokens in formulas).
 - Phone related lists are on their own screen rather than in tabs over the form, so the Form is never hidden while it
   holds unsaved edits (whether a hidden Form keeps them was not checked).

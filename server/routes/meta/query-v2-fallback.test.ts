@@ -47,6 +47,17 @@ describe('Query v2 fallback (reference executor)', () => {
     expect(r.body.truncated).toBe(true)
   })
 
+  it('P3-C: a sort by a lookup column is refused in plain words (never computed over part of the rows or targets)', async () => {
+    const t = await fileTable('Name,Boss\nAnn,\nBob,\n')
+    // a lookup of the file table to itself (same store): the store still can't run the sort as one query
+    await h.meta.tables.upsert({ ...t, columns: t.columns.map((c) => (c.name === 'Boss' ? { ...c, type: 'lookup' as const, lookupTable: 'People' } : c)) })
+    const r = await query(M, { sort: [{ col: 'Boss', dir: 'asc', via: { table: 'People', col: 'Name' } }] })
+    expect(r.status, JSON.stringify(r.body)).toBe(422)
+    expect(r.body.error.message).toBe("This list can't be sorted by Boss: sorting by a lookup's names needs a table in a PostgreSQL database, and People is stored in a connection that can't run that query.")
+    // a plain sort of the same column still works (by the stored value)
+    expect((await query(M, { sort: [{ col: 'Name', dir: 'asc' }] })).status).toBe(200)
+  })
+
   it('row filters and hidden columns apply to the fallback too', async () => {
     const t = await fileTable('Name,City,Salary\nAnn,Pune,10\nBob,Delhi,20\nCyd,Pune,30\n')
     const role = (await h.call(A, 'POST', '/api/v1/roles', { name: 'PuneOnly', privileges: [{ table: t.id, create: false, read: 'all', update: 'none', delete: 'none', columns: { Salary: 'none' }, rowFilter: [{ column: 'City', op: 'eq', value: 'pune' }] }] })).body

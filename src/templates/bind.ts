@@ -9,7 +9,7 @@ import type { TableEventInput } from '../platform/events.ts'
 import { IDENT, uniqueIdentifier } from '../model/names.ts'
 import { systemColumnDefs } from '../model/ops.ts'
 import {
-  columnToken, declaredTokens, tableToken, type CandidateColumn, type SlotBinding, type SlotColumn, type SlotColumnReport, type SlotReport,
+  SLOT_PREFIX, columnToken, declaredTokens, tableToken, type CandidateColumn, type SlotBinding, type SlotColumn, type SlotColumnReport, type SlotReport,
   type TemplatePackage, type TemplateSlot,
 } from './format.ts'
 import { rewriteFormula, tokensIn } from './rewrite.ts'
@@ -64,12 +64,28 @@ export function columnMismatch(sc: SlotColumn, col: ColumnDef, lookupTarget: str
   return undefined
 }
 
-/** the default binding: create where the template can and the name is free, else the same-named table, else create (a clash to resolve) */
-export function defaultBindings(pkg: Pick<TemplatePackage, 'slots' | 'kind'>, tables: EnvTable[]): Record<string, SlotBinding> {
+/**
+ * the default binding: create where the template can and the name is free, else the same-named table, else create (a
+ * clash to resolve). Solution packs: `defaultMode: map` slots use a same-named table when there is one; other slots are
+ * created (a taken name is a clash to resolve); shared slots (`from`) are bound by the server to the dependency's table.
+ */
+export function defaultBindings(pkg: Pick<TemplatePackage, 'slots' | 'kind'> & { prefix?: string }, tables: EnvTable[]): Record<string, SlotBinding> {
   const out: Record<string, SlotBinding> = {}
   const taken = tables.map((t) => t.name)
   for (const s of pkg.slots) {
-    const preferCreate = s.create && (s.defaultMode === 'create' || pkg.kind === 'dataModel' || pkg.kind === 'app')
+    if (s.from) continue
+    if (pkg.kind === 'solution' && s.create && s.defaultMode === 'map') {
+      // a shared table (Accounts): the same-named table when its columns fit, else a new one under the pack's prefix
+      const same = byName(tables, s.create.name)
+      const cols = same ? autoColumns(s, same) : {}
+      if (same && !same.system && s.columns.every((c) => !c.required || cols[c.id])) { out[s.id] = { mode: 'map', table: same.id, columns: cols }; continue }
+      const prefix = (pkg as { prefix?: string }).prefix ?? ''
+      const name = same ? uniqueIdentifier(`${prefix}${s.create.name}`, taken) : s.create.name
+      out[s.id] = { mode: 'create', name, displayName: same && prefix ? `${s.create.displayName} (${prefix})` : s.create.displayName }
+      taken.push(name)
+      continue
+    }
+    const preferCreate = s.create && (pkg.kind === 'solution' ? true : (s.defaultMode === 'create' || pkg.kind === 'dataModel' || pkg.kind === 'app'))
     if (s.create && preferCreate) {
       out[s.id] = { mode: 'create', name: s.create.name, displayName: s.create.displayName }
       taken.push(s.create.name)
@@ -99,7 +115,7 @@ export function autoColumns(s: TemplateSlot, t: EnvTable): Record<string, string
  * Checks the bindings against the environment's tables: the report per slot (bound table, columns, candidates with the
  * reason a column does not fit, name clashes), blocking problems, and the token map for the payload.
  */
-export function resolveBindings(pkg: Pick<TemplatePackage, 'slots' | 'kind'>, given: Record<string, SlotBinding> | undefined, tables: EnvTable[]): Resolution {
+export function resolveBindings(pkg: Pick<TemplatePackage, 'slots' | 'kind'> & { prefix?: string }, given: Record<string, SlotBinding> | undefined, tables: EnvTable[]): Resolution {
   const bindings = { ...defaultBindings(pkg, tables), ...(given ?? {}) }
   const problems: string[] = []
   const warnings: string[] = []
@@ -137,7 +153,10 @@ export function resolveBindings(pkg: Pick<TemplatePackage, 'slots' | 'kind'>, gi
       else {
         const clash = byName(tables, name)
         if (clash) {
-          const suggestion = uniqueIdentifier(name, [...tables.map((t) => t.name), ...createdNames, ...resolved.filter((x) => x.mode === 'create').map((x) => x.tableName ?? '')])
+          const takenNames = [...tables.map((t) => t.name), ...createdNames, ...resolved.filter((x) => x.mode === 'create').map((x) => x.tableName ?? '')]
+          // packs propose their prefix (Mfg + ProductionLog); otherwise a number
+          const prefixed = pkg.prefix ? `${pkg.prefix}${name}` : ''
+          const suggestion = prefixed && !takenNames.some((n) => n.toLowerCase() === prefixed.toLowerCase()) ? prefixed : uniqueIdentifier(prefixed || name, takenNames)
           rp.clash = { id: clash.id, name: clash.name, displayName: clash.displayName, suggestion }
           rp.problems.push(`A table named ${clash.name} already exists here. Use it (map the slot to it) or install under another name (for example ${suggestion}).`)
         } else if (createdNames.some((n) => n.toLowerCase() === name.toLowerCase())) rp.problems.push(`Two tables of this template would be called ${name}: give one another name.`)
@@ -156,7 +175,7 @@ export function resolveBindings(pkg: Pick<TemplatePackage, 'slots' | 'kind'>, gi
         const want = b.mode === 'map' ? (b.columns ?? {}) : {}
         const auto = autoColumns(s, t)
         for (const sc of s.columns) {
-          const lookupTarget = sc.lookupSlot ? nameOfSlot(sc.lookupSlot) : null
+          const lookupTarget = sc.lookupSlot ? nameOfSlot(sc.lookupSlot) : sc.lookupSystem ?? null
           const chosen = sc.id in want ? want[sc.id] : auto[sc.id]
           const candidates: CandidateColumn[] = t.columns.filter((c) => c.name !== 'id').map((c) => {
             const why = columnMismatch(sc, c, lookupTarget)
@@ -251,9 +270,23 @@ export function createdTable(r: ResolvedSlot, resolution: Resolution, now: strin
     if (req) col.required = true
     if (c.create?.unique) col.unique = true
     if (c.create?.indexed) col.indexed = true
-    if (c.create?.default !== undefined) col.default = c.create.default
+    if (c.create?.default !== undefined) {
+      col.default = c.create.default
+      // a formula default (=NextNumber("Slot_Seq_Passes")) is bound like any formula
+      if (typeof col.default === 'string' && col.default.trimStart().startsWith('=') && col.default.includes('Slot_')) {
+        const f = rewriteFormula(col.default, resolution.tokens)
+        col.default = f.out
+        problems.push(...f.problems.map((p) => `${s.label}.${c.label} default: ${p}`))
+      }
+    }
     if (type === 'choice') col.choices = [...(c.create?.choices ?? [])]
     if (type === 'autonumber' && c.create?.prefix) col.prefix = c.create.prefix
+    if (type === 'lookup' && c.lookupSystem && !c.lookupSlot) {
+      // a table of the core data model (Users, Currencies ...): in every environment, no relationship row needed
+      col.lookupTable = c.lookupSystem
+      cols.push(col)
+      continue
+    }
     if (type === 'lookup') {
       const target = c.lookupSlot ? nameOfSlot(c.lookupSlot) : null
       if (!target) { problems.push(`${s.label}.${c.label} points at ${c.lookupSlot}, which is left out.`); continue }
@@ -261,11 +294,16 @@ export function createdTable(r: ResolvedSlot, resolution: Resolution, now: strin
       lookups.push({ column: c.id, toSlot: c.lookupSlot!, ...(c.create?.onDelete ? { onDelete: c.create.onDelete } : {}) })
     }
     if (c.create?.computed) {
-      const comp = clone(c.create.computed)
+      let comp = clone(c.create.computed)
       if (comp.kind === 'formula') {
         const f = rewriteFormula(comp.formula, resolution.tokens, { noEq: true })
         comp.formula = f.out
         problems.push(...f.problems.map((p) => `${s.label}.${c.label}: ${p}`))
+      } else {
+        // a rollup names its child table, the lookup and the column: tokens as whole values
+        const b = bindJson(comp, resolution.tokens)
+        comp = b.value
+        problems.push(...b.problems.map((p) => `${s.label}.${c.label}: ${p}`))
       }
       col.computed = comp
     }
@@ -288,10 +326,85 @@ export function createdTable(r: ResolvedSlot, resolution: Resolution, now: strin
     def: {
       name: r.tableName ?? s.create?.name ?? s.id, displayName: r.displayName || s.create?.displayName || s.label, primaryColumn: primary,
       ...(s.create?.description ? { description: s.create.description } : {}),
+      ...(s.create?.uniqueTogether?.length ? { uniqueTogether: s.create.uniqueTogether.map((u) => [...u]) } : {}),
       columns: [...systemColumnDefs(), ...cols], createdOn: now, modifiedOn: now,
     },
     events, problems, lookups,
   }
+}
+
+/* ------------------------------------------------------------------ binding JSON parts of a pack (format 2) */
+
+const TOKEN_RE = /^Slot_[A-Za-z0-9_]+$/
+const PREFIXED_RE = /^([A-Za-z-]+):(Slot_[A-Za-z0-9_]+)$/
+
+/**
+ * Binds a JSON part of a solution pack (a flow definition, an approval policy, a dashboard, a print document, a role's
+ * row rule, a rollup) with the token map. A string is rewritten when it is
+ *   - exactly a token, or a comma list of tokens            "Slot_Visits", "Slot_Visits_Status, Slot_Visits_Arrival"
+ *   - `<word>:<token>`                                         "role:Slot_Role_Reception"
+ *   - text with {formulas} (print documents)                  "Pass {Slot_Visits_PassNumber}"   (each {...} through the parser)
+ *   - otherwise a formula (with or without the leading =)    "Trigger.Record.Slot_Visits_Status = \"Pending\""
+ * Object keys that are exactly a token are renamed (data.create / data.update values, column security). A token mapped to
+ * null cannot be bound in JSON and is reported.
+ */
+export function bindJson<T>(v: T, tokens: ReadonlyMap<string, string | null>): Bound<T> {
+  const problems: string[] = []
+  const look = (t: string, where: string): string | null => {
+    if (!tokens.has(t)) { problems.push(`${where}: the token ${t} is not declared by the template`); return null }
+    const to = tokens.get(t) ?? null
+    if (to === null) problems.push(`${where}: ${t} is left out, but this part of the template needs it`)
+    return to
+  }
+  const str = (s: string, where: string): string => {
+    if (!s.includes(SLOT_PREFIX)) return s
+    const t = s.trim()
+    if (TOKEN_RE.test(t)) return look(t, where) ?? s
+    const pieces = t.split(',').map((x) => x.trim())
+    if (pieces.length > 1 && pieces.every((x) => TOKEN_RE.test(x) || !x.includes(SLOT_PREFIX)) && pieces.some((x) => TOKEN_RE.test(x))) {
+      return pieces.map((x) => (TOKEN_RE.test(x) ? look(x, where) ?? x : x)).join(s.includes(', ') ? ', ' : ',')
+    }
+    const pre = PREFIXED_RE.exec(t)
+    if (pre) { const to = look(pre[2], where); return to === null ? s : `${pre[1]}:${to}` }
+    const r = rewriteFormula(s, tokens, { noEq: !s.trimStart().startsWith('=') })
+    const parses = !r.problems.some((p) => /does not parse/.test(p))
+    if (!parses && /\{[^{}]*Slot_[^{}]*\}/.test(s)) {
+      // not a formula: text with {formulas} (print documents)
+      return s.replace(/\{([^{}]*)\}/g, (all, inner: string) => {
+        if (!inner.includes(SLOT_PREFIX)) return all
+        const b = rewriteFormula(inner, tokens, { noEq: true })
+        problems.push(...b.problems.map((p) => `${where}: ${p}`))
+        return `{${b.out}}`
+      })
+    }
+    problems.push(...r.problems.map((p) => `${where}: ${p}`))
+    return r.out
+  }
+  const walk = (x: unknown, where: string): unknown => {
+    if (typeof x === 'string') return str(x, where)
+    if (Array.isArray(x)) return x.map((y, i) => walk(y, `${where}[${i}]`))
+    if (!x || typeof x !== 'object') return x
+    const out: Record<string, unknown> = {}
+    for (const [k, y] of Object.entries(x as Record<string, unknown>)) {
+      const key = TOKEN_RE.test(k) ? (look(k, `${where}.${k}`) ?? k) : k
+      out[key] = walk(y, `${where}.${key}`)
+    }
+    return out
+  }
+  return { value: walk(v, '') as T, problems: [...new Set(problems.map((p) => p.replace(/^: /, '').replace(/^\./, '')))] }
+}
+
+/** the JSON parts of a pack, with where they are (for the catalogue's check and the docs) */
+export function packParts(pkg: TemplatePackage): { where: string; value: unknown }[] {
+  const p = pkg.payload
+  const out: { where: string; value: unknown }[] = []
+  for (const f of p.flows ?? []) out.push({ where: `flow ${f.key}`, value: { definition: f.definition, runRoles: f.runRoles ?? [] } })
+  for (const a of p.approvalPolicies ?? []) out.push({ where: `approval policy ${a.key}`, value: a.definition })
+  for (const d of p.dashboards ?? []) out.push({ where: `dashboard ${d.key}`, value: { def: d.def, roles: d.roles ?? [] } })
+  for (const d of p.printTemplates ?? []) out.push({ where: `print template ${d.key}`, value: d.doc })
+  for (const r of p.roles ?? []) for (const [slot, t] of Object.entries(r.tables ?? {})) if (t.rowFilter) out.push({ where: `role ${r.key ?? r.name} on ${slot}`, value: t.rowFilter })
+  for (const s of pkg.slots) for (const c of s.columns) if (c.create?.computed && c.create.computed.kind !== 'formula') out.push({ where: `${s.id}.${c.id}`, value: c.create.computed })
+  return out
 }
 
 /* ------------------------------------------------------------------ checking a package's formulas */
@@ -308,8 +421,8 @@ export function formulasOf(pkg: TemplatePackage): { where: string; f: string; no
   const out: { where: string; f: string; noEq?: boolean }[] = []
   formulasOfNodes(pkg.payload.controls ?? [], out)
   if (pkg.payload.screen) formulasOfNodes([pkg.payload.screen], out)
-  const app = pkg.payload.app
-  if (app) {
+  const apps = [...(pkg.payload.app ? [pkg.payload.app] : []), ...(pkg.payload.apps ?? []).map((a) => a.app)]
+  for (const app of apps) {
     formulasOfNodes(app.screens, out)
     for (const [k, f] of Object.entries(app.appProps ?? {})) out.push({ where: `App.${k}`, f, noEq: k === 'Formulas' })
     for (const t of app.offline?.tables ?? []) if (t.filter) out.push({ where: `offline ${t.table}`, f: t.filter, noEq: true })
@@ -317,6 +430,7 @@ export function formulasOf(pkg: TemplatePackage): { where: string; f: string; no
   for (const s of pkg.slots) {
     for (const e of s.events ?? []) for (const k of ['condition', 'actions'] as const) if (e[k]) out.push({ where: `${s.id} rule ${e.name ?? ''}`, f: e[k]!, noEq: true })
     for (const c of s.columns) if (c.create?.computed?.kind === 'formula') out.push({ where: `${s.id}.${c.id}`, f: c.create.computed.formula, noEq: true })
+    for (const c of s.columns) if (typeof c.create?.default === 'string' && c.create.default.trimStart().startsWith('=')) out.push({ where: `${s.id}.${c.id} default`, f: c.create.default })
   }
   return out
 }
@@ -331,6 +445,14 @@ export function checkTemplateFormulas(pkg: TemplatePackage): string[] {
     const r = rewriteFormula(f, new Map([...declared.keys()].map((k) => [k, k])), { noEq })
     for (const p of r.problems) if (!/left after binding|not declared/.test(p)) problems.push(`${where}: ${p}`)
   }
-  for (const n of pkg.payload.app?.dataSources ?? []) if (n.startsWith('Slot_') && !declared.has(n)) problems.push(`App data source ${n} is not a declared slot.`)
+  for (const app of [...(pkg.payload.app ? [pkg.payload.app] : []), ...(pkg.payload.apps ?? []).map((a) => a.app)]) {
+    for (const n of app.dataSources ?? []) if (n.startsWith('Slot_') && !declared.has(n)) problems.push(`App data source ${n} is not a declared slot.`)
+    for (const t of app.offline?.tables ?? []) if (t.table.startsWith('Slot_') && !declared.has(t.table)) problems.push(`Offline table ${t.table} is not a declared slot.`)
+  }
+  // format 2: flows, policies, dashboards, print documents, row rules, rollups
+  if (pkg.kind === 'solution') {
+    const identity = new Map([...declared.keys()].map((k) => [k, k]))
+    for (const part of packParts(pkg)) for (const pr of bindJson(part.value, identity).problems) if (!/left after binding/.test(pr)) problems.push(`${part.where}: ${pr}`)
+  }
   return [...new Set(problems)]
 }

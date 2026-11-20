@@ -90,7 +90,7 @@ try {
   await shot('events-formula-column.png')
   await click('[data-testid="formula-column-save"]')
   await sleep(1500)
-  const after = await api('POST', '/data/InvoiceLines/query', {})
+  const after = await api('POST', '/query', { plan: { version: 2, table: 'InvoiceLines' } })
   ok(after.rows[0].LineTotal === 25, `formula column backfilled (LineTotal = ${after.rows[0].LineTotal})`)
 
   // 3. rollup on the invoice (by API: the designer's Rollups tab is shown in a screenshot)
@@ -131,11 +131,11 @@ try {
   // pick the invoice in the lookup (first option)
   await page.evaluate(() => [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Save')?.click())
   await sleep(1500)
-  const saved = (await api('POST', '/data/InvoiceLines/query', { where: { col: 'Item', op: 'eq', value: 'Washers' } })).rows[0]
+  const saved = (await api('POST', '/query', { plan: { version: 2, table: 'InvoiceLines', filter: { col: 'Item', op: 'eq', value: 'Washers' } } })).rows[0]
   ok(saved && saved.LineTotal === 16, `good line saved with LineTotal ${saved?.LineTotal}`)
   await api('PATCH', `/data/InvoiceLines/rows/${saved.id}`, { changes: { Invoice: invoice.id } })
   let total = 0
-  for (let i = 0; i < 30 && total !== 41; i++) { await sleep(300); total = (await api('POST', '/data/Invoices/query', {})).rows[0].Total }
+  for (let i = 0; i < 30 && total !== 41; i++) { await sleep(300); total = (await api('POST', '/query', { plan: { version: 2, table: 'Invoices' } })).rows[0].Total }
   ok(total === 41, `invoice rollup total updated to ${total}`)
   await page.goto(`${BASE}/#table-${inv.id}`, { waitUntil: 'networkidle0' })
   await click('[data-testid="tab-data"]')

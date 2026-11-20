@@ -3,6 +3,7 @@
  * rollup columns, environment isolation, post-commit attachment deletion, and a 10,000-job load check (PostgreSQL):
  *   APPBUILDER_TEST_DB=postgres://... npx vitest run server/core/jobs
  */
+import { planBody } from './testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PG_URL, SKIP_PG } from './testdb.ts'
 import { setQuiet } from './util.ts'
@@ -125,7 +126,7 @@ describe.skipIf(!PG_URL)('job queue and kernel guarantees (PostgreSQL)', () => {
     const list = (await A().get('/admin/schedules')).data.items
     // the backup schedules (package J) are managed on the Backups page; they live in Default's schedules too, as do the
     // install-wide log retention schedules (package M)
-    expect(list.filter((x: any) => x.builtIn && !x.jobType.startsWith('backup.')).map((x: any) => x.jobType).sort()).toEqual(['actions.retention', 'approval.retention', 'attachments.sweep', 'audit.retention', 'collab.orphan-sweep', 'data.recycle-purge', 'flow.digest', 'flow.retention', 'identity.mail-log.retention', 'identity.signin-log.retention', 'notifications.delivery-retention', 'notifications.digest', 'ops.health_daily', 'ops.health_watch', 'ops.heartbeat', 'outbox.retention', 'print.sweep', 'rollup.reconcile', 'whatsapp.retention'])
+    expect(list.filter((x: any) => x.builtIn && !x.jobType.startsWith('backup.')).map((x: any) => x.jobType).sort()).toEqual(['actions.retention', 'approval.retention', 'attachments.sweep', 'audit.retention', 'chat.retention', 'collab.orphan-sweep', 'data.recycle-purge', 'flow.digest', 'flow.retention', 'identity.mail-log.retention', 'identity.signin-log.retention', 'notifications.delivery-retention', 'notifications.digest', 'ops.health_daily', 'ops.health_watch', 'ops.heartbeat', 'outbox.retention', 'print.sweep', 'rollup.reconcile', 'whatsapp.retention'])
     expect((await A().post('/admin/schedules', { name: 'bad', cron: '61 * * * *', jobType: 'test.noop' })).status).toBe(422)
   }, 60000)
 
@@ -185,7 +186,7 @@ describe.skipIf(!PG_URL)('job queue and kernel guarantees (PostgreSQL)', () => {
     expect(self.status, JSON.stringify(self.data)).toBe(200)
     const row = (await A().post('/data/Ping/rows', { values: { N: 0 } })).data.row.id
     await drain()
-    const n = (await A().post('/data/Ping/query', { where: { col: 'id', op: 'eq', value: row } })).data.rows[0].N
+    const n = (await A().post('/query', planBody('Ping', { where: { col: 'id', op: 'eq', value: row } }))).data.rows[0].N
     expect(n).toBe(1)
     const runs = (await A().get(`/tables/${p.data.id}/event-runs`)).data.items
     expect(runs.some((r: any) => r.status === 'skipped' && /loop guard/.test(r.message))).toBe(true)

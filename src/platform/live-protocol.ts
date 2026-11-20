@@ -12,6 +12,7 @@
  */
 
 import type { BackupLiveEvent } from './backup.ts'
+import type { ChatPushMessage, ChatTypingMessage, ChatUserEvent } from './chat-protocol.ts'
 
 export const LIVE_PROTOCOL_VERSION = 1
 /** the endpoint (same origin, same port as the API); ws:// or wss:// as the page */
@@ -128,6 +129,8 @@ export type UserEvent =
   | { event: 'session'; reason: SessionEndReason }
   /** install administrators: progress of a backup or restore (P0 package J, src/platform/backup.ts) */
   | ({ event: 'backup' } & BackupLiveEvent)
+  /** P3-A chat: a conversation's unread state or the list of conversations changed (src/platform/chat-protocol.ts) */
+  | ChatUserEvent
 
 export type SessionEndReason = 'signed_out' | 'password_changed' | 'password_change_required' | 'disabled' | 'removed' | 'expired'
 
@@ -173,7 +176,8 @@ export interface AppMessage {
 export type ServerMessage =
   | HelloMessage
   | { t: 'subscribed'; id?: string; topic: string; env?: string; seq?: number; epoch: string }
-  | { t: 'unsubscribed'; id?: string; topic: string; env?: string }
+  /** reason: the server ended the subscription (lost access, removed from a chat conversation) */
+  | { t: 'unsubscribed'; id?: string; topic: string; env?: string; reason?: string }
   | { t: 'error'; id?: string; code: LiveErrorCode; message: string; topic?: string }
   | { t: 'pong'; id?: string; at: string }
   | { t: 'resync'; reason: string }
@@ -183,6 +187,9 @@ export type ServerMessage =
   | PresenceMessage
   | EnvMessage
   | AppMessage
+  /** P3-A chat topics chat:<channelId> and chat:typing:<channelId> (src/platform/chat-protocol.ts) */
+  | ChatPushMessage
+  | ChatTypingMessage
 
 export type LiveErrorCode = 'invalid' | 'denied' | 'not-found' | 'unavailable' | 'limit' | 'password_change_required'
 
@@ -240,6 +247,7 @@ export const NOTIFICATION_KINDS: readonly { kind: string; label: string; descrip
   { kind: 'approval', label: 'Approvals', description: 'Approval requests waiting for you.' },
   { kind: 'mention', label: 'Mentions and comments', description: 'Someone mentioned you or commented on a record you follow.' },
   { kind: 'task', label: 'Tasks', description: 'A task was assigned to you.' },
+  { kind: 'chat', label: 'Chat', description: 'Direct messages and mentions in chat (ordinary channel messages only raise the unread count).' },
   { kind: 'health', label: 'Server health', description: 'Install administrators: the daily health summary and alerts (degraded server, failed backup, dead jobs, failing flows), when turned on in Admin console > Server logs.' },
 ]
 

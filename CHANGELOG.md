@@ -4,6 +4,24 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 
 ## [Unreleased]
 
+Phase 3 (Collaboration and templates), in progress. Schema version 14. Specifications: docs/plan/p3-spec.md, docs/plan/hosting-spec.md.
+
+### Added
+- **Chat server** (no screens yet): channels, direct and group conversations, threads, reactions, files, record / app / dashboard cards resolved per reader, mentions and chat notifications, search, retention, moderation, reports, and an audited export announced in the conversation (`/api/v1/chat/*`, live topics `chat:<id>`).
+- **Solution templates** (Templates > Solutions): a whole working set (tables, desktop and phone apps, flows, approvals, dashboards, print templates, roles, number sequences) installs as a versioned solution in one step after a backup, upgrades in place with your changes kept or replaced, and **Remove sample data** removes only the sample rows. The common business model is in the catalogue and is installed first by the templates that need it. New built-in example: **Visitor log**. Flows brought by a template arrive turned off; an administrator switches them on.
+- **Sort by a lookup.** Lists can be sorted by a lookup column's name on the server (DataTable headers, the phone card Sort by, auto apps). A record the viewer cannot read sorts as blank; a hidden name column is refused; tables on MySQL, data files and Google Sheets say they cannot be sorted this way.
+- Plans: a GST calculation specification draft for a practising accountant to review (docs/plan/gst-spec-draft.md); nothing of ledgers or GST is built before the sign-off.
+
+### Removed
+- **Breaking:** the Data API v1 read route `POST /api/v1/data/:table/query` is removed (404). Use `POST /api/v1/query` with a Query v2 plan. The row write routes are unchanged. The browser's small-table cache and offline answers use Query v2.
+
+### Security
+- The communication system tables were writable through the data API (any user could create channels or add members with any role), and environment administrators read every message through Query v2. Chat tables are now written by the chat service only and read by membership for everyone, administrators included. Nothing wrote to these tables before, so nothing was exposed.
+
+### Known gaps
+- Chat has no screens yet; the read-only install path and WhatsApp for chat are untested.
+- Solution templates: scheduled reports and Word print templates cannot go in a pack; environment copies do not carry the install register; a dependency's tables cannot be chosen in the install dialog; deploying a pack's solution to another environment is untested.
+
 ## [0.7.0] - 2026-11-20
 
 **Phase 2 "Reach" is done** (docs/plan/p2-spec.md, with the exit check results): phone apps with offline entry, print templates and PDFs, dashboards with TV screens and email snapshots, auto apps, the templates catalogue, the WhatsApp connector. Schema version 13. Verified on one developer PC and in CI; nothing was run on a real phone, against Meta's real API or on a hosted server, and there has been no outside security review (internal review: docs/internal/security-review-p2.md).

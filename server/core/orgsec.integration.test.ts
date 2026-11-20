@@ -6,6 +6,7 @@
  * read, sharing and unsharing, team member removal, deleted users, the explainer, the CSV import of users, solution
  * export of rules, and EXPLAIN checks that the organisation and rule predicates can use their indexes.
  */
+import { planBody } from './testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -250,7 +251,7 @@ describe.skipIf(!PG_URL)(PG_URL ? 'organisation security (PostgreSQL)' : `organi
     expect((await clients.teach1.query('Students', { count: true })).data.count).toBe(2)
     expect(names(await clients.teach2.query('Students'))).toEqual(['Ken', 'Sam'])
     expect(names(await clients.parent1.query('Students'))).toEqual(['Sam'])
-    const v1 = await clients.parent1.post('/api/v1/data/Students/query', {})
+    const v1 = await clients.parent1.post('/api/v1/query', planBody('Students'))
     expect(v1.data.rows.map((r: { Name: string }) => r.Name)).toEqual(['Sam'])
     const agg = await clients.teach1.query('Attendance', { aggregate: { groupBy: [], measures: [{ name: 'n', fn: 'count' }] } })
     expect(agg.status, JSON.stringify(agg.data)).toBe(200)

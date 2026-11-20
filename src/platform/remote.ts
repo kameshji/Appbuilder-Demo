@@ -9,7 +9,7 @@
  * still in flight; `rows` = confirmed with the ops replayed on top. Success folds the server's answer into
  * `confirmed`, failure just drops the op, so a rollback can never clobber a later write.
  */
-import { answerFromSnapshot, backoffMs, isIdempotentRead, isNetworkError, offlineHook, readKey, type Snapshot } from './offline-hook'
+import { answerFromSnapshot, backoffMs, isIdempotentRead, isNetworkError, offlineHook, readKey, viaTables, type Snapshot } from './offline-hook'
 import { remoteCollab } from './remote-collab.ts'
 import { remoteRecycle, type RecycleBatch } from './recycle-api.ts'
 import type { AppDef, FxRecord, FxValue } from '@/contracts'
@@ -22,7 +22,7 @@ import type {
 } from './contracts'
 import { API_BASE, CSRF_HEADER, DEFAULT_ROW_CAP } from './http'
 import type {
-  ApiError, AppGetResponse, AttachmentResolveResponse, EnvironmentsResponse, QueryResponse, QueryValue, RowResponse, SourceTableInfo, StatusResponse,
+  ApiError, AppGetResponse, AttachmentResolveResponse, EnvironmentsResponse, QueryValue, RowResponse, SourceTableInfo, StatusResponse,
   WorkspaceResponse,
 } from './http'
 import { rowsToCsv } from './csv'
@@ -354,7 +354,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
     return o
   }
   /** P2-A offline entry: answers over tables of offline apps are kept on the device; offline, the last one answers */
-  async function cachedRead<T>(path: string, table: string, body: unknown, run: () => Promise<T>, fromSnapshot?: (snap: Snapshot) => T | undefined): Promise<T> {
+  async function cachedRead<T>(path: string, table: string, body: unknown, run: () => Promise<T>, fromSnapshot?: (snap: Snapshot) => T | undefined | Promise<T | undefined>): Promise<T> {
     const h = offlineHook()
     if (!h) return run()
     const key = readKey(path, body)
@@ -369,16 +369,27 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
         // a table kept on the device for offline use ("available offline"): answer from its rows (offline-hook.ts)
         if (fromSnapshot && h.snapshot) {
           const snap = await h.snapshot(table)
-          const ans = snap ? fromSnapshot(snap) : undefined
+          const ans = snap ? await fromSnapshot(snap) : undefined
           if (ans !== undefined) return ans
         }
       }
       throw e
     }
   }
-  const snapshotAnswer = (plan: QueryPlan) => (snap: Snapshot): QueryV2Response | undefined => {
+  const snapshotAnswer = (plan: QueryPlan) => async (snap: Snapshot): Promise<QueryV2Response | undefined> => {
     const e = findEntry(plan.table)
-    return e ? answerFromSnapshot(plan, snap, e.def) : undefined
+    if (!e) return undefined
+    // lookup paths and sorts through a lookup (P3-C) read the target's kept rows too; without them: not offline
+    const targets = viaTables(plan)
+    if (!targets.length) return answerFromSnapshot(plan, snap, e.def)
+    const related: Record<string, { snap: Snapshot; def: TableDef }> = {}
+    for (const t of targets) {
+      const te = findEntry(t)
+      const ts = te ? await offlineHook()?.snapshot?.(te.def.name) : undefined
+      if (!te || !ts) return undefined
+      related[t] = { snap: ts, def: te.def }
+    }
+    return answerFromSnapshot(plan, snap, e.def, related)
   }
   const queries = new QueryCache({
     post: (plan, signal) => cachedRead('/query', plan.table, { plan }, () => call<QueryV2Response>('POST', '/query', { json: { plan }, signal }), snapshotAnswer(plan)),
@@ -504,6 +515,24 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
 
   const setNames = (list: string[], name: string, on: boolean) => (on ? (list.includes(name) ? list : [...list, name].sort()) : list.filter((n) => n !== name))
 
+  /**
+   * The rows of a small table, whole (P3-C: Query v2, the v1 query route is gone): one plan in natural order with
+   * `take` of the row cap (DEFAULT_ROW_CAP, 5,000), as the signed-in user (row and column security in the statement,
+   * as for every query). When exactly the cap came back, one count-only request says whether more rows exist (the
+   * v1 `truncated`); connectors that read at most 5,000 rows set `truncated` themselves. Offline, both requests are
+   * answered from the rows kept on the device ("available offline", answerFromSnapshot), as v1 loads were.
+   */
+  async function readWhole(name: string): Promise<{ rows: Record<string, QueryValue>[]; truncated: boolean }> {
+    const post = (plan: QueryPlan) => cachedRead('/query', name, { plan }, () => call<QueryV2Response>('POST', '/query', { json: { plan } }), snapshotAnswer(plan))
+    const res = await post({ version: 2, table: name, take: { n: DEFAULT_ROW_CAP, from: 'start' } })
+    let truncated = !!res.truncated
+    if (!truncated && res.rows.length >= DEFAULT_ROW_CAP) {
+      const n = await post({ version: 2, table: name, count: true, page: { size: 0 } })
+      truncated = !!n.truncated || (n.count ?? 0) > DEFAULT_ROW_CAP
+    }
+    return { rows: res.rows, truncated }
+  }
+
   function load(e: TableEntry, o: { quiet?: boolean; force?: boolean } = {}): Promise<void> {
     if (e.loadPromise) return e.loadPromise
     if (e.loaded && !o.force) return Promise.resolve()
@@ -514,7 +543,7 @@ export function createRemotePlatform(options: RemotePlatformOptions = {}): Platf
       try {
         for (let attempt = 0; ; attempt++) {
           const epoch = e.epoch
-          const res = await cachedRead(`/data/${name}/query`, name, { top: DEFAULT_ROW_CAP }, () => call<QueryResponse>('POST', `/data/${enc(name)}/query`, { json: { top: DEFAULT_ROW_CAP } }), (snap): QueryResponse => ({ rows: snap.rows.slice(0, DEFAULT_ROW_CAP), truncated: snap.partial || snap.rows.length > DEFAULT_ROW_CAP }))
+          const res = await readWhole(name)
           if (!isCurrent(e)) return
           if (e.epoch !== epoch && attempt < 2) continue // a write finished while we were reading: read again
           e.confirmed = res.rows.map((r) => rowFromJson(e.def, r))

@@ -12,6 +12,7 @@ import { attachmentIds, imageSource } from '@/runtime/attachments'
 import { AvatarCircle } from './basics'
 import { DynIcon, fieldText, formatDate, formatNumber, isIsoDateString, pick, prettify, selModeOf } from './helpers'
 import { queryMeta, rowCountText, useVirtualRows, viewMatches } from '../virtual'
+import { lookupSortInfo } from '@/runtime/delegation'
 import { useDevice } from '@/phone/env'
 import { useBoxWidth } from '@/phone/touch-hooks'
 import { cardMode, cardPlan, parseCardColumns } from '@/phone/touch-logic'
@@ -164,7 +165,10 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
       const def = srcDef?.columns.find((x) => x.name === c.field)
       if (!def || def.type !== 'lookup' || !def.lookupTable) continue
       const distinct = meta ? 0 : new Set(items.map((r) => pick(r, c.field)).filter((v) => typeof v === 'string' && v !== '')).size
-      out.set(c.field, { target: def.lookupTable, ...lookupSort(!!meta, c.header, distinct) })
+      // a server list sorts by the label on the server where the store supports it and the viewer may read the target's
+      // primary column (P3-C); otherwise the header says why it can't
+      const info = meta ? lookupSortInfo(meta.table, c.field) : null
+      out.set(c.field, { target: def.lookupTable, ...lookupSort(info ? info.support : false, c.header, distinct, info?.target?.displayName ?? def.lookupTable) })
     }
     return out
   }, [cols, srcDef, meta, items])
@@ -294,7 +298,8 @@ function DataTableRender({ props, mode, outputs, setOutput, fire }: ControlRende
 
   const onHeader = (c: Col) => {
     if (!sortable || design) return
-    // a query result sorts on the server: only columns of the table can be sorted, and never a lookup (it would sort by id)
+    // a query result sorts on the server: only columns of the table can be sorted, a lookup by its label where the
+    // server supports it (lookupSortInfo), never by record id
     if (!canSort(c)) return
     if (sortCol !== c.field || !sortDir) {
       setOutput('SortColumn', c.field)

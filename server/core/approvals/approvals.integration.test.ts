@@ -7,6 +7,7 @@
  * policies, backup restore rules and the approvalDecided flow trigger.
  *   APPBUILDER_TEST_DB=postgres://... npx vitest run server/core/approvals
  */
+import { planBody } from '../testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PG_URL, SKIP_PG } from '../testdb.ts'
 import { setQuiet } from '../util.ts'
@@ -296,25 +297,25 @@ describe.skipIf(!PG_URL)('approvals (PostgreSQL)', () => {
     expect((await N.get('/approvals?view=all')).status).toBe(403)
     expect((await N.post(`/approvals/${r.id}/respond`, { response: 'Approve' })).status).toBe(404)
     for (const t of ['sys_approval_requests', 'sys_approval_assignments', 'sys_approval_history', 'sys_approval_stages']) {
-      const q = await N.post(`/data/${t}/query`, { select: ['id'], count: true })
+      const q = await N.post('/query', planBody(t, { select: ['id'], count: true }))
       expect(q.status, `${t} ${JSON.stringify(q.data)}`).toBe(200)
       expect(q.data.rows, t).toEqual([])
-      expect(q.data.total, t).toBe(0)
+      expect(q.data.count, t).toBe(0)
     }
     expect((await N.get(`/approvals/record/${ids.table}/${ids.order}`)).status).toBe(404)
     // Vic has "Approvals: view" but cannot read the record either: still nothing
     await inEnv(async () => ap().saveSettings(await ctx('ada@example.com'), { viewerRoles: ['role_viewer'] }))
     expect((await clients['vic@example.com'].get(`/approvals/${r.id}`)).status).toBe(404)
-    const vq = await clients['vic@example.com'].post('/data/sys_approval_requests/query', { select: ['id'] })
+    const vq = await clients['vic@example.com'].post('/query', planBody('sys_approval_requests', { select: ['id'] }))
     expect(vq.data.rows).toEqual([])
     // Fay sees her own request rows through the system tables (assigned), and the Comments rule follows the request
-    const fq = await clients['fay@example.com'].post('/data/sys_approval_requests/query', { select: ['id', 'Title'] })
+    const fq = await clients['fay@example.com'].post('/query', planBody('sys_approval_requests', { select: ['id', 'Title'] }))
     expect(fq.data.rows.map((x: any) => x.id)).toContain(r.id)
     const cm = await clients['raj@example.com'].post(`/data/sys_comments/rows`, { values: { regardingTable: 'sys_approval_requests', regardingId: r.id, Body: 'See the quote' } })
     expect(cm.status, JSON.stringify(cm.data)).toBe(200)
-    const nc = await N.post('/data/sys_comments/query', { select: ['id'], where: { col: 'regardingId', op: 'eq', value: r.id } })
+    const nc = await N.post('/query', planBody('sys_comments', { select: ['id'], where: { col: 'regardingId', op: 'eq', value: r.id } }))
     expect(nc.data.rows).toEqual([])
-    const fc = await clients['fay@example.com'].post('/data/sys_comments/query', { select: ['id'], where: { col: 'regardingId', op: 'eq', value: r.id } })
+    const fc = await clients['fay@example.com'].post('/query', planBody('sys_comments', { select: ['id'], where: { col: 'regardingId', op: 'eq', value: r.id } }))
     expect(fc.data.rows).toHaveLength(1)
     await respond('fay@example.com', r.id, 'Approve')
     // the record timeline: the requester sees the approval events; Nia cannot open the record at all

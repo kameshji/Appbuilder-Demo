@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { EXPORT_MAX_H, EXPORT_MAX_W, EXPORT_MIN_W, exportSize, hasSignature, inkLength, padRect, penWidthFor, simplify, strokeBounds, strokePath, toPad, type Stroke } from './signature'
 import { BackStack, type HistoryLike } from './back'
 import { DEFAULT_OFFLINE_ROWS, DOWNLOAD_PAGE, MAX_OFFLINE_ROWS, capMessage, clampRows, compileOfflineTable, downloadPlan, normalizeOfflineTables, progressText, specKey } from './offline/tables'
-import { answerFromSnapshot } from '@/platform/offline-hook'
+import { answerFromSnapshot, viaTables } from '@/platform/offline-hook'
 import { draftKeyOf, draftNote, draftRecordKey, restoreDecision } from './drafts'
 import { registerFiles, splitFileTokens } from '@/runtime/attachments'
 import type { SchemaInfo } from '@/platform/query'
@@ -239,6 +239,21 @@ describe('available offline tables', () => {
     // a count plan (sizes) and a malformed plan (the caller then says "Could not reach the server")
     expect(answerFromSnapshot({ version: 2, table: 'Parts', count: true, page: { size: 0 } }, { rows: wire, partial: false }, PARTS)!.count).toBe(3)
     expect(answerFromSnapshot({ version: 2, table: 'Parts', filter: { col: 'Nope', op: 'eq', value: 1 } }, { rows: wire, partial: false }, PARTS)).toBeUndefined()
+  })
+  it('P3-C: a list sorted by a lookup is answered from the kept rows of both tables (an unkept target row sorts blank)', () => {
+    const BINS: TableDef = { id: 'tbl_b', name: 'Bins', displayName: 'Bins', primaryColumn: 'Code', createdOn: '', modifiedOn: '', columns: [col('id', 'text', { system: true }), col('createdOn', 'datetime', { system: true }), col('Code', 'text')] }
+    const parts: TableDef = { ...PARTS, columns: [...PARTS.columns, col('Bin', 'lookup', { lookupTable: 'Bins' })] }
+    const rows = wire.map((r, i) => ({ ...r, Bin: ['b2', 'b1', 'b9'][i] }))
+    const bins = { rows: [{ id: 'b1', createdOn: '2026-01-01T00:00:00.000Z', Code: 'Z-1' }, { id: 'b2', createdOn: '2026-01-01T00:00:00.000Z', Code: 'a-2' }], partial: false }
+    const plan = { version: 2 as const, table: 'Parts', sort: [{ col: 'Bin', dir: 'desc' as const, via: { table: 'Bins', col: 'Code' } }] }
+    const res = answerFromSnapshot(plan, { rows, partial: false }, parts, { Bins: { snap: bins, def: BINS } })!
+    // Z-1 (p1), a-2 (p3), then b9 (not kept: blank, last when descending)
+    expect(res.rows.map((r) => r.id)).toEqual(['p1', 'p3', 'p2'])
+    expect(res.truncated).toBeUndefined()
+    expect(answerFromSnapshot(plan, { rows, partial: false }, parts, { Bins: { snap: { ...bins, partial: true }, def: BINS } })!.truncated).toBe(true)
+    // without the target's kept rows the plan cannot run here (never sorted by the id)
+    expect(answerFromSnapshot(plan, { rows, partial: false }, parts)).toBeUndefined()
+    expect(viaTables({ ...plan, filter: { via: { col: 'Bin', table: 'Bins', where: { col: 'Code', op: 'eq', value: 'x' } } } })).toEqual(['Bins'])
   })
 })
 

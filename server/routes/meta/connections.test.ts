@@ -109,7 +109,7 @@ describe('connections', () => {
     expect(ok.body).toMatchObject({ name: 'LegacyOrders', source: 'legacy_orders', connectionId: 'conn_default', readOnly: true, missingSystem: ['createdOn', 'modifiedOn', 'createdBy', 'owner'] })
     expect(ok.body.managed).toBeUndefined()
     expect(ok.body.columns.map((c: { name: string }) => c.name)).toEqual(['id', 'total', 'who'])
-    const q = await h.call(A, 'POST', `/api/v1/data/${ok.body.id}/query`, {})
+    const q = await h.call(A, 'POST', '/api/v1/query', { plan: { version: 2, table: ok.body.id } })
     expect(q.status, JSON.stringify(q.body)).toBe(200)
     expect(q.body.rows).toEqual([{ id: '11111111-1111-4111-8111-111111111111', total: 5, who: 'a' }])
     expect((await h.call(A, 'POST', `/api/v1/data/${ok.body.id}/rows`, { values: { who: 'b' } })).status).toBe(403)
@@ -122,7 +122,7 @@ describe('connections', () => {
     const ro = await h.call(M, 'POST', '/api/v1/connections/conn_default/link', { source: 'no_id' })
     expect(ro.body.readOnly).toBe(true)
     expect(ro.body.missingSystem).toEqual(['id', 'createdOn', 'modifiedOn', 'createdBy', 'owner'])
-    expect((await h.call(A, 'POST', `/api/v1/data/${ro.body.id}/query`, {})).status).toBe(200)
+    expect((await h.call(A, 'POST', '/api/v1/query', { plan: { version: 2, table: ro.body.id } })).status).toBe(200)
     // read-only tables get read-only default privileges, schema changes are refused
     expect((await h.meta.roles.get('role_maker'))!.privileges.find((p) => p.table === ro.body.id)).toMatchObject({ create: false, update: 'none', read: 'all' })
     expect((await h.call(M, 'POST', `/api/v1/tables/${ro.body.id}/columns`, { displayName: 'x', type: 'text' })).status).toBe(422)

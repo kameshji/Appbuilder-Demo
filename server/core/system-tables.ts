@@ -19,6 +19,7 @@
  *    by attachments.ts).
  */
 import { upgradeEnvironmentTo8Flows } from './flows/ddl.ts'
+import { CHAT_SYSTEM_TABLES, chatSystemIndexes } from './chat/ddl.ts'
 import type { SqlDb } from './contracts.ts'
 import type { ColumnDef, TableDef } from '../../src/platform/contracts.ts'
 import {
@@ -172,6 +173,8 @@ function extraIndexes(d: Dialect, def: TableDef, spec: SystemTableSpec): string[
     out.push(`CREATE INDEX IF NOT EXISTS ${quoteId(indexName(spec.source, 'index', 'myteamtasks'))} ON ${t} ("AssignedTeam", "Status", "DueOn") WHERE "AssignedTeam" IS NOT NULL`)
   }
   if (spec.id === SYS.mentions) out.push(`CREATE INDEX IF NOT EXISTS ${quoteId(indexName(spec.source, 'index', 'inbox'))} ON ${t} ("MentionedUser", "createdOn" DESC)`)
+  // P3-A chat: history pages, change feed, search, one direct conversation per pair (chat/ddl.ts)
+  out.push(...chatSystemIndexes(d.schema, spec.id))
   void def
   return out
 }
@@ -304,7 +307,10 @@ export async function linkAttachments(db: SqlDb, schema: string): Promise<number
      SELECT (substr(h, 1, 8) || '-' || substr(h, 9, 4) || '-5' || substr(h, 14, 3) || '-8' || substr(h, 18, 3) || '-' || substr(h, 21, 12)), a.created_on, a.created_on, a.created_by, a.created_by,
             a.id, a.col, left(a.file_name, 255), left(a.mime, 255), a.size_bytes, a.table_id, lower(a.row_id)
        FROM (SELECT md5('attachment:' || id) AS h, * FROM ${S('ab_attachments')}) a
-      WHERE NOT EXISTS (SELECT 1 FROM ${S(SYS.attachmentLinks)} l WHERE l."Attachment" = a.id)`,
+      WHERE NOT EXISTS (SELECT 1 FROM ${S(SYS.attachmentLinks)} l WHERE l."Attachment" = a.id)
+        AND a.table_id <> ALL($1::text[])`,
+    // P3-A: chat files are not listed in Attachment links (their names are message content)
+    [CHAT_SYSTEM_TABLES],
   )
   return r.affectedRows
 }
@@ -330,8 +336,8 @@ async function ownerLookupsOnce(db: SqlDb, schema: string): Promise<void> {
 
 /* ------------------------------------------------------------------ environment copy */
 
-/** real system tables (not projections) whose rows an environment copy "with data" takes along */
-export const COPYABLE_SYSTEM_TABLES = SYSTEM_TABLES.filter((t) => t.kind !== 'projection').map((t) => t.source)
+/** real system tables (not projections) whose rows an environment copy "with data" takes along (never chat: P3-A) */
+export const COPYABLE_SYSTEM_TABLES = SYSTEM_TABLES.filter((t) => t.kind !== 'projection' && !CHAT_SYSTEM_TABLES.includes(t.id)).map((t) => t.source)
 
 /** copies the rows of the real system tables (after both schemas were provisioned); reference seeds are replaced */
 export async function copySystemData(db: SqlDb, from: string, to: string): Promise<void> {

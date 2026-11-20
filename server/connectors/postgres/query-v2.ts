@@ -29,7 +29,7 @@ const F = 'FALSE'
 export interface V2Options {
   /** the caller's row filter (v1 semantics); undefined = every row (system / administrators) */
   rowFilter?: Condition
-  /** lookup paths (`via` conditions): the tables they read and the caller's row filter on each (same schema) */
+  /** lookup paths (`via` conditions) and sort keys through a lookup: the tables they read and the caller's row filter on each (same schema) */
   related?: Record<string, { def: TableDef; rowFilter?: Condition }>
   /** columns returned when the plan has no select (the caller's visible columns) */
   visible: string[]
@@ -272,6 +272,50 @@ export class V2Builder {
     return `(CASE WHEN ${x} = 0 THEN 0::double precision WHEN ${expo} THEN ${viaExp} ELSE ${viaDec} END)`
   }
 
+  /* -------------------------------------------------------------- sort keys through a lookup (P3-C) */
+
+  /** the column whose kind a sort key has: the target's column for a key through a lookup */
+  sortCol(k: SortKeyV2): ColumnDef {
+    if (!k.via) return this.cols.get(k.col)
+    const rel = this.related?.[k.via.table]
+    if (!rel) return bad(`The lookup table ${k.via.table.slice(0, 64)} cannot be read in this query`)
+    return new Cols(rel.def).get(k.via.col)
+  }
+
+  /** the normalised sort key of key i of the stream (a key through a lookup reads its join "__l<i>") */
+  sortRef(sort: SortKeyV2[], i: number): string {
+    const k = sort[i]!
+    return k.via ? this.key(this.sortCol(k), `"__l${i}"."__lv"`) : this.key(this.cols.get(k.col))
+  }
+
+  /**
+   * One LEFT JOIN per key through a lookup: an uncorrelated derived table of the target's rows THE CALLER MAY READ
+   * (their row filter and the recycle bin's live-row predicate, through the v1 buildWhere like a lookup path), exposing
+   * only "__lid" and "__lv", joined on the target's id. A blank lookup, a missing row and an unreadable row find no
+   * partner: "__lv" is NULL and the key is the blank key of its kind, the same as a blank label. Managed tables have id
+   * as their primary key, so the join never repeats a row; for linked tables DISTINCT ON keeps the first row of an id.
+   * Never an alias for the main table (row filters' correlated semi-joins name it by its qualified name).
+   */
+  sortJoins(sort: SortKeyV2[]): string {
+    const t = tableId(this.d, this.def)
+    const out: string[] = []
+    sort.forEach((k, i) => {
+      if (!k.via) return
+      const rel = this.related?.[k.via.table]
+      if (!rel) bad(`The lookup table ${k.via.table.slice(0, 64)} cannot be read in this query`)
+      if ((rel!.def.missingSystem ?? []).includes('id')) bad(`${k.via.table.slice(0, 64)} has no id column, so a list cannot be sorted through it`)
+      const target = this.sortCol(k)
+      const tt = tableId(this.d, rel!.def)
+      const rw = buildWhere(this.d, rel!.def, rel!.rowFilter && !('const' in rel!.rowFilter && rel!.rowFilter.const) ? rel!.rowFilter : undefined, this.p).sql
+      const sel = `"id" AS "__lid", ${quoteId(target.name)} AS "__lv"`
+      const sub = rel!.def.managed
+        ? `SELECT ${sel} FROM ${tt} WHERE ${rw}`
+        : `SELECT DISTINCT ON ("id") ${sel} FROM ${tt} WHERE ${rw} ORDER BY "id", ${naturalTerms(rel!.def).join(', ')}`
+      out.push(`LEFT JOIN (${sub}) AS "__l${i}" ON "__l${i}"."__lid" = ${t}.${this.q(k.col)}`)
+    })
+    return out.length ? ' ' + out.join(' ') : ''
+  }
+
   /* -------------------------------------------------------------- where, order, seek */
 
   where(plan: QueryPlan, rowFilter: Condition | undefined): string {
@@ -295,7 +339,7 @@ export class V2Builder {
   /** ORDER BY terms of the stream (sort keys, then natural order ascending); `reverse` flips every term (take from end) */
   orderTerms(sort: SortKeyV2[], reverse: boolean, ref?: (i: number) => string, nat?: string[]): string[] {
     const flip = (dir: 'asc' | 'desc') => ((dir === 'asc') !== reverse ? 'ASC' : 'DESC')
-    const out = sort.map((k, i) => `${ref ? ref(i) : this.key(this.cols.get(k.col))} ${flip(k.dir)}`)
+    const out = sort.map((k, i) => `${ref ? ref(i) : this.sortRef(sort, i)} ${flip(k.dir)}`)
     for (const n of nat ?? this.natural()) out.push(`${n} ${flip('asc')}`)
     return out
   }
@@ -323,7 +367,7 @@ export class V2Builder {
   /** rows strictly after the cursor in the total order (keys, then createdOn asc, id asc) */
   seek(sort: SortKeyV2[], cur: DecodedCursor, ref: (i: number) => string, nat: string[]): string {
     if (!this.hasId) bad('This table has no id column, so it cannot be paged with a cursor')
-    const terms: { expr: string; val: string; dir: 'asc' | 'desc' }[] = sort.map((k, i) => ({ expr: ref(i), val: this.cursorParam(this.cols.get(k.col), cur.keys[i] ?? null), dir: k.dir }))
+    const terms: { expr: string; val: string; dir: 'asc' | 'desc' }[] = sort.map((k, i) => ({ expr: ref(i), val: this.cursorParam(this.sortCol(k), cur.keys[i] ?? null), dir: k.dir }))
     if (this.hasCreatedOn) {
       let c = `'-infinity'::timestamptz`
       if (cur.createdOn !== null) {
@@ -352,7 +396,7 @@ export class V2Builder {
   /** the hidden cursor columns of a row (normalised keys, createdOn ISO, id) */
   cursorColumns(sort: SortKeyV2[], ref: (i: number) => string, prefix: string): string[] {
     const out = sort.map((k, i) => {
-      const col = this.cols.get(k.col)
+      const col = this.sortCol(k)
       const e = ref(i)
       switch (kindOf(col.type)) {
         case 'date': return `(CASE WHEN ${e} = '-infinity'::date THEN NULL ELSE to_char(${e}, 'YYYY-MM-DD') END) AS "__c${i}"`
@@ -369,6 +413,7 @@ export class V2Builder {
   /* -------------------------------------------------------------- statements */
 
   build(plan: QueryPlan, o: V2Options): V2Statement {
+    if (plan.aggregate && plan.sort?.some((k) => k.via)) bad('Sorting through a lookup is only possible for lists of rows, not before grouping')
     if (plan.aggregate) return this.aggregate(plan, o)
     return this.rows(plan, o)
   }
@@ -397,19 +442,21 @@ export class V2Builder {
     let ref: (i: number) => string
     let nat: string[]
     let colRef: (c: ColumnDef) => string
+    // keys through a lookup (P3-C): one LEFT JOIN each to the target rows the caller may read
+    const joins = this.sortJoins(sort)
     if (plan.take) {
-      const keys = sort.map((k, i) => `${this.key(this.cols.get(k.col))} AS "__k${i}"`)
+      const keys = sort.map((_, i) => `${this.sortRef(sort, i)} AS "__k${i}"`)
       const natSel = this.natural().map((n, i) => `${n} AS "${i === 0 && this.hasCreatedOn ? '__n' : '__i'}"`)
       const needed = new Set([...out.map((c) => c.name), ...(this.hasCreatedOn ? ['createdOn'] : []), ...(this.hasId ? ['id'] : [])])
-      const sel = [...[...needed].map((n) => quoteId(this.cols.get(n).name)), ...keys, ...natSel].join(', ')
+      const sel = [...[...needed].map((n) => `${joins ? `${t}.` : ''}${quoteId(this.cols.get(n).name)}`), ...keys, ...natSel].join(', ')
       const order = this.orderTerms(sort, plan.take.from === 'end').join(', ')
-      from = `(SELECT ${sel} FROM ${t} WHERE ${W} ORDER BY ${order} LIMIT ${plan.take.n}) AS s`
+      from = `(SELECT ${sel} FROM ${t}${joins} WHERE ${W} ORDER BY ${order} LIMIT ${plan.take.n}) AS s`
       ref = (i) => `s."__k${i}"`
       nat = this.natural().map((_, i) => (i === 0 && this.hasCreatedOn ? 's."__n"' : 's."__i"'))
       colRef = (c) => `s.${quoteId(c.name)}`
     } else {
-      from = `${t}`
-      ref = (i) => this.key(this.cols.get(sort[i]!.col))
+      from = `${t}${joins}`
+      ref = (i) => this.sortRef(sort, i)
       nat = this.natural()
       colRef = (c) => quoteId(c.name)
     }

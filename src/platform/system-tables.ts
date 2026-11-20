@@ -186,12 +186,12 @@ export const SYSTEM_TABLES: SystemTableSpec[] = [
   {
     id: SYS.mentions, name: 'Mentions', displayName: 'Mentions', group: 'collaboration', kind: 'table', policy: 'regarding', source: SYS.mentions, primaryColumn: 'MentionedUser', extensible: false, regarding: true,
     description: 'Who was @mentioned where. Written by the platform when a comment mentions someone.',
-    columns: [look('MentionedUser', 'Mentioned user', 'Users', { indexed: true }), look('Comment', 'Comment', 'Comments'), ...regardingCols(true), col('IsRead', 'Read', 'boolean', { default: 'false' }), col('ReadOn', 'Read on', 'datetime')],
+    columns: [look('MentionedUser', 'Mentioned user', 'Users', { indexed: true }), look('Comment', 'Comment', 'Comments'), ...regardingCols(true), col('IsRead', 'Read', 'boolean', { default: 'false' }), col('ReadOn', 'Read on', 'datetime'), look('Message', 'Message', 'Messages')],
   },
   {
     id: SYS.follows, name: 'Follows', displayName: 'Follows', group: 'collaboration', kind: 'table', policy: 'regarding', source: SYS.follows, primaryColumn: REGARDING.id, extensible: false, regarding: true,
     description: 'Records a user follows (the owner is the follower): they are notified of new comments.',
-    columns: [...regardingCols(true)],
+    columns: [...regardingCols(true), col('LastReadOn', 'Last read', 'datetime')],
     uniqueTogether: [['owner', REGARDING.id]],
   },
   {
@@ -238,29 +238,43 @@ export const SYSTEM_TABLES: SystemTableSpec[] = [
     columns: [col('Attachment', 'Attachment id', 'text', { unique: true }), col('ColumnName', 'Column', 'text'), col('FileName', 'File name', 'text'), col('Mime', 'Type', 'text'), col('SizeBytes', 'Size (bytes)', 'number'), ...regardingCols(true)],
   },
 
-  /* ---------------------------------------------------------------- communication (placeholders, final shape) */
+  /* ---------------------------------------------------------------- communication (chat, P3 package A: docs/dev/chat.md) */
+  // policy 'chat' (chatPredicate below): read follows channel membership (open channels: every chat user), for
+  // administrators too; never written through the data API (the chat service writes them, server/core/chat/).
   {
-    id: SYS.channels, name: 'Channels', displayName: 'Channels', group: 'communication', kind: 'placeholder', policy: 'members', source: SYS.channels, primaryColumn: 'Name', extensible: true,
-    description: 'Chat channels, direct conversations and record discussions (filled by chat later). Members only.',
-    columns: [col('Name', 'Name', 'text', { required: true }), col('Description', 'Description', 'multiline'), col('Kind', 'Kind', 'choice', { choices: ['channel', 'direct', 'record'], default: 'channel' }), col('IsPrivate', 'Private', 'boolean', { default: 'true' }), ...regardingCols(false), col('ArchivedOn', 'Archived on', 'datetime')],
+    id: SYS.channels, name: 'Channels', displayName: 'Channels', group: 'communication', kind: 'placeholder', policy: 'chat', source: SYS.channels, primaryColumn: 'Name', extensible: true,
+    description: 'Chat channels and conversations. Members only (open channels: everyone who uses chat). Written by chat only.',
+    columns: [
+      col('Name', 'Name', 'text', { required: true }), col('Description', 'Description', 'multiline'), col('Kind', 'Kind', 'choice', { choices: ['channel', 'direct', 'group', 'record'], default: 'channel' }),
+      col('IsPrivate', 'Private', 'boolean', { default: 'true' }), ...regardingCols(false), col('ArchivedOn', 'Archived on', 'datetime'),
+      col('DirectKey', 'Direct key', 'text'), col('LastSeq', 'Last change', 'number', { default: '0' }), col('LastMessageOn', 'Last message on', 'datetime', { indexed: true }),
+      col('PurgedSeq', 'Removed up to', 'number', { default: '0' }), col('PostingPolicy', 'Who may post', 'choice', { choices: ['everyone', 'owners'], default: 'everyone' }),
+    ],
   },
   {
-    id: SYS.channelMembers, name: 'ChannelMembers', displayName: 'Channel members', group: 'communication', kind: 'placeholder', policy: 'parent', source: SYS.channelMembers, primaryColumn: 'User', extensible: false,
-    parent: { column: 'Channel', table: SYS.channels },
-    description: 'Who is in which channel.',
-    columns: [look('Channel', 'Channel', 'Channels', { required: true }), look('User', 'User', 'Users', { required: true }), col('MemberRole', 'Role', 'choice', { choices: ['member', 'owner'], default: 'member' }), col('LastReadOn', 'Last read', 'datetime'), col('Muted', 'Muted', 'boolean', { default: 'false' })],
+    id: SYS.channelMembers, name: 'ChannelMembers', displayName: 'Channel members', group: 'communication', kind: 'placeholder', policy: 'chat', source: SYS.channelMembers, primaryColumn: 'User', extensible: false,
+    description: 'Who is in which channel (readable by whoever can read the channel). Written by chat only.',
+    columns: [
+      look('Channel', 'Channel', 'Channels', { required: true }), look('User', 'User', 'Users', { required: true }), col('MemberRole', 'Role', 'choice', { choices: ['member', 'owner'], default: 'member' }),
+      col('LastReadOn', 'Last read', 'datetime'), col('Muted', 'Muted', 'boolean', { default: 'false' }),
+      col('LastReadSeq', 'Last read change', 'number', { default: '0' }), col('NotifyLevel', 'Notify', 'choice', { choices: ['all', 'mentions', 'none'], default: 'mentions' }), col('JoinedOn', 'Joined on', 'datetime'),
+    ],
     uniqueTogether: [['Channel', 'User']],
   },
   {
-    id: SYS.messages, name: 'Messages', displayName: 'Messages', group: 'communication', kind: 'placeholder', policy: 'parent', source: SYS.messages, primaryColumn: 'Body', extensible: true,
-    parent: { column: 'Channel', table: SYS.channels },
-    description: 'Chat messages (members of the channel only).',
-    columns: [look('Channel', 'Channel', 'Channels', { required: true }), col('Body', 'Message', 'multiline'), look('ParentMessage', 'Reply to', 'Messages'), col('EditedOn', 'Edited on', 'datetime'), col('DeletedOn', 'Deleted on', 'datetime'), ...regardingCols(false)],
+    id: SYS.messages, name: 'Messages', displayName: 'Messages', group: 'communication', kind: 'placeholder', policy: 'chat', source: SYS.messages, primaryColumn: 'Body', extensible: true,
+    description: 'Chat messages (readers of the channel only). Written by chat only.',
+    columns: [
+      look('Channel', 'Channel', 'Channels', { required: true }), col('Body', 'Message', 'multiline'), look('ParentMessage', 'Reply to', 'Messages'), col('EditedOn', 'Edited on', 'datetime'), col('DeletedOn', 'Deleted on', 'datetime'), ...regardingCols(false),
+      col('Seq', 'Number', 'number'), col('ChangeSeq', 'Last change', 'number'), col('Kind', 'Kind', 'choice', { choices: ['message', 'system'], default: 'message' }),
+      col('BodyText', 'Text', 'multiline'), col('Cards', 'Cards', 'multiline'), col('Files', 'Files', 'file', { multiple: true, maxSizeMB: 25 }), col('MentionIds', 'Mentioned users', 'multiline'),
+      col('ReplyCount', 'Replies', 'number', { default: '0' }), col('LastReplyOn', 'Last reply on', 'datetime'), look('DeletedBy', 'Deleted by', 'Users'),
+    ],
+    uniqueTogether: [['Channel', 'Seq']],
   },
   {
-    id: SYS.messageReactions, name: 'MessageReactions', displayName: 'Message reactions', group: 'communication', kind: 'placeholder', policy: 'parent', source: SYS.messageReactions, primaryColumn: 'Emoji', extensible: false,
-    parent: { column: 'Message', table: SYS.messages },
-    description: 'Reactions to chat messages.',
+    id: SYS.messageReactions, name: 'MessageReactions', displayName: 'Message reactions', group: 'communication', kind: 'placeholder', policy: 'chat', source: SYS.messageReactions, primaryColumn: 'Emoji', extensible: false,
+    description: 'Reactions to chat messages (readers of the message only). Written by chat only.',
     columns: [look('Message', 'Message', 'Messages', { required: true }), col('Emoji', 'Emoji', 'text', { required: true })],
     uniqueTogether: [['Message', 'owner', 'Emoji']],
   },
@@ -495,6 +509,10 @@ export function systemPredicate(table: TableDef, op: SystemOp, env: SystemPredic
   if (table.systemKind === 'projection' && op !== 'read') return FALSE
   const me = env.user.id
   if (policy === 'own') return op === 'read' ? eq('owner', me) : FALSE
+  // chat (P3-A): membership decides, for administrators too; never written through the data API
+  if (policy === 'chat') return op === 'read' ? chatRead(table.id, env) : FALSE
+  // rows about chat messages (chat mentions, file links) follow the message's read rule, for administrators too
+  if (env.isAdmin && (table.id === SYS.mentions || table.id === SYS.attachmentLinks)) return or([{ not: eq(REGARDING.table, SYS.messages) }, chatAboutMessage(table, env)])
   if (env.isAdmin) return TRUE
   switch (policy) {
     case 'directory':
@@ -537,6 +555,8 @@ export function hiddenSystemColumns(table: TableDef, isAdmin: boolean): Set<stri
 export function systemCanCreate(table: TableDef, isAdmin: boolean): boolean {
   if (table.systemKind === 'projection') return false
   const policy = table.systemPolicy ?? SYSTEM_TABLE_BY_ID.get(table.id)?.policy
+  // chat tables (P3-A): written by the chat service only, for everyone (administrators included)
+  if (policy === 'chat') return false
   if (isAdmin) return policy !== 'own'
   if (table.id === SYS.mentions || table.id === SYS.attachmentLinks || table.id === SYS.flowRuns) return false
   return policy === 'regarding' || policy === 'shared' || policy === 'members' || policy === 'parent'
@@ -562,8 +582,10 @@ export function regardingCondition(collab: TableDef, env: SystemPredicateEnv): C
   let joined = 0
   for (const t of env.tables) {
     if (t.id === collab.id) continue
-    // collaboration rows about collaboration rows: only about activities, documents and approval requests (one level deep)
-    if (t.system && t.id !== SYS.activities && t.id !== SYS.documents && t.id !== SYS.approvalRequests) continue
+    // collaboration rows about collaboration rows: only about activities, documents and approval requests (one level deep);
+    // chat mentions and chat file links are about messages (P3-A)
+    const aboutMessages = t.id === SYS.messages && (collab.id === SYS.mentions || collab.id === SYS.attachmentLinks)
+    if (t.system && t.id !== SYS.activities && t.id !== SYS.documents && t.id !== SYS.approvalRequests && !aboutMessages) continue
     if (t.system && (env.depth ?? 0) > 0) continue
     const pred = t.system ? systemPredicate(t, 'read', { ...env, depth: (env.depth ?? 0) + 1 }) : env.readOf(t)
     if (isFalse(pred)) continue
@@ -656,6 +678,46 @@ function approvalsPredicate(table: TableDef, op: SystemOp, env: SystemPredicateE
     }
   }
   return FALSE
+}
+
+/**
+ * Chat (P3 package A, docs/dev/chat.md "Security"): who may read a chat row. The same for every user, administrators
+ * included (they see channel metadata through the chat admin routes only, never through generic queries):
+ *  - Channels: the user is a member, or it is an open channel (Kind channel, not private, not archived);
+ *  - Channel members, Messages: rows of a channel the user may read;
+ *  - Message reactions: rows of a message the user may read.
+ * Tables in another store than Channel members fail closed.
+ */
+export function chatRead(tableId: string, env: SystemPredicateEnv): Condition {
+  const find = (id: string) => env.tables.find((t) => t.id === id)
+  const channels = find(SYS.channels)
+  const members = find(SYS.channelMembers)
+  if (!channels || !members || !env.sameStore(channels, members)) return FALSE
+  const channelRead = or([
+    { semi: { col: 'id', table: members, key: 'Channel', where: eq('User', env.user.id) } },
+    and([eq('Kind', 'channel'), { col: 'IsPrivate', op: 'eq', value: false }, blank('ArchivedOn')]),
+  ])
+  if (tableId === SYS.channels) return channelRead
+  const inChannel = (t: TableDef | undefined): Condition => (t && env.sameStore(t, channels) ? { semi: { col: 'Channel', table: channels, key: 'id', where: channelRead } } : FALSE)
+  if (tableId === SYS.channelMembers) return inChannel(members)
+  const messages = find(SYS.messages)
+  const messageRead = inChannel(messages)
+  if (tableId === SYS.messages) return messageRead
+  if (tableId === SYS.messageReactions) {
+    const reactions = find(SYS.messageReactions)
+    if (!reactions || !messages || isFalse(messageRead) || !env.sameStore(reactions, messages)) return FALSE
+    return { semi: { col: 'Message', table: messages, key: 'id', where: messageRead } }
+  }
+  return FALSE
+}
+
+/** rows of a collaboration table about a chat message the user may read (chat mentions, chat file links) */
+function chatAboutMessage(collab: TableDef, env: SystemPredicateEnv): Condition {
+  const messages = env.tables.find((t) => t.id === SYS.messages)
+  if (!messages || !env.sameStore(collab, messages)) return FALSE
+  const read = chatRead(SYS.messages, env)
+  if (isFalse(read)) return FALSE
+  return and([eq(REGARDING.table, SYS.messages), { semi: { col: REGARDING.id, table: messages, key: 'id', where: read, correlated: true } }])
 }
 
 function membersPredicate(table: TableDef, op: SystemOp, env: SystemPredicateEnv): Condition {

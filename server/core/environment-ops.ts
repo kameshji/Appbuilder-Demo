@@ -16,6 +16,7 @@ import { ROLE_ADMIN, ensureBuiltinRoles } from './auth.ts'
 import { flushFiles, forgetFilesFolder } from '../connectors/files/index.ts'
 import { seedSample } from '../routes/meta/seed.ts'
 import { copySystemData, provisionSystemTables } from './system-tables.ts'
+import { dropChatFromCopy, refuseChatEnvironmentDelete } from './chat/settings.ts'
 import { assertAdminRemains } from '../routes/meta/security.ts'
 import { errText, log } from './util.ts'
 import { SUMMARY_JOB } from './model/summary.ts'
@@ -111,6 +112,8 @@ export async function createEnvironment(s: CoreServices, actor: UserContext, b: 
       // P0-N core data model: system tables (views, real tables, reference data); a copy with data takes their rows along
       await provisionSystemTables(db, schema, id)
       if (source && copy === 'data') await copySystemData(db, source.schema, schema)
+      // P3-A: a copy never takes chat along (chat files and chat mentions that came with the generic copy go)
+      if (source && copy === 'data') await dropChatFromCopy(s, schema)
       await ensureBuiltinRoles(s)
       await s.ensureBuiltinConnections()
       // the creator administers it (an Administrator role there also records the access)
@@ -294,6 +297,8 @@ export async function deleteEnvironment(s: CoreServices, actor: UserContext, id:
   if (typeof confirmName !== 'string' || confirmName.trim() !== e.name) throw invalid(`Type the name of the environment ("${e.name}") to confirm.`, 'confirmName')
   const all = await s.install.environments.list()
   if (e.type === 'production' && !all.some((x) => x.id !== id && x.type === 'production')) throw conflict(`"${e.name}" is the last production environment and cannot be deleted.`)
+  // P3-A: the chat environment cannot be deleted while it holds chat messages
+  await refuseChatEnvironmentDelete(s, e)
   if (e.state === 'creating' || e.state === 'deleting' || e.state === 'restoring') throw conflict(`"${e.name}" is being ${e.state === 'creating' ? 'created' : e.state === 'restoring' ? 'restored' : 'deleted'}.`)
   if (id === actor.environmentId) {
     // the request itself works in it; the client switches away first

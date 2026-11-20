@@ -226,7 +226,7 @@ try {
   ok(true, 'Del rejected with a comment')
 
   // 5. Raj sees the outcome on the record's timeline (and the flow set the status)
-  const row = await waitFor(async () => (await api('POST', '/data/PurchaseRequests/query', { select: ['id', 'Status'] })).rows.find((r) => String(r.Status).startsWith('Rejected')), 'the approvalDecided flow')
+  const row = await waitFor(async () => (await api('POST', '/query', { plan: { version: 2, table: 'PurchaseRequests', select: ['id', 'Status'] } })).rows.find((r) => String(r.Status).startsWith('Rejected')), 'the approvalDecided flow')
   ok(row.Status === 'Rejected: Wait for the new models in March', `the approvalDecided flow set the status (${row.Status})`)
   await raj.page.reload({ waitUntil: 'networkidle0' })
   await raj.page.goto(`${BASE}/#u-approvals?id=${req.id}`, { waitUntil: 'networkidle0' })

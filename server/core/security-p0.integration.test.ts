@@ -3,6 +3,7 @@
  * the surface Phase 0 added — environment selection, Query v2 plans and cursors, hidden-column inference, collaboration
  * links and mentions, system-table writes, the explainer, outbound hosts, API keys on admin routes, request sizes.
  */
+import { planBody } from './testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PG_URL, SKIP_PG } from './testdb.ts'
 import { Client, startHarness } from './kernel-testkit.ts'
@@ -136,7 +137,7 @@ describe.skipIf(!PG_URL)(PG_URL ? 'phase 0 security re-check (PostgreSQL)' : `ph
     const g = await ann.post('/query', { plan: { version: 2, table: 'Deal', aggregate: { groupBy: ['Customer'], measures: [{ name: 'n', fn: 'count' }] } } })
     expect(g.data.rows.map((r: { n: number }) => r.n)).toEqual([1])
     // the v1 query route too
-    expect([403, 422]).toContain((await ann.post(`/data/${deal.id}/query`, { where: { col: 'Margin', op: 'gt', value: 10 } })).status)
+    expect([403, 422]).toContain((await ann.post('/query', planBody(deal.id, { where: { col: 'Margin', op: 'gt', value: 10 } }))).status)
   })
 
   it('collaboration: no comment, follow or tag about a record the user cannot read; mentions of non-readers notify nobody', async () => {

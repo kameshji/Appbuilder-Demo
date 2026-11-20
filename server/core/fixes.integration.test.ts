@@ -4,6 +4,7 @@
  * body limits per route, RLS WITH CHECK on create/update, all-or-nothing deletes and imports, attachment size limits,
  * insertion order of reads, distinct throttle codes, lowercase emails. Creates and drops its own database.
  */
+import { planBody } from './testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -131,9 +132,10 @@ describe.skipIf(!URL_ENV)('docs review fixes (PostgreSQL)', () => {
     const t = await A.post('/tables/from-csv', { displayName: 'Big csv', csv })
     expect(t.status, JSON.stringify(t.data).slice(0, 300)).toBe(200)
     // rows read back without a sort come in CSV (insertion) order
-    const q = await A.post(`/data/${t.data.id}/query`, { top: 5, skip: 59995 })
+    // (P3-C: v1's skip is gone; the last 5 rows of the natural order are a take from the end)
+    const q = await A.post('/query', { plan: { version: 2, table: t.data.id, take: { n: 5, from: 'end' } } })
     expect(q.data.rows.map((r: any) => r.Name)).toEqual(['Row 059995', 'Row 059996', 'Row 059997', 'Row 059998', 'Row 059999'])
-    const first = await A.post(`/data/${t.data.id}/query`, { top: 3 })
+    const first = await A.post('/query', planBody(t.data.id, { top: 3 }))
     expect(first.data.rows.map((r: any) => r.Name)).toEqual(['Row 000000', 'Row 000001', 'Row 000002'])
     expect((await A.post('/tables/from-csv', { displayName: 'Too big', csv: 'a\n' + 'z'.repeat(26 * 1024 * 1024) })).status).toBe(413)
   }, 120000)
@@ -142,13 +144,13 @@ describe.skipIf(!URL_ENV)('docs review fixes (PostgreSQL)', () => {
     const names = ['Zulu', 'Alpha', 'Mike', 'Bravo', 'Yankee', 'Charlie', 'Xray', 'Delta']
     const t = await A.post('/tables/from-csv', { displayName: 'Order check', csv: `Name,N\n${names.map((n, i) => `${n},${i}`).join('\n')}` })
     expect(t.status).toBe(200)
-    const all = await A.post(`/data/${t.data.id}/query`, {})
+    const all = await A.post('/query', planBody(t.data.id))
     expect(all.data.rows.map((r: any) => r.Name)).toEqual(names)
     const more = ['Echo', 'Whiskey', 'Foxtrot']
     expect((await A.post(`/data/${t.data.id}/import`, { csv: `Name,N\n${more.map((n, i) => `${n},${10 + i}`).join('\n')}`, mode: 'append' })).data.imported).toBe(3)
-    const after = await A.post(`/data/${t.data.id}/query`, {})
+    const after = await A.post('/query', planBody(t.data.id))
     expect(after.data.rows.map((r: any) => r.Name)).toEqual([...names, ...more])
-    const sorted = await A.post(`/data/${t.data.id}/query`, { orderBy: [{ col: 'Name', dir: 'asc' }] })
+    const sorted = await A.post('/query', planBody(t.data.id, { orderBy: [{ col: 'Name', dir: 'asc' }] }))
     expect(sorted.data.rows.map((r: any) => r.Name)).toEqual([...names, ...more].sort())
     const csv = await A.get(`/tables/${t.data.id}/csv`)
     expect(String(csv.data).split('\r\n').slice(1, 4).map((l) => l.split(',').at(-2))).toEqual(['Zulu', 'Alpha', 'Mike'])
@@ -172,7 +174,7 @@ describe.skipIf(!URL_ENV)('docs review fixes (PostgreSQL)', () => {
     expect(no.status).toBe(403)
     expect(no.data.error.code).toBe('denied')
     expect((await sales.post('/data/Leads/rows', { values: { Name: 'Blank' } })).status).toBe(403)
-    expect((await sales.post('/data/Leads/query', {})).data.rows.map((r: any) => r.Name)).toEqual(['Acme'])
+    expect((await sales.post('/query', planBody('Leads'))).data.rows.map((r: any) => r.Name)).toEqual(['Acme'])
     // update: allowed while the row keeps matching, refused (and not written) when it would leave the filter
     expect((await sales.patch(`/data/Leads/rows/${ok.data.row.id}`, { changes: { Name: 'Acme Ltd' } })).status).toBe(200)
     const out = await sales.patch(`/data/Leads/rows/${ok.data.row.id}`, { changes: { Status: 'Lead' } })
@@ -195,7 +197,7 @@ describe.skipIf(!URL_ENV)('docs review fixes (PostgreSQL)', () => {
     expect(mine.status).toBe(200)
     const moved = await rep.patch(`/data/Leads/rows/${mine.data.row.id}`, { changes: { RepEmail: 'someone@example.com' } })
     expect(moved.status, JSON.stringify(moved.data)).toBe(200)
-    expect((await rep.post('/data/Leads/query', {})).data.rows).toEqual([])
+    expect((await rep.post('/query', planBody('Leads'))).data.rows).toEqual([])
   }, 60000)
 
   it('multi-row delete is all or nothing: a denied row in a later chunk deletes nothing', async () => {
@@ -218,13 +220,13 @@ describe.skipIf(!URL_ENV)('docs review fixes (PostgreSQL)', () => {
     expect((await A.post('/data/Repl/import', { csv: 'Code,Qty\nA,1\nB,2\nC,3', mode: 'append' })).data.imported).toBe(3)
     // the replacement may reuse codes of the rows it replaces
     expect((await A.post('/data/Repl/import', { csv: 'Code,Qty\nC,30\nA,10', mode: 'replace' })).data.imported).toBe(2)
-    expect((await A.post('/data/Repl/query', {})).data.rows.map((r: any) => [r.Code, r.Qty])).toEqual([['C', 30], ['A', 10]])
+    expect((await A.post('/query', planBody('Repl'))).data.rows.map((r: any) => [r.Code, r.Qty])).toEqual([['C', 30], ['A', 10]])
     // duplicate inside the batch, bad value: refused before anything is deleted
     const dup = await A.post('/data/Repl/import', { csv: 'Code,Qty\nX,1\nx,2', mode: 'replace' })
     expect(dup.status).toBe(409)
     expect(dup.data.error.message).toMatch(/^Row 2:.*nothing was imported/)
     expect((await A.post('/data/Repl/import', { csv: 'Code,Qty\nY,1\nZ,abc', mode: 'replace' })).status).toBe(422)
-    expect((await A.post('/data/Repl/query', {})).data.rows.map((r: any) => r.Code)).toEqual(['C', 'A'])
+    expect((await A.post('/query', planBody('Repl'))).data.rows.map((r: any) => r.Code)).toEqual(['C', 'A'])
     // a failure inside the write rolls the delete back (connector transaction)
     const connector = await app.services.connections.get('conn_default')
     expect(connector.capabilities.transactions).toBe(true)
@@ -233,7 +235,7 @@ describe.skipIf(!URL_ENV)('docs review fixes (PostgreSQL)', () => {
       expect((await tx.select(def, {})).rows).toEqual([])
       await tx.insert(def, [{ id: '00000000-0000-7000-8000-000000000001', Code: 'NEW' }, { id: '00000000-0000-7000-8000-000000000002', Code: 'NEW' }])
     })).rejects.toMatchObject({ status: 409 })
-    expect((await A.post('/data/Repl/query', {})).data.rows.map((r: any) => r.Code)).toEqual(['C', 'A'])
+    expect((await A.post('/query', planBody('Repl'))).data.rows.map((r: any) => r.Code)).toEqual(['C', 'A'])
   }, 60000)
 
   it('attachments: column maxSizeMB is enforced from Content-Length and while streaming; route cap is 25 MB', async () => {

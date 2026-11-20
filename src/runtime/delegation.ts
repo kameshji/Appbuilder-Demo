@@ -19,7 +19,7 @@ import { freeIdentifiers, type Node } from '@/fx/ast'
 import { isSystemMacro, systemMacroTables } from '@/fx/functions/collab'
 import { columnKind, type ColumnKind, type ConditionV2, type QueryPlan, type SchemaInfo, type SortKeyV2, type TableSchemaInfo } from '@/platform/query'
 import { platform, type QueryState, type TableDef } from '@/platform'
-import { lookupSearchCondition } from '@/controls/lookups'
+import { lookupSearchCondition, lookupSortKey, lookupSortSupport, type LookupSortSupport } from '@/controls/lookups'
 import { platformMode, platformState } from './data'
 
 /** tables at most this big run formulas the server can't run in the browser (same threshold as the platform) */
@@ -241,17 +241,40 @@ function lookupTargets(table: string): Map<string, TableDef | null> {
 }
 
 /**
- * shape the plan of the list by the control's view (sort by a header, search box). Lookup columns (lookups.ts): never
- * sorted on the server (that would order by the row id; the DataTable does not offer it), searched by the target
- * row's label through a lookup path (`via`), not by id.
+ * Can the server sort the list of `table` by its lookup column `col` (by the label, P3-C)? The DataTable asks before it
+ * offers the header (and the phone card's "Sort by"); `withView` builds the sort key only when this says yes.
+ */
+export function lookupSortInfo(table: string, col: string): { support: LookupSortSupport; target?: TableDef } {
+  const st = platformState()
+  const def = st?.tables.find((t) => t.name === table)
+  const c = def?.columns.find((x) => x.name === col)
+  if (!def || !c || c.type !== 'lookup') return { support: { ok: false, why: 'kind' } }
+  const target = c.lookupTable ? st!.tables.find((t) => t.name === c.lookupTable || t.id === c.lookupTable) : undefined
+  const priv = st?.session?.privileges
+  const tp = target ? priv?.tables[target.id] : undefined
+  const hidden = !!target && !!priv && !priv.isAdmin && (!tp || tp.read === 'none' || tp.columns[target.primaryColumn] === 'none')
+  const connectorOf = (id: string) => st?.connections?.find((x) => x.id === id)?.connector
+  return { support: lookupSortSupport({ table: def, target, hidden, connectorOf }), target }
+}
+
+/**
+ * shape the plan of the list by the control's view (sort by a header, search box). Lookup columns (lookups.ts): sorted
+ * on the server by the target row's primary column read as the viewer (a sort key with `via`; a row whose target the
+ * viewer cannot read sorts as blank), only where lookupSortInfo allows it, never by the row id; searched by the
+ * target row's label through a lookup path (`via`), not by id.
  */
 function withView(plan: QueryPlan, view: ListView | undefined, kinds: Record<string, ColumnKind>): QueryPlan {
   if (!view) return plan
   let p = plan
   const visible = plan.select ? plan.select : Object.keys(kinds)
   const lookups = lookupTargets(plan.table)
-  if (view.sort && visible.includes(view.sort.col) && kinds[view.sort.col] && kinds[view.sort.col] !== 'other' && !lookups.has(view.sort.col)) {
-    p = { ...p, sort: [view.sort, ...(p.sort ?? []).filter((k) => k.col !== view.sort!.col)] }
+  if (view.sort && visible.includes(view.sort.col) && kinds[view.sort.col] && kinds[view.sort.col] !== 'other') {
+    let key: SortKeyV2 | null = view.sort
+    if (lookups.has(view.sort.col)) {
+      const info = lookupSortInfo(plan.table, view.sort.col)
+      key = info.support.ok && info.target ? lookupSortKey(view.sort.col, info.target, view.sort.dir) : null
+    }
+    if (key) p = { ...p, sort: [key, ...(p.sort ?? []).filter((k) => k.col !== view.sort!.col)] }
   }
   const text = view.search?.trim()
   if (text) {

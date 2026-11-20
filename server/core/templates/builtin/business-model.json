@@ -1,0 +1,801 @@
+{
+  "format": "appbuilder/template",
+  "formatVersion": 2,
+  "id": "builtin.business-model",
+  "version": "1.0.0",
+  "kind": "solution",
+  "name": "Common business model",
+  "shortName": "Business model",
+  "prefix": "Cbm",
+  "description": "Accounts, contacts, addresses, products, price lists and tax codes shared by the CRM, ERP and other solution templates. Installed by the first template that needs it; uses tables of the same name you already have.",
+  "publisher": "Appbuilder",
+  "tags": [
+    "accounts",
+    "contacts",
+    "products",
+    "price lists",
+    "common business model"
+  ],
+  "minPlatformVersion": "0.7.0",
+  "modes": [
+    "copy",
+    "linked"
+  ],
+  "slots": [
+    {
+      "id": "Accounts",
+      "label": "Accounts",
+      "description": "Organisations you do business with: customers, suppliers, partners.",
+      "required": true,
+      "defaultMode": "map",
+      "create": {
+        "name": "Accounts",
+        "displayName": "Accounts",
+        "primaryColumn": "Name",
+        "description": "Organisations you do business with: customers, suppliers, partners."
+      },
+      "columns": [
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true,
+            "indexed": true
+          }
+        },
+        {
+          "id": "AccountNumber",
+          "label": "Account number",
+          "types": [
+            "autonumber"
+          ],
+          "required": false,
+          "create": {
+            "type": "autonumber",
+            "prefix": "ACC-"
+          }
+        },
+        {
+          "id": "Type",
+          "label": "Type",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "choice",
+            "default": "Customer",
+            "choices": [
+              "Customer",
+              "Supplier",
+              "Partner",
+              "Other"
+            ]
+          }
+        },
+        {
+          "id": "Email",
+          "label": "Email",
+          "types": [
+            "email"
+          ],
+          "required": false,
+          "create": {
+            "type": "email"
+          }
+        },
+        {
+          "id": "Phone",
+          "label": "Phone",
+          "types": [
+            "phone"
+          ],
+          "required": false,
+          "create": {
+            "type": "phone"
+          }
+        },
+        {
+          "id": "Website",
+          "label": "Website",
+          "types": [
+            "url"
+          ],
+          "required": false,
+          "create": {
+            "type": "url"
+          }
+        },
+        {
+          "id": "Gstin",
+          "label": "GSTIN",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        },
+        {
+          "id": "Pan",
+          "label": "PAN",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        },
+        {
+          "id": "Industry",
+          "label": "Industry",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        },
+        {
+          "id": "Currency",
+          "label": "Currency",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSystem": "Currencies",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "PaymentTermsDays",
+          "label": "Payment terms (days)",
+          "types": [
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "number"
+          }
+        },
+        {
+          "id": "CreditLimit",
+          "label": "Credit limit",
+          "types": [
+            "currency"
+          ],
+          "required": false,
+          "create": {
+            "type": "currency"
+          }
+        },
+        {
+          "id": "Status",
+          "label": "Status",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "choice",
+            "default": "Active",
+            "choices": [
+              "Active",
+              "Inactive"
+            ]
+          }
+        },
+        {
+          "id": "ParentAccount",
+          "label": "Parent account",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Accounts",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        }
+      ]
+    },
+    {
+      "id": "Contacts",
+      "label": "Contacts",
+      "description": "People at your accounts.",
+      "required": true,
+      "defaultMode": "map",
+      "create": {
+        "name": "Contacts",
+        "displayName": "Contacts",
+        "primaryColumn": "FullName",
+        "description": "People at your accounts."
+      },
+      "columns": [
+        {
+          "id": "FullName",
+          "label": "Full name",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true,
+            "indexed": true
+          }
+        },
+        {
+          "id": "Account",
+          "label": "Account",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Accounts",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "JobTitle",
+          "label": "Job title",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        },
+        {
+          "id": "Email",
+          "label": "Email",
+          "types": [
+            "email"
+          ],
+          "required": false,
+          "create": {
+            "type": "email"
+          }
+        },
+        {
+          "id": "Phone",
+          "label": "Phone",
+          "types": [
+            "phone"
+          ],
+          "required": false,
+          "create": {
+            "type": "phone"
+          }
+        },
+        {
+          "id": "Mobile",
+          "label": "Mobile",
+          "types": [
+            "phone"
+          ],
+          "required": false,
+          "create": {
+            "type": "phone"
+          }
+        },
+        {
+          "id": "IsPrimary",
+          "label": "Primary contact",
+          "types": [
+            "boolean"
+          ],
+          "required": false,
+          "create": {
+            "type": "boolean",
+            "default": "false"
+          }
+        }
+      ]
+    },
+    {
+      "id": "Addresses",
+      "label": "Addresses",
+      "description": "Billing, shipping and registered-office addresses of accounts and contacts.",
+      "required": true,
+      "defaultMode": "map",
+      "create": {
+        "name": "Addresses",
+        "displayName": "Addresses",
+        "primaryColumn": "Line1",
+        "description": "Billing, shipping and registered-office addresses of accounts and contacts."
+      },
+      "columns": [
+        {
+          "id": "Account",
+          "label": "Account",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Accounts",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "Contact",
+          "label": "Contact",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Contacts",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "Kind",
+          "label": "Kind",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "choice",
+            "default": "Billing",
+            "choices": [
+              "Billing",
+              "Shipping",
+              "Registered office",
+              "Other"
+            ]
+          }
+        },
+        {
+          "id": "Line1",
+          "label": "Address line 1",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true
+          }
+        },
+        {
+          "id": "Line2",
+          "label": "Address line 2",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        },
+        {
+          "id": "City",
+          "label": "City",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        },
+        {
+          "id": "PostalCode",
+          "label": "PIN / postal code",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        },
+        {
+          "id": "State",
+          "label": "State",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSystem": "States",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "Country",
+          "label": "Country",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSystem": "Countries",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "IsDefault",
+          "label": "Default",
+          "types": [
+            "boolean"
+          ],
+          "required": false,
+          "create": {
+            "type": "boolean",
+            "default": "false"
+          }
+        }
+      ]
+    },
+    {
+      "id": "TaxCodes",
+      "label": "Tax codes",
+      "description": "Tax codes (structure only: rates and rules come with the reviewed GST specification).",
+      "required": true,
+      "defaultMode": "map",
+      "create": {
+        "name": "TaxCodes",
+        "displayName": "Tax codes",
+        "primaryColumn": "Code",
+        "description": "Tax codes (structure only: rates and rules come with the reviewed GST specification)."
+      },
+      "columns": [
+        {
+          "id": "Code",
+          "label": "Code",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true,
+            "unique": true
+          }
+        },
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        },
+        {
+          "id": "Description",
+          "label": "Description",
+          "types": [
+            "multiline",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "multiline"
+          }
+        },
+        {
+          "id": "IsActive",
+          "label": "Active",
+          "types": [
+            "boolean"
+          ],
+          "required": false,
+          "create": {
+            "type": "boolean",
+            "default": "true"
+          }
+        }
+      ]
+    },
+    {
+      "id": "Products",
+      "label": "Products",
+      "description": "Goods and services you buy or sell.",
+      "required": true,
+      "defaultMode": "map",
+      "create": {
+        "name": "Products",
+        "displayName": "Products",
+        "primaryColumn": "Name",
+        "description": "Goods and services you buy or sell."
+      },
+      "columns": [
+        {
+          "id": "Code",
+          "label": "Code",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text",
+            "required": true,
+            "unique": true
+          }
+        },
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true,
+            "indexed": true
+          }
+        },
+        {
+          "id": "Kind",
+          "label": "Kind",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "choice",
+            "default": "Goods",
+            "choices": [
+              "Goods",
+              "Service"
+            ]
+          }
+        },
+        {
+          "id": "Description",
+          "label": "Description",
+          "types": [
+            "multiline",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "multiline"
+          }
+        },
+        {
+          "id": "Unit",
+          "label": "Unit",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSystem": "UnitsOfMeasure",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "HsnSac",
+          "label": "HSN / SAC",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        },
+        {
+          "id": "TaxCode",
+          "label": "Tax code",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "TaxCodes",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "StandardPrice",
+          "label": "Standard price",
+          "types": [
+            "currency"
+          ],
+          "required": false,
+          "create": {
+            "type": "currency"
+          }
+        },
+        {
+          "id": "IsActive",
+          "label": "Active",
+          "types": [
+            "boolean"
+          ],
+          "required": false,
+          "create": {
+            "type": "boolean",
+            "default": "true"
+          }
+        }
+      ]
+    },
+    {
+      "id": "PriceLists",
+      "label": "Price lists",
+      "description": "Named price lists in a currency, valid for a period.",
+      "required": true,
+      "defaultMode": "map",
+      "create": {
+        "name": "PriceLists",
+        "displayName": "Price lists",
+        "primaryColumn": "Name",
+        "description": "Named price lists in a currency, valid for a period."
+      },
+      "columns": [
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true,
+            "unique": true
+          }
+        },
+        {
+          "id": "Currency",
+          "label": "Currency",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSystem": "Currencies",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "ValidFrom",
+          "label": "Valid from",
+          "types": [
+            "date"
+          ],
+          "required": false,
+          "create": {
+            "type": "date"
+          }
+        },
+        {
+          "id": "ValidTo",
+          "label": "Valid to",
+          "types": [
+            "date"
+          ],
+          "required": false,
+          "create": {
+            "type": "date"
+          }
+        },
+        {
+          "id": "IsDefault",
+          "label": "Default",
+          "types": [
+            "boolean"
+          ],
+          "required": false,
+          "create": {
+            "type": "boolean",
+            "default": "false"
+          }
+        }
+      ]
+    },
+    {
+      "id": "PriceListItems",
+      "label": "Price list items",
+      "description": "The price of a product in a price list.",
+      "required": true,
+      "defaultMode": "map",
+      "create": {
+        "name": "PriceListItems",
+        "displayName": "Price list items",
+        "primaryColumn": "Product",
+        "description": "The price of a product in a price list.",
+        "uniqueTogether": [
+          [
+            "PriceList",
+            "Product"
+          ]
+        ]
+      },
+      "columns": [
+        {
+          "id": "PriceList",
+          "label": "Price list",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "PriceLists",
+          "create": {
+            "type": "lookup",
+            "required": true,
+            "onDelete": "restrict"
+          }
+        },
+        {
+          "id": "Product",
+          "label": "Product",
+          "types": [
+            "lookup"
+          ],
+          "required": true,
+          "lookupSlot": "Products",
+          "create": {
+            "type": "lookup",
+            "required": true,
+            "onDelete": "restrict"
+          }
+        },
+        {
+          "id": "UnitPrice",
+          "label": "Unit price",
+          "types": [
+            "currency"
+          ],
+          "required": false,
+          "create": {
+            "type": "currency",
+            "required": true
+          }
+        },
+        {
+          "id": "MinQuantity",
+          "label": "Minimum quantity",
+          "types": [
+            "decimal"
+          ],
+          "required": false,
+          "create": {
+            "type": "decimal"
+          }
+        }
+      ]
+    }
+  ],
+  "payload": {},
+  "signature": {
+    "alg": "sha256",
+    "digest": "b065f313d67cd98a19550af178e3536553331bdf4e001a69189d197140725d00"
+  }
+}

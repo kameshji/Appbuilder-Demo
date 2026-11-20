@@ -158,6 +158,132 @@ describe.skipIf(!PG_URL)(PG_URL ? 'POST /api/v1/query (PostgreSQL)' : `POST /api
     }
   })
 
+  /**
+   * P3-C: a list sorted by a lookup column's label, for a viewer restricted on the TARGET table. A target row the viewer
+   * may not read (row filter), a deleted one (recycle bin) and a blank lookup all sort as a blank label, by the row's
+   * own natural order; nothing about the hidden rows reaches the answer, and renaming them never moves a row. A hidden
+   * target column is refused with a plain message.
+   */
+  describe('sort by a lookup column, restricted on the target', () => {
+    let viewer: Client, blind: Client
+    const accounts: TableDef = {
+      id: 'tbl_acc_q2l', name: 'Accounts', displayName: 'Accounts', primaryColumn: 'Name', createdOn: new Date().toISOString(), modifiedOn: new Date().toISOString(),
+      connectionId: 'conn_default', source: 't_acc_q2l', managed: true, recycleBin: true, recycleDays: 30,
+      columns: [...sys.map((c) => ({ ...c })), { name: 'Name', displayName: 'Name', type: 'text' }, { name: 'Tier', displayName: 'Tier', type: 'text' }],
+    }
+    const opps: TableDef = {
+      id: 'tbl_opp_q2l', name: 'Opps', displayName: 'Opportunities', primaryColumn: 'Title', createdOn: new Date().toISOString(), modifiedOn: new Date().toISOString(),
+      connectionId: 'conn_default', source: 't_opp_q2l', managed: true,
+      columns: [...sys.map((c) => ({ ...c })), { name: 'Title', displayName: 'Title', type: 'text' }, { name: 'Account', displayName: 'Account', type: 'lookup', lookupTable: 'Accounts' }],
+    }
+    // gold accounts are readable by the viewer; the others carry names that must never leak
+    // 5: deleted to the recycle bin; 7: deleted for good (the opportunities then point at an id that no longer exists)
+    const ACC = [['Zeta', 'gold'], ['alpha', 'gold'], ['SECRET-aardvark', 'tin'], ['Mid', 'gold'], ['SECRET-zz', 'tin'], ['Gone', 'gold'], ['', 'gold'], ['SECRET-purged', 'gold']] as const
+    const GONE = new Set([5, 7])
+    const accIds: string[] = []
+    const oppTitles: string[] = []
+    const sortPlan = (dir: 'asc' | 'desc', extra: Partial<QueryPlan> = {}) => ({ plan: { version: 2, table: 'Opps', sort: [{ col: 'Account', dir, via: { table: 'Accounts', col: 'Name' } }], select: ['Title', 'Account'], ...extra } })
+
+    beforeAll(async () => {
+      const meta = app.services.meta
+      for (const t of [accounts, opps]) {
+        await meta.tables.upsert(t)
+        await (await app.services.connections.get('conn_default')).createTable(t)
+      }
+      const viewerRole: RoleDef = { id: 'role_viewer_q2l', name: 'Opp viewer', apps: [], privileges: [
+        { table: opps.id, create: false, read: 'all', update: 'none', delete: 'none', columns: {} },
+        { table: accounts.id, create: false, read: 'all', update: 'none', delete: 'none', columns: {}, rowFilter: [{ column: 'Tier', op: 'eq', value: 'gold' }] },
+      ] }
+      const blindRole: RoleDef = { id: 'role_blind_q2l', name: 'Opp blind', apps: [], privileges: [
+        { table: opps.id, create: false, read: 'all', update: 'none', delete: 'none', columns: {} },
+        { table: accounts.id, create: false, read: 'all', update: 'none', delete: 'none', columns: { Name: 'none' } },
+      ] }
+      await meta.roles.upsert(viewerRole)
+      await meta.roles.upsert(blindRole)
+      await meta.users.insert({ id: 'user_viewer_q2l', name: 'Vera', email: 'vera@example.com', roleIds: [viewerRole.id], status: 'active', passwordHash: await hashPassword('vera-password-1') })
+      await meta.users.insert({ id: 'user_blind_q2l', name: 'Bo', email: 'bo@example.com', roleIds: [blindRole.id], status: 'active', passwordHash: await hashPassword('bo-password-1') })
+      app.services.security.invalidate()
+      viewer = new Client(base); blind = new Client(base)
+      expect((await viewer.post('/api/v1/auth/login', { email: 'vera@example.com', password: 'vera-password-1' })).status).toBe(200)
+      expect((await blind.post('/api/v1/auth/login', { email: 'bo@example.com', password: 'bo-password-1' })).status).toBe(200)
+      for (const [Name, Tier] of ACC) {
+        const r = await A.post('/api/v1/data/Accounts/rows', { values: { Name, Tier } })
+        expect(r.status, JSON.stringify(r.data)).toBe(200)
+        accIds.push(r.data.row.id)
+      }
+      // 3 opportunities per account, 2 with no account
+      const links = [...accIds.flatMap((id) => [id, id, id]), null, null]
+      for (const [i, Account] of links.entries()) {
+        const Title = `Opp ${String(i).padStart(2, '0')}`
+        oppTitles.push(Title)
+        expect((await A.post('/api/v1/data/Opps/rows', { values: { Title, Account } })).status).toBe(200)
+      }
+      // "Gone" goes to the recycle bin: it is no longer a live row for anyone
+      expect((await A.post('/api/v1/data/Accounts/delete', { ids: [accIds[5]] })).status).toBe(200)
+      const purged = await A.post('/api/v1/data/Accounts/delete', { ids: [accIds[7]] })
+      expect(purged.status).toBe(200)
+      expect((await A.post('/api/v1/data/Accounts/purge', { batch: purged.data.batch.id })).status, 'purge').toBe(200)
+      // the natural order (createdOn, id) the ties fall back to
+      natural.push(...(await A.req('POST', '/api/v1/query', { plan: { version: 2, table: 'Opps', select: ['Title'] } })).data.rows.map((x: { Title: string }) => x.Title))
+      expect([...natural].sort()).toEqual([...oppTitles].sort())
+    }, 60000)
+    const natural: string[] = []
+
+    const titles = (r: { data: { rows: { Title: string }[] } }) => r.data.rows.map((x) => x.Title)
+    /** the expected order: readable live gold names (lower-cased, code point), everything else as blank, ties by natural order */
+    function expected(dir: 'asc' | 'desc', readable: (i: number) => boolean): string[] {
+      const nameOf = (t: string): string => {
+        const i = Number(t.slice(4))
+        const a = i < accIds.length * 3 ? Math.floor(i / 3) : -1
+        return a >= 0 && readable(a) && !GONE.has(a) ? ACC[a]![0].toLowerCase() : ''
+      }
+      return natural.map((t, i) => ({ t, i, k: nameOf(t) })).sort((x, y) => (x.k === y.k ? x.i - y.i : (x.k < y.k ? -1 : 1) * (dir === 'asc' ? 1 : -1))).map((x) => x.t)
+    }
+
+    it('rows whose account the viewer cannot read (or that is deleted, or missing) sort exactly like a blank label', async () => {
+      for (const dir of ['asc', 'desc'] as const) {
+        const r = await viewer.req('POST', '/api/v1/query', sortPlan(dir))
+        expect(r.status, JSON.stringify(r.data)).toBe(200)
+        expect(titles(r), dir).toEqual(expected(dir, (a) => ACC[a]![1] === 'gold'))
+        // nothing of the hidden accounts is in the answer (the lookup column holds only the id the viewer already sees)
+        expect(JSON.stringify(r.data)).not.toMatch(/SECRET/)
+        // the administrator reads every account: their order differs (the restriction is applied inside the statement)
+        const admin = await A.req('POST', '/api/v1/query', sortPlan(dir))
+        expect(titles(admin), dir).toEqual(expected(dir, () => true))
+      }
+    })
+
+    it('renaming an account the viewer cannot read never moves a row; paging with cursors gives the same order', async () => {
+      const before = titles(await viewer.req('POST', '/api/v1/query', sortPlan('asc')))
+      for (const name of ['   first of all', 'zzzz last']) {
+        expect((await A.req('PATCH', `/api/v1/data/Accounts/rows/${accIds[2]}`, { changes: { Name: name } })).status).toBe(200)
+        expect(titles(await viewer.req('POST', '/api/v1/query', sortPlan('asc')))).toEqual(before)
+      }
+      const paged: string[] = []
+      let cursor: string | undefined
+      for (let i = 0; i < 20; i++) {
+        const r = await viewer.req('POST', '/api/v1/query', sortPlan('asc', { count: true, page: { size: 4, ...(cursor ? { cursor } : {}) } }))
+        expect(r.status, JSON.stringify(r.data)).toBe(200)
+        expect(r.data.count).toBe(oppTitles.length)
+        paged.push(...titles(r))
+        if (!r.data.nextCursor) break
+        // a cursor holds only keys the viewer may read
+        expect(Buffer.from(String(r.data.nextCursor).slice(3), 'base64url').toString()).not.toMatch(/secret|first of all|zzzz/i)
+        cursor = r.data.nextCursor
+      }
+      expect(paged).toEqual(before)
+    })
+
+    it('a hidden target column is refused in plain words, not sorted silently', async () => {
+      const r = await blind.req('POST', '/api/v1/query', sortPlan('asc'))
+      expect(r.status).toBe(403)
+      expect(r.data.error).toMatchObject({ code: 'denied', field: 'Account' })
+      expect(r.data.error.message).toBe('This list can\'t be sorted by Account: you do not have access to the column "Accounts.Name" it would be sorted by.')
+      // grouping after such a sort is refused too (422), never computed in part
+      expect((await A.req('POST', '/api/v1/query', sortPlan('asc', { select: undefined, aggregate: { groupBy: ['Title'], measures: [] } }))).status).toBe(422)
+    })
+  })
+
   it('a user without access to the table gets 404; malformed plans get 422', async () => {
     const none = await nobody.query({})
     expect(none.status, JSON.stringify(none.data)).toBe(404)

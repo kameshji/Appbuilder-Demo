@@ -307,7 +307,8 @@ users, sessions, the registry (`ab.environments`), access (`ab.environment_acces
 
 1. A formula such as `Filter(Tickets, Status = "Open")` resolves `Tickets` to `platform.tables.rows('Tickets')`.
 2. In server mode the remote platform keeps a **lazy per-table cache**. For an unloaded table it returns `[]`, starts
-   `POST /api/v1/data/Tickets/query` with `{ top: 5000 }`, and notifies subscribers when the rows arrive (the runtime's `dataKey`
+   `POST /api/v1/query` with `{ plan: { version: 2, table: "Tickets", take: { n: 5000, from: "start" } } }` (Phase 3: the
+   v1 read route is gone), and notifies subscribers when the rows arrive (the runtime's `dataKey`
    changes and formulas re-evaluate). If a write finished while the load was in flight, it re-reads (at most twice). The server's
    `truncated` flag is recorded so the UI can warn. `Filter`, `Sum`, `Sort` and the rest run in the browser over those rows.
 3. **Server side** (`server/core/router.ts`, `data-routes.ts`, `data.ts`): the router checks Host, Origin and the session cookie,

@@ -11,9 +11,10 @@
  * created and dropped here; KEEP=1 keeps it). Tables are made through the API: Customers (every common column type,
  * the recycle bin on), Products (2,500 rows: more than the browser holds for a table in server mode) and Orders (a
  * required lookup to Customers, an optional one to Products). Lookups (A and B): New order picks both by typing (the
- * picker searches the server; desktop with the keyboard only), the list shows both by name and never an id, a lookup
- * header is not sortable (with a reason) and the card sort leaves it out, the list search finds orders by the customer's
- * name, and offline the picker says the table is not available offline (desktop). Then, by clicking in headless Chrome:
+ * picker searches the server; desktop with the keyboard only), the list shows both by name and never an id, the list
+ * search finds orders by the customer's name, and offline the picker says the table is not available offline (desktop).
+ * P3-C: lookup headers sort by the target's NAME on the server (Product: a lookup to the 2,500 products, both ways; the
+ * phone card's "Sort by Customer"), and G below. Then, by clicking in headless Chrome:
  *
  *  A. desktop app from the Tables page ("Create app", both tables): run it; home tile, the list shows the rows, search
  *     and sort run on the server, open a record, edit and save, the related Orders list shows the customer's orders,
@@ -25,7 +26,11 @@
  *  C. the table page's "Create app" (one table) creates and opens an app in the Studio;
  *  D. the Studio: the desktop app opens there as a normal app; changing a property is saved like any other edit;
  *  E. a user without the Maker role sees no entry point;
- *  F. demo mode (dist/index.html from disk, no server): Apps > From a table on the seeded Contacts, run, open, delete.
+ *  F. demo mode (dist/index.html from disk, no server): Apps > From a table on the seeded Contacts, run, open, delete;
+ *  G. (P3-C) the user without the Maker role may read only the products named below "Product 0600" (a row filter on the
+ *     lookup's TARGET): in app A, sorting orders by Product puts the orders whose product they cannot read (shown "Not
+ *     available") with the blank ones, first ascending and last descending, never by the hidden name, which appears
+ *     nowhere on screen or in the HTTP answer; the same plan is timed over HTTP (printed).
  *
  * Real phones were not used: B is Chrome's phone emulation.
  *
@@ -108,8 +113,9 @@ async function api(c, method, p, body) {
   return r.data
 }
 const rowsOf = async (table) => (await api(admin, 'POST', '/query', { plan: { version: 2, table } })).rows
-/** Products by name -> id (set up below) */
+/** Products by name -> id and id -> name (set up below) */
 const productIds = new Map()
+const productNames = new Map()
 
 /* ------------------------------------------------------------------ browser helpers */
 
@@ -300,6 +306,40 @@ async function createFromDialog(page, { open, tables, device, name, single, dark
   return { id, preview, issues }
 }
 
+/**
+ * P3-C: click the Product header (a lookup to the 2,500-row Products) and compare the list with the expected order by
+ * product NAME: ascending, then descending, then the sort is cleared. `hiddenFrom`: the viewer may read only products
+ * named below it; the others (and orders without a product) show "Not available" and must sort exactly like a blank
+ * name: first ascending, last descending, never by the hidden name.
+ */
+async function sortByProduct(page, list, hiddenFrom) {
+  const orders = await rowsOf('SalesOrders')
+  const nameOf = (o) => {
+    const n = o.Product ? productNames.get(o.Product) : undefined
+    return n && (!hiddenFrom || n < hiddenFrom) ? n : ''
+  }
+  const want = orders.map(nameOf).sort()
+  const labelsOf = (rows) => rows.map((r) => (r.match(/Product \d{4}/) ?? [''])[0])
+  const th = async () => {
+    for (const h of await page.$$(`${list} thead th`)) if ((await h.evaluate((e) => e.innerText.trim())) === 'Product') return h
+    throw new Error('no Product header')
+  }
+  // the table draws only the rows in view (windowed): the rows on screen must be the head of the expected order
+  const same = (got, exp) => got.length >= Math.min(12, exp.length) && got.every((x, i) => x === exp[i])
+  await (await th()).click()
+  const asc = labelsOf(await waitItems(page, list, (r) => same(labelsOf(r), want), 'sorted by product name, ascending', 20000))
+  await (await th()).click()
+  const desc = labelsOf(await waitItems(page, list, (r) => same(labelsOf(r), [...want].reverse()), 'sorted by product name, descending', 20000))
+  const text = (await listItems(page, list)).join(' ')
+  const leaked = hiddenFrom ? [...productNames.values()].filter((n) => n >= hiddenFrom && text.includes(n)) : []
+  const blanks = want.filter((x) => x === '').length
+  await (await th()).click()
+  return {
+    ok: !leaked.length && (!hiddenFrom || (blanks > 0 && blanks < orders.length)),
+    evidence: `${orders.length} rows (${asc.length} on screen); ascending ${blanks ? `${blanks} blank, then ` : ''}${want.slice(blanks, blanks + 2).join(', ')} ...; descending ${desc.slice(0, 2).join(', ')} ...${hiddenFrom ? `; the ${blanks} rows with an unreadable or no product come first ascending (shown "Not available"), no hidden name on screen` : ''}`,
+  }
+}
+
 /* ------------------------------------------------------------------ run checks shared by desktop and phone */
 
 let lastPage = null
@@ -428,13 +468,21 @@ async function runChecks(page, label, appId, phone) {
   const newRow = (await waitItems(page, olist0, (r) => r.some((x) => x.includes(`${label.toUpperCase()}-NEW`) && x.includes('Customer 05') && (phone || x.includes('Product 2345'))), 'lookup labels in the list')).find((x) => x.includes(`${label.toUpperCase()}-NEW`))
   const allText = (await listItems(page, olist0)).join(' ')
   check(!allText.includes(c05.id) && !allText.includes(made.Product), P(phone ? 'the cards show the customer by name (a required lookup is the subtitle), never an id' : 'the list shows Customer and Product by name (Product from the 2,500-row table), never an id'), newRow.slice(0, 90))
+  // P3-C: a lookup column sorts by its LABEL on the server (Products has 2,500 rows: the browser holds none of them)
   if (!phone) {
     const th = await page.$$eval(`${olist0} thead th`, (l) => l.map((e) => ({ t: e.innerText.trim(), s: e.getAttribute('data-sortable'), title: e.getAttribute('title') ?? '' })))
     const cust = th.find((x) => x.t === 'Customer')
-    check(cust && cust.s === 'false' && /record id/.test(cust.title) && th.find((x) => x.t === 'Order no')?.s === 'true', P('sorting by a lookup column is visibly unavailable (no sort control, a reason on hover); other columns sort'), JSON.stringify(cust))
+    const prod = th.find((x) => x.t === 'Product')
+    check(cust?.s === 'true' && !cust.title && prod?.s === 'true' && th.find((x) => x.t === 'Order no')?.s === 'true', P('lookup columns are sortable (a sort control, no "unavailable" reason)'), JSON.stringify([cust, prod]))
+    const sorted = await sortByProduct(page, olist0, null)
+    check(sorted.ok, P('sorting by Product (a lookup to 2,500 rows) orders the list by the product names, both ways, on the server'), sorted.evidence)
   } else {
     const opts = await page.$$eval(`${olist0} select[aria-label="Sort by"] option`, (l) => l.map((o) => o.value))
-    check(!opts.includes('Customer') && opts.includes('OrderNo'), P('phone: the card sort does not offer lookup columns'), opts.join(','))
+    check(opts.includes('Customer') && opts.includes('OrderNo'), P('phone: the card sort offers the lookup column'), opts.join(','))
+    await page.select(`${olist0} select[aria-label="Sort by"]`, 'Customer')
+    const byCust = await waitItems(page, olist0, (r) => r.length >= 36 && r[0]?.includes('Customer 01') && r[r.length - 1]?.includes('Customer 12'), 'cards sorted by the customer name')
+    check(true, P('phone: "Sort by Customer" orders the cards by the customer\'s name (server side)'), `${byCust[0].slice(0, 30)} ... ${byCust[byCust.length - 1].slice(0, 30)}`)
+    await page.select(`${olist0} select[aria-label="Sort by"]`, '')
   }
   // the search box finds orders by the customer's name (a lookup path on the server, not the id)
   const of05 = (await rowsOf('SalesOrders')).filter((o) => o.Customer === c05.id).length
@@ -525,7 +573,7 @@ try {
   const products = await api(admin, 'POST', '/tables', { displayName: 'Products', name: 'Products', columns: [{ displayName: 'Name', name: 'Name', type: 'text', required: true }] })
   const csv = 'Name\n' + Array.from({ length: 2500 }, (_, i) => `Product ${String(i + 1).padStart(4, '0')}`).join('\n')
   await api(admin, 'POST', '/data/Products/import', { csv, mode: 'append' })
-  for (const r of (await api(admin, 'POST', '/query', { plan: { version: 2, table: 'Products', filter: { col: 'Name', op: 'eq', value: 'Product 2345' } } })).rows) productIds.set(r.Name, r.id)
+  for (const r of await rowsOf('Products')) { productIds.set(r.Name, r.id); productNames.set(r.id, r.Name) }
   const orders = await api(admin, 'POST', '/tables', {
     displayName: 'Sales orders', name: 'SalesOrders', recycleDays: 30, columns: [
       { displayName: 'Order no', name: 'OrderNo', type: 'text', required: true },
@@ -543,8 +591,11 @@ try {
     ids.push(r.id ?? r.row?.id)
     await sleep(15) // distinct createdOn: "newest first" is deterministic
   }
-  for (let i = 1; i <= 12; i++) for (let k = 1; k <= 3; k++) await api(admin, 'POST', '/data/SalesOrders/rows', { values: { OrderNo: `ORD-${String(i).padStart(2, '0')}-${k}`, Customer: ids[i - 1], Status: k === 1 ? 'Open' : 'Done', Amount: i * k } })
-  const role = await api(admin, 'POST', '/roles', { name: 'App users', apps: 'all', privileges: [customers, orders, products].map((t) => ({ table: t.id, create: true, read: 'all', update: 'all', delete: 'all' })) })
+  // P3-C: the orders point at products spread over the 2,500 (sorting by the product's name is checked in the browser)
+  const productOf = (i, k) => `Product ${String(((i * 7 + k * 311) % 2500) + 1).padStart(4, '0')}`
+  for (let i = 1; i <= 12; i++) for (let k = 1; k <= 3; k++) await api(admin, 'POST', '/data/SalesOrders/rows', { values: { OrderNo: `ORD-${String(i).padStart(2, '0')}-${k}`, Customer: ids[i - 1], Product: productIds.get(productOf(i, k)), Status: k === 1 ? 'Open' : 'Done', Amount: i * k } })
+  // Una may read only the products named below "Product 0600" (a row filter on the TARGET of the Product lookup)
+  const role = await api(admin, 'POST', '/roles', { name: 'App users', apps: 'all', privileges: [customers, orders, products].map((t) => ({ table: t.id, create: true, read: 'all', update: 'all', delete: 'all', ...(t === products ? { rowFilter: [{ column: 'Name', op: 'lt', value: 'Product 0600' }] } : {}) })) })
   const una = await api(admin, 'POST', '/users', { name: USER.name, email: USER.email, password: USER.password, roleIds: [role.id] })
   await q('UPDATE ab.users SET must_change_password = false WHERE id = $1', [una.id ?? una.user?.id])
   check(productIds.get('Product 2345'), 'setup', `12 customers, 36 orders, 2,500 products (CSV import), a user without the Maker role`)
@@ -559,7 +610,7 @@ try {
   await page.goto(`${BASE}/#tables`, { waitUntil: 'domcontentloaded' })
   const A = await createFromDialog(page, { open: 'tables-create-app', tables: ['Customers', 'SalesOrders'], device: 'desktop', name: 'Customers desktop' })
   check(A.preview.length === 5 && A.preview[0].startsWith('Home'), 'A: the dialog previews the screens (home, list and details per table)', A.preview.map((s) => s.split(' - ')[0]).join(' | '))
-  check(A.issues.some((s) => /Customer/.test(s) && /search box that asks the server/.test(s) && /cannot be sorted/.test(s)) && !A.issues.some((s) => /not a search box|row id/.test(s)) && A.issues.some((s) => /Notes/.test(s)), 'A: the dialog lists what it cannot do (lookups: no sort by them; long text and files only in the form), no longer the old picker limits', `${A.issues.length} issues`)
+  check(A.issues.some((s) => /Customer/.test(s) && /search box that asks the server/.test(s) && /a list can be sorted by it/.test(s)) && !A.issues.some((s) => /not a search box|row id|cannot be sorted/.test(s)) && A.issues.some((s) => /Notes/.test(s)), 'A: the dialog says how lookups work (picked by a server search, lists sort by their name: P3-C) and what it cannot do (long text and files only in the form)', `${A.issues.length} issues`)
   const defA = await api(admin, 'GET', `/apps/${A.id}`)
   const appA = defA.definition
   check(appA.width === 1920 && appA.screens.map((s) => s.name).join() === 'Home,CustomersList,CustomersDetail,SalesOrdersList,SalesOrdersDetail', 'A: created through the normal app path: an ordinary 1920x1080 app on the server', appA.screens?.map((s) => s.name).join())
@@ -628,6 +679,30 @@ try {
   await sleep(1500)
   const hasEntry = await up.evaluate(() => !!document.querySelector('[data-testid="app-from-table-button"], [data-testid="app-from-model-button"], [data-testid="tables-create-app"]'))
   check(!hasEntry, 'E: a user without the Maker role gets no "Create app" entry point', await up.evaluate(() => location.hash))
+
+  /* ---------------------------------------------------------------- G. P3-C: sort by a lookup, restricted on the target */
+  log('G. sort by a lookup column as a user restricted on the target table')
+  lastPage = up
+  await up.goto(`${BASE}/?r=${Date.now()}#run-${A.id}`, { waitUntil: 'domcontentloaded' })
+  await waitScreen(up, 'Home', 30000)
+  await press(up, 'SalesOrdersTile')
+  await waitScreen(up, 'SalesOrdersList')
+  const ulist = await N(up, 'SalesOrdersTable')
+  await waitItems(up, ulist, (r) => r.length >= 12, 'orders for Una')
+  const g = await sortByProduct(up, ulist, 'Product 0600')
+  await shot(up, 'restricted-sort-by-product.png')
+  check(g.ok, 'G: a user who may read only some products sorts orders by Product on the server: the others sort as blank (first ascending, last descending), their names never appear', g.evidence)
+  // the same plan over HTTP as Una: one statement, timed (median of 5 after a warm-up)
+  const unaC = new Client(BASE)
+  await api(unaC, 'POST', '/auth/login', { email: USER.email, password: USER.password })
+  const plan = { version: 2, table: 'SalesOrders', sort: [{ col: 'Product', dir: 'asc', via: { table: 'Products', col: 'Name' } }, { col: 'createdOn', dir: 'desc' }], count: true, page: { size: 100 } }
+  await api(unaC, 'POST', '/query', { plan })
+  const ms = []
+  for (let i = 0; i < 5; i++) { const s = performance.now(); await api(unaC, 'POST', '/query', { plan }); ms.push(performance.now() - s) }
+  ms.sort((a, b) => a - b)
+  const one = await api(unaC, 'POST', '/query', { plan })
+  const hiddenName = [...productNames.values()].find((n) => n >= 'Product 0600' && JSON.stringify(one).includes(n))
+  check(!hiddenName && one.rows.length >= 36, 'G: over HTTP the answer holds no hidden product name; one request per page', `median ${ms[2].toFixed(1)} ms (min ${ms[0].toFixed(1)}, max ${ms[4].toFixed(1)}) for a page of 100 orders sorted by a lookup to 2,500 products, as a restricted user`)
 
   /* ---------------------------------------------------------------- F. demo mode */
   log('F. demo mode (dist/index.html from disk)')

@@ -136,7 +136,7 @@ try {
   await page.evaluate(() => [...document.querySelectorAll('[data-testid="run-step"] button')][2]?.click())
   await sleep(300)
   await shot(page, 'flows-run-detail.png')
-  const rows = await api('POST', '/data/PurchaseRequests/query', {})
+  const rows = await api('POST', '/query', { plan: { version: 2, table: 'PurchaseRequests' } })
   ok(rows.rows.some((r) => r.Title === 'Forklift' && r.Status === 'Needs review'), 'the flow updated the row as its owner')
   // 4. the list with health
   await page.goto(`${BASE}/#flows`, { waitUntil: 'networkidle0' })

@@ -43,6 +43,7 @@ import { applyApprovalPolicies, planApprovalPolicies, readPkgApprovalPolicies, t
 import { applyPrintTemplates, planPrintTemplates, readPkgPrintTemplates, type PrintTemplateOps, type PkgPrintTemplate } from '../../core/print/alm.ts'
 import { DASHBOARD_KIND, applyDashboards, planDashboards, readPkgDashboards, type DashboardOps, type PkgDashboard } from '../../core/dashboards/alm.ts'
 import type { PkgFile } from './solutions.ts'
+import { SEQUENCE_KIND, applySequences, planSequences, readPkgSequences, type PkgSequence, type SequenceOps } from '../../core/templates/sequences.ts'
 
 /* ------------------------------------------------------------------ package */
 
@@ -64,6 +65,8 @@ export interface SolutionPkg {
   printTemplates?: PkgPrintTemplate[]
   /** P2-C; undefined: an older package (the solution's dashboards are left alone) */
   dashboards?: PkgDashboard[]
+  /** P3-M1: number sequences (name and format, never the next value); undefined: the solution's are left alone */
+  numberSequences?: PkgSequence[]
   /** sha256 of the package content (without exportedOn) */
   hash: string
 }
@@ -118,7 +121,7 @@ export function readSolutionPkg(text: unknown, s: Services): SolutionPkg | null 
       version: typeof head.version === 'string' && VERSION_RE.test(head.version) ? head.version : '1.0.0',
       ...(typeof head.description === 'string' && head.description ? { description: head.description } : {}),
     },
-    apps, tables, roles, connections, files: readPkgFiles(doc.files), flows: readPkgFlows(doc.flows), approvalPolicies: readPkgApprovalPolicies(doc.approvalPolicies), printTemplates: readPkgPrintTemplates(doc.printTemplates), dashboards: readPkgDashboards(doc.dashboards),
+    apps, tables, roles, connections, files: readPkgFiles(doc.files), flows: readPkgFlows(doc.flows), approvalPolicies: readPkgApprovalPolicies(doc.approvalPolicies), printTemplates: readPkgPrintTemplates(doc.printTemplates), dashboards: readPkgDashboards(doc.dashboards), numberSequences: readPkgSequences(doc.numberSequences),
     // the content, not the text: two exports of the same solution differ only in exportedOn
     hash: createHash('sha256').update(JSON.stringify({ ...doc, exportedOn: null })).digest('hex'),
   }
@@ -191,6 +194,8 @@ interface Ops {
   approvalOps?: ApprovalPolicyOps
   printOps?: PrintTemplateOps
   dashboardOps?: DashboardOps
+  /** P3-M1 */
+  sequenceOps?: SequenceOps
 }
 
 export interface PlanResult { plan: SolutionPlan; ops: Ops }
@@ -203,7 +208,11 @@ function mapRole(r: PkgRole, ops: Ops): { privileges: TablePrivilege[]; apps: st
 }
 
 /** computes the plan in the current environment (nothing is changed) */
-export interface FlowImportOptions { connectionMap?: Record<string, string>; enableFlows?: boolean | string[]; peopleMap?: Record<string, string> }
+export interface FlowImportOptions {
+  connectionMap?: Record<string, string>; enableFlows?: boolean | string[]; peopleMap?: Record<string, string>
+  /** P3-M1: names of tables that exist by the time this package is applied (a dependency installed first, in the same transaction) */
+  expectTables?: string[]
+}
 
 export async function planSolution(s: Services, user: UserContext, pkg: SolutionPkg, flowOpts: FlowImportOptions = {}): Promise<PlanResult> {
   const items: PlanItem[] = []
@@ -307,6 +316,7 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
   const finalNames = new Set([...tables.filter((t) => !ops.removedTables.includes(t)).map((t) => t.name.toLowerCase()), ...ops.newTables.map((t) => t.def.name.toLowerCase())])
   // the core data model's tables (Users, Teams ...) are in every environment
   for (const n of SYSTEM_TABLES.map((t) => t.name.toLowerCase())) finalNames.add(n)
+  for (const n of flowOpts.expectTables ?? []) finalNames.add(n.toLowerCase())
   for (const p of pkg.tables) for (const c of p.def.columns) if (c.type === 'lookup' && c.lookupTable && !c.system && !finalNames.has(c.lookupTable.toLowerCase())) problems.push(`${p.def.displayName}.${c.displayName} looks up "${c.lookupTable}", which is neither here nor in the package.`)
 
   // table events and validation rules of the solution's tables (package G): matched by id within the table
@@ -472,6 +482,13 @@ export async function planSolution(s: Services, user: UserContext, pkg: Solution
   warnings.push(...dp.warnings)
   if (dp.matched) matched = true
   ops.dashboardOps = dp.ops
+  // number sequences (P3-M1)
+  const sp = await planSequences(s, user, pkg.numberSequences, old.filter((x) => (x.kind as string) === SEQUENCE_KIND).map((x) => x.id))
+  items.push(...sp.items)
+  problems.push(...sp.problems)
+  warnings.push(...sp.warnings)
+  if (sp.matched) matched = true
+  ops.sequenceOps = sp.ops
 
   const planMode: SolutionPlan['mode'] = matched ? 'upgrade' : 'install'
   if (planMode === 'upgrade' && !canAdmin) problems.push('Upgrading a solution in place changes existing apps, tables and roles: only administrators of this environment can do it.')
@@ -805,6 +822,12 @@ export async function applySolution(s: Services, ctx: Ctx, pkg: SolutionPkg, res
       }
       if (pkg.dashboards) for (const p of pkg.dashboards) components.push({ kind: DASHBOARD_KIND as SolutionDef['components'][number]['kind'], id: p.id })
       else for (const c of ops.existingSolution?.components ?? []) if ((c.kind as string) === DASHBOARD_KIND) components.push(c)
+      // number sequences (P3-M1): created or their format updated, never their next value; one the package no longer has stays a component
+      if (ops.sequenceOps) await applySequences(s, u.user.id, ops.sequenceOps)
+      if (pkg.numberSequences) {
+        for (const p of pkg.numberSequences) components.push({ kind: SEQUENCE_KIND as SolutionDef['components'][number]['kind'], id: p.id })
+        for (const c of ops.existingSolution?.components ?? []) if ((c.kind as string) === SEQUENCE_KIND && !pkg.numberSequences.some((p) => p.id === c.id)) components.push(c)
+      } else for (const c of ops.existingSolution?.components ?? []) if ((c.kind as string) === SEQUENCE_KIND) components.push(c)
 
       const sols = await s.meta.solutions.list()
       const prev = ops.existingSolution

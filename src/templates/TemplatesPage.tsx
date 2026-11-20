@@ -1,10 +1,12 @@
 /**
  * The Templates page (Dev mode; docs/guide/maker/templates.md): the built-in catalogue by kind with search, a detail
  * view (what it contains, what it needs, integrity), "Use", and the templates installed in this environment (uninstall
- * for apps and data models; upgrade for Linked installs with a newer version).
+ * for apps, data models and solutions; upgrade for Linked installs with a newer version). Solution templates (P3-M1):
+ * "Remove sample data", "Switch on these flows" (administrators), what an install depends on and what depends on it,
+ * and the local changes of every component kind on the upgrade screen.
  */
 import { useEffect, useMemo, useState } from 'react'
-import { AppWindow, Boxes, CheckCircle2, LayoutTemplate, Network, PanelsTopLeft, RefreshCw, Search, ShieldAlert, ShieldCheck, Trash2, type LucideIcon } from 'lucide-react'
+import { AppWindow, Boxes, Eraser, Package, Workflow, CheckCircle2, LayoutTemplate, Network, PanelsTopLeft, RefreshCw, Search, ShieldAlert, ShieldCheck, Trash2, type LucideIcon } from 'lucide-react'
 import { platform, usePlatform } from '@/platform'
 import { go } from '@/router'
 import { cn } from '@/lib/utils'
@@ -16,12 +18,12 @@ import { Spinner } from '@/components/ui/spinner'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { BackupRefusal, PlanView, isBackupRefusal, useConfirmable } from '@/portal/SolutionPlan'
 import { Empty, PageHeader, errMsg, fmtDate, useToast } from '@/portal/kit'
-import { KIND_LABEL, TEMPLATE_KINDS, type TemplateDetail, type TemplateInstallRecord, type TemplateKind, type TemplateSummary, type UninstallPlan, type UpgradePlan } from './format'
-import { fetchCatalogue, fetchInstalled, fetchTemplate, planUninstall, planUpgrade, uninstall, upgrade } from './api'
+import { KIND_LABEL, LOCAL_CHANGE_LABEL, TEMPLATE_KINDS, type TemplateDetail, type TemplateInstallRecord, type TemplateKind, type TemplateSummary, type UninstallItem, type UninstallPlan, type UpgradePlan } from './format'
+import { enableFlows, fetchCatalogue, fetchInstalled, fetchTemplate, planUninstall, planUpgrade, removeSample, uninstall, upgrade } from './api'
 import { UseTemplateDialog } from './UseTemplateDialog'
 
-const KIND_ICON: Record<TemplateKind, LucideIcon> = { component: Boxes, screen: PanelsTopLeft, app: AppWindow, dataModel: Network }
-const KIND_PLURAL: Record<TemplateKind, string> = { component: 'UI components', screen: 'Screens', app: 'Apps', dataModel: 'Data models' }
+const KIND_ICON: Record<TemplateKind, LucideIcon> = { component: Boxes, screen: PanelsTopLeft, app: AppWindow, dataModel: Network, solution: Package }
+const KIND_PLURAL: Record<TemplateKind, string> = { component: 'UI components', screen: 'Screens', app: 'Apps', dataModel: 'Data models', solution: 'Solutions' }
 
 /** the hash that opens an app in the Studio with a template's use dialog */
 export const studioWithTemplate = (appId: string, templateId: string): string => `#studio-${appId}?template=${encodeURIComponent(templateId)}`
@@ -47,6 +49,85 @@ function OpenInStudioDialog({ template, onClose }: { template: TemplateSummary |
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button disabled={!appId || !template} data-testid="tpl-open-go" onClick={() => { if (template) location.hash = studioWithTemplate(appId, template.id) }}>Open in the Studio</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+const UNINSTALL_KIND: Record<UninstallItem['kind'], string> = { app: 'App', table: 'Table', role: 'Role', flow: 'Flow', solution: 'Solution', approvalPolicy: 'Approval policy', dashboard: 'Dashboard', printTemplate: 'Print template', numberSequence: 'Number sequence' }
+
+/** "Remove sample data": exactly the SAMPLE rows the install added (rows people added, and SAMPLE rows they still use, stay) */
+function SampleDialog({ rec, onClose, onDone }: { rec: TemplateInstallRecord | null; onClose(): void; onDone(): void }) {
+  const { toast, fail } = useToast()
+  const [busy, setBusy] = useState(false)
+  const run = async () => {
+    if (!rec) return
+    setBusy(true)
+    try {
+      const r = await removeSample(rec.id)
+      await platform.init().catch(() => undefined)
+      toast(`Removed ${r.removed} SAMPLE row${r.removed === 1 ? '' : 's'}${r.kept.length ? `; ${r.kept.length} kept because your rows use them` : ''}`, 'success')
+      onDone()
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog open={!!rec} onOpenChange={(o) => !o && !busy && onClose()}>
+      <DialogContent data-testid="tpl-sample-dialog">
+        <DialogHeader>
+          <DialogTitle>Remove the sample data of "{rec?.name}"</DialogTitle>
+          <DialogDescription>Deletes the {rec?.sampleRemaining ?? 0} SAMPLE rows this template added (they are recorded by id). Rows you added stay; a SAMPLE row one of your rows still points at stays too.</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button variant="destructive" onClick={() => void run()} disabled={busy} data-testid="tpl-sample-go">{busy ? <Spinner /> : <Eraser />} Remove sample data</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** "Switch on these flows" (rule 8: the flows of a pack arrive turned off; an administrator switches them on explicitly) */
+function FlowsDialog({ rec, onClose, onDone }: { rec: TemplateInstallRecord | null; onClose(): void; onDone(): void }) {
+  const { toast, fail } = useToast()
+  const [pick, setPick] = useState<Set<string>>(new Set())
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { setPick(new Set()) }, [rec])
+  const run = async () => {
+    if (!rec) return
+    setBusy(true)
+    try {
+      await enableFlows(rec.id, [...pick])
+      toast(`Switched on ${pick.size} flow${pick.size === 1 ? '' : 's'}`, 'success')
+      onDone()
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog open={!!rec} onOpenChange={(o) => !o && !busy && onClose()}>
+      <DialogContent data-testid="tpl-flows-dialog">
+        <DialogHeader>
+          <DialogTitle>Switch on the flows of "{rec?.name}"</DialogTitle>
+          <DialogDescription>They arrived turned off. Once on, they run as their owner (the administrator who installed the template). Recorded in the audit log.</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-1.5">
+          {(rec?.flowsOff ?? []).map((f) => (
+            <label key={f.id} className="flex items-center gap-2 text-sm">
+              <Checkbox checked={pick.has(f.id)} disabled={busy} data-testid={`tpl-flow-${f.id}`} onCheckedChange={(v) => { const n = new Set(pick); if (v === true) n.add(f.id); else n.delete(f.id); setPick(n) }} />
+              {f.name}
+            </label>
+          ))}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button onClick={() => void run()} disabled={busy || !pick.size} data-testid="tpl-flows-go">{busy ? <Spinner /> : <Workflow />} Switch on</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -88,7 +169,7 @@ function UninstallDialog({ rec, onClose, onDone }: { rec: TemplateInstallRecord 
       <DialogContent className="sm:max-w-2xl" data-testid="tpl-uninstall">
         <DialogHeader>
           <DialogTitle>Uninstall "{rec?.name}"</DialogTitle>
-          <DialogDescription>Removes the apps, flows and roles the template created. Tables with data stay unless you tick delete below.</DialogDescription>
+          <DialogDescription>Removes the apps, flows, roles, approval policies, dashboards and print templates the template created. Tables with data stay unless you tick delete below; tables it did not create are never touched.</DialogDescription>
         </DialogHeader>
         {!plan ? <div className="grid place-items-center py-6"><Spinner /></div> : (
           <div className="grid gap-3">
@@ -97,10 +178,10 @@ function UninstallDialog({ rec, onClose, onDone }: { rec: TemplateInstallRecord 
               {plan.items.length === 0 && <p className="p-3 text-sm text-muted-foreground">Nothing is left to remove.</p>}
               {plan.items.map((i) => (
                 <div key={`${i.kind}:${i.id}`} className={cn('flex items-start gap-2 border-b border-border px-3 py-2 text-sm last:border-0', i.destructive && 'bg-rose-500/5')} data-testid={`tpl-uninstall-${i.kind}-${i.action}`}>
-                  <span className="w-16 shrink-0 text-xs text-muted-foreground">{i.kind}</span>
+                  <span className="w-28 shrink-0 text-xs text-muted-foreground">{UNINSTALL_KIND[i.kind] ?? i.kind}</span>
                   <span className="font-medium">{i.name}</span>
                   <span className={cn('ml-auto rounded px-1.5 py-0.5 text-[11px] font-medium', i.action === 'removed' ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300' : 'bg-muted text-muted-foreground')}>{i.action}</span>
-                  {i.note && <span className="basis-full pl-[4.5rem] text-xs text-muted-foreground">{i.note}</span>}
+                  {i.note && <span className="basis-full pl-[7.5rem] text-xs text-muted-foreground">{i.note}</span>}
                 </div>
               ))}
             </div>
@@ -173,13 +254,19 @@ function UpgradeDialog({ rec, onClose, onDone }: { rec: TemplateInstallRecord | 
                 <span className="text-xs font-semibold">Changed here since the template delivered it</span>
                 {up.localChanges.map((l) => (
                   <label key={l.key} className="flex items-center gap-2">
-                    <span className="flex-1">{l.kind === 'app' ? 'App' : 'Table'} {l.name}</span>
+                    <span className="flex-1">{LOCAL_CHANGE_LABEL[l.kind] ?? l.kind} {l.name}</span>
                     <select className="h-8 rounded-md border border-input bg-background px-2 text-sm" value={choices[l.key] ?? l.choice} data-testid={`tpl-local-${l.key}`} onChange={(e) => setChoices({ ...choices, [l.key]: e.target.value as 'keep' | 'replace' })}>
                       <option value="keep">Keep my changes</option>
                       <option value="replace">Replace with v{up.to}</option>
                     </select>
                   </label>
                 ))}
+              </div>
+            )}
+            {up.noLongerUsed && up.noLongerUsed.length > 0 && (
+              <div className="grid gap-0.5 rounded-md border border-border p-2.5 text-xs text-muted-foreground" data-testid="tpl-no-longer-used">
+                <span className="font-semibold text-foreground">Kept here although the new version no longer has them (data is never removed by an upgrade)</span>
+                {up.noLongerUsed.map((n) => <span key={n}>{n}</span>)}
               </div>
             )}
             <PlanView plan={up.plan} />
@@ -244,6 +331,9 @@ export function TemplatesPage() {
   const [inStudio, setInStudio] = useState<TemplateSummary | null>(null)
   const [unin, setUnin] = useState<TemplateInstallRecord | null>(null)
   const [upg, setUpg] = useState<TemplateInstallRecord | null>(null)
+  const [smp, setSmp] = useState<TemplateInstallRecord | null>(null)
+  const [flw, setFlw] = useState<TemplateInstallRecord | null>(null)
+  const isAdmin = usePlatform((s) => !!s.session?.privileges.isAdmin)
   const load = () => {
     void fetchCatalogue().then((l) => { setItems(l); setSel((s) => s ?? l[0]?.id ?? null) }, (e) => { setItems([]); fail(e) })
     void fetchInstalled().then(setInstalled, () => setInstalled([]))
@@ -256,7 +346,7 @@ export function TemplatesPage() {
   const startUse = (t: TemplateSummary) => (t.kind === 'component' || t.kind === 'screen' ? setInStudio(t) : setUse(t.id))
   return (
     <div className="grid gap-4 p-6" data-testid="templates-page">
-      <PageHeader title="Templates" icon={LayoutTemplate} subtitle="Ready-made UI components, screens, apps and data models. Using one never overwrites anything you have; install in a sandbox first, then Deploy." />
+      <PageHeader title="Templates" icon={LayoutTemplate} subtitle="Ready-made UI components, screens, apps, data models and solutions. Using one never overwrites anything you have; install in a sandbox first, then Deploy." />
       <div className="flex flex-wrap items-center gap-2">
         {(['all', ...TEMPLATE_KINDS] as const).map((k) => (
           <Button key={k} size="sm" variant={kind === k ? 'default' : 'outline'} onClick={() => setKind(k)} data-testid={`tpl-kind-${k}`}>{k === 'all' ? 'All' : KIND_PLURAL[k]}</Button>
@@ -298,7 +388,11 @@ export function TemplatesPage() {
                   {[r.created.apps.length ? `app ${r.created.apps.map((a) => a.name).join(', ')}` : '', r.created.tables.length ? `tables ${r.created.tables.map((t) => t.name).join(', ')}` : '', r.created.mapped.length ? `uses ${r.created.mapped.map((m) => m.name).join(', ')}` : '', r.created.target?.appName ? `into ${r.created.target.appName}` : ''].filter(Boolean).join(' · ')}
                 </span>
                 {r.status === 'uninstalled' && <Badge variant="outline">uninstalled</Badge>}
+                {r.status === 'installed' && r.dependsOn && r.dependsOn.length > 0 && <span className="text-xs text-muted-foreground" data-testid={`tpl-needs-${r.id}`}>needs {r.dependsOn.map((d) => d.name).join(', ')}</span>}
+                {r.status === 'installed' && r.usedBy && r.usedBy.length > 0 && <span className="text-xs text-muted-foreground" data-testid={`tpl-usedby-${r.id}`}>used by {r.usedBy.map((d) => d.name).join(', ')}</span>}
                 <span className="ml-auto flex gap-1.5">
+                  {r.flowsOff && r.flowsOff.length > 0 && isAdmin && <Button size="xs" variant="outline" onClick={() => setFlw(r)} data-testid={`tpl-flows-${r.id}`}><Workflow /> Switch on {r.flowsOff.length} flow{r.flowsOff.length === 1 ? '' : 's'}</Button>}
+                  {r.sampleRemaining ? <Button size="xs" variant="outline" onClick={() => setSmp(r)} data-testid={`tpl-sample-remove-${r.id}`}><Eraser /> Remove sample data</Button> : null}
                   {r.upgradeTo && <Button size="xs" variant="outline" onClick={() => setUpg(r)} data-testid={`tpl-upgrade-${r.id}`}><RefreshCw /> Upgrade to v{r.upgradeTo}</Button>}
                   {r.created.apps[0] && r.status === 'installed' && <Button size="xs" variant="ghost" onClick={() => go({ page: 'studio', id: r.created.apps[0].id })}>Open app</Button>}
                   {r.canUninstall && <Button size="xs" variant="outline" onClick={() => setUnin(r)} data-testid={`tpl-uninstall-${r.id}`}><Trash2 /> Uninstall</Button>}
@@ -312,6 +406,8 @@ export function TemplatesPage() {
       <OpenInStudioDialog template={inStudio} onClose={() => setInStudio(null)} />
       <UninstallDialog rec={unin} onClose={() => setUnin(null)} onDone={() => { setUnin(null); load() }} />
       <UpgradeDialog rec={upg} onClose={() => setUpg(null)} onDone={() => { setUpg(null); load() }} />
+      <SampleDialog rec={smp} onClose={() => setSmp(null)} onDone={() => { setSmp(null); load() }} />
+      <FlowsDialog rec={flw} onClose={() => setFlw(null)} onDone={() => { setFlw(null); load() }} />
     </div>
   )
 }

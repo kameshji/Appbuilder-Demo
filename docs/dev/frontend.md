@@ -463,9 +463,19 @@ HTTP). Decisions are pure functions in `src/controls/lookups.ts` (tested in `loo
   record was deleted or you cannot see it."). Never the id, and the two cases are not told apart (the server answers a
   hidden row exactly like a missing one). While a batch is on its way the cell shows "…".
 - **DataTable** (and its phone cards): lookup columns of the rows' table (`QueryMeta.table`, or the table whose columns
-  the rows have) render labels. Sorting: a list paged from the server cannot sort by a lookup (it would order by id):
-  the header has no sort arrow, `data-sortable="false"`, a reason on hover, and the card **Sort by** box leaves it out;
-  `withView` in `src/runtime/delegation.ts` also ignores such a sort. A list held in the browser sorts by label (up to
+  the rows have) render labels. Sorting (P3-C): a list paged from the server sorts by a lookup's LABEL on the server:
+  `withView` in `src/runtime/delegation.ts` turns the header sort into a Query v2 sort key through the lookup
+  (`lookupSortKey`: `{ col, dir, via: { table: target, col: target's primary column } }`, [query-v2.md 5b](query-v2.md#5b-sorting-by-a-lookup-column-p3-c)),
+  never by record id. The server reads the target as the viewer: a row whose target they cannot read (or that is
+  deleted, or blank) sorts with the blank labels, by the row's own creation order, so its position tells nothing about
+  the hidden row; the cell shows *Not available*. The header offers it only where `lookupSortInfo` (delegation.ts, on top
+  of `lookupSortSupport` in lookups.ts) says the server can: the viewer may read the target table and its primary column,
+  the primary column can be sorted (not a file or image), and both tables are in the same PostgreSQL store (the default
+  database; another connection only when the workspace says it is PostgreSQL, which only makers see). Otherwise the
+  header keeps `data-sortable="false"` with the reason on hover ("you cannot see the names in Customers it would be
+  sorted by", "... stored where the server cannot sort by a lookup's names", "... has no name column to sort by") and
+  the card **Sort by** box leaves the column out; the server refuses such a sort too (403 for a hidden primary column,
+  422 for another store). A list held in the browser sorts by label (up to
   2,000 distinct ids; it then asks for every label). Search: on the server, a lookup column is searched through its
   target's primary column with a lookup path (`lookupSearchCondition`: `{ via: { col, table, where: contains } }`),
   never by id; targets that are unreadable, have a hidden or non-text primary column, or live in another connection are

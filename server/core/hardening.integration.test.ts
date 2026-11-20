@@ -5,6 +5,7 @@
  * with and without consent, assign owner, boot retry, downgrade guard, the first migration's audit entry. Creates and drops
  * its own database.
  */
+import { planBody } from './testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -156,10 +157,11 @@ describe.skipIf(!URL_ENV)('hardening (PostgreSQL)', () => {
     const l = await A.post('/connections/conn_default/link', { source: 'half_sys', displayName: 'Half' })
     expect(l.status, JSON.stringify(l.data)).toBe(200)
     expect(l.data).toMatchObject({ readOnly: true, missingSystem: ['createdOn', 'modifiedOn', 'createdBy', 'owner'] })
-    const q = await A.post(`/data/${l.data.id}/query`, { count: true })
+    const q = await A.post('/query', planBody(l.data.id, { count: true }))
     expect(q.status, JSON.stringify(q.data)).toBe(200)
     expect(q.data.rows).toEqual([{ id: '11111111-1111-4111-8111-111111111111', name: 'x' }])
-    expect((await A.post(`/data/${l.data.id}/query`, { top: 1, skip: 0 })).status).toBe(200)
+    expect((await A.post('/query', planBody(l.data.id, { top: 1 }))).status).toBe(200)
+    expect((await A.post('/query', { plan: { version: 2, table: l.data.id, page: { size: 1 } } })).status).toBe(200)
     expect((await A.get(`/tables/${l.data.id}/csv`)).status).toBe(200)
     // the same physical table cannot be linked twice
     const again = await A.post('/connections/conn_default/link', { source: 'half_sys' })
@@ -193,13 +195,13 @@ describe.skipIf(!URL_ENV)('hardening (PostgreSQL)', () => {
     }
     const ins = await A.post(`/data/${l.data.id}/rows`, { values: { client_no: 4, name: 'Delta' } })
     expect(ins.status, JSON.stringify(ins.data)).toBe(200)
-    const q = await A.post(`/data/${l.data.id}/query`, { orderBy: [{ col: 'client_no', dir: 'asc' }] })
+    const q = await A.post('/query', planBody(l.data.id, { orderBy: [{ col: 'client_no', dir: 'asc' }] }))
     expect(q.data.rows.map((r: any) => r.name)).toEqual(['Alpha', 'Beta', 'Gamma', 'Delta'])
     expect(q.data.rows.map((r: any) => r.owner)).toEqual([null, null, null, expect.stringMatching(/^user_/)])
     // the pre-existing rows have no owner: the admin action fixes that
     const as = await A.post(`/tables/${l.data.id}/assign-owner`, {})
     expect(as.data).toEqual({ updated: 3 })
-    const q2 = await A.post(`/data/${l.data.id}/query`, {})
+    const q2 = await A.post('/query', planBody(l.data.id))
     expect(q2.data.rows.every((r: any) => typeof r.owner === 'string' && r.owner)).toBe(true)
     // removing a column of the linked table only unmaps it
     expect((await A.req('DELETE', `/tables/${l.data.id}/columns/name`)).status).toBe(200)
@@ -294,7 +296,7 @@ describe.skipIf(!URL_ENV)('hardening (PostgreSQL)', () => {
       const st = await c.get('/status')
       expect(st.data.setup).toMatchObject({ incompatible: true, needsDatabase: false })
       expect(st.data.ok).toBe(false)
-      expect((await c.post('/data/x/query', {})).status).toBe(503)
+      expect((await c.post('/query', planBody('x'))).status).toBe(503)
       expect((await c.post('/setup/database', { ...dbSettings(), setupCode: 'ABCDEFGH' })).status).toBe(409)
       // nothing was written to the newer database
       const v = await raw.query<{ v: string }>("SELECT v FROM ab.settings WHERE k = 'schemaVersion'")

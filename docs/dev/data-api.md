@@ -1,10 +1,23 @@
-# Data API v1 (and the v2 query)
+# Data API v1 (reads through Query v2)
 
-This is the HTTP contract between the browser and a backend. The local Node server implements it today
-(`/home/claude/appbuilder-demo/server/core/*`, `/home/claude/appbuilder-demo/server/routes/meta/*`). **The planned PHP gateway for
-shared hosting (decision D12 in `/home/claude/appbuilder-demo/docs/decisions.md`) must implement exactly this contract**:
-same paths, same JSON shapes, same status codes and error codes, same cookie and CSRF rules. The client does not know which
-backend it talks to; `GET /api/v1/status` reports `backend: 'node' | 'php'`.
+This is the HTTP contract between the browser and a backend, under the base path `/api/v1` ("v1" names the path, not the query
+language). The local Node server implements it (`/home/claude/appbuilder-demo/server/core/*`,
+`/home/claude/appbuilder-demo/server/routes/meta/*`). The client does not know which backend it talks to; `GET /api/v1/status`
+reports `backend: 'node' | 'php'`.
+
+**Reads are Query v2 only (Phase 3, package C).** The v1 read route `POST /data/:table/query` (a `Query` with `where`, `orderBy`,
+`top`, `skip`) was removed: it answers 404. Every read, the browser's small-table cache and the phone's offline answers included,
+is a plan for [`POST /api/v1/query`](#post-query-user-data-api-v2). The row write routes (`POST /data/:table/rows`, `PATCH
+/data/:table/rows/:id`, `POST /data/:table/delete`, `POST /data/:table/import`) stay: they are the write API. A caller outside this
+repository cannot be known; the CHANGELOG states the removal.
+
+**What this means for the PHP gateway (decision D12, on hold since D14).** D12 planned a PHP gateway "implementing Data API v1"
+on shared hosting. With the v1 read route gone, a conformant gateway can no longer offer a simple `where`/`orderBy` read: it would
+have to implement Query v2 itself, that is port the plan validator (`src/fx/query/validate.ts`), the PostgreSQL statement builder
+with row and column security inside the statement (`server/connectors/postgres/query-v2.ts`, lookup paths and sorts through a
+lookup included), the keyset cursors (`src/fx/query/cursor.ts`) and the fallback rules, and pass the same parity corpora
+(`query-v2.md` sections 11 and 15). That is a reimplementation of the query engine, not a thin gateway. The conformance list at the
+end of this page is updated accordingly; whether D12 is kept, rewritten or retired is the owner's decision.
 
 Sources of truth, in order: the code in `server/core/router.ts` and the `router.add(...)` registrations, then the types in
 `/home/claude/appbuilder-demo/src/platform/http.ts` and `/home/claude/appbuilder-demo/src/platform/contracts.ts`. This page was
@@ -12,8 +25,8 @@ written by hand from them. Where a doc comment in `http.ts` disagrees with the c
 "Known differences" list at the end).
 
 What is not supported: there is no API for per-row sharing, no bulk update, no websockets or server push, and no API tokens (session
-cookie only). Filtering, sorting, search, keyset paging, exact counts and aggregates run on the server through
-[`POST /api/v1/query`](#post-query-user-data-api-v2) (Query v2, P0 package D); `POST /data/:table/query` (v1) stays for one phase.
+cookie only). Filtering, sorting (also by a lookup column's label), search, keyset paging, exact counts and aggregates run on the
+server through [`POST /api/v1/query`](#post-query-user-data-api-v2) (Query v2); the v1 read route is gone (above).
 
 ## Conventions
 
@@ -59,9 +72,10 @@ cookie only). Filtering, sorting, search, keyset paging, exact counts and aggreg
   `currency` is rounded to 4 decimals, `number` must be an integer, `decimal` is a double. Booleans accept `true/false/1/0/yes/no/y/n`
   on input. `text`, `email`, `phone`, `choice`, `url` are limited to 255 chars (`url` 1024), `multiline` to 16,000,000. Attachment cells
   hold an attachment id or a JSON array of ids. Details: `/home/claude/appbuilder-demo/server/core/values.ts`.
-- **Row cap (v1 only).** A v1 query returns at most `DEFAULT_ROW_CAP` = 5000 rows. If more rows match, the server returns 5000 and
-  `truncated: true`. Since package D the browser uses v1 only to hold small tables (at most 2,000 readable rows) whole; everything
-  else goes through `POST /query`, which pages with a keyset cursor (decision D10 is superseded by D15).
+- **Row cap.** An unpaged Query v2 rows plan returns at most 5,000 rows (more: 422, page it); connectors that cannot run plans read at
+  most 5,000 rows and say `truncated: true`. The browser holds small tables (at most 2,000 readable rows) whole with ONE plan in
+  natural order, `take` of `DEFAULT_ROW_CAP` (5,000) rows, plus a count-only plan when exactly 5,000 came back (more rows:
+  `truncated`, as the v1 route said); everything else is paged with a keyset cursor (decision D10 is superseded by D15).
 - **Timestamps in metadata** (`createdOn`, `modifiedOn`, `lastLogin`, `expiresOn`) are ISO-8601 strings.
 - **Environment.** Every request works in one [environment](../admin/environments.md). Name it with the header
   `X-Appbuilder-Environment: <id>` (or `?env=<id>` on a `GET`, for links such as attachment URLs; both with different values: 400).
@@ -195,27 +209,33 @@ names do not leak (`ensureTableVisible` in `/home/claude/appbuilder-demo/server/
 ### `POST /query` (user): Data API v2
 
 Body `{ plan: QueryPlan }` (`src/platform/query.ts`; semantics in `query-v2.md`). The table is `plan.table` (name or id); a caller
-with no privilege on it gets 404 as for v1. Response `QueryV2Response`: `{ rows, count?, nextCursor?, truncated? }`.
+with no privilege on it gets 404. Response `QueryV2Response`: `{ rows, count?, nextCursor?, truncated? }`.
 
 - **Plan.** `filter` (ConditionV2: `isNull`, `eq ne lt le gt ge` with a literal of the column's kind, `in`, `contains`, `startsWith`,
-  `endsWith`, `cmpCol`, `cmpExpr` over computed numbers, `and`, `or`, `not`, `const`), `search { text, columns }`, `sort [{ col, dir }]`,
+  `endsWith`, `cmpCol`, `cmpExpr` over computed numbers, `via` through a lookup, `and`, `or`, `not`, `const`), `search { text, columns }`,
+  `sort [{ col, dir, via? }]` (`via: { table, col }`: by a column of the row the lookup points at, as the caller may read it;
+  [query-v2.md 5b](query-v2.md#5b-sorting-by-a-lookup-column-p3-c)),
   `take { n, from }`, `aggregate { groupBy, measures, sort?, as? }` (measures `sum avg min max` over a number column or an expression,
   `count` with an optional filter), `select`, `count`, `single`, `page { size, cursor? }`. Stages: filter and search, sort, take,
   aggregate, select, count / single / page.
-- **Rows.** Values as in v1 (dates `YYYY-MM-DD`, datetimes ISO). Rows plans always include `id`; without `select` every column the
+- **Rows.** Values as everywhere in this API (dates `YYYY-MM-DD`, datetimes ISO). Rows plans always include `id`; without `select` every column the
   caller may read. Aggregate rows have the group columns (renamed by `as`) and the measures (numbers; `avg` of nothing is `null`).
 - **Paging.** `page.size` 0..500; `nextCursor` is the opaque cursor of the next page or `null` on the last one. Send the same plan with
   `page.cursor` for the next page. `count: true` adds the exact number of result rows (after take and aggregate, before paging).
 - **Security.** RBAC, the caller's row scope and role row filters are part of the one SQL statement on PostgreSQL, so rows, counts
   and aggregates only cover rows the caller may read. A column the caller may not read (column access `none`) named anywhere in the
-  plan (select, filter, sort, search, groupBy, measures, measure filters) is 403 `denied` with `field` = the column.
+  plan (select, filter, sort, search, groupBy, measures, measure filters) is 403 `denied` with `field` = the column. A sort through a
+  lookup whose target column the caller may not read is 403 too, in plain words ("This list can't be sorted by Customer: you do
+  not have access to the column "Customers.Name" it would be sorted by."); target ROWS the caller may not read sort as a blank
+  label (query-v2.md 5b).
 - **Errors.** 422 `invalid` for a malformed plan (unknown column or operator, a literal of the wrong kind, `page.size` above 500, a
   cursor for another sort or a forged one), an unpaged rows plan with more than 5,000 rows, an aggregate with more than 5,000 groups,
   division by zero or an out-of-range number ("That result isn't a valid number"); 503 `unavailable` when the query runs longer than
   the statement timeout (15 s, `APPBUILDER_QUERY_TIMEOUT_MS`).
 - **Connectors.** PostgreSQL tables (the default connection and external PostgreSQL connections) run the plan in the database. MySQL,
   data files and Google Sheets run it over at most the first 5,000 readable rows and say `truncated: true` when there were more
-  (`query-v2.md` section 14).
+  (`query-v2.md` section 14); a sort through a lookup is refused there (422, "sorting by a lookup's names needs a table in a
+  PostgreSQL database"), as is a lookup path, never computed over part of the rows.
 
 ```bash
 curl -sS -b $JAR -H "$H" -H "$JSON" \
@@ -227,28 +247,26 @@ curl -sS -b $JAR -H "$H" -H "$JSON" \
   $BASE/query
 ```
 
-### `POST /data/:table/query` (user)
+### `POST /data/:table/query`: removed (Phase 3)
 
-Body (`Query`, every field optional): `{ select?: string[], where?: Condition, orderBy?: [{ col, dir: 'asc'|'desc' }], top?, skip?, count? }`.
+The v1 read route is gone: it answers 404 `not-found` like any unknown route. What it did maps onto Query v2 as follows (the
+`Query` type stays in `http.ts` as the connectors' internal select shape and the security engine's condition language; clients
+cannot send it any more):
 
-- `where` is the `Condition` tree described in `connectors.md` (ops `eq ne lt le gt ge in contains startsWith endsWith isBlank notBlank`,
-  plus `and`, `or`, `not`, `const`). Limits: 2000 nodes, depth 32, at most 1000 values in `in`. Larger or malformed trees: 422.
-- `top`, `skip`: non-negative integers. If `top` is absent or larger than 5000, 5000 rows are returned and `truncated` says
-  whether more matched. If `top` is 5000 or less, exactly that many rows are returned at most, and `truncated` is false.
-- `count: true` adds `total` (rows matching `where` and the caller's row filter).
-- A column in `select`, `where` or `orderBy` that does not exist: 422. A column the caller may not read (column access `none`): 403.
-- Without `orderBy` rows come in insertion order (SQL connectors: `ORDER BY createdOn, id`; row ids are time-ordered UUIDv7; the
-  file and Google Sheets connectors keep file/sheet order). The same keys break ties of an explicit sort.
-- The caller's row filter and row scope are ANDed into `where` on the server. Blanks sort last for both directions in every
-  connector (SQL sorts the blank test first, then the value); text compares and sorts case-insensitively by code point on
-  PostgreSQL and in memory; see `connectors.md`.
-
-Response `QueryResponse`: `{ rows, truncated, total? }`.
+| v1 body | Query v2 plan |
+| --- | --- |
+| `where` (`Condition`: lenient blanks) | `filter` (`ConditionV2`: strict primitives; add `isNull` branches where a blank should match, `query-v2.md` section 4) |
+| `orderBy` (blanks last) | `sort` (blanks are the kind's blank key: first ascending, `query-v2.md` section 5) |
+| `top` | `take: { n, from: 'start' }`, or `page: { size }` (at most 500) with `nextCursor` |
+| `skip` | none: page with the keyset cursor (stable under inserts), or `take` from the end |
+| `count` -> `total` | `count: true` -> `count` (`page: { size: 0 }` for the count alone) |
+| `truncated` (more than 5,000 matched) | an unpaged rows plan with more than 5,000 rows is 422; capped connectors set `truncated` |
 
 ```bash
+# v1 {"where":{"col":"Status","op":"eq","value":"Open"},"orderBy":[{"col":"createdOn","dir":"desc"}],"top":50,"count":true}
 curl -sS -b $JAR -H "$H" -H "$JSON" \
-  -d '{"where":{"col":"Status","op":"eq","value":"Open"},"orderBy":[{"col":"createdOn","dir":"desc"}],"top":50,"count":true}' \
-  $BASE/data/Tickets/query
+  -d '{"plan":{"version":2,"table":"Tickets","filter":{"col":"Status","op":"eq","value":"Open"},"sort":[{"col":"createdOn","dir":"desc"}],"count":true,"page":{"size":50}}}' \
+  $BASE/query
 ```
 
 ### `POST /data/:table/rows` (user)
@@ -953,8 +971,11 @@ A gateway is conformant when:
    is advisory only;
 3. it keeps the cookie, CSRF and same-origin rules above;
 4. `GET /status` returns `backend: 'php'` and the same `setup` flags so the setup screens work;
-5. `Query`/`Condition` semantics match `/home/claude/appbuilder-demo/server/core/condition.ts` (the reference) and the values rules in
-   `/home/claude/appbuilder-demo/server/core/values.ts`.
+5. `POST /query` gives exactly the rows, values, order, counts and cursors of `query-v2.md` (the reference executor
+   `src/fx/query/reference.ts` and the parity corpora of its sections 11 and 15, lookup sorts of section 5b included), with the
+   caller's row and column security inside the query; the row filters themselves (`Condition`, the security engine's language)
+   follow `/home/claude/appbuilder-demo/server/core/condition.ts`, and values the rules in `/home/claude/appbuilder-demo/server/core/values.ts`.
+   Since the v1 read route was removed (Phase 3) there is no simpler read API a gateway could offer instead.
 
 The client detects the backend by calling `GET /api/v1/status` (800 ms timeout); if it does not answer with
 `{ app: 'appbuilder' }` the browser falls back to demo mode (see `architecture.md`).
@@ -964,5 +985,5 @@ The client detects the backend by calling `GET /api/v1/status` (800 ms timeout);
 - `http.ts` comments `POST /api/v1/data/:table/from-csv (on /api/v1/tables/from-csv)`; the real route is `POST /api/v1/tables/from-csv`.
 - `http.ts` comments "connections (admins; makers may read)". In code `test`, `source-tables` and `link` are maker-level and the rest
   are admin-only; there is no `GET /connections` (connections come from `GET /workspace`).
-- The doc comment for `Query.top` says "default and maximum: DEFAULT_ROW_CAP"; the code returns the cap when `top` is larger, as
-  described above.
+- The doc comment for `Query.top` describes the removed v1 read route; `Query` is now only the connectors' internal select shape
+  (`DataService.query` inside the server, never over HTTP).

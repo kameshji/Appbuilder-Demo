@@ -6,7 +6,7 @@ import { executePlan } from '@/fx/query/reference'
 import { schemaInfoOf } from '@/platform/query-local'
 import {
   LABEL_BATCH, LABEL_SORT_LIMIT, LOADING_MARK, NOT_AVAILABLE, batches, isNoConnection, labelPlans, labelStoreKey, labelText, lookupCell,
-  lookupSearchCondition, lookupSort, lookupSortText, mergeLabels, missingIds, pickerMessage, pickerNote, pickerPlan, type LabelEntry,
+  lookupSearchCondition, lookupSort, lookupSortKey, lookupSortSupport, lookupSortText, mergeLabels, missingIds, pickerMessage, pickerNote, pickerPlan, type LabelEntry,
 } from './lookups'
 
 const sys: ColumnDef[] = [
@@ -96,12 +96,34 @@ describe('lookup cells', () => {
     expect(lookupSortText('p1', null)).toBe('')
     expect(lookupSortText('p1', undefined)).toBe('')
   })
-  it('sorting: never on the server (it would sort by id); in the browser by label up to a limit', () => {
-    const s = lookupSort(true, 'Product', 0)
-    expect(s.sortable).toBe(false)
-    expect(s.reason).toMatch(/record id/)
+  it('sorting: on the server by label where supported (never by id), with a plain reason otherwise; in the browser by label up to a limit', () => {
+    expect(lookupSort({ ok: true }, 'Product', 0).sortable).toBe(true)
+    const hidden = lookupSort({ ok: false, why: 'hidden' }, 'Product', 0, 'Products')
+    expect(hidden).toEqual({ sortable: false, reason: 'Sorting by Product is not available: you cannot see the names in Products it would be sorted by.' })
+    expect(lookupSort({ ok: false, why: 'store' }, 'Product', 0, 'Products').reason).toMatch(/stored where the server cannot sort/)
+    expect(lookupSort({ ok: false, why: 'kind' }, 'Product', 0, 'Products').reason).toMatch(/no name column/)
     expect(lookupSort(false, 'Product', 10).sortable).toBe(true)
     expect(lookupSort(false, 'Product', LABEL_SORT_LIMIT + 1).sortable).toBe(false)
+  })
+  it('server support: same PostgreSQL store, a sortable primary column the viewer may read', () => {
+    expect(lookupSortSupport({ table: orders, target: products, hidden: false })).toEqual({ ok: true })
+    expect(lookupSortSupport({ table: orders, target: products, hidden: true })).toEqual({ ok: false, why: 'hidden' })
+    expect(lookupSortSupport({ table: orders, target: undefined, hidden: false })).toEqual({ ok: false, why: 'kind' })
+    expect(lookupSortSupport({ table: orders, target: def('Pics', 'Photo', [{ name: 'Photo', type: 'image' }]), hidden: false })).toEqual({ ok: false, why: 'kind' })
+    expect(lookupSortSupport({ table: orders, target: def('Refs', 'Other', [{ name: 'Other', type: 'lookup', lookupTable: 'Products' }]), hidden: false }).ok).toBe(false)
+    // another store: refused unless both are in the same connection and it is known to be PostgreSQL
+    const ext = { ...products, connectionId: 'conn_my' }
+    expect(lookupSortSupport({ table: orders, target: ext, hidden: false })).toEqual({ ok: false, why: 'store' })
+    expect(lookupSortSupport({ table: { connectionId: 'conn_my' }, target: ext, hidden: false })).toEqual({ ok: false, why: 'store' })
+    expect(lookupSortSupport({ table: { connectionId: 'conn_my' }, target: ext, hidden: false, connectorOf: () => 'mysql' })).toEqual({ ok: false, why: 'store' })
+    expect(lookupSortSupport({ table: { connectionId: 'conn_my' }, target: ext, hidden: false, connectorOf: () => 'postgres' })).toEqual({ ok: true })
+  })
+  it('the server sort key reads the primary column through the lookup', () => {
+    expect(lookupSortKey('Product', products, 'desc')).toEqual({ col: 'Product', dir: 'desc', via: { table: 'Products', col: 'Name' } })
+    expect(lookupSortKey('Product', numbered, 'asc')).toEqual({ col: 'Product', dir: 'asc', via: { table: 'Tickets', col: 'No' } })
+    const plan = { version: 2 as const, table: 'Orders', sort: [lookupSortKey('Product', products, 'asc')!], page: { size: 2 } }
+    const related = (t: string) => (t === 'Products' ? schemaInfoOf(products) : undefined)
+    expect(() => checkPlan(plan, schemaInfoOf(orders), 'Orders', { related })).not.toThrow()
   })
 })
 

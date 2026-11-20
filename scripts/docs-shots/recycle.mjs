@@ -129,8 +129,8 @@ try {
   await click(page, '[data-testid="undo-delete-undo"]')
   await waitText(page, /Projects: 2 · Tasks: 4/)
   ok(true, 'Undo restored the project and all its tasks')
-  const after = await api('POST', '/data/ProjectTasks/query', { count: true, top: 0 })
-  ok(after.total === 4, 'the server has the 4 tasks back')
+  const after = await api('POST', '/query', { plan: { version: 2, table: 'ProjectTasks', count: true, page: { size: 0 } } })
+  ok(after.count === 4, 'the server has the 4 tasks back')
 
   // 2. delete again, close the app; the portal's Deleted view restores the whole batch
   ok(await clickText(page, 'Warehouse move'), 'selected the project again')
@@ -149,8 +149,8 @@ try {
   await click(page, `[data-testid="restore-batch-${p1.id}"]`)
   await waitText(page, /Restored 4 rows/)
   ok(true, 'Restore 4 rows in the Deleted view brought the batch back after the app was closed')
-  const tasks = await api('POST', '/data/ProjectTasks/query', { count: true, top: 0 })
-  ok(tasks.total === 4, 'all 4 tasks are back')
+  const tasks = await api('POST', '/query', { plan: { version: 2, table: 'ProjectTasks', count: true, page: { size: 0 } } })
+  ok(tasks.count === 4, 'all 4 tasks are back')
 
   // 3. the setting in the table designer
   await click(page, '[data-testid="tab-settings"]')

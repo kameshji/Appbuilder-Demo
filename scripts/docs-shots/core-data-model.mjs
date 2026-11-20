@@ -61,7 +61,7 @@ async function person(name, email, roleIds) {
 }
 const beaCookie = await person('Bea Maker', 'bea@example.test', ['role_maker'])
 const rajCookie = await person('Raj Field', 'raj@example.test', [restricted.id])
-const rows = (await api(adaCookie, 'POST', `/data/${contacts.name}/query`, { orderBy: [{ col: 'Name', dir: 'asc' }] })).data.rows
+const rows = (await api(adaCookie, 'POST', '/query', { plan: { version: 2, table: contacts.name, sort: [{ col: 'Name', dir: 'asc' }] } })).data.rows
 const target = rows[0]
 
 // the sample app: a Record timeline under the contact form instead of the orders chart

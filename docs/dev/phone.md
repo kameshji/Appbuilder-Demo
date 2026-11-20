@@ -269,7 +269,7 @@ the outbox instead of failing; its optimistic row stays visible in this session.
   failure and a miss of the exact-answer cache): the reference executor (`src/fx/query/reference.ts`, demo mode's) runs the
   plan over the kept rows and the result goes back to the query cache in the wire format, so Dropdown / ComboBox
   type-ahead (search plans), lookups (`LookUp`, `First(Filter(...))`), counts and simple lists over those tables work
-  offline. Whole-table loads (`/data/:t/query`) are answered with the kept rows too. Answers from kept rows that the cap
+  offline. Whole-table loads (since Phase 3 a Query v2 plan taking 5,000 rows; the v1 route is gone) are answered with the kept rows too. Answers from kept rows that the cap
   or the filter cut are marked `truncated` (the existing "partial data" flag). A plan the executor cannot run fails with
   "Could not reach the server" as before.
 - Never another user's rows: the store is per user (database name and key), and every read checks the sealed user id
@@ -366,7 +366,7 @@ the outbox instead of failing; its optimistic row stays visible in this session.
 
 ## Connectivity
 
-- Reads that change nothing (`GET`, `POST /query`, `/data/:t/query`, `/attachments/resolve`) are retried twice with
+- Reads that change nothing (`GET`, `POST /query`, `/attachments/resolve`) are retried twice with
   backoff (about 400 ms and 1.2 s, with jitter) after a network failure or a 502-504, unless the browser says it is
   offline (`src/platform/offline-hook.ts`, `remote.ts` `call`). Writes are never retried by `call`.
 - "You're offline" shows for every user (not only offline apps); the live socket's existing degraded mode ("Live

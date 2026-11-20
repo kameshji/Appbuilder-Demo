@@ -7,6 +7,7 @@
  * writes, snapshots before upgrades and deletes, the restore test, upload and download, notifications, and the install
  * restore command line (with and without the key file). Creates and drops its databases.
  */
+import { planBody } from '../testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -213,12 +214,12 @@ describe.skipIf(!PG_URL)('backup and restore (PostgreSQL)', () => {
     // the restored environments work: rows, attachments (same bytes), data files
     for (const id of results) {
       const env = id
-      const c = await A.post('/data/Purchases/query', { count: true }, env)
-      expect(c.data.total).toBe(300)
+      const c = await A.post('/query', planBody('Purchases', { count: true }), env)
+      expect(c.data.count).toBe(300)
       const att = await A.get(`/attachments/${attId}?env=${env}`, env)
       expect(att.status).toBe(200)
       expect(Buffer.compare(att.data, photo)).toBe(0)
-      const people = await A.post('/data/people/query', {}, env)
+      const people = await A.post('/query', planBody('people'), env)
       expect(people.status, JSON.stringify(people.data)).toBe(200)
       expect(people.data.rows.map((r: { Name: string }) => r.Name).sort()).toEqual(['Ann', 'Bo'])
       // a new row in the restored environment works (identity, indexes)
@@ -315,7 +316,7 @@ describe.skipIf(!PG_URL)('backup and restore (PostgreSQL)', () => {
     const ws = await A.get('/workspace', 'default')
     const nt = ws.data.tables.find((t: { id: string }) => t.id === newId)
     expect(nt).toBeTruthy()
-    const rows = await A.post(`/data/${encodeURIComponent(nt.name)}/query`, { count: true, filter: { col: 'id', op: 'eq', value: orderIds[0] } }, 'default')
+    const rows = await A.post('/query', planBody(nt.name, { count: true, where: { col: 'id', op: 'eq', value: orderIds[0] } }), 'default')
     expect(rows.status, JSON.stringify(rows.data)).toBe(200)
     const cell = rows.data.rows[0].Photo
     const newAtt = typeof cell === 'string' ? cell : cell?.id ?? (Array.isArray(cell) ? cell[0]?.id : undefined)
@@ -342,7 +343,7 @@ describe.skipIf(!PG_URL)('backup and restore (PostgreSQL)', () => {
     }
     expect(await digest('env_default', 't_purchases')).toEqual(kept)
     expect((await q("SELECT state FROM ab.environments WHERE id = 'default'"))[0]).toEqual({ state: 'ready' })
-    expect((await A.post('/data/Purchases/query', { count: true })).data.total).toBe(300)
+    expect((await A.post('/query', planBody('Purchases', { count: true }))).data.count).toBe(300)
     expect((await q("SELECT action FROM ab.audit WHERE action = 'backup.restore_failed'")).length).toBeGreaterThan(0)
   }, 120_000)
 
@@ -368,7 +369,7 @@ describe.skipIf(!PG_URL)('backup and restore (PostgreSQL)', () => {
     const safety = await A.get(`/backups/${op.result.safetyBackup}`)
     expect(safety.data).toMatchObject({ trigger: 'pre-restore', state: 'ok', environmentId: 'default' })
     // the environment works again: sign-in sessions, attachments, writes
-    expect((await maker.post('/data/Purchases/query', { count: true }, 'default')).data.total).toBe(300)
+    expect((await maker.post('/query', planBody('Purchases', { count: true }), 'default')).data.count).toBe(300)
     const att = await A.get(`/attachments/${attId}?env=default`, 'default')
     expect(Buffer.compare(att.data, photo)).toBe(0)
     expect((await A.post('/data/Purchases/rows', { values: { Title: 'new after in-place' } })).status).toBe(200)
@@ -608,7 +609,7 @@ describe.skipIf(!PG_URL)('backup and restore (PostgreSQL)', () => {
         try {
           const C = new Client(`http://127.0.0.1:${(s2.address() as AddressInfo).port}`)
           expect((await C.post('/auth/login', { email: 'ada@example.com', password: 'admin-password-1' })).status).toBe(200)
-          expect((await C.post('/data/Purchases/query', { count: true }, 'default')).data.total).toBeGreaterThanOrEqual(300)
+          expect((await C.post('/query', planBody('Purchases', { count: true }), 'default')).data.count).toBeGreaterThanOrEqual(300)
           const att = await C.get(`/attachments/${attId}?env=default`, 'default')
           expect(Buffer.compare(att.data, photo)).toBe(0)
           const rows = await pgQuery<{ n: number }>(db2, 'SELECT count(*)::int AS n FROM ab.sessions')

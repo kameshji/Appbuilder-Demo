@@ -14,7 +14,8 @@ import type { Connector, ConnectionRecord, ConnectorEnv, RawRow } from '../../co
 import { createPostgresConnector } from './index.ts'
 import { createPgDb, mapPgError } from './db.ts'
 import type { PgDb } from './db.ts'
-import { buildSelect, fromDb, columnTypesByName } from './sql.ts'
+import { buildSelect, fromDb, columnTypesByName, sortKeyExpr } from './sql.ts'
+import { CLIENT_NAMES } from '../../../src/fx/query/testdata-lookup.ts'
 import { PG_URL, SKIP_PG, pgServer } from '../../core/testdb.ts'
 
 if (!PG_URL) console.warn(`[postgres connector] ${SKIP_PG}`)
@@ -495,6 +496,31 @@ suite(PG_URL ? 'postgres connector (integration)' : `postgres connector (integra
         const r = (await c.select(def, { orderBy: [{ col: 'tn', dir }], select: ['tn'] })).rows.map((x) => x.tn)
         expect(r.slice(-2).sort()).toEqual(['', null].sort((a, b) => String(a).localeCompare(String(b))))
       }
+    })
+    it('P3-C: the Query v2 text sort key orders the lookup-sort names like JavaScript (lower-cased, code point, NULL as "") in every collation', async () => {
+      const names = CLIENT_NAMES
+      const want = names.map((n, i) => ({ n, i })).sort((a, b) => {
+        const x = (a.n ?? '').toLowerCase(), y = (b.n ?? '').toLowerCase()
+        return x < y ? -1 : x > y ? 1 : a.i - b.i
+      }).map((e) => e.i)
+      const libc: string[] = []
+      for (const locale of ['en_US.UTF-8', 'en_US.utf8', 'en-US']) {
+        try {
+          await raw.exec(`CREATE COLLATION IF NOT EXISTS "${schema}"."p3c_libc" (provider = libc, locale = '${locale}')`)
+          libc.push(`"${schema}"."p3c_libc"`)
+          break
+        } catch { /* next spelling */ }
+      }
+      const icu = (await raw.query<{ n: number }>(`SELECT count(*)::int AS n FROM pg_collation WHERE collname = 'en-US-x-icu'`))[0]!.n ? ['"en-US-x-icu"'] : []
+      const ran: string[] = []
+      for (const coll of ['', ...icu, ...libc]) {
+        const v = coll ? `(v COLLATE ${coll})` : 'v'
+        const sql = `SELECT i FROM unnest($1::text[]) WITH ORDINALITY AS t(v, i) ORDER BY ${sortKeyExpr({ schema, icu: true }, 'text', v)}, i`
+        const got = (await raw.query<{ i: string }>(sql, [names])).map((r) => Number(r.i) - 1)
+        expect(got, coll || 'database default').toEqual(want)
+        ran.push(coll || 'database default')
+      }
+      console.log(`[postgres parity] lookup-sort names ordered in: ${ran.join(', ')}`)
     })
     it('documented differences: hex text is a number only in JavaScript; contains on dates uses ISO text', async () => {
       const hexDef = mkdef([col('t', 'text'), col('d', 'date')], 'diffs')

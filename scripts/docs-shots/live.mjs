@@ -59,7 +59,7 @@ async function person(name, email, roleIds) {
 }
 await person('Bea Maker', 'bea@example.test', ['role_maker'])
 await person('Raj Field', 'raj@example.test', [restricted.id])
-const rows = (await api(adaCookie, 'POST', `/data/${contacts.name}/query`, { orderBy: [{ col: 'Name', dir: 'asc' }] })).data.rows
+const rows = (await api(adaCookie, 'POST', '/query', { plan: { version: 2, table: contacts.name, sort: [{ col: 'Name', dir: 'asc' }] } })).data.rows
 const target = rows[0]
 const adaRowIds = rows.map((x) => x.id)
 
@@ -148,7 +148,7 @@ try {
     await B.page.click('[data-testid="form-conflict-keep"]')
     await B.page.click('[data-testid="form-save"]')
     await sleep(1500)
-    const after = (await api(adaCookie, 'POST', `/data/${contacts.name}/query`, { where: { col: 'id', op: 'eq', value: target.id } })).data.rows[0]
+    const after = (await api(adaCookie, 'POST', '/query', { plan: { version: 2, table: contacts.name, filter: { col: 'id', op: 'eq', value: target.id } } })).data.rows[0]
     check(after.Company === typed, 'Keep mine + Save stored Bea\'s value')
     // a stale save over the API answers 409
     const stale = await api(adaCookie, 'PATCH', `/data/${contacts.name}/rows/${target.id}`, { changes: { City: 'x' }, ifModifiedOn: target.modifiedOn })

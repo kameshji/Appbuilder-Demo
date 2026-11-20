@@ -135,8 +135,8 @@ try {
   const envs = (await api('GET', '/environments')).data.items
   const restored = envs.find((e) => e.name === 'Restored copy')
   ok(restored && !restored.state, 'the new environment exists and is ready')
-  const n1 = (await api('POST', '/data/Contacts/query', { count: true }, 'default')).data.total
-  const n2 = (await api('POST', '/data/Contacts/query', { count: true }, restored.id)).data.total
+  const n1 = (await api('POST', '/query', { plan: { version: 2, table: 'Contacts', count: true, page: { size: 0 } } }, 'default')).data.count
+  const n2 = (await api('POST', '/query', { plan: { version: 2, table: 'Contacts', count: true, page: { size: 0 } } }, restored.id)).data.count
   ok(n1 === n2 && n1 > 0, `same rows in both (${n1})`)
   await shot('backups-restore-done', tid('restore-dialog'))
   await page.keyboard.press('Escape')

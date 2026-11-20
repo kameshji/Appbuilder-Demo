@@ -1,6 +1,7 @@
 # Solutions
 
-A solution bundles apps, tables, roles, connections and files so you can move them between
+A solution bundles apps, tables, roles, connections, files, flows, approval policies, print templates, dashboards and
+number sequences so you can move them between
 [environments](../../admin/environments.md) (from a sandbox to production) or between machines.
 
 ## Create and fill
@@ -90,6 +91,21 @@ and are upgraded in place too:
 
 Changing what kind of table it is (a plain table into a view, a summary into a date dimension) is not part of an upgrade:
 the plan lists it as a problem.
+
+### Number sequences travel too
+
+A number sequence in a solution (component kind `numberSequence`) brings its **name and format**: prefix, suffix,
+digits and reset rule. It **never brings the next number**: numbering belongs to each environment. A first install
+starts at 1; an upgrade may change the format and keeps the next number; one the solution no longer has is kept (documents
+may carry its numbers). A sequence of the same name with another identity in the target is a problem: rename one of
+them. (Through the API: add one with `POST /solutions/:id/components { kind: "numberSequence", id: <row id> }`.)
+
+### Solutions that come from templates
+
+A **solution template** installed Linked (see [Templates](templates.md#solution-templates)) is a solution named
+"<template> (template)". Deploy it to production like any solution: the plan is the solution's. Upgrade it from the
+**Templates** page, not by importing a package: the Templates page knows what the template delivered, so it can list
+your local changes and keep or replace each one. A template installed as a **Copy** has no solution record.
 
 ## Export and import
 

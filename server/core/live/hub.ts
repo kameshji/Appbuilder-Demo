@@ -33,6 +33,8 @@ import type {
 import {
   LIVE_CLOSE, LIVE_LIMITS, LIVE_PATH, LIVE_PROTOCOL_VERSION, parsePresenceScope, parseTopic, presenceTopic, userTopic,
 } from '../../../src/platform/live-protocol.ts'
+import type { ChatPushMessage } from '../../../src/platform/chat-protocol.ts'
+import { chatTopic, chatTypingTopic, parseChatTopic } from '../../../src/platform/chat-protocol.ts'
 import { SESSION_COOKIE } from '../../../src/platform/http.ts'
 import { cookieValue, originProblem } from '../router.ts'
 import type { CoreServices } from '../services.ts'
@@ -44,6 +46,7 @@ import { onTableChange } from './changes.ts'
 import type { TableChange } from './changes.ts'
 import { onSessionEvent } from './session-events.ts'
 import { errText, log } from '../util.ts'
+import { CHAT_SYSTEM_TABLES } from '../chat/ddl.ts'
 
 export interface LiveLimits {
   maxMessageBytes: number
@@ -82,6 +85,15 @@ export function liveLimits(env: NodeJS.ProcessEnv = process.env, over: Partial<L
 /** who changed what, for app / env messages */
 export interface LiveActor { id: string; name: string }
 
+/**
+ * P3-A chat: the chat service answers whether a person may read a conversation now (member, or an open channel; a chat
+ * user at all), with the conversation's change counter for the `subscribed` answer; null = no (the same answer for a
+ * conversation that does not exist).
+ */
+export interface ChatAccess {
+  canRead(userId: string, channelId: string): Promise<{ lastSeq: number } | null>
+}
+
 export interface LiveHub {
   /** true when the URL is the live endpoint (the caller then hands the upgrade to handleUpgrade) */
   isLiveRequest(req: IncomingMessage): boolean
@@ -96,6 +108,14 @@ export interface LiveHub {
   onlineUsers(): string[]
   /** a user's notification settings changed (hidden presence is honoured from now on) */
   setHidden(userId: string, hidden: boolean): void
+  /** P3-A chat: who may subscribe to a conversation's topics (the chat service; until set, chat topics are refused) */
+  setChatAccess(access: ChatAccess | null): void
+  /** P3-A chat: a committed change of a conversation, to its current subscribers (in seq order per channel) */
+  publishChat(channelId: string, msg: Omit<ChatPushMessage, 't' | 'topic'>, origin?: string): void
+  /** P3-A chat: someone is typing (not stored) */
+  publishTyping(channelId: string, user: { id: string; name: string }): void
+  /** P3-A chat: who may read a conversation changed: re-check its subscriptions (only these users' when given) */
+  chatAccessChanged(channelId: string, userIds?: string[]): void
   stats(): { connections: number; users: number; subscriptions: number; sent: number; dropped: number; slowClosed: number }
   close(): Promise<void>
 }
@@ -316,7 +336,11 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
     c.recheckDue = false
     for (const key of [...c.subs]) {
       const [env, topic] = splitKey(key)
-      if (!env) continue
+      if (!env) {
+        // P3-A chat topics are install-wide: the chat service decides (access to the chat environment, membership)
+        if (parseChatTopic(topic)) await recheckChat(c, key)
+        continue
+      }
       try {
         await authorize(c, env, topic)
       } catch (e) {
@@ -362,9 +386,91 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
   async function readableTable(ctx: UserContext, env: string, idOrName: string): Promise<TableDef> {
     const t = await runInEnvironment(env, () => services.meta.tables.get(idOrName))
     if (!t || (!ctx.privileges.isMaker && !hasAnyTableAccess(ctx, t))) throw new HttpError(404, 'not-found', 'Table not found.')
+    // P3-A: the chat tables have their own topics (chat:<channel id>, checked per channel); table and record topics on them are refused for everyone
+    if (CHAT_SYSTEM_TABLES.includes(t.id)) throw new HttpError(403, 'denied', 'Chat changes come on the chat topics (chat:<channel id>), not on table topics.')
     const read = ctx.rowPredicate(t, 'read')
     if ('const' in read && !read.const) throw new HttpError(403, 'denied', 'You may not read this table.')
     return t
+  }
+
+  /* -------------------------------------------------------------- chat topics (P3-A, docs/dev/chat.md) */
+
+  let chatAccess: ChatAccess | null = null
+
+  /** re-checks one chat subscription; a refusal ends it (unsubscribed with the reason), a failure is tried again */
+  async function recheckChat(c: Conn, key: string): Promise<void> {
+    const topic = splitKey(key)[1]
+    const ct = parseChatTopic(topic)
+    if (!ct || !c.subs.has(key)) return
+    let ok: { lastSeq: number } | null
+    try {
+      ok = chatAccess ? await chatAccess.canRead(c.userId, ct.channelId) : null
+    } catch (e) {
+      log('warn', `live: could not re-check a chat subscription: ${errText(e)}`)
+      c.recheckDue = true
+      retryRechecks()
+      return
+    }
+    if (ok) return
+    unsubscribeKey(c, key)
+    send(c, { t: 'unsubscribed', topic, reason: 'You can no longer read this conversation.' })
+  }
+
+  async function onChatSub(c: Conn, m: { id?: string; topic: string }, channelId: string): Promise<void> {
+    const key = K('', m.topic)
+    if (!c.subs.has(key) && c.subs.size >= limits.maxSubscriptions) return send(c, { t: 'error', id: m.id, code: 'limit', message: 'Too many subscriptions.', topic: m.topic })
+    if (!chatAccess) return send(c, { t: 'error', id: m.id, code: 'unavailable', message: 'Chat is not available.', topic: m.topic })
+    let ok: { lastSeq: number } | null
+    try {
+      ok = await chatAccess.canRead(c.userId, channelId)
+    } catch (e) {
+      return send(c, { t: 'error', id: m.id, code: codeOf(e), message: e instanceof HttpError ? e.message : 'Not available.', topic: m.topic })
+    }
+    // a conversation the person may not read answers exactly like one that does not exist
+    if (!ok) return send(c, { t: 'error', id: m.id, code: 'not-found', message: 'Conversation not found.', topic: m.topic })
+    // the order of pushes starts from the counter the database had (so the first pushes of a channel are ordered too)
+    const st = chatOrder.get(channelId)
+    if (!st) chatOrder.set(channelId, { last: ok.lastSeq, pending: new Map(), timer: null })
+    else if (!st.pending.size && ok.lastSeq > st.last) st.last = ok.lastSeq
+    subscribeKey(c, key)
+    send(c, { t: 'subscribed', id: m.id, topic: m.topic, seq: ok.lastSeq, epoch })
+  }
+
+  /**
+   * Pushes in seq order per channel: writers of one channel are serialised by its row lock, but their commits reach this
+   * process in any order; a push that arrives ahead of the one before it waits up to CHAT_ORDER_WAIT_MS (then it goes
+   * anyway: the client sees the gap and asks for the changes).
+   */
+  const CHAT_ORDER_WAIT_MS = 300
+  interface ChatOrder { last: number; pending: Map<number, { msg: Omit<ChatPushMessage, 't' | 'topic'>; origin?: string }>; timer: NodeJS.Timeout | null }
+  const chatOrder = new Map<string, ChatOrder>()
+
+  function deliverChat(channelId: string, msg: Omit<ChatPushMessage, 't' | 'topic'>, origin?: string): void {
+    const topic = chatTopic(channelId)
+    const subs = topics.get(K('', topic))
+    if (!subs?.size) return
+    const out: ChatPushMessage = { t: 'chat', topic, ...msg }
+    for (const c of subs) enqueue(c, () => send(c, origin && origin === c.id ? { ...out, self: true } : out))
+  }
+
+  function flushChat(channelId: string, st: ChatOrder, all: boolean): void {
+    for (;;) {
+      const next = st.pending.get(st.last + 1)
+      if (next) {
+        st.pending.delete(st.last + 1)
+        st.last++
+        deliverChat(channelId, next.msg, next.origin)
+        continue
+      }
+      if (!all || !st.pending.size) break
+      // waited long enough: the lowest pending goes (the client recovers the gap)
+      const lowest = Math.min(...st.pending.keys())
+      st.last = lowest - 1
+    }
+    if (st.timer && !st.pending.size) {
+      clearTimeout(st.timer)
+      st.timer = null
+    }
   }
 
   /* -------------------------------------------------------------- subscriptions */
@@ -385,6 +491,8 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
   }
 
   async function onSub(c: Conn, m: { id?: string; topic: string; env?: string }): Promise<void> {
+    const chat = parseChatTopic(m.topic)
+    if (chat) return onChatSub(c, m, chat.channelId)
     const p = parseTopic(m.topic)
     if (!p) return send(c, { t: 'error', id: m.id, code: 'invalid', message: 'Unknown topic.', topic: m.topic })
     if (p.kind === 'user') {
@@ -412,9 +520,10 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
 
   function onUnsub(c: Conn, m: { id?: string; topic: string; env?: string }): void {
     const p = parseTopic(m.topic)
-    const key = K(p?.kind === 'user' ? '' : (m.env ?? ''), m.topic)
+    const isChat = !!parseChatTopic(m.topic)
+    const key = K(p?.kind === 'user' || isChat ? '' : (m.env ?? ''), m.topic)
     unsubscribeKey(c, key)
-    send(c, { t: 'unsubscribed', id: m.id, topic: m.topic, ...(m.env ? { env: m.env } : {}) })
+    send(c, { t: 'unsubscribed', id: m.id, topic: m.topic, ...(m.env && !isChat ? { env: m.env } : {}) })
   }
 
   /* -------------------------------------------------------------- presence and Studio locks */
@@ -861,6 +970,51 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
       }
       onlineChanged()
     },
+    setChatAccess(a) {
+      chatAccess = a
+    },
+    publishChat(channelId, msg, origin) {
+      let st = chatOrder.get(channelId)
+      if (!st) {
+        if (chatOrder.size > 10_000) for (const k of [...chatOrder.keys()].slice(0, 5_000)) chatOrder.delete(k)
+        chatOrder.set(channelId, (st = { last: msg.seq, pending: new Map(), timer: null }))
+        deliverChat(channelId, msg, origin)
+        return
+      }
+      if (msg.seq <= st.last + 1) {
+        // the next one (or a late one: the client already recovered it and ignores it)
+        if (msg.seq === st.last + 1) st.last = msg.seq
+        deliverChat(channelId, msg, origin)
+        flushChat(channelId, st, false)
+        return
+      }
+      st.pending.set(msg.seq, { msg, origin })
+      if (!st.timer) {
+        const s = st
+        s.timer = outside.runInAsyncScope(() => setTimeout(() => {
+          s.timer = null
+          flushChat(channelId, s, true)
+        }, CHAT_ORDER_WAIT_MS))
+        s.timer.unref()
+      }
+    },
+    publishTyping(channelId, user) {
+      const topic = chatTypingTopic(channelId)
+      const subs = topics.get(K('', topic))
+      if (!subs?.size) return
+      const at = new Date().toISOString()
+      for (const c of subs) if (c.userId !== user.id) enqueue(c, () => send(c, { t: 'typing', topic, channelId, userId: user.id, name: user.name, at }))
+    },
+    chatAccessChanged(channelId, userIds) {
+      const only = userIds ? new Set(userIds) : null
+      for (const topic of [chatTopic(channelId), chatTypingTopic(channelId)]) {
+        const key = K('', topic)
+        for (const c of [...(topics.get(key) ?? [])]) {
+          if (only && !only.has(c.userId)) continue
+          enqueue(c, () => recheckChat(c, key))
+        }
+      }
+    },
     stats: () => ({
       connections: conns.size, users: byUser.size, subscriptions: [...topics.values()].reduce((n, s) => n + s.size, 0), sent, dropped, slowClosed,
     }),
@@ -873,6 +1027,7 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
       if (recheckTimer) clearTimeout(recheckTimer)
       if (retryTimer) clearTimeout(retryTimer)
       if (onlineTimer) clearTimeout(onlineTimer)
+      for (const st of chatOrder.values()) if (st.timer) clearTimeout(st.timer)
       for (const l of locks.values()) if (l.graceTimer) clearTimeout(l.graceTimer)
       services.security.invalidate = invalidateSecurity
       for (const c of [...conns.values()]) closeConn(c, LIVE_CLOSE.shutdown, 'server stopping')

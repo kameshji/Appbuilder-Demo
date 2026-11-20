@@ -147,18 +147,65 @@ export interface RelatedRows {
   schema(table: string): TableSchemaInfo | undefined
 }
 
+/**
+ * The related rows of ONE execution: each table is read once and indexed by lowercased id (the first row of an id
+ * wins, as a linear search would find it), so a lookup path or a lookup sort costs a map probe per row.
+ */
+class MemoRelated implements RelatedRows {
+  private readonly src: RelatedRows
+  private readonly cache = new Map<string, { rows: FxRecord[] | undefined; byId?: Map<string, FxRecord> }>()
+  constructor(src: RelatedRows) { this.src = src }
+  private entry(table: string) {
+    let e = this.cache.get(table)
+    if (!e) { e = { rows: this.src.rows(table) }; this.cache.set(table, e) }
+    return e
+  }
+  rows(table: string): FxRecord[] | undefined { return this.entry(table).rows }
+  schema(table: string): TableSchemaInfo | undefined { return this.src.schema(table) }
+  byId(table: string, id: string): FxRecord | undefined {
+    const e = this.entry(table)
+    if (!e.byId) {
+      e.byId = new Map()
+      for (const r of e.rows ?? []) {
+        const k = String(r.__id ?? r.id ?? '').toLowerCase()
+        if (!e.byId.has(k)) e.byId.set(k, r)
+      }
+    }
+    return e.byId.get(id)
+  }
+}
+
+/** the row of `table` a lookup cell points at, when it exists and the caller may read it (only those rows are given) */
+function lookupTarget(related: RelatedRows | undefined, table: string, v: FxValue): { ts: TableSchemaInfo; target: FxRecord | undefined } {
+  const ts = related?.schema(table)
+  const trows = related?.rows(table)
+  if (!ts || !trows) throw new PlanError(`the lookup table ${table} is not available`)
+  const id = v === null || v === undefined ? '' : String(v).toLowerCase()
+  if (!id) return { ts, target: undefined }
+  const target = related instanceof MemoRelated ? related.byId(table, id) : trows.find((r) => String(r.__id ?? r.id ?? '').toLowerCase() === id)
+  return { ts, target }
+}
+
+/**
+ * The normalised key of a sort key through a lookup (P3-C): the target row's `via.col`, or the blank key of that
+ * column's kind when the lookup is blank or its row is missing or not readable (not in `related`).
+ */
+export function viaSortKey(k: SortKeyV2, row: FxRecord, related: RelatedRows | undefined): KeyValue {
+  const via = k.via!
+  const { ts, target } = lookupTarget(related, via.table, cell(row, k.col))
+  const kind = ts.columns[via.col]
+  if (kind === undefined) throw new PlanError(`unknown column ${via.table}.${via.col}`)
+  if (kind === 'other') throw new PlanError(`Sorting by ${via.table}.${via.col} isn't possible`)
+  return sortKeyValue(kind, target ? cell(target, via.col) : null)
+}
+
 export function evaluateConditionV2(c: ConditionV2, row: FxRecord, schema: TableSchemaInfo, related?: RelatedRows): boolean {
   if ('const' in c) return c.const
   if ('and' in c) return c.and.every((x) => evaluateConditionV2(x, row, schema, related))
   if ('or' in c) return c.or.some((x) => evaluateConditionV2(x, row, schema, related))
   if ('not' in c) return !evaluateConditionV2(c.not, row, schema, related)
   if ('via' in c) {
-    const v = cell(row, c.via.col)
-    const ts = related?.schema(c.via.table)
-    const trows = related?.rows(c.via.table)
-    if (!ts || !trows) throw new PlanError(`the lookup table ${c.via.table} is not available`)
-    const id = v === null || v === undefined ? '' : String(v).toLowerCase()
-    const target = id ? trows.find((r) => String(r.__id ?? r.id ?? '').toLowerCase() === id) : undefined
+    const { ts, target } = lookupTarget(related, c.via.table, cell(row, c.via.col))
     return target ? evaluateConditionV2(c.via.where, target, ts, related) : !!c.via.orMissing
   }
   if (c.op === 'cmpExpr') return cmp(c.cmp, evaluateNumExpr(c.left, row, schema), evaluateNumExpr(c.right, row, schema), 'number')
@@ -209,8 +256,8 @@ export function naturalCompare(a: FxRecord, b: FxRecord): number {
   return ia < ib ? -1 : ia > ib ? 1 : 0
 }
 
-function keysOf(row: FxRecord, keys: SortKeyV2[], kinds: (col: string) => ColumnKind): KeyValue[] {
-  return keys.map((k) => sortKeyValue(kinds(k.col), cell(row, k.col)))
+function keysOf(row: FxRecord, keys: SortKeyV2[], kinds: (col: string) => ColumnKind, related?: RelatedRows): KeyValue[] {
+  return keys.map((k) => (k.via ? viaSortKey(k, row, related) : sortKeyValue(kinds(k.col), cell(row, k.col))))
 }
 
 /* ------------------------------------------------------------------ aggregate */
@@ -345,6 +392,8 @@ function aggregate(rows: FxRecord[], a: AggregateV2, schema: TableSchemaInfo): F
  */
 export function executePlan(plan: QueryPlan, allRows: FxRecord[], schema: TableSchemaInfo, opts: ExecuteOptions = {}): ReferenceResult {
   if (plan.version !== 2) throw new PlanError('not a v2 plan')
+  const related = opts.related ? new MemoRelated(opts.related) : undefined
+  if (plan.aggregate && plan.sort?.some((k) => k.via)) throw new PlanError('Sorting through a lookup is only for lists of rows, not before grouping')
   // natural position of every row: (createdOn, id), or the input order for sources that keep file / sheet order
   const position = new Map<FxRecord, number>()
   const idPosition = new Map<string, number>()
@@ -353,7 +402,7 @@ export function executePlan(plan: QueryPlan, allRows: FxRecord[], schema: TableS
     rows = [...allRows]
     rows.forEach((r, i) => { position.set(r, i); idPosition.set(String(cell(r, 'id') ?? ''), i) })
   } else rows = [...allRows].sort(naturalCompare)
-  if (plan.filter) rows = rows.filter((r) => evaluateConditionV2(plan.filter!, r, schema, opts.related))
+  if (plan.filter) rows = rows.filter((r) => evaluateConditionV2(plan.filter!, r, schema, related))
   if (plan.search && plan.search.text !== '') {
     const needle = plan.search.text.toLowerCase()
     for (const c of plan.search.columns) if (kindOf(schema, c) !== 'text') throw new PlanError('search needs text columns')
@@ -363,7 +412,7 @@ export function executePlan(plan: QueryPlan, allRows: FxRecord[], schema: TableS
   if (sortKeys.length) {
     const kinds = (col: string): ColumnKind => kindOf(schema, col)
     const dirs = sortKeys.map((k) => k.dir)
-    const keyed = rows.map((r, i) => ({ r, i, k: keysOf(r, sortKeys, kinds) }))
+    const keyed = rows.map((r, i) => ({ r, i, k: keysOf(r, sortKeys, kinds, related) }))
     // ties keep natural order (the input is in natural order; i breaks ties ascending for every direction)
     keyed.sort((x, y) => compareKeys(x.k, y.k, dirs) || x.i - y.i)
     rows = keyed.map((x) => x.r)
@@ -397,7 +446,7 @@ export function executePlan(plan: QueryPlan, allRows: FxRecord[], schema: TableS
       const dirs = [...sortKeys.map((k) => k.dir)]
       // keyset seek over the full order (sort keys, then createdOn asc, id asc); `rows` are the un-selected rows
       start = rows.findIndex((r) => {
-        const d = compareKeys(keysOf(r, sortKeys, kinds), cur.keys, dirs)
+        const d = compareKeys(keysOf(r, sortKeys, kinds, related), cur.keys, dirs)
         if (d !== 0) return d > 0
         if (opts.inputOrder) return (position.get(r) ?? -1) > (idPosition.get(cur.id) ?? -1)
         return naturalCompare(r, { createdOn: cur.createdOn === null ? null : new Date(cur.createdOn), id: cur.id }) > 0
@@ -407,7 +456,7 @@ export function executePlan(plan: QueryPlan, allRows: FxRecord[], schema: TableS
     const size = Math.max(0, Math.trunc(plan.page.size))
     result.rows = out.slice(start, start + size)
     const last = rows[start + size - 1]
-    result.nextCursor = size > 0 && start + size < rows.length && last ? encodeCursor(plan, last, schema) : null
+    result.nextCursor = size > 0 && start + size < rows.length && last ? encodeCursor(plan, last, schema, (k, r) => viaSortKey(k, r, related)) : null
   }
   return result
 }

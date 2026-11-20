@@ -9,6 +9,7 @@ import { exportFlows } from '../../core/flows/alm.ts'
 import { exportApprovalPolicies } from '../../core/approvals/alm.ts'
 import { exportPrintTemplates } from '../../core/print/alm.ts'
 import { DASHBOARD_KIND, dashboardExists, exportDashboards } from '../../core/dashboards/alm.ts'
+import { SEQUENCE_KIND, exportSequences, sequenceExists } from '../../core/templates/sequences.ts'
 import { readDataFile } from '../../connectors/files/index.ts'
 import {
   IDENT, bodyObj, clone, conflict, invalid, isObj, me, notFound, optString, reqString, toIdentifier, toYaml, uniqueIdentifier, uniqueLabel,
@@ -28,8 +29,8 @@ import type { CoreServices } from '../../core/services.ts'
 import { userContextFor } from '../../core/auth.ts'
 import { runInEnvironment } from '../../core/env-context.ts'
 
-// P2-C: 'dashboard' is not in SolutionComponentKind (src/platform) yet, hence the cast
-const KINDS: SolutionComponentKind[] = ['app', 'table', 'role', 'connection', 'file', 'flow', 'approvalPolicy', 'printTemplate', DASHBOARD_KIND as SolutionComponentKind]
+// P2-C: 'dashboard' is not in SolutionComponentKind (src/platform) yet, hence the cast; P3-M1: 'numberSequence' likewise
+const KINDS: SolutionComponentKind[] = ['app', 'table', 'role', 'connection', 'file', 'flow', 'approvalPolicy', 'printTemplate', DASHBOARD_KIND as SolutionComponentKind, SEQUENCE_KIND as SolutionComponentKind]
 const MAX_FILE_BYTES = 25 * 1024 * 1024
 
 /** P1-A: the flow options of an import (connection mapping, which new flows arrive turned on) */
@@ -67,6 +68,7 @@ async function componentExists(s: Services, kind: SolutionComponentKind, id: str
     case 'printTemplate': return !!(await (s as unknown as { print?: { raw(id: string): Promise<{ id: unknown } | null> } }).print?.raw(id))
   }
   if ((kind as string) === DASHBOARD_KIND) return dashboardExists(s, id)
+  if ((kind as string) === SEQUENCE_KIND) return sequenceExists(s, id)
   return false
 }
 
@@ -284,6 +286,8 @@ export async function exportSolutionPackage(s: Services, ctx: Ctx, id: string, i
     printTemplates: await exportPrintTemplates(s, ofKind('printTemplate')),
     // P2-C: dashboards (definition, viewer roles by id and name; never view tokens or snapshots)
     dashboards: await exportDashboards(s, ofKind(DASHBOARD_KIND as SolutionComponentKind)),
+    // P3-M1: number sequences (name and format; never the next value), only when the solution has any (older readers ignore it)
+    ...(ofKind(SEQUENCE_KIND as SolutionComponentKind).length ? { numberSequences: await exportSequences(s, ofKind(SEQUENCE_KIND as SolutionComponentKind)) } : {}),
   })
 }
 

@@ -1106,6 +1106,19 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
       throw e
     }
     let related: Record<string, { def: TableDef; rowFilter?: Condition }> | undefined
+    // P3-C: a sort through a lookup reads the target's column as the caller. A hidden column is refused in plain words
+    // (sorting by it would order the rows by values the caller may not see); unreadable ROWS sort as blank (query-v2.md 5b)
+    const lookupSorts = (plan.sort ?? []).filter((k) => k.via)
+    for (const k of lookupSorts) {
+      const t = relatedDefs.get(k.via!.table)!
+      const shown = allColumns(def).find((c) => c.name === k.col)?.displayName || k.col
+      if (ctx && ctx.columnAccess(t, k.via!.col) === 'none') {
+        throw new HttpError(403, 'denied', `This list can't be sorted by ${shown}: you do not have access to the column "${t.displayName || t.name}.${k.via!.col}" it would be sorted by.`, k.col)
+      }
+      if ((t.connectionId || DEFAULT_CONNECTION_ID) !== (def.connectionId || DEFAULT_CONNECTION_ID)) {
+        throw new HttpError(422, 'invalid', `This list can't be sorted by ${shown}: ${t.displayName || t.name} is stored in another connection, so the database can't sort by its names.`, k.col)
+      }
+    }
     for (const [tname, cols] of via) {
       const t = relatedDefs.get(tname)!
       if ((t.connectionId || DEFAULT_CONNECTION_ID) !== (def.connectionId || DEFAULT_CONNECTION_ID)) throw new HttpError(422, 'invalid', `${tname} is stored in another connection, so a condition through it cannot run in the database.`)
@@ -1129,6 +1142,12 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     }
     const connector = await connectorFor(def)
     if (!connector.queryV2) {
+      // MySQL connections, data files and Google Sheets run plans over at most 5,000 rows (fallbackV2): a sort by a
+      // lookup's names is refused there rather than computed over part of the rows or part of the targets
+      if (lookupSorts.length) {
+        const shown = allColumns(def).find((c) => c.name === lookupSorts[0]!.col)?.displayName || lookupSorts[0]!.col
+        throw new HttpError(422, 'invalid', `This list can't be sorted by ${shown}: sorting by a lookup's names needs a table in a PostgreSQL database, and ${def.displayName || def.name} is stored in a connection that can't run that query.`, lookupSorts[0]!.col)
+      }
       if (related) throw new HttpError(422, 'invalid', 'Conditions through a lookup column (Lookup.Column) need a table in a database connection.')
       return fallbackV2(connector, def, plan, rowFilter, visible)
     }

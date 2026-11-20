@@ -4,6 +4,7 @@
  * administrator's confirmation and are audited, copies import them disabled, environment copies keep them.
  *   APPBUILDER_TEST_DB=postgres://... npx vitest run server/core/events-alm
  */
+import { planBody } from './testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PG_URL, SKIP_PG } from './testdb.ts'
 import { setQuiet } from './util.ts'
@@ -79,9 +80,9 @@ describe.skipIf(!PG_URL)('events in solutions and environment copies (PostgreSQL
     const p = await T.post('/data/Parts/rows', { values: { Qty: 3, Bin: bin } })
     expect(p.data.row).toMatchObject({ Price: 1, Value: 3 })
     await drain()
-    const stock = (await T.post('/data/Bins/query', { where: { col: 'id', op: 'eq', value: bin } })).data.rows[0].Stock
+    const stock = (await T.post('/query', planBody('Bins', { where: { col: 'id', op: 'eq', value: bin } }))).data.rows[0].Stock
     expect(stock).toBe(3)
-    const imported = (await T.post('/data/Parts/query', { where: { col: 'Qty', op: 'eq', value: 2 } })).data.rows[0]
+    const imported = (await T.post('/query', planBody('Parts', { where: { col: 'Qty', op: 'eq', value: 2 } }))).data.rows[0]
     expect(imported.Value).toBe(10)
     const def = (await h.q<{ def: any }>(`SELECT def FROM env_${target}.ab_tables WHERE id = $1`, [partsId]))[0].def
     expect(def.sharing).toBe(true)
@@ -110,7 +111,7 @@ describe.skipIf(!PG_URL)('events in solutions and environment copies (PostgreSQL
     const after = (await T.get(`/tables/${partsId}/events`)).data.items
     expect(after.map((e: any) => e.name).sort()).toEqual(['Count bins', 'No negatives'])
     expect(after.find((e: any) => e.name === 'No negatives').message).toBe('Quantity cannot be negative')
-    const rows = (await T.post('/data/Parts/query', {})).data.rows
+    const rows = (await T.post('/query', planBody('Parts'))).data.rows
     for (const r of rows) expect(r.Value).toBe(r.Qty * r.Price * 2)
     const def = (await h.q<{ def: any }>(`SELECT def FROM env_${target}.ab_tables WHERE id = $1`, [partsId]))[0].def
     expect(def.sharing).toBeUndefined()

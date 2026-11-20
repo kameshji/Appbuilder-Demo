@@ -15,6 +15,7 @@ import type { AppServer } from './app.ts'
 import { hashPassword } from './password.ts'
 import { setQuiet } from './util.ts'
 import { PG_URL, SKIP_PG, dropDatabase, pgServer, testDatabaseName } from './testdb.ts'
+import { planBody } from './testquery.ts'
 import type { RoleDef, TableDef } from '../../src/platform/contracts.ts'
 
 setQuiet(true)
@@ -220,10 +221,14 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (PostgreSQL)' : `se
     expect((await A.post('/api/v1/data/Deals/rows', { values: { Title: 'X', Status: 'Maybe' } })).status).toBe(422)
     expect((await A.post('/api/v1/data/Deals/rows', { values: { Title: 'X', Nope: 1 } })).status).toBe(422)
     expect((await A.post('/api/v1/data/Deals/rows', { values: { Title: 'X', Docs: '["att_fake"]' } })).status).toBe(422)
-    const q = await A.post('/api/v1/data/Deals/query', { orderBy: [{ col: 'Code', dir: 'asc' }], count: true })
+    const q = await A.post('/api/v1/query', planBody('Deals', { orderBy: [{ col: 'Code', dir: 'asc' }], count: true }))
     expect(q.data.rows.map((r: any) => r.Title)).toEqual(['Alpha', 'Bravo'])
-    expect(q.data.total).toBe(2)
-    expect(q.data.truncated).toBe(false)
+    expect(q.data.count).toBe(2)
+    expect(q.data.truncated).toBeUndefined()
+    // P3-C: the Data API v1 query route is gone (every read is a Query v2 plan); the write routes stay
+    const gone = await A.post('/api/v1/data/Deals/query', { top: 5 })
+    expect(gone.status).toBe(404)
+    expect(JSON.stringify(gone.data)).not.toMatch(/Alpha|Bravo/)
     expect(q.data.rows[0].Secret).toBe('top')
   }, 60000)
 
@@ -234,13 +239,13 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (PostgreSQL)' : `se
     expect(rowC).toBe('0b5b9d3e-6f1a-4c55-9d7e-1f2a3b4c5d6e')
     expect(c.data.row.owner).toBe('user_rep')
     expect('Secret' in c.data.row).toBe(false)
-    const q = await rep.post('/api/v1/data/Deals/query', {})
+    const q = await rep.post('/api/v1/query', planBody('Deals'))
     expect(q.data.rows.map((r: any) => r.Title)).toEqual(['Charlie'])
     expect(Object.keys(q.data.rows[0])).not.toContain('Secret')
     // hidden column refused in where / orderBy / select / writes
-    expect((await rep.post('/api/v1/data/Deals/query', { where: { col: 'Secret', op: 'eq', value: 'top' } })).status).toBe(403)
-    expect((await rep.post('/api/v1/data/Deals/query', { orderBy: [{ col: 'Secret', dir: 'asc' }] })).status).toBe(403)
-    expect((await rep.post('/api/v1/data/Deals/query', { select: ['Secret'] })).status).toBe(403)
+    expect((await rep.post('/api/v1/query', planBody('Deals', { where: { col: 'Secret', op: 'eq', value: 'top' } }))).status).toBe(403)
+    expect((await rep.post('/api/v1/query', planBody('Deals', { orderBy: [{ col: 'Secret', dir: 'asc' }] }))).status).toBe(403)
+    expect((await rep.post('/api/v1/query', planBody('Deals', { select: ['Secret'] }))).status).toBe(403)
     const w = await rep.post('/api/v1/data/Deals/rows', { values: { Title: 'Sneaky', Secret: 'x' } })
     expect(w.status).toBe(403)
     expect(w.data.error.field).toBe('Secret')
@@ -271,7 +276,7 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (PostgreSQL)' : `se
   }, 60000)
 
   it('rowFilter user: sees West rows only, cannot write', async () => {
-    const q = await viewer.post('/api/v1/data/Deals/query', { orderBy: [{ col: 'Title', dir: 'asc' }] })
+    const q = await viewer.post('/api/v1/query', planBody('Deals', { orderBy: [{ col: 'Title', dir: 'asc' }] }))
     expect(q.status).toBe(200)
     expect(q.data.rows.map((r: any) => r.Title)).toEqual(['Alpha', 'Charlie 2'])
     expect('Secret' in q.data.rows[0]).toBe(false)
@@ -296,13 +301,13 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (PostgreSQL)' : `se
     expect(up.data.url).toBe(`/api/v1/attachments/${attC}?env=default`)
     const up2 = await rep.req('POST', `/api/v1/attachments?table=Deals&column=Docs&rowId=${rowC}&name=b.txt`, undefined, { data: Buffer.from('second'), type: 'text/plain' })
     expect(up2.status).toBe(200)
-    const row = await rep.post('/api/v1/data/Deals/query', { where: { col: 'id', op: 'eq', value: rowC } })
+    const row = await rep.post('/api/v1/query', planBody('Deals', { where: { col: 'id', op: 'eq', value: rowC } }))
     expect(JSON.parse(row.data.rows[0].Docs)).toEqual([attC, up2.data.id])
     // image column: single, replaced; wrong MIME refused
     expect((await rep.req('POST', `/api/v1/attachments?table=Deals&column=Photo&rowId=${rowC}&name=x.pdf`, undefined, { data: bytes, type: 'application/pdf' })).status).toBe(422)
     const p1 = await rep.req('POST', `/api/v1/attachments?table=Deals&column=Photo&rowId=${rowC}&name=a.png`, undefined, { data: Buffer.from('png1'), type: 'image/png' })
     const p2 = await rep.req('POST', `/api/v1/attachments?table=Deals&column=Photo&rowId=${rowC}&name=b.png`, undefined, { data: Buffer.from('png2'), type: 'image/png' })
-    expect((await rep.post('/api/v1/data/Deals/query', { where: { col: 'id', op: 'eq', value: rowC } })).data.rows[0].Photo).toBe(p2.data.id)
+    expect((await rep.post('/api/v1/query', planBody('Deals', { where: { col: 'id', op: 'eq', value: rowC } }))).data.rows[0].Photo).toBe(p2.data.id)
     expect(await app.services.meta.attachments.get(p1.data.id)).toBeNull() // replaced one is gone
     // download
     const dl = await rep.get(attachmentPath(attC))
@@ -335,7 +340,7 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (PostgreSQL)' : `se
     const d = await rep.del(attachmentPath(attC))
     expect(d.status).toBe(200)
     expect(await app.services.meta.attachments.get(attC)).toBeNull()
-    const row = await rep.post('/api/v1/data/Deals/query', { where: { col: 'id', op: 'eq', value: rowC } })
+    const row = await rep.post('/api/v1/query', planBody('Deals', { where: { col: 'id', op: 'eq', value: rowC } }))
     expect(JSON.parse(row.data.rows[0].Docs)).toHaveLength(1)
     // update removing an id deletes that attachment
     const keep = JSON.parse(row.data.rows[0].Docs)[0]
@@ -359,7 +364,7 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (PostgreSQL)' : `se
     const r = await rep.post('/api/v1/data/Deals/import', { csv, mode: 'append' })
     expect(r.status).toBe(200)
     expect(r.data.imported).toBe(2)
-    const q = await A.post('/api/v1/data/Deals/query', { where: { col: 'Title', op: 'in', value: ['Delta', 'Echo'] }, orderBy: [{ col: 'Title', dir: 'asc' }] })
+    const q = await A.post('/api/v1/query', planBody('Deals', { where: { col: 'Title', op: 'in', value: ['Delta', 'Echo'] }, orderBy: [{ col: 'Title', dir: 'asc' }] }))
     expect(q.data.rows.map((x: any) => [x.Title, x.owner, x.Secret, x.Status])).toEqual([['Delta', 'user_rep', null, 'Open'], ['Echo', 'user_rep', null, 'Open']])
     const bad = await rep.post('/api/v1/data/Deals/import', { csv: 'Title,Amount\nOk,1\nBad,abc', mode: 'append' })
     expect(bad.status).toBe(422)
@@ -383,7 +388,7 @@ describe.skipIf(!URL_ENV)(URL_ENV ? 'server core integration (PostgreSQL)' : `se
     expect(out.status).toBe(200)
     expect(rep.cookie).toBe('')
     expect((await rep.get('/api/v1/auth/session')).status).toBe(401)
-    expect((await rep.post('/api/v1/data/Deals/query', {})).status).toBe(401)
+    expect((await rep.post('/api/v1/query', planBody('Deals'))).status).toBe(401)
   }, 60000)
 
   it('restart: bootstraps from server.json', async () => {

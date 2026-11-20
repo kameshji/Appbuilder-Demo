@@ -341,7 +341,16 @@ class Analyzer {
     const filter = and(s.filters)
     if (!('const' in filter && filter.const)) plan.filter = filter
     if (s.search) plan.search = s.search
-    if (s.sort.length) plan.sort = s.sort
+    let sort = s.sort
+    if (s.agg && sort.some((k) => k.via)) {
+      // a sort through a lookup is for lists of rows (P3-C): over the whole table with no groups the order changes nothing
+      if (s.agg.groupBy.length || s.take) {
+        throw new Refusal('not-delegable-function', "Sorting by a lookup's column before grouping or totals can't run on the server", src, 'Sort the grouped result instead')
+      }
+      sort = []
+    }
+    if (sort.filter((k) => k.via).length > 3) throw new Refusal('not-delegable-function', 'A list can be sorted through at most 3 lookup columns on the server', src)
+    if (sort.length) plan.sort = sort
     if (s.take) plan.take = s.take
     if (s.agg) {
       plan.aggregate = { groupBy: s.agg.groupBy, measures: s.agg.measures }
@@ -686,6 +695,13 @@ class Analyzer {
       if (col === null) throw new Refusal('not-delegable-expression', 'Sorting groups on the server works on an output column, not a calculation', a)
       kind = rc.s.agg.out.get(col)
     } else {
+      // P3-C: Sort(Orders, Customer.Name): by a column of the row the lookup points at, read as the caller
+      const lp = this.lookupPath(a, rc)
+      if (lp) {
+        sortable(`${lp.table}.${lp.field}`, lp.kind, a)
+        const asc = n.args.length > 2 ? orderOf(this.foldText(n.args[2]!), n.args[2]!) : true
+        return { col: lp.col, dir: asc ? 'asc' : 'desc', via: { table: lp.table, col: lp.field } }
+      }
       col = this.columnRef(a, rc)
       if (col === null) {
         if (!this.rowDependent(a, rc)) { this.fold(a); return null }

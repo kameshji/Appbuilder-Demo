@@ -16,6 +16,8 @@ const MAX_NODES = 2000
 const MAX_DEPTH = 32
 const MAX_IN = 1000
 const MAX_SORT = 20
+/** QUERY_MAX_LOOKUP_SORT_KEYS of src/platform/query.ts (src/fx imports only types from outside) */
+const MAX_VIA_SORT = 3
 const MAX_GROUP = 10
 const MAX_MEASURES = 50
 const MAX_SEARCH_COLUMNS = 50
@@ -182,14 +184,30 @@ class Checker {
     }
   }
 
-  sortKeys(v: unknown, kinds: (col: string) => ColumnKind | undefined, what: string): SortKeyV2[] {
+  sortKeys(v: unknown, kinds: (col: string) => ColumnKind | undefined, what: string, allowVia = false): SortKeyV2[] {
     if (!Array.isArray(v) || v.length > MAX_SORT) return bad(`${what} takes a list of at most ${MAX_SORT} keys`)
+    let viaKeys = 0
     return v.map((k) => {
       if (!isObj(k) || typeof k.col !== 'string' || (k.dir !== 'asc' && k.dir !== 'desc')) bad(`${what}: each key is { col, dir: "asc" | "desc" }`)
       const kind = kinds(k.col as string)
       if (kind === undefined) bad(`Column "${String(k.col).slice(0, 64)}" does not exist in "${this.table}"`)
       if (kind === 'other') bad(`Sorting by ${String(k.col)} isn't possible`)
-      return { col: k.col as string, dir: k.dir as 'asc' | 'desc' }
+      if (k.via === undefined) return { col: k.col as string, dir: k.dir as 'asc' | 'desc' }
+      // P3-C: a key through a lookup (sort by the label): the lookup column of this table, a sortable column of its target
+      if (!allowVia) bad(`${what}: sorting through a lookup is only possible for lists of rows`)
+      const via = k.via
+      if (!isObj(via) || typeof via.table !== 'string' || !via.table || typeof via.col !== 'string' || !via.col) return bad(`${what}: via is { table, col }`)
+      if (++viaKeys > MAX_VIA_SORT) bad(`A list can be sorted through at most ${MAX_VIA_SORT} lookup columns at once`)
+      if (kind !== 'text') bad(`${String(k.col)} is not a lookup column`)
+      const target = this.related?.(via.table as string, k.col as string)
+      if (!target) bad(`${String(k.col)} does not point at a table ${String(via.table).slice(0, 64)}`)
+      const tk = Object.prototype.hasOwnProperty.call(target!.columns, via.col as string) ? target!.columns[via.col as string] : undefined
+      if (tk === undefined) bad(`Column "${String(via.col).slice(0, 64)}" does not exist in "${String(via.table).slice(0, 64)}"`)
+      if (tk === 'other') bad(`Sorting by ${String(via.table)}.${String(via.col)} isn't possible`)
+      const used = this.via.get(via.table as string) ?? new Set<string>()
+      used.add(via.col as string)
+      this.via.set(via.table as string, used)
+      return { col: k.col as string, dir: k.dir as 'asc' | 'desc', via: { table: via.table as string, col: via.col as string } }
     })
   }
 
@@ -319,7 +337,7 @@ export function checkPlan(input: unknown, schema: TableSchemaInfo, tableName: st
     })
     plan.search = { text: (s as { text: string }).text, columns: cols }
   }
-  if (p.sort !== undefined) plan.sort = ch.sortKeys(p.sort, (c) => (Object.prototype.hasOwnProperty.call(schema.columns, c) ? (ch.cols.add(c), schema.columns[c]) : undefined), 'sort')
+  if (p.sort !== undefined) plan.sort = ch.sortKeys(p.sort, (c) => (Object.prototype.hasOwnProperty.call(schema.columns, c) ? (ch.cols.add(c), schema.columns[c]) : undefined), 'sort', true)
   if (p.take !== undefined) {
     const t = p.take
     if (!isObj(t) || typeof t.n !== 'number' || !Number.isInteger(t.n) || t.n < 0 || t.n > 1e9 || (t.from !== 'start' && t.from !== 'end')) bad('take is { n: whole number >= 0, from: "start" | "end" }')
@@ -330,6 +348,7 @@ export function checkPlan(input: unknown, schema: TableSchemaInfo, tableName: st
     const r = ch.aggregate(p.aggregate)
     plan.aggregate = r.agg
     out = r.out
+    if (plan.sort?.some((k) => k.via)) bad('Sorting through a lookup is only possible for lists of rows, not before grouping')
   }
   if (p.select !== undefined) {
     if (!Array.isArray(p.select) || p.select.length > 500 || !p.select.every((x) => typeof x === 'string')) bad('select is a list of column names')

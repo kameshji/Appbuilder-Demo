@@ -19,7 +19,10 @@ const ALLOWED_PAYLOAD: Record<TemplatePackage['kind'], string[]> = {
   screen: ['screen'],
   app: ['app', 'roles'],
   dataModel: ['sample'],
+  solution: ['apps', 'roles', 'flows', 'approvalPolicies', 'dashboards', 'printTemplates', 'sequences', 'reference', 'sample'],
 }
+/** payload parts whose keys are slot ids (a slot may be called Accounts): their rows are checked, not their keys */
+const ROWS_BY_SLOT = new Set(['sample', 'reference'])
 
 export interface SafetyResult {
   /** the package with what may not be installed removed */
@@ -57,7 +60,8 @@ export function checkSafety(input: TemplatePackage): SafetyResult {
         delete o[k]
         continue
       }
-      if (PEOPLE_KEY.test(k) && (Array.isArray(val) || (val && typeof val === 'object'))) {
+      // a role's privileges are keyed by slot ids (a slot may be called Accounts): not people
+      if (PEOPLE_KEY.test(k) && !/\.roles\[\d+\]\.tables$/.test(path) && (Array.isArray(val) || (val && typeof val === 'object'))) {
         stripped.push(`Removed people from the template (${path}.${k}): users are never part of a template.`)
         delete o[k]
         continue
@@ -66,12 +70,42 @@ export function checkSafety(input: TemplatePackage): SafetyResult {
     }
   }
   const { signature, ...content } = pkg
-  walk(content, 'template')
-  Object.assign(pkg, content, signature ? { signature } : {})
+  const { payload, ...head } = content
+  walk(head, 'template')
+  for (const [k, v] of Object.entries(payload ?? {})) {
+    if (ROWS_BY_SLOT.has(k) && v && typeof v === 'object' && !Array.isArray(v)) for (const [slot, rows] of Object.entries(v as Record<string, unknown>)) walk(rows, `template.payload.${k}.${slot}`)
+    else walk(v, `template.payload.${k}`)
+  }
+  Object.assign(pkg, head, { payload }, signature ? { signature } : {})
   // roles: never the administrator flag
   for (const r of pkg.payload.roles ?? []) {
     const x = r as unknown as Record<string, unknown>
     if (x.isAdmin) { stripped.push(`The administrator flag of the role "${r.name}" was removed.`); delete x.isAdmin }
+  }
+  // format 2 packs: no people in approval policies (user:<email or id> approvers), flows never run as a service account
+  // and carry no connection references (connections are made in each environment)
+  if (pkg.kind === 'solution') {
+    const isPerson = (ref: unknown): boolean => typeof ref === 'string' && (/^user:/i.test(ref.trim()) || (!/^[a-z-]+:/i.test(ref.trim()) && ref.includes('@')))
+    const clean = (list: unknown, where: string): unknown => {
+      if (!Array.isArray(list)) return list
+      const kept = list.filter((x) => !isPerson(x))
+      if (kept.length !== list.length) stripped.push(`Removed people from the template (${where}): approvers are roles, teams, departments or managers, never named people.`)
+      return kept
+    }
+    for (const a of pkg.payload.approvalPolicies ?? []) {
+      const d = a.definition as Record<string, unknown>
+      if (!d || typeof d !== 'object') continue
+      d.approvers = clean(d.approvers, `approval policy ${a.key}`)
+      for (const st of Array.isArray(d.stages) ? d.stages as Record<string, unknown>[] : []) st.approvers = clean(st.approvers, `approval policy ${a.key}`)
+      for (const ru of Array.isArray(d.rules) ? d.rules as Record<string, unknown>[] : []) ru.approvers = clean(ru.approvers, `approval policy ${a.key}`)
+      const esc = d.escalation as Record<string, unknown> | undefined
+      if (esc && isPerson(esc.to)) { delete esc.to; stripped.push(`Removed a person from the template (approval policy ${a.key} escalation).`) }
+    }
+    for (const f of pkg.payload.flows ?? []) {
+      const x = f as unknown as Record<string, unknown>
+      if (x.runAs !== undefined && x.runAs !== 'owner' && x.runAs !== 'triggeringUser') { stripped.push(`The flow "${f.name}" ran as a service account: here it runs as its owner (the administrator who installs it).`); delete x.runAs }
+      if (x.connections !== undefined) { stripped.push(`Removed connection references from the flow "${f.name}" (connections are made in each environment).`); delete x.connections }
+    }
   }
   // events that run as the system: approval needed
   for (const s of pkg.slots) for (const e of s.events ?? []) if (e.runAs === 'system') systemItems.push(`${s.label}: ${e.name ?? 'event'}`)

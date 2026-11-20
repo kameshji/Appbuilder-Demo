@@ -1036,6 +1036,9 @@ async function signatures(appId) {
   check(/SIG:true/.test(await text('LblSig')) && top0 === top1 && !(await page.$(T('pull-to-refresh'))), 'Signature pad: a finger signature sets HasSignature; the page did not scroll and pull to refresh did not start', `${await text('LblSig')}, scrollTop ${top0} -> ${top1}`)
   await shot('22-signature-pad.png')
   const before = (await q(`SELECT count(*)::int AS n FROM env_default.${VISITS}`))[0].n
+  // a tap sent within a few ms of the last stroke's touch end is sometimes swallowed by Chrome (touch and pointer events arrive, no click):
+  // a person needs longer than that to move a finger from the pad to the button. Real-device check: phone-test-script.md
+  await sleep(450)
   await tap(ctl('BtnSign') + ' button')
   for (let i = 0; i < 40; i++) { const r = await q(`SELECT * FROM env_default.${VISITS} WHERE "Part" = 'Standalone'`); if (r.length && r[0].Signature) break; await sleep(250) }
   const sv = await q(`SELECT * FROM env_default.${VISITS} WHERE "Part" = 'Standalone'`)

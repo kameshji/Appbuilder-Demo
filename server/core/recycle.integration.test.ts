@@ -4,6 +4,7 @@
  * shares), unique values free at once and checked on restore, security of the bin, events and flows on restore,
  * rollups, purge, concurrency, schema 9 -> 10 without a behaviour change, index use (EXPLAIN).
  */
+import { planBody, type SimpleQuery } from './testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PG_URL, SKIP_PG } from './testdb.ts'
 import { Client, startHarness } from './kernel-testkit.ts'
@@ -28,7 +29,7 @@ describe.skipIf(!PG_URL)(PG_URL ? 'recycle bin (PostgreSQL)' : `recycle bin (Pos
   }
   const table = async (displayName: string, columns: unknown[], extra: Record<string, unknown> = {}) => ok(await h.admin.post('/tables', { displayName, columns, ...extra })) as { id: string; name: string; recycleDays?: number; recycleBin?: boolean }
   const insert = async (cl: Client, t: string, values: Record<string, unknown>) => (ok(await cl.post(`/data/${t}/rows`, { values })) as { row: { id: string } }).row.id
-  const rows = async (cl: Client, t: string, q: Record<string, unknown> = {}) => (ok(await cl.post(`/data/${t}/query`, q)) as { rows: Record<string, unknown>[]; total?: number }).rows
+  const rows = async (cl: Client, t: string, q: SimpleQuery = {}) => (ok(await cl.post('/query', planBody(t, q))) as { rows: Record<string, unknown>[]; count?: number }).rows
   const v2 = async (cl: Client, plan: Record<string, unknown>) => ok(await cl.post('/query', { plan })) as { rows: Record<string, unknown>[]; count?: number }
   const relate = async (child: string, column: string, parent: string, onDelete: 'restrict' | 'cascade' | 'setBlank') => {
     await h.q(`INSERT INTO env_default.ab_relationships (id, from_table, from_column, to_table, kind, on_delete, created_on, modified_on) VALUES ($1, $2, $3, $4, 'oneToMany', $5, now(), now())
@@ -71,7 +72,7 @@ describe.skipIf(!PG_URL)(PG_URL ? 'recycle bin (PostgreSQL)' : `recycle bin (Pos
     expect(r).toEqual([])
     await insert(h.admin, p.id, { Code: 'P-1', Name: 'Bolt' })
     expect(Object.keys((await rows(h.admin, p.id))[0])).not.toContain('deletedOn')
-    expect(ok(await h.admin.post(`/data/${p.id}/query`, { select: ['deletedOn'] }), 422)).toBeTruthy()
+    expect(ok(await h.admin.post('/query', planBody(p.id, { select: ['deletedOn'] })), 422)).toBeTruthy()
   })
 
   it('delete: the row disappears at once, comes back with the batch; the unique value is free meanwhile and checked on restore', async () => {
@@ -166,7 +167,7 @@ describe.skipIf(!PG_URL)(PG_URL ? 'recycle bin (PostgreSQL)' : `recycle bin (Pos
     const A = h.admin
     // v1: rows, count, lookup display (rows by id), filters
     expect((await rows(A, T.cust)).map((r) => r.Code)).toEqual(['C2'])
-    expect((ok(await A.post(`/data/${T.cust}/query`, { count: true, top: 0 })) as { total: number }).total).toBe(1)
+    expect((ok(await A.post('/query', planBody(T.cust, { count: true, top: 0 }))) as { count: number }).count).toBe(1)
     expect(await rows(A, T.ord, { where: { col: 'id', op: 'in', value: [ids.o1, ids.o2, ids.o3] } })).toHaveLength(1)
     expect(await rows(A, T.line, { where: { col: 'Ord', op: 'eq', value: ids.o1 } })).toEqual([])
     // Query v2: rows, count, aggregates, grouped aggregates, search, single

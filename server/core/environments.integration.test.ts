@@ -6,6 +6,7 @@
  * in-place solution upgrade (plan, confirm, destructive changes, rollback on failure) and deploy between environments,
  * the per-environment boot migration (one failing environment does not block the others). Creates and drops its database.
  */
+import { planBody } from './testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -114,8 +115,8 @@ describe.skipIf(!PG_URL)('environments (PostgreSQL)', () => {
     const w = await outsider.get('/workspace')
     expect(w.status).toBe(200)
     expect(w.data).toMatchObject({ apps: [], tables: [], environments: [] })
-    expect((await outsider.post('/data/Contacts/query', {})).status).toBe(403)
-    expect((await outsider.post('/data/Contacts/query', {}, 'default')).status).toBe(403)
+    expect((await outsider.post('/query', planBody('Contacts'))).status).toBe(403)
+    expect((await outsider.post('/query', planBody('Contacts'), 'default')).status).toBe(403)
     // environment routes are install-admin only
     expect((await maker.post('/environments', { name: 'Mine', type: 'developer' })).status).toBe(403)
     expect((await maker.get('/install/audit')).status).toBe(403)
@@ -129,7 +130,7 @@ describe.skipIf(!PG_URL)('environments (PostgreSQL)', () => {
     const contacts = (await A.get('/workspace')).data.tables.find((t: { name: string }) => t.name === 'Contacts')
     const addPhoto = await A.post(`/tables/${contacts.id}/columns`, { displayName: 'Photo', type: 'file' })
     expect(addPhoto.status).toBe(200)
-    const rows = (await A.post('/data/Contacts/query', { orderBy: [{ col: 'Name', dir: 'asc' }] })).data.rows
+    const rows = (await A.post('/query', planBody('Contacts', { orderBy: [{ col: 'Name', dir: 'asc' }] }))).data.rows
     const up = await A.req('POST', `/attachments?table=Contacts&column=Photo&rowId=${rows[0].id}&name=a.txt`, undefined, { raw: { data: Buffer.from('in default'), type: 'text/plain' } })
     expect(up.status).toBe(200)
     expect(up.data.url).toBe(`/api/v1/attachments/${up.data.id}?env=default`)
@@ -146,7 +147,7 @@ describe.skipIf(!PG_URL)('environments (PostgreSQL)', () => {
     expect(s.tables.map((t: { id: string }) => t.id).sort()).toEqual(d.tables.map((t: { id: string }) => t.id).sort())
     expect(s.apps.map((a: { id: string }) => a.id)).toEqual(d.apps.map((a: { id: string }) => a.id))
     expect(s.roles.map((x: { id: string }) => x.id).sort()).toEqual(d.roles.map((x: { id: string }) => x.id).sort())
-    const sRows = (await A.post('/data/Contacts/query', { orderBy: [{ col: 'Name', dir: 'asc' }] }, 'sales_test')).data.rows
+    const sRows = (await A.post('/query', planBody('Contacts', { orderBy: [{ col: 'Name', dir: 'asc' }] }), 'sales_test')).data.rows
     expect(sRows.map((x: { Name: string }) => x.Name)).toEqual(rows.map((x: { Name: string }) => x.Name))
     expect(await q("SELECT count(*)::int AS n FROM env_sales_test.t_orders")).toEqual([{ n: 12 }])
     const got = await A.get(`/attachments/${up.data.id}?env=sales_test`, null)
@@ -164,19 +165,19 @@ describe.skipIf(!PG_URL)('environments (PostgreSQL)', () => {
   it('isolation: same-named tables, rows, roles, apps, attachments and audit never cross environments', async () => {
     // same table name, same id, different rows
     expect((await A.post('/data/Contacts/rows', { values: { Name: 'Only in sales' } }, 'sales_test')).status).toBe(200)
-    expect((await A.post('/data/Contacts/query', { where: { col: 'Name', op: 'eq', value: 'Only in sales' } }, 'default')).data.rows).toEqual([])
-    expect((await A.post('/data/Contacts/query', { where: { col: 'Name', op: 'eq', value: 'Only in sales' } }, 'sales_test')).data.rows).toHaveLength(1)
+    expect((await A.post('/query', planBody('Contacts', { where: { col: 'Name', op: 'eq', value: 'Only in sales' } }), 'default')).data.rows).toEqual([])
+    expect((await A.post('/query', planBody('Contacts', { where: { col: 'Name', op: 'eq', value: 'Only in sales' } }), 'sales_test')).data.rows).toHaveLength(1)
     // a table created in one only
     const t = await A.post('/tables', { displayName: 'Leads', columns: [{ displayName: 'Title', type: 'text' }] }, 'sales_test')
     expect(t.status).toBe(200)
     expect((await A.get('/workspace', 'default')).data.tables.some((x: { name: string }) => x.name === 'Leads')).toBe(false)
-    expect((await A.post('/data/Leads/query', {}, 'default')).status).toBe(404)
+    expect((await A.post('/query', planBody('Leads'), 'default')).status).toBe(404)
     // the same name in both, created separately: two different tables
     const t2 = await A.post('/tables', { displayName: 'Leads', columns: [{ displayName: 'Title', type: 'text' }] }, 'default')
     expect(t2.status).toBe(200)
     expect(t2.data.id).not.toBe(t.data.id)
     await A.post('/data/Leads/rows', { values: { Title: 'default lead' } }, 'default')
-    expect((await A.post('/data/Leads/query', {}, 'sales_test')).data.rows).toEqual([])
+    expect((await A.post('/query', planBody('Leads'), 'sales_test')).data.rows).toEqual([])
     // roles: same name in both, different privileges
     const rs = await A.post('/roles', { name: 'Clerks', privileges: [] }, 'sales_test')
     const rd = await A.post('/roles', { name: 'Clerks', privileges: [] }, 'default')
@@ -188,7 +189,7 @@ describe.skipIf(!PG_URL)('environments (PostgreSQL)', () => {
     expect(app1.status).toBe(200)
     expect((await A.get(`/apps/${app1.data.id}`, 'default')).status).toBe(404)
     // attachments: an id from one environment does not resolve in the other
-    const row = (await A.post('/data/Contacts/query', { where: { col: 'Name', op: 'eq', value: 'Only in sales' } }, 'sales_test')).data.rows[0]
+    const row = (await A.post('/query', planBody('Contacts', { where: { col: 'Name', op: 'eq', value: 'Only in sales' } }), 'sales_test')).data.rows[0]
     const up = await A.req('POST', `/attachments?table=Contacts&column=Photo&rowId=${row.id}&name=s.txt`, undefined, { env: 'sales_test', raw: { data: Buffer.from('in sales'), type: 'text/plain' } })
     expect(up.status).toBe(200)
     expect(up.data.url).toContain('?env=sales_test')
@@ -319,7 +320,7 @@ describe.skipIf(!PG_URL)('environments (PostgreSQL)', () => {
     def.screens[0].props.Fill = '=Color.LightBlue'
     expect((await A.req('PUT', `/apps/${appId}`, { definition: def }, { env: 'sales_test' })).status).toBe(200)
     await A.patch(`/solutions/${solId}`, { version: '1.1.0' }, 'sales_test')
-    const before = (await A.post('/data/Contacts/query', { count: true }, 'default')).data.total
+    const before = (await A.post('/query', planBody('Contacts', { count: true }), 'default')).data.count
 
     const plan = await A.post(`/solutions/${solId}/deploy`, { target: 'default', plan: true }, 'sales_test')
     expect(plan.status, JSON.stringify(plan.data)).toBe(200)
@@ -343,7 +344,7 @@ describe.skipIf(!PG_URL)('environments (PostgreSQL)', () => {
     const dc = dws.tables.find((x: { id: string }) => x.id === contacts.id)
     expect(dc.columns.map((c: { name: string }) => c.name)).toContain('Score')
     expect(dc.columns.map((c: { name: string }) => c.name)).not.toContain('City')
-    expect((await A.post('/data/Contacts/query', { count: true }, 'default')).data.total).toBe(before)
+    expect((await A.post('/query', planBody('Contacts', { count: true }), 'default')).data.count).toBe(before)
     expect((await A.get(`/apps/${appId}`, 'default')).data.definition.screens[0].props.Fill).toBe('=Color.LightBlue')
     expect(dws.solutions.find((x: { id: string }) => x.id === solId)).toMatchObject({ version: '1.1.0' })
     expect((await q("SELECT action FROM env_default.ab_audit WHERE action = 'solution.upgrade'"))).toHaveLength(1)
@@ -522,7 +523,7 @@ describe.skipIf(!PG_URL)('migration from the version 4 layout (PostgreSQL)', () 
     const login = await c.post('/auth/login', { email: 'old@example.com', password: 'old-admin-pass-1' })
     expect(login.status).toBe(200)
     expect(login.data).toMatchObject({ environmentId: 'default', privileges: { isAdmin: true, isInstallAdmin: true } })
-    expect((await c.post('/data/Notes/query', {})).data.rows.map((r: { Title: string }) => r.Title)).toEqual(['First note'])
+    expect((await c.post('/query', planBody('Notes'))).data.rows.map((r: { Title: string }) => r.Title)).toEqual(['First note'])
     const att = await c.get('/attachments/att_old')
     expect(att.status).toBe(200)
     expect(Buffer.from(att.data).toString()).toBe('old')

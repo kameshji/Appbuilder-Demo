@@ -96,8 +96,17 @@ function makeServer(opts: { signedIn?: boolean; session?: Session; rowCount?: nu
       v2++
       if (rules.rejectNext) { const r = rules.rejectNext; rules.rejectNext = null; return err(r.status, r.code, r.message) }
       const plan = (body as { plan: QueryPlan }).plan
+      // P3-C: the whole-table load of the small-table cache is a plan in natural order taking the row cap
+      const load = plan.take?.n === 5000 && plan.take.from === 'start' && !plan.filter && !plan.search && !plan.sort && !plan.aggregate && !plan.page && !plan.select
+      if (load) {
+        queries++
+        if (rules.delayQuery) await new Promise((r) => setTimeout(r, rules.delayQuery))
+      }
       const types = Object.fromEntries(CONTACTS.columns.map((c) => [c.name, c.type]))
-      const fx = rowsFromWire({ version: 2, table: 'Contacts' }, rows, types)
+      // `cap`: a connector that reads at most that many rows (the server's fallback flags `truncated`)
+      const all = rowsFromWire({ version: 2, table: 'Contacts' }, rows, types)
+      const fx = opts.cap !== undefined ? all.slice(0, opts.cap) : all
+      const capped = opts.cap !== undefined && all.length > opts.cap
       const res = executePlan(plan, fx, schemaInfoOf(CONTACTS), { inputOrder: true })
       const out = res.rows.map((r) => {
         const o: J = {}
@@ -107,20 +116,14 @@ function makeServer(opts: { signedIn?: boolean; session?: Session; rowCount?: nu
         }
         return o
       })
-      return json(200, { rows: out, ...(res.count !== undefined ? { count: res.count } : {}), ...(plan.page ? { nextCursor: res.nextCursor ?? null } : {}) })
+      return json(200, { rows: out, ...(res.count !== undefined ? { count: res.count } : {}), ...(plan.page ? { nextCursor: res.nextCursor ?? null } : {}), ...(capped ? { truncated: true } : {}) })
     }
     const m = /^\/data\/([^/]+)(\/.*)?$/.exec(p)
     if (m) {
       if (rules.rejectNext) { const r = rules.rejectNext; rules.rejectNext = null; return err(r.status, r.code, r.message) }
       const rest = m[2] ?? ''
-      if (rest === '/query' && method === 'POST') {
-        queries++
-        if (rules.delayQuery) await new Promise((r) => setTimeout(r, rules.delayQuery))
-        const cap = opts.cap ?? 5000
-        const top = (body as { top?: number }).top
-        const out = rows.slice(0, Math.min(top ?? cap, cap))
-        return json(200, { rows: out.map((r) => ({ ...r })), truncated: rows.length > out.length })
-      }
+      // P3-C: the v1 query route is gone from the server; the client must never call it
+      if (rest === '/query') return err(404, 'not-found', `no route ${method} ${p}`)
       if (rest === '/rows' && method === 'POST') {
         const v = (body as { values: J }).values
         if (rows.some((r) => r.Email && v.Email && r.Email === v.Email)) return err(422, 'invalid', 'Email: already exists')
@@ -228,8 +231,10 @@ describe('RemotePlatform: lazy rows and typed conversion', () => {
     // a small table: its size is counted first (Query v2), then it is held whole
     const count = srv.log.find((r) => r.path === '/api/v1/query')!
     expect(count.body).toEqual({ plan: { version: 2, table: 'Contacts', count: true, page: { size: 0 } } })
-    const q = srv.log.find((r) => r.path.endsWith('/data/Contacts/query'))!
-    expect(q.body).toEqual({ top: 5000 })
+    // P3-C: then held whole through Query v2 (natural order, the 5,000-row cap); never the removed v1 route
+    const q = srv.log.find((r) => r.path === '/api/v1/query' && (r.body as { plan: QueryPlan }).plan.take)!
+    expect(q.body).toEqual({ plan: { version: 2, table: 'Contacts', take: { n: 5000, from: 'start' } } })
+    expect(srv.log.some((r) => /\/data\/[^/]+\/query/.test(r.path))).toBe(false)
     expect(notified).toBeGreaterThan(1)
     const r = p.tables.rows('Contacts')[0]
     expect(r.__id).toBe('row-1')
@@ -252,6 +257,27 @@ describe('RemotePlatform: lazy rows and typed conversion', () => {
     await p.tables.ensureLoaded(['Contacts'])
     expect(p.tables.rows('Contacts')).toHaveLength(3)
     expect(p.getState().truncated).toEqual(['Contacts'])
+  })
+
+  it('P3-C: a held table that grew to 5,000 rows asks for the count once: more rows mean truncated, as v1 said', async () => {
+    const grow = (srv: { rows: J[] }, to: number) => {
+      for (let i = srv.rows.length; i < to; i++) srv.rows.push({ ...srv.rows[0]!, id: `row-${i + 1}`, Email: `p${i + 1}@x.io` })
+    }
+    for (const [n, truncated] of [[5003, true], [5000, false]] as const) {
+      const { p, srv } = await boot()
+      await p.tables.ensureLoaded(['Contacts'])
+      grow(srv, n)
+      const before = srv.log.length
+      await p.tables.reload('Contacts')
+      expect(p.tables.rows('Contacts')).toHaveLength(5000)
+      expect(p.getState().truncated).toEqual(truncated ? ['Contacts'] : [])
+      const plans = srv.log.slice(before).filter((r) => r.path === '/api/v1/query').map((r) => (r.body as { plan: QueryPlan }).plan)
+      expect(plans.filter((x) => x.take)).toHaveLength(1)
+      // the count-only plan (the same one the size cache uses, so it may also be the size refresh)
+      expect(plans.filter((x) => x.count && x.page?.size === 0).length).toBeGreaterThanOrEqual(1)
+      // the rows keep the natural order the server answered in
+      expect(p.tables.rows('Contacts').slice(0, 3).map((r) => r.id)).toEqual(['row-1', 'row-2', 'row-3'])
+    }
   })
 
   it('state updates produce new objects and dataVersion bumps', async () => {

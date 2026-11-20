@@ -327,8 +327,8 @@ with no CSP violation in the console.
 - **Queries (Data API v2):** filters, search, sorting, paging, counts and aggregates run in PostgreSQL with RBAC, the row scope and
   row filters ANDed into the one statement, and a plan naming a hidden column anywhere (select, filter, sort, search, grouping,
   measures) is refused (403), so aggregates cannot leak hidden values or other users' rows. Limits: pages of at most 500 rows, at
-  most 5,000 rows without paging, 5,000 groups, a 15 s statement timeout. The v1 query still returns at most **5,000 rows**
-  (`DEFAULT_ROW_CAP`); CSV export is capped at 1,000,000 rows. These are performance limits, applied after the user's own filters.
+  most 5,000 rows without paging, 5,000 groups, a 15 s statement timeout. The v1 read route was removed in Phase 3 (every read is a
+  plan); the browser holds a small table whole with one plan of at most **5,000 rows** (`DEFAULT_ROW_CAP`); CSV export is capped at 1,000,000 rows. These are performance limits, applied after the user's own filters.
 - **Organisation scopes, relationship rules and shares are part of the same statement** (P0 package F). The sets a
   scope needs (the user's department members, reporting line, team members, rows shared with them) are worked out on the
   server for each request from a directory cached for at most 5 seconds and dropped when the organisation or a share
@@ -436,6 +436,33 @@ Reviewed in [the Phase 2 security review](../internal/security-review-p2.md); te
   connector refuses every host of Meta's domains; webhook calls need Meta's signature over the raw body, each signature
   once; numbers are kept in E.164 (`(0)` after the country code is dropped) and masked outside the admin pages; a flow may
   record an opt-in (attributed to its identity) but never as "inbound keyword".
+
+## Chat (Phase 3)
+
+Chat's server rules are in [chat for administrators](chat.md) and [chat for developers](../dev/chat.md); tests
+`server/core/chat/chat-policy.test.ts`, `server/core/chat/chat-security.integration.test.ts` (the leak suite: every chat
+route and the generic routes, as members, non-members, makers, environment and install administrators, a person of another
+environment, an API key and an anonymous client).
+
+- **Who reads a conversation:** its members; an open channel (not private, not archived) also every person who uses chat.
+  **Administrators are no exception**: Query v2, the data API, CSV export, the environment data export, a backup's table
+  browser, dashboards, print templates and flows show them only conversations they are in. Rows about chat messages
+  (chat mentions) follow the message for administrators too; chat files are not listed in Attachment links.
+- **What administrators see** (Admin console > Chat): names, kinds, members, counts and dates of every conversation; the
+  text of a message a member reported to them; a conversation they export with a typed reason (audited `chat.export`, and
+  a system message tells its members). Every administrator action in chat is audited without message text.
+- **Nobody writes the chat tables through the data API**, administrators included: only the chat service does, which
+  checks membership, posting rules and mentions (a mention of someone who cannot read the conversation is refused).
+- **Live:** the topics `chat:<id>` and `chat:typing:<id>` are open only to readers, checked when subscribing and again at
+  every security or membership change; a removed member's subscription ends at once. Table and record topics on the chat
+  tables are refused for everyone.
+- **Cards** in messages are references; each reader resolves them with their own access in the card's environment (hidden
+  columns are left out, a hidden row answers like a missing one). Notifications and emails never carry card values.
+- **Limits** (server): 4,000 characters, 10 files of 25 MB, 30 messages a minute per person, 1,000 members per channel,
+  8 per group conversation, one typing event per person and conversation every 3 s.
+- **Not protected:** install administrators can download backup archives, which contain the chat environment's chat;
+  people with database access read everything. Whether monitoring or retention rules apply to the customer is for their
+  lawyer.
 
 ## Audit log
 

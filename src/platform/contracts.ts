@@ -163,9 +163,11 @@ export type SystemTableGroup = 'people' | 'collaboration' | 'files' | 'communica
  * admin: administrators only; reference: everyone reads, administrators write; regarding: rows about a record the user can
  * read; shared: everyone reads and creates, owners and administrators change (tags); members: channel members only;
  * parent: follows the read rule of the row a lookup column points at (document versions, channel messages); approvals: the
- * approval rule (requester, the people asked, delegates, administrators, "Approvals: view" readers of the record; P1-C).
+ * approval rule (requester, the people asked, delegates, administrators, "Approvals: view" readers of the record; P1-C);
+ * chat: channel membership decides reads for everyone, administrators included, and nobody writes through the data API
+ * (the four communication tables; P3-A, docs/dev/chat.md).
  */
-export type SystemPolicy = 'directory' | 'own' | 'adminOrOwn' | 'admin' | 'reference' | 'shared' | 'regarding' | 'members' | 'parent' | 'approvals'
+export type SystemPolicy = 'directory' | 'own' | 'adminOrOwn' | 'admin' | 'reference' | 'shared' | 'regarding' | 'members' | 'parent' | 'approvals' | 'chat'
 
 /**
  * A row as formulas see it. Typed values: number/decimal/currency -> number, boolean -> boolean,

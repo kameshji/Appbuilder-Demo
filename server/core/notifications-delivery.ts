@@ -87,8 +87,9 @@ const label = (kind: string) => NOTIFICATION_KINDS.find((k) => k.kind === kind)?
 
 /** the channels of one kind for one user, with the reasons shown in the delivery log */
 export function effectiveChannels(policy: DeliveryPolicy, prefs: NotificationSettings, kind: string): Effective {
-  // server health alerts (install administrators, turned on by them) are emailed right away unless set otherwise
-  const p = policy.kinds[kind] ?? (kind === 'health' ? { email: 'immediate' as const } : {})
+  // server health alerts (install administrators, turned on by them) are emailed right away unless set otherwise;
+  // P3-A chat (direct messages and mentions): in the digest unless set otherwise
+  const p = policy.kinds[kind] ?? (kind === 'health' ? { email: 'immediate' as const } : kind === 'chat' ? { email: 'digest' as const } : {})
   const what = `"${label(kind)}"`
   if (p.lock) {
     const inApp = p.inApp ?? true
@@ -251,6 +252,20 @@ ${n.from ? `<div style="margin-top:4px;font-size:12px;color:#64748b">From ${esc(
 ${actions ? `<div style="margin-top:12px">${actions}</div><div style="font-size:11px;color:#94a3b8">Each button opens a page where you confirm (sign in first if asked); each link works once.</div>` : ''}
 ${href ? `<div style="margin-top:8px"><a href="${esc(href)}" style="display:inline-block;padding:7px 14px;border-radius:8px;background:#4f46e5;color:#ffffff;text-decoration:none;font-weight:600;font-size:13px">Open in ${esc(brand.installName)}</a></div>` : ''}
 </div>`
+}
+
+/* ------------------------------------------------------------------ digest relevance (P3-A) */
+
+/**
+ * A kind may say, when the digest is composed, that an item waiting in it is no longer relevant (chat: the message was
+ * read or can no longer be read). The check returns null (keep) or the reason to drop it; dropped items are logged with
+ * that reason in the delivery log and never emailed. Process-wide (every delivery instance applies it).
+ */
+export type DigestRelevance = (userId: string, item: { kind: string; link: string | null; environmentId: string | null }) => Promise<string | null>
+const digestRelevance = new Map<string, DigestRelevance>()
+export function setDigestRelevance(kind: string, fn: DigestRelevance | null): void {
+  if (fn) digestRelevance.set(kind, fn)
+  else digestRelevance.delete(kind)
 }
 
 /* ------------------------------------------------------------------ the service */
@@ -455,9 +470,21 @@ export function createDelivery(services: CoreServices): DeliveryService {
           const digestNow = digestDue(prefs, lastSent, r.oldest ? new Date(r.oldest) : null, now)
           const heldNow = r.held && new Date(r.held).getTime() <= now.getTime() && !inQuietHours(prefs, now)
           if (!digestNow && !heldNow) continue
-          const items = await db().query<Record<string, unknown>>(
+          const waiting = await db().query<Record<string, unknown>>(
             `SELECT * FROM "ab"."notification_digest" WHERE user_id = $1 AND (${digestNow ? 'true OR ' : ''}hold_until <= $2) ORDER BY created_on LIMIT 200`, [u.id, now],
           )
+          // P3-A: items of a kind with a relevance check that fails it are dropped with the reason (never emailed)
+          const items: Record<string, unknown>[] = []
+          for (const i of waiting) {
+            const check = digestRelevance.get(String(i.kind))
+            const why = check ? await check(u.id, { kind: String(i.kind), link: i.link ? String(i.link) : null, environmentId: i.environment_id ? String(i.environment_id) : null }).catch(() => null) : null
+            if (!why) {
+              items.push(i)
+              continue
+            }
+            await db().exec(`DELETE FROM "ab"."notification_digest" WHERE id = $1`, [String(i.id)])
+            if (typeof i.delivery_id === 'string') await db().exec(`UPDATE "ab"."notification_deliveries" SET status = 'dropped', reason = $2 WHERE id = $1`, [i.delivery_id, why.slice(0, 500)])
+          }
           if (!items.length) continue
           const list = items.map((i) => ({ kind: String(i.kind), title: String(i.title), body: String(i.body ?? ''), link: i.link ? String(i.link) : null }))
           const kinds = [...new Set(list.map((i) => i.kind))]

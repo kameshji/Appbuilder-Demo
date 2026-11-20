@@ -256,7 +256,7 @@ export const createPostgresConnector: ConnectorFactory = (conn: ConnectionRecord
           const keys: KeyValue[] = []
           for (let i = 0; i < st.cursorKeys; i++) {
             const v = last[`__c${i}`]
-            keys.push(v === null || v === undefined ? null : typeof v === 'number' ? v : typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v) && kindOfSort(def, input.plan, i) === 'num' ? Number(v) : (v as string))
+            keys.push(v === null || v === undefined ? null : typeof v === 'number' ? v : typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v) && kindOfSort(def, input, i) === 'num' ? Number(v) : (v as string))
           }
           res.nextCursor = cursorFromKeys(input.plan, keys, (last.__cn as string | null) ?? null, String(last.__ci ?? ''))
         } else res.nextCursor = null
@@ -270,9 +270,12 @@ export const createPostgresConnector: ConnectorFactory = (conn: ConnectionRecord
     }, bound)
   }
 
-  function kindOfSort(def: TableDef, plan: QueryV2Input['plan'], i: number): string {
-    const k = plan.sort?.[i]
-    const c = k ? def.columns.find((x) => x.name === k.col) : undefined
+  function kindOfSort(def: TableDef, input: QueryV2Input, i: number): string {
+    const k = input.plan.sort?.[i]
+    // a key through a lookup (P3-C) has the kind of the target's column
+    const owner = k?.via ? input.related?.[k.via.table]?.def : def
+    const name = k?.via ? k.via.col : k?.col
+    const c = k && owner ? owner.columns.find((x) => x.name === name) : undefined
     return c ? kindOf(c.type) : 'text'
   }
 

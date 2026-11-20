@@ -164,8 +164,9 @@ type RowCondition =
 - **Invalid rules** (unknown column, non-lookup path, another connection, more than 2 hops, list token with an ordering operator,
   `exists` without exactly one correlation) make the role grant nothing (`null` from `filterFor`); `ruleProblems()` gives the
   messages the API (422) and the rule builder show.
-- Clients can never send a `semi` node: the v1 query validator (`checkCondition` in `data.ts`) only accepts `and/or/not/const`
-  and column leaves, and Query v2 plans have their own AST.
+- Clients can never send a `semi` node: the v1 read route is gone (Phase 3); the server-internal
+  `DataService.query` validator (`checkCondition` in `data.ts`) only accepts `and/or/not/const` and column leaves, and
+  Query v2 plans (the only reads over HTTP) have their own AST.
 
 SQL (PostgreSQL, `semiJoin` in `sql.ts`): `(<outer> IN (SELECT <inner> FROM "env_x"."t_target" WHERE <inner> IS NOT NULL AND
 <where>))`, both sides compared as the indexes are built (text kinds `lower(...)`, the managed `id` as stored), so the lookup
@@ -233,7 +234,7 @@ Roles never govern the system tables (`sys_*`; `ab_role_tables` rows for them ar
 `systemPredicate` (`src/platform/system-tables.ts`) instead, by the table's `systemPolicy`: `directory` (Users,
 Departments, Teams: read-only, active members of the environment), `own` (Notifications), `adminOrOwn` (Team members,
 Roles, Role assignments, Sign-in log), `admin` (the other logs; invisible to others), `reference` (read by all, written
-by administrators), `shared` (Tags), `regarding` (the collaboration and files tables), `members` (Channels) and `parent`
+by administrators), `shared` (Tags), `regarding` (the collaboration and files tables), `chat` (Channels, Channel members, Messages, Message reactions: read = member or open channel, the same for administrators; never writable through the data API; see [chat.md](chat.md)) and `parent`
 (rows readable through their parent row). Column security: `adminColumns` (for example Users' phone and manager) are
 `none` for non-administrators. `share` is refused on every system table; projections are never writable.
 

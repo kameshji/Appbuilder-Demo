@@ -45,8 +45,19 @@ export function templatesEnvironmentDdl(schema: string): string[] {
     )`,
     `CREATE INDEX IF NOT EXISTS ab_ix_template_installs_template ON ${E('ab_template_installs')} (template_id)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS ab_ux_template_installs_linked ON ${E('ab_template_installs')} (template_id) WHERE mode = 'linked' AND status = 'installed'`,
+    // schema version 14 (P3 package M1, solution templates): the register remembers the SAMPLE rows it added (table id ->
+    // row ids; "Remove sample data" deletes exactly those), the reference rows it delivered (per row: table, id, the hash
+    // of the values delivered, so an upgrade keeps rows the customer changed) and the installs it depends on
+    ...TEMPLATE_COLUMNS_14.map(([c, type]) => `ALTER TABLE ${E('ab_template_installs')} ADD COLUMN IF NOT EXISTS ${q(c)} ${type}`),
   ]
 }
+
+/** the register columns of schema version 14 (checked by the step) */
+export const TEMPLATE_COLUMNS_14: [string, string][] = [
+  ['sample_rows', `jsonb NOT NULL DEFAULT '{}'::jsonb`],
+  ['reference_rows', `jsonb NOT NULL DEFAULT '{}'::jsonb`],
+  ['depends_on', `jsonb NOT NULL DEFAULT '[]'::jsonb`],
+]
 
 /**
  * Upgrade step to 13 (independent): the table comes from environmentDdl (run before the steps); the step checks it exists
@@ -59,7 +70,12 @@ export async function upgradeEnvironmentTo13Templates(db: SqlDb, schema: string)
   }
 }
 
-/** upgrade step to 14 (P3 package M1, solution templates): wired by the orchestrator; a no-op until the package needs it */
-export async function upgradeEnvironmentTo14Templates(_db: SqlDb, _schema: string): Promise<void> {
-  // filled in by the package if solution templates need new columns or tables (add the DDL to templatesEnvironmentDdl)
+/**
+ * Upgrade step to 14 (P3 package M1, solution templates; independent): the register columns come from environmentDdl
+ * (ADD COLUMN IF NOT EXISTS, run before the steps; existing rows get the defaults: no sample rows recorded, no reference
+ * rows, no dependencies). The step checks they exist, so a server of version 13 refuses this schema (downgrade guard).
+ */
+export async function upgradeEnvironmentTo14Templates(db: SqlDb, schema: string): Promise<void> {
+  const have = await db.query<{ column_name: string }>(`SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'ab_template_installs'`, [schema])
+  for (const [c] of TEMPLATE_COLUMNS_14) if (!have.some((r) => r.column_name === c)) throw new Error(`column ${schema}.ab_template_installs.${c} is missing after the schema update`)
 }

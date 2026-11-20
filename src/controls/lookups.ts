@@ -9,11 +9,12 @@
  *    screen of 100 rows costs one request per target table, never one per row;
  *  - what a lookup cell shows: the label, a neutral placeholder for a row the viewer cannot read (or that is gone),
  *    a loading mark while the batch is on its way, nothing for a blank value; never the raw id;
- *  - whether a list may sort by a lookup column (server lists: no, it would sort by id; lists held in the browser:
- *    by label) and the condition that searches a lookup column by its label on the server (`via`).
+ *  - whether a list may sort by a lookup column (server lists: by the label on the server, through a sort key with
+ *    `via`, where the store supports it and the viewer may read the target's primary column; lists held in the
+ *    browser: by label) and the condition that searches a lookup column by its label on the server (`via`).
  */
 import type { ColumnDef, ColumnType, Row, TableDef } from '../platform/contracts.ts'
-import type { ConditionV2, QueryPlan } from '../platform/query.ts'
+import type { ConditionV2, QueryPlan, SortKeyV2 } from '../platform/query.ts'
 
 /** rows per page of the picker (the query cache pages it; scrolling loads the next page) */
 export const PICKER_PAGE = 25
@@ -159,11 +160,56 @@ export function labelStoreKey(userId: string, table: string): string {
 }
 
 /**
- * May a list sort by this lookup column? A list paged from the server cannot (the server would order by the row id,
- * not by what the user sees); a list held in the browser sorts by label when it holds few enough distinct ids.
+ * Can the SERVER sort a list by this lookup column's label (P3-C, Query v2 sort key `via`, docs/dev/query-v2.md 5b)?
+ *  - `hidden`: the viewer may not read the target table or its primary column (the server would refuse: 403);
+ *  - `store`: the list's table and the target are not in the same PostgreSQL store (MySQL, data files and Google Sheets
+ *    run plans over at most 5,000 rows and refuse it; the client only knows the default database for sure, plus the
+ *    connections a maker sees);
+ *  - `kind`: the target has no primary column that can be sorted (missing, a file or an image).
  */
-export function lookupSort(server: boolean, header: string, distinctIds: number): { sortable: boolean; reason?: string } {
-  if (server) return { sortable: false, reason: `Sorting by ${header} is not available here: the server would order the rows by record id, not by the names you see.` }
+export type LookupSortSupport = { ok: true } | { ok: false; why: 'hidden' | 'store' | 'kind' }
+
+const DEFAULT_CONNECTION = 'conn_default'
+// a primary column that is itself a lookup would sort by record id again: not offered
+const SORTABLE_KEY: ColumnType[] = [...TEXT_KEY, ...NUMBER_KEY, 'boolean', 'date', 'datetime']
+
+export function lookupSortSupport(o: {
+  table: { connectionId?: string }
+  target: (TargetLike & { connectionId?: string }) | undefined
+  /** the viewer may not read the target table, or its primary column is hidden from them */
+  hidden: boolean
+  /** connector kind of a connection, when known (makers see the connections; everyone else only the default) */
+  connectorOf?: (connectionId: string) => string | undefined
+}): LookupSortSupport {
+  const p = o.target ? primaryOf(o.target) : undefined
+  if (!o.target || !p || !SORTABLE_KEY.includes(p.type)) return { ok: false, why: 'kind' }
+  if (o.hidden) return { ok: false, why: 'hidden' }
+  const a = o.table.connectionId ?? DEFAULT_CONNECTION
+  const b = o.target.connectionId ?? DEFAULT_CONNECTION
+  if (a !== b) return { ok: false, why: 'store' }
+  if (a !== DEFAULT_CONNECTION && o.connectorOf?.(a) !== 'postgres') return { ok: false, why: 'store' }
+  return { ok: true }
+}
+
+/** the server sort key of a list sorted by a lookup column: the target row's primary column, read as the viewer */
+export function lookupSortKey(col: string, target: TargetLike, dir: 'asc' | 'desc'): SortKeyV2 | null {
+  const p = primaryOf(target)
+  if (!p || !SORTABLE_KEY.includes(p.type)) return null
+  return { col, dir, via: { table: target.name, col: p.name } }
+}
+
+/**
+ * May a list sort by this lookup column? A list paged from the server (`server` = what lookupSortSupport says) sorts
+ * by the label on the server when the store supports it; a list held in the browser sorts by label when it holds few
+ * enough distinct ids.
+ */
+export function lookupSort(server: false | LookupSortSupport, header: string, distinctIds: number, target = 'the looked-up table'): { sortable: boolean; reason?: string } {
+  if (server) {
+    if (server.ok) return { sortable: true }
+    if (server.why === 'hidden') return { sortable: false, reason: `Sorting by ${header} is not available: you cannot see the names in ${target} it would be sorted by.` }
+    if (server.why === 'store') return { sortable: false, reason: `Sorting by ${header} is not available here: ${target} or this table is stored where the server cannot sort by a lookup's names.` }
+    return { sortable: false, reason: `Sorting by ${header} is not available: ${target} has no name column to sort by.` }
+  }
   if (distinctIds > LABEL_SORT_LIMIT) return { sortable: false, reason: `Sorting by ${header} is not available: too many different records (${distinctIds.toLocaleString('en-US')}).` }
   return { sortable: true }
 }

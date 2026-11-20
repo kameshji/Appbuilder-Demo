@@ -24,6 +24,7 @@ import type {
 import { DEFAULT_ENVIRONMENT_ID, environmentSchema, runInEnvironment } from '../env-context.ts'
 import { SCHEMA_VERSION, migrateEnvironmentSchema } from '../meta-store.ts'
 import { DEFAULT_CONNECTION_ID, FILES_CONNECTION_ID } from '../connections.ts'
+import { CHAT_SYSTEM_TABLES } from '../chat/ddl.ts'
 import { flushFiles, forgetFilesFolder } from '../../connectors/files/index.ts'
 import { createTableSql } from '../../connectors/postgres/sql.ts'
 import { uniqueIdentifier } from '../../routes/meta/util.ts'
@@ -803,6 +804,8 @@ export function createBackupService(deps: BackupServiceDeps) {
       const me = a.manifest.environments.find((x) => x.id === envId)!
       const t = me.tables.find((x) => x.id === b.table || x.name === b.table)
       if (!t || !t.source || t.connectionId !== DEFAULT_CONNECTION_ID) throw new HttpError(404, 'not-found', 'This table has no rows in the backup (it is not stored in the system database).')
+      // P3-A: conversations are not browsed (administrators export one conversation with a reason: docs/admin/chat.md)
+      if (CHAT_SYSTEM_TABLES.includes(t.id)) throw new HttpError(403, 'denied', 'Chat tables cannot be browsed in a backup. To read one conversation, export it in Admin console > Chat (audited, and its members are told).')
       const offset = Math.max(0, Math.min(Number(b.offset) || 0, 10_000_000))
       const limit = Math.max(1, Math.min(Number(b.limit) || 50, 500))
       const defs = await backupTableDefs(a, schema)

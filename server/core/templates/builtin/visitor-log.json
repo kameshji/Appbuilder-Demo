@@ -1,0 +1,913 @@
+{
+  "format": "appbuilder/template",
+  "formatVersion": 2,
+  "id": "builtin.visitor-log",
+  "version": "1.0.0",
+  "kind": "solution",
+  "name": "Visitor log",
+  "shortName": "Visitor log",
+  "prefix": "Vis",
+  "description": "A small reception pack: visitors and their visits with numbered passes, a reception desk app and a phone check-in app (works offline), an approval for visits that need one, a dashboard and a printable visitor pass. Also the worked example of a solution template.",
+  "publisher": "Appbuilder",
+  "tags": [
+    "visitors",
+    "reception",
+    "front desk",
+    "solution"
+  ],
+  "minPlatformVersion": "0.7.0",
+  "modes": [
+    "copy",
+    "linked"
+  ],
+  "dependencies": [
+    {
+      "id": "builtin.business-model",
+      "minVersion": "1.0.0"
+    }
+  ],
+  "slots": [
+    {
+      "id": "Companies",
+      "label": "Companies (Accounts)",
+      "description": "The companies visitors come from: the Accounts of the common business model.",
+      "required": true,
+      "from": {
+        "template": "builtin.business-model",
+        "slot": "Accounts"
+      },
+      "columns": [
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "VisitPurposes",
+      "label": "Visit purposes",
+      "description": "Why people visit (reference rows the pack brings).",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "VisitPurposes",
+        "displayName": "Visit purposes",
+        "primaryColumn": "Name",
+        "description": "Why people visit."
+      },
+      "columns": [
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true,
+            "unique": true
+          }
+        },
+        {
+          "id": "NeedsApproval",
+          "label": "Needs approval",
+          "types": [
+            "boolean"
+          ],
+          "required": false,
+          "create": {
+            "type": "boolean",
+            "default": "false"
+          }
+        }
+      ]
+    },
+    {
+      "id": "Visitors",
+      "label": "Visitors",
+      "description": "One row per person who visits.",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "Visitors",
+        "displayName": "Visitors",
+        "primaryColumn": "FullName",
+        "description": "People who visit."
+      },
+      "columns": [
+        {
+          "id": "FullName",
+          "label": "Full name",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true,
+            "indexed": true
+          }
+        },
+        {
+          "id": "Company",
+          "label": "Company",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "Companies",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "Phone",
+          "label": "Phone",
+          "types": [
+            "phone",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "phone"
+          }
+        },
+        {
+          "id": "Email",
+          "label": "Email",
+          "types": [
+            "email",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "email"
+          }
+        },
+        {
+          "id": "IdChecked",
+          "label": "ID checked",
+          "types": [
+            "boolean"
+          ],
+          "required": false,
+          "create": {
+            "type": "boolean",
+            "default": "false"
+          }
+        }
+      ]
+    },
+    {
+      "id": "Visits",
+      "label": "Visits",
+      "description": "One row per visit, with its pass number.",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "Visits",
+        "displayName": "Visits",
+        "primaryColumn": "PassNumber",
+        "description": "Visits with their pass numbers."
+      },
+      "columns": [
+        {
+          "id": "PassNumber",
+          "label": "Pass number",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text",
+            "default": "=NextNumber(\"Slot_Seq_Passes\")",
+            "unique": true
+          }
+        },
+        {
+          "id": "Visitor",
+          "label": "Visitor",
+          "types": [
+            "lookup"
+          ],
+          "required": true,
+          "lookupSlot": "Visitors",
+          "create": {
+            "type": "lookup",
+            "required": true,
+            "onDelete": "restrict"
+          }
+        },
+        {
+          "id": "Host",
+          "label": "Host",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSystem": "Users",
+          "create": {
+            "type": "lookup"
+          }
+        },
+        {
+          "id": "Purpose",
+          "label": "Purpose",
+          "types": [
+            "lookup"
+          ],
+          "required": false,
+          "lookupSlot": "VisitPurposes",
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "Arrival",
+          "label": "Arrival",
+          "types": [
+            "datetime"
+          ],
+          "required": false,
+          "create": {
+            "type": "datetime"
+          }
+        },
+        {
+          "id": "Departure",
+          "label": "Departure",
+          "types": [
+            "datetime"
+          ],
+          "required": false,
+          "create": {
+            "type": "datetime"
+          }
+        },
+        {
+          "id": "Status",
+          "label": "Status",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "choice",
+            "choices": [
+              "Expected",
+              "Checked in",
+              "Checked out"
+            ],
+            "default": "Expected"
+          }
+        },
+        {
+          "id": "Approval",
+          "label": "Approval",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "choice",
+            "choices": [
+              "Not needed",
+              "Pending",
+              "Approved",
+              "Rejected"
+            ],
+            "default": "Not needed"
+          }
+        },
+        {
+          "id": "Minutes",
+          "label": "Minutes on site",
+          "types": [
+            "number"
+          ],
+          "required": false,
+          "create": {
+            "type": "number",
+            "computed": {
+              "kind": "formula",
+              "formula": "If(IsBlank(Slot_Visits_Arrival) || IsBlank(Slot_Visits_Departure), Blank(), DateDiff(Slot_Visits_Arrival, Slot_Visits_Departure, \"Minutes\"))"
+            }
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "Departure after arrival",
+          "kind": "validation",
+          "timing": "before",
+          "operations": [
+            "create",
+            "update"
+          ],
+          "condition": "IsBlank(Slot_Visits_Departure) || IsBlank(Slot_Visits_Arrival) || Slot_Visits_Departure >= Slot_Visits_Arrival",
+          "message": "The departure cannot be before the arrival.",
+          "field": "Slot_Visits_Departure",
+          "runAs": "caller",
+          "enabled": true
+        }
+      ]
+    }
+  ],
+  "payload": {
+    "apps": [
+      {
+        "key": "Desk",
+        "name": "Reception desk",
+        "description": "The front desk: visits, check-in and check-out.",
+        "app": {
+          "formatVersion": 2,
+          "name": "Reception desk",
+          "width": 1920,
+          "height": 1080,
+          "scaleMode": "responsive",
+          "theme": {
+            "mode": "light"
+          },
+          "dataSources": [
+            "Slot_Visits",
+            "Slot_Visitors",
+            "Slot_VisitPurposes",
+            "Slot_Companies"
+          ],
+          "appProps": {
+            "OnStart": "=false"
+          },
+          "screens": [
+            {
+              "id": "vl_desk_screen",
+              "name": "DeskScreen",
+              "type": "Screen",
+              "props": {
+                "Fill": "=RGBA(248, 250, 252, 1)"
+              },
+              "children": [
+                {
+                  "id": "vl_desk_title",
+                  "name": "DeskTitle",
+                  "type": "Label",
+                  "props": {
+                    "X": "=32",
+                    "Y": "=20",
+                    "Width": "=600",
+                    "Height": "=44",
+                    "Text": "=\"Visitors\"",
+                    "Size": "=28",
+                    "FontWeight": "=FontWeight.Bold"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "vl_desk_count",
+                  "name": "DeskCount",
+                  "type": "Label",
+                  "props": {
+                    "X": "=660",
+                    "Y": "=30",
+                    "Width": "=600",
+                    "Height": "=24",
+                    "Text": "=\"In the building: \" & CountRows(Filter(Slot_Visits, Slot_Visits_Status = \"Checked in\"))",
+                    "Size": "=14",
+                    "Color": "=RGBA(100, 116, 139, 1)"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "vl_desk_new",
+                  "name": "DeskNewVisit",
+                  "type": "Button",
+                  "props": {
+                    "X": "=1528",
+                    "Y": "=20",
+                    "Width": "=160",
+                    "Height": "=40",
+                    "AnchorH": "=Anchor.End",
+                    "Text": "=\"+ New visit\"",
+                    "OnSelect": "=NewForm(VisitForm)"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "vl_desk_out",
+                  "name": "DeskCheckOut",
+                  "type": "Button",
+                  "props": {
+                    "X": "=1708",
+                    "Y": "=20",
+                    "Width": "=180",
+                    "Height": "=40",
+                    "AnchorH": "=Anchor.End",
+                    "Text": "=\"Check out\"",
+                    "OnSelect": "=Patch(Slot_Visits, VisitsTable.Selected, {Slot_Visits_Status: \"Checked out\", Slot_Visits_Departure: Now()}); Notify(\"Checked out\", NotificationType.Success)"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "vl_desk_table",
+                  "name": "VisitsTable",
+                  "type": "DataTable",
+                  "props": {
+                    "X": "=32",
+                    "Y": "=88",
+                    "Width": "=1096",
+                    "Height": "=960",
+                    "AnchorH": "=Anchor.Stretch",
+                    "AnchorV": "=Anchor.Stretch",
+                    "Items": "=Slot_Visits",
+                    "Columns": "=\"Slot_Visits_PassNumber, Slot_Visits_Visitor, Slot_Visits_Status, Slot_Visits_Approval, Slot_Visits_Arrival\""
+                  },
+                  "children": []
+                },
+                {
+                  "id": "vl_desk_panel",
+                  "name": "VisitPanel",
+                  "type": "Container",
+                  "props": {
+                    "X": "=1160",
+                    "Y": "=88",
+                    "Width": "=728",
+                    "Height": "=960",
+                    "AnchorH": "=Anchor.End",
+                    "AnchorV": "=Anchor.Stretch",
+                    "Fill": "=Color.White",
+                    "Radius": "=12"
+                  },
+                  "children": [
+                    {
+                      "id": "vl_desk_ptitle",
+                      "name": "VisitPanelTitle",
+                      "type": "Label",
+                      "props": {
+                        "X": "=24",
+                        "Y": "=20",
+                        "Width": "=680",
+                        "Height": "=32",
+                        "Text": "=If(VisitForm.Mode = \"New\", \"New visit\", Coalesce(VisitsTable.Selected.Slot_Visits_PassNumber, \"Select a visit\"))",
+                        "Size": "=20",
+                        "FontWeight": "=FontWeight.Semibold"
+                      },
+                      "children": []
+                    },
+                    {
+                      "id": "vl_desk_form",
+                      "name": "VisitForm",
+                      "type": "Form",
+                      "props": {
+                        "X": "=24",
+                        "Y": "=64",
+                        "Width": "=680",
+                        "Height": "=640",
+                        "DataSource": "=\"Slot_Visits\"",
+                        "Item": "=VisitsTable.Selected",
+                        "Mode": "=FormMode.Edit",
+                        "Fields": "=\"Slot_Visits_Visitor, Slot_Visits_Purpose, Slot_Visits_Host, Slot_Visits_Arrival, Slot_Visits_Status, Slot_Visits_Approval\"",
+                        "Columns": "=1",
+                        "OnSuccess": "=Notify(\"Visit saved\", NotificationType.Success)",
+                        "OnFailure": "=Notify(VisitForm.Error, NotificationType.Error)"
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "key": "CheckIn",
+        "name": "Visitor check-in",
+        "description": "On a phone at the gate: log a visitor, also without a connection.",
+        "phone": true,
+        "app": {
+          "formatVersion": 2,
+          "name": "Visitor check-in",
+          "width": 390,
+          "height": 844,
+          "scaleMode": "responsive",
+          "theme": {
+            "mode": "light"
+          },
+          "dataSources": [
+            "Slot_Visitors",
+            "Slot_Companies",
+            "Slot_VisitPurposes"
+          ],
+          "appProps": {
+            "OnStart": "=false"
+          },
+          "screens": [
+            {
+              "id": "vl_ph_screen",
+              "name": "CheckInScreen",
+              "type": "Screen",
+              "props": {
+                "Fill": "=RGBA(248, 250, 252, 1)"
+              },
+              "children": [
+                {
+                  "id": "vl_ph_title",
+                  "name": "CheckInTitle",
+                  "type": "Label",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=16",
+                    "Width": "=358",
+                    "Height": "=36",
+                    "Text": "=\"New visitor\"",
+                    "Size": "=22",
+                    "FontWeight": "=FontWeight.Bold"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "vl_ph_form",
+                  "name": "VisitorForm",
+                  "type": "Form",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=64",
+                    "Width": "=358",
+                    "Height": "=560",
+                    "DataSource": "=\"Slot_Visitors\"",
+                    "Mode": "=FormMode.New",
+                    "Fields": "=\"Slot_Visitors_FullName, Slot_Visitors_Phone, Slot_Visitors_Email, Slot_Visitors_Company, Slot_Visitors_IdChecked\"",
+                    "Columns": "=1",
+                    "OnSuccess": "=Notify(\"Visitor saved\", NotificationType.Success); NewForm(VisitorForm)",
+                    "OnFailure": "=Notify(VisitorForm.Error, NotificationType.Error)"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "vl_ph_save",
+                  "name": "CheckInSave",
+                  "type": "Button",
+                  "props": {
+                    "X": "=16",
+                    "Y": "=640",
+                    "Width": "=358",
+                    "Height": "=48",
+                    "Text": "=\"Save visitor\"",
+                    "OnSelect": "=SubmitForm(VisitorForm)"
+                  },
+                  "children": []
+                }
+              ]
+            }
+          ],
+          "offline": {
+            "entry": true,
+            "tables": [
+              {
+                "table": "Slot_VisitPurposes"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "roles": [
+      {
+        "key": "Reception",
+        "name": "Reception",
+        "description": "Runs the front desk: every visitor and visit.",
+        "tables": {
+          "Companies": {
+            "read": "all"
+          },
+          "VisitPurposes": {
+            "read": "all"
+          },
+          "Visitors": {
+            "create": true,
+            "read": "all",
+            "update": "all",
+            "delete": "none"
+          },
+          "Visits": {
+            "create": true,
+            "read": "all",
+            "update": "all",
+            "delete": "own"
+          }
+        }
+      },
+      {
+        "key": "Host",
+        "name": "Visit host",
+        "description": "Staff who receive visitors: their own visits only; the phone numbers of visitors are hidden.",
+        "tables": {
+          "Companies": {
+            "read": "all"
+          },
+          "VisitPurposes": {
+            "read": "all"
+          },
+          "Visitors": {
+            "create": true,
+            "read": "all",
+            "update": "own",
+            "delete": "none",
+            "columns": {
+              "Phone": "none"
+            }
+          },
+          "Visits": {
+            "create": true,
+            "read": "own",
+            "update": "own",
+            "delete": "none"
+          }
+        }
+      }
+    ],
+    "sequences": [
+      {
+        "key": "Passes",
+        "name": "Visitor passes",
+        "prefix": "VIS-",
+        "padding": 4,
+        "resetRule": "never",
+        "description": "Numbers of visitor passes."
+      }
+    ],
+    "approvalPolicies": [
+      {
+        "key": "VisitApproval",
+        "name": "Visit approval",
+        "description": "Reception approves visits that need it.",
+        "definition": {
+          "type": "single",
+          "approvers": [
+            "role:Slot_Role_Reception"
+          ],
+          "allowSelfApproval": true,
+          "dueMinutes": 240
+        }
+      }
+    ],
+    "flows": [
+      {
+        "key": "ApproveVisits",
+        "name": "Approve visits",
+        "description": "A visit logged with Approval = Pending goes to reception; the answer is written back on the visit.",
+        "definition": {
+          "trigger": {
+            "type": "table",
+            "table": "Slot_Visits",
+            "on": [
+              "create"
+            ],
+            "condition": "Trigger.Record.Slot_Visits_Approval = \"Pending\""
+          },
+          "steps": [
+            {
+              "id": "ask",
+              "name": "Ask",
+              "kind": "approval",
+              "title": "\"Visitor pass \" & Trigger.Record.Slot_Visits_PassNumber",
+              "policy": "Slot_Policy_VisitApproval",
+              "regarding": {
+                "table": "Slot_Visits",
+                "rowId": "Trigger.Record"
+              }
+            },
+            {
+              "id": "set",
+              "name": "SetApproval",
+              "kind": "data.update",
+              "table": "Slot_Visits",
+              "rowId": "Trigger.Record",
+              "values": {
+                "Slot_Visits_Approval": "If(Steps.Ask.Output.Outcome = \"Approve\", \"Approved\", \"Rejected\")"
+              }
+            }
+          ],
+          "settings": {
+            "concurrency": "perRecord",
+            "timeoutMinutes": 10080,
+            "retentionDays": 30,
+            "onError": "fail"
+          }
+        },
+        "runRoles": [
+          "Slot_Role_Reception"
+        ]
+      }
+    ],
+    "dashboards": [
+      {
+        "key": "Overview",
+        "name": "Visitors",
+        "roles": [
+          "Slot_Role_Reception"
+        ],
+        "def": {
+          "version": 1,
+          "title": "Visitors",
+          "range": "all",
+          "tiles": [
+            {
+              "id": "visits",
+              "title": "Visits",
+              "kind": "kpi",
+              "layout": {
+                "x": 0,
+                "y": 0,
+                "w": 4,
+                "h": 3
+              },
+              "query": {
+                "table": "Slot_Visits",
+                "measures": [
+                  {
+                    "id": "Visits",
+                    "label": "Visits",
+                    "fn": "count"
+                  }
+                ],
+                "dateColumn": {
+                  "col": "Slot_Visits_Arrival",
+                  "kind": "datetime"
+                }
+              },
+              "visual": {
+                "kpi": {
+                  "measure": "Visits"
+                }
+              }
+            },
+            {
+              "id": "status",
+              "title": "Visits by status",
+              "kind": "bar",
+              "layout": {
+                "x": 4,
+                "y": 0,
+                "w": 8,
+                "h": 3
+              },
+              "query": {
+                "table": "Slot_Visits",
+                "groupBy": [
+                  "Slot_Visits_Status"
+                ],
+                "measures": [
+                  {
+                    "id": "Visits",
+                    "label": "Visits",
+                    "fn": "count"
+                  }
+                ],
+                "dateColumn": {
+                  "col": "Slot_Visits_Arrival",
+                  "kind": "datetime"
+                }
+              },
+              "visual": {
+                "category": "Slot_Visits_Status",
+                "series": [
+                  {
+                    "key": "Visits"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "printTemplates": [
+      {
+        "key": "Pass",
+        "name": "Visitor pass",
+        "description": "A pass to print at the desk.",
+        "doc": {
+          "page": {
+            "size": "A5",
+            "orientation": "portrait"
+          },
+          "source": {
+            "kind": "record",
+            "table": "Slot_Visits"
+          },
+          "fileName": "Visitor pass {Slot_Visits_PassNumber}",
+          "body": [
+            {
+              "id": "h",
+              "kind": "heading",
+              "level": 1,
+              "text": "Visitor pass"
+            },
+            {
+              "id": "num",
+              "kind": "text",
+              "text": "**{Slot_Visits_PassNumber}**",
+              "size": 16
+            },
+            {
+              "id": "kv",
+              "kind": "keyValue",
+              "columns": 1,
+              "items": [
+                {
+                  "label": "Status",
+                  "value": "Slot_Visits_Status"
+                },
+                {
+                  "label": "Approval",
+                  "value": "Slot_Visits_Approval"
+                },
+                {
+                  "label": "Arrival",
+                  "value": "Slot_Visits_Arrival",
+                  "format": "datetime"
+                }
+              ]
+            },
+            {
+              "id": "qr",
+              "kind": "barcode",
+              "symbology": "qr",
+              "value": "\"PASS:\" & Slot_Visits_PassNumber",
+              "width": 30,
+              "align": "center"
+            }
+          ]
+        }
+      }
+    ],
+    "reference": {
+      "VisitPurposes": [
+        {
+          "_id": "meeting",
+          "Name": "Meeting",
+          "NeedsApproval": false
+        },
+        {
+          "_id": "interview",
+          "Name": "Interview",
+          "NeedsApproval": true
+        },
+        {
+          "_id": "delivery",
+          "Name": "Delivery",
+          "NeedsApproval": false
+        }
+      ]
+    },
+    "sample": {
+      "Visitors": [
+        {
+          "_id": "v1",
+          "FullName": "SAMPLE Asha Rao",
+          "Phone": "+91 98000 00001",
+          "IdChecked": true
+        },
+        {
+          "_id": "v2",
+          "FullName": "SAMPLE Ravi Kumar",
+          "Phone": "+91 98000 00002"
+        }
+      ],
+      "Visits": [
+        {
+          "_id": "s1",
+          "PassNumber": "SAMPLE-0001",
+          "Visitor": "v1",
+          "Purpose": "meeting",
+          "Arrival": "2026-11-02T09:30:00.000Z",
+          "Departure": "2026-11-02T11:00:00.000Z",
+          "Status": "Checked out",
+          "Approval": "Not needed"
+        },
+        {
+          "_id": "s2",
+          "PassNumber": "SAMPLE-0002",
+          "Visitor": "v2",
+          "Purpose": "interview",
+          "Arrival": "2026-11-03T10:00:00.000Z",
+          "Status": "Checked in",
+          "Approval": "Approved"
+        }
+      ]
+    }
+  },
+  "signature": {
+    "alg": "sha256",
+    "digest": "215e02c21fc245ba49a1ec9d993b59d2300c987bd7fdb5f070059d400c0bd765"
+  }
+}

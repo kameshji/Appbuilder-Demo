@@ -167,6 +167,6 @@ by record (`Comments(record)`) or by user (`MyTasks()`), which use the indexes a
 
 ## Not done (later packages)
 
-Chat (Channels / Messages are placeholders), Documents UI beyond the timeline (folders,
+Chat screens (the chat server exists since Phase 3 package A: [chat.md](chat.md); the communication tables are written by the chat service only), Documents UI beyond the timeline (folders,
 check-out), editing a comment from the timeline, reminders (`ReminderOn` is stored, nothing fires), currency rates
 from outside, a template gallery button for the business model.

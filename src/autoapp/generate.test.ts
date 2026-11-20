@@ -156,7 +156,9 @@ describe('plan', () => {
     expect(msg.some((m) => m.startsWith('blocked|Nope|'))).toBe(true)
     expect(msg.some((m) => m.startsWith('skipped|Customers||') && m.includes('cannot read'))).toBe(true)
     // the lookup picker searches the server now: a note (how it works), no longer a limitation
-    expect(msg.some((m) => m.startsWith('note|Customers|Account manager|') && m.includes('search box that asks the server') && m.includes('cannot be sorted'))).toBe(true)
+    // P3-C: and lists sort by its label on the server (each viewer by the names they may read)
+    expect(msg.some((m) => m.startsWith('note|Customers|Account manager|') && m.includes('search box that asks the server') && m.includes('a list can be sorted by it') && m.includes('sorts as blank'))).toBe(true)
+    expect(msg.some((m) => m.includes('cannot be sorted'))).toBe(false)
     expect(msg.some((m) => /not a search box|2,000|row id/.test(m))).toBe(false)
     expect(msg.some((m) => m.startsWith('note|Customers|Score|') && m.includes('read-only'))).toBe(true)
     expect(msg.some((m) => m.startsWith('note|Readings||') && m.includes('no search box'))).toBe(true)
@@ -172,7 +174,13 @@ describe('plan', () => {
     const c = p.tables.find((t) => t.table.name === 'Customers')!
     // Orders (Customer): BillTo is listed, Customer (this record) is not
     expect(c.related[0]!.listColumns.map((x) => x.name)).toEqual(['OrderNo', 'BillTo', 'Status', 'Amount', 'Due'])
-    expect(p.screens.find((s) => s.name === 'Orders: list')!.what).toContain('sort by any column but lookups')
+    // P3-C: lookups sort by their label on the server (both tables are in the default database)
+    expect(p.screens.find((s) => s.name === 'Orders: list')!.what).toContain('sort by any column,')
+    // a lookup whose target is stored elsewhere cannot: the plan says so
+    const moved = all.map((t) => (t.name === 'Customers' ? { ...t, connectionId: 'conn_sheet' } : t))
+    const p2 = planAutoApp(moved, { name: '', device: 'desktop', tables: ['Orders'] })
+    expect(p2.screens.find((s) => s.name === 'Orders: list')!.what).toContain('sort by any column but some lookups')
+    expect(p2.issues.some((i) => i.column === 'Customer' && i.message.includes('cannot be sorted by it (Customers or this table is stored outside the default database)'))).toBe(true)
     // phone: a required lookup is the card's subtitle
     const ph = planAutoApp(all, { name: '', device: 'phone', tables: ['Orders'] }).tables[0]!
     expect(ph.cardColumns.map((x) => x.name)).toEqual(['OrderNo', 'Customer', 'Amount', 'Due'])

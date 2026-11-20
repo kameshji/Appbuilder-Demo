@@ -3,6 +3,7 @@
  *   APPBUILDER_TEST_DB=postgres://... npx vitest run server/core/events
  * The worker is not started: the tests drive dispatch and jobs with services.kernel.drain().
  */
+import { planBody } from './testquery.ts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PG_URL, SKIP_PG } from './testdb.ts'
 import { setQuiet } from './util.ts'
@@ -75,7 +76,7 @@ describe.skipIf(!PG_URL)('table events (PostgreSQL)', () => {
     const c = await A().post(`/tables/${linesId}/columns`, { displayName: 'Line total', name: 'LineTotal', type: 'decimal', computed: { kind: 'formula', formula: 'Qty * Price' } })
     expect(c.status, JSON.stringify(c.data)).toBe(200)
     await drain() // backfill of the existing row
-    const all = (await A().post('/data/Lines/query', {})).data.rows
+    const all = (await A().post('/query', planBody('Lines'))).data.rows
     expect(all.map((r: any) => r.LineTotal)).toEqual([6])
     const r = await A().post('/data/Lines/rows', { values: { Item: 'Nut', Qty: 4, Price: 2.5, LineTotal: 999 } })
     expect(r.status, JSON.stringify(r.data)).toBe(200)
@@ -86,7 +87,7 @@ describe.skipIf(!PG_URL)('table events (PostgreSQL)', () => {
     const p = await A().patch(`/tables/${linesId}/columns/LineTotal`, { computed: { kind: 'formula', formula: 'Qty * Price * 2' } })
     expect(p.status, JSON.stringify(p.data)).toBe(200)
     await drain()
-    const after = (await A().post('/data/Lines/query', { orderBy: [{ col: 'Item', dir: 'asc' }] })).data.rows
+    const after = (await A().post('/query', planBody('Lines', { orderBy: [{ col: 'Item', dir: 'asc' }] }))).data.rows
     expect(after.map((x: any) => [x.Item, x.LineTotal])).toEqual([['Bolt', 12], ['Nut', 25]])
     // bad formulas are refused at save time
     const cyc = await A().post(`/tables/${linesId}/columns`, { displayName: 'A', name: 'A1', type: 'number', computed: { kind: 'formula', formula: 'A1 + 1' } })
@@ -105,7 +106,7 @@ describe.skipIf(!PG_URL)('table events (PostgreSQL)', () => {
     const l1 = (await A().post('/data/Lines/rows', { values: { Item: 'A', Qty: 1, Price: 10, Order: o } })).data.row.id
     await A().post('/data/Lines/rows', { values: { Item: 'B', Qty: 2, Price: 10, Order: o } })
     await drain()
-    const get = async () => (await A().post('/data/SalesOrders/query', { where: { col: 'id', op: 'eq', value: o } })).data.rows[0]
+    const get = async () => (await A().post('/query', planBody('SalesOrders', { where: { col: 'id', op: 'eq', value: o } }))).data.rows[0]
     expect(await get()).toMatchObject({ Total: 60, LineCount: 2 })
     await A().patch(`/data/Lines/rows/${l1}`, { changes: { Qty: 3 } })
     await drain()
@@ -135,9 +136,9 @@ describe.skipIf(!PG_URL)('table events (PostgreSQL)', () => {
     expect(a.status, JSON.stringify(a.data)).toBe(200)
     const o = (await A().post('/data/SalesOrders/rows', { values: { Ref: 'evt', Status: 'Open' } })).data.row.id
     await drain()
-    const lines = (await A().post('/data/Lines/query', { where: { col: 'Order', op: 'eq', value: o } })).data.rows
+    const lines = (await A().post('/query', planBody('Lines', { where: { col: 'Order', op: 'eq', value: o } }))).data.rows
     expect(lines.map((x: any) => x.Item)).toEqual(['Auto for EVT'])
-    const order = (await A().post('/data/SalesOrders/query', { where: { col: 'id', op: 'eq', value: o } })).data.rows[0]
+    const order = (await A().post('/query', planBody('SalesOrders', { where: { col: 'id', op: 'eq', value: o } }))).data.rows[0]
     expect(order).toMatchObject({ Note: 'auto', LineCount: 1, Total: 2 })
     const runs = (await A().get(`/tables/${ordersId}/event-runs`)).data.items
     expect(runs.some((x: any) => x.eventName === 'Note the line' && x.status === 'ok')).toBe(true)

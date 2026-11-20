@@ -1,7 +1,9 @@
-# Templates catalogue (P2 package D)
+# Templates catalogue (P2 package D, P3 package M1)
 
 Master plan 11.3 (the spec: kinds, and the eight rules that keep installs from breaking anything), Phase 2 exit check 5.
-Maker view: [guide/maker/templates.md](../guide/maker/templates.md).
+Maker view: [guide/maker/templates.md](../guide/maker/templates.md). **Solution templates** (kind `solution`, package
+format 2, P3 package M1): the authoring guide is [solution-templates.md](solution-templates.md); this page keeps the
+shared mechanics and the format 1 kinds.
 
 | Module | What it does |
 | --- | --- |
@@ -14,12 +16,15 @@ Maker view: [guide/maker/templates.md](../guide/maker/templates.md).
 | `src/studio/StudioTemplates.tsx` | Studio entry points: Insert pane, screen tabs, `#studio-<app>?template=<id>` |
 | `server/core/templates/builtin/*.json`, `builtin/index.ts`, `builtin/manifest.json` | The built-in catalogue (ships with the install) |
 | `server/core/templates/catalogue.ts`, `manifest.ts` | Loading and integrity; sealing the built-ins |
-| `server/core/templates/service.ts`, `routes.ts`, `ddl.ts` | Plan, install, uninstall, upgrade; the routes; the register (schema version 13) |
+| `server/core/templates/service.ts`, `routes.ts`, `ddl.ts` | Plan, install, uninstall, upgrade, Switch on these flows, Remove sample data; the routes; the register (schema versions 13 and 14) |
+| `server/core/templates/packs.ts` | Format 2: binding a pack's components (component tokens, number sequence clash rule, prefixed names), its solution document parts, hashes of delivered components, reference and SAMPLE rows, privileges of its roles on mapped tables |
+| `server/core/templates/sequences.ts` | The `numberSequence` solution component kind (used by `server/routes/meta/alm.ts` and `solutions.ts`) |
+| `server/core/templates/testdata/` | Later versions of the Visitor log pack for upgrade tests (not built in, not shipped) |
 
 `src/templates/{format,rewrite,bind,safety,insert}.ts` are shared with the server like `src/model`: relative `.ts`
 imports, erasable TypeScript, no React, DOM or packages.
 
-## Package format (version 1)
+## Package format (version 1; version 2 adds the kind `solution`, see [solution-templates.md](solution-templates.md))
 
 One JSON document:
 
@@ -50,7 +55,9 @@ One JSON document:
   (the first one is used when the table is created); `lookupSlot` says which slot's table a lookup must point at; `create`
   carries the settings used when the table is created (choices, default, unique, a formula column, the delete behaviour
   of a lookup). `required: false` slots and columns may be left out.
-- **modes**: `copy` always; `linked` only for app and data model templates (`LINKED_KINDS`).
+- **modes**: `copy` always; `linked` only for app, data model and solution templates (`LINKED_KINDS`).
+- **formatVersion**: 1 or 2 (`TEMPLATE_FORMAT_VERSIONS`); kind `solution` needs 2; `shortName`, `prefix`, `dependencies`,
+  `from` (shared slots), `lookupSystem`, `create.uniqueTogether` and the pack payload parts are format 2.
 - **minPlatformVersion**: compared with the running server's version (`serverVersion()`); older servers refuse.
 
 ### Slot tokens
@@ -169,6 +176,10 @@ administrator; deleting tables with data needs an administrator and `confirmText
 
 ## Linked upgrade
 
+Solution templates extend this to every component kind (roles, flows, approval policies, dashboards, print templates,
+number sequences, reference rows), never drop a column or a table, and keep data rows unchanged: the table in
+[solution-templates.md](solution-templates.md) "Install, upgrade, uninstall". The P2 kinds behave as below.
+
 `POST /templates/installed/:iid/upgrade/plan { choices }`: the newest catalogue version, bound with the install's stored
 bindings and its stable ids; **local changes**: every created app and table whose current hash differs from the one
 delivered (`delivered`) is listed; `keep` (default) puts the current definition into the package (so the plan leaves it),
@@ -190,10 +201,13 @@ environment; clients reload their metadata after them).
 | `POST /templates/:id/install` | the same plus `confirm`, `approveSystem`, `proceedWithoutBackup` -> `{ install, controls?, screen?, dataSources, appId?, backup, warnings }` |
 | `POST /templates/installed/:iid/uninstall/plan`, `/uninstall` | see above |
 | `POST /templates/installed/:iid/upgrade/plan`, `/upgrade` | see above |
+| `POST /templates/installed/:iid/flows` | format 2: `{ enable: [flow ids] }` "Switch on these flows" (administrators; only the install's flows; audit `template.flows.enable` and `flow.enable`) |
+| `POST /templates/installed/:iid/sample/remove` | format 2: "Remove sample data" (design route): `{ install, removed, kept: [{ table, id, reason }] }` |
 
 ## The register
 
-`ab_template_installs` (schema version 13, [schema.md](schema.md)). Not copied by environment copies; never in solutions.
+`ab_template_installs` (schema version 13, [schema.md](schema.md); version 14 adds `sample_rows`, `reference_rows`,
+`depends_on`). Not copied by environment copies; never in solutions.
 
 ## Tests
 
@@ -207,10 +221,20 @@ environment; clients reload their metadata after them).
   install / local change / upgrade, uninstall with the typed confirmation, the audit log, the before/after snapshot, the
   12 -> 13 step.
 - `scripts/exit-check/p2-templates.mjs` (headless Chrome, server mode): the exit check, clicking through each kind.
+- Format 2: `src/templates/packs.test.ts` (validation, tokens, bindJson, shared tables, rule 8 for packs),
+  `server/core/templates/packs.integration.test.ts` (the Visitor log end to end: dependency, every component, a restricted
+  role, upgrades with keep and replace, Remove sample data, uninstall, Copy, the byte-equal snapshot, 13 -> 14),
+  `builtin-packs.integration.test.ts` (the pack test, every built-in pack), `scripts/exit-check/p3-templates.mjs` (the
+  browser check of Linked install, upgrade and uninstall).
 
 ## Not done
 
-- Flow, dashboard, role set, theme and document template kinds (master plan 11.3 table) and solution templates (P3).
-- Linked for UI components and screens (they become part of the app; the UI does not offer it).
+- Flow, dashboard, role set, theme and document template kinds on their own (master plan 11.3 table): they travel inside
+  solution templates.
+- Linked for UI components and screens: dropped (p3-spec default 31: they become part of the app; Copy only).
 - An online catalogue, importing a template file, and authoring templates from your own apps.
-- Environment copies do not copy the register.
+- Environment copies do not copy the register (p3-spec 5.11 decided: a copy with data should copy it, a schema-only copy
+  not; this needs `ab_template_installs` in the data-copy list of `server/core/environment-ops.ts`, which is not this
+  package's file).
+- Scheduled reports in packs (no solution hook for them yet), Word print templates in packs.
+- Binding a dependency's slots in the dialog (a dependency is installed with its default bindings).

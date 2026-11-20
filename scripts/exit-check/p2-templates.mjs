@@ -220,7 +220,9 @@ try {
   await page.goto(`${BASE}/#templates`, { waitUntil: 'domcontentloaded' })
   await waitFor(page, T('templates-page'), 30000)
   const cards = await page.$$eval('[data-testid^="tpl-card-"]', (els) => els.map((e) => e.getAttribute('data-testid')))
-  check(cards.length === 4, 'the Templates page (live in Dev mode) lists the four built-in templates', cards.join(', '))
+  // P3-M1 added two solution templates (checked by p3-templates.mjs); the four P2 kinds are counted here
+  const p2cards = cards.filter((c) => !/builtin.(business-model|visitor-log)$/.test(c))
+  check(p2cards.length === 4, 'the Templates page (live in Dev mode) lists the four built-in templates of the P2 kinds', p2cards.join(', '))
   await click(page, T('tpl-kind-dataModel'))
   check((await page.$$('[data-testid^="tpl-card-"]')).length === 1, 'kinds filter the catalogue')
   await click(page, T('tpl-kind-all'))

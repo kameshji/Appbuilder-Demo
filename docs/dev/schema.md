@@ -9,7 +9,7 @@ Decision D14 in `/home/claude/appbuilder-demo/docs/decisions.md` records the mov
    (at most `APPBUILDER_MAX_ENVIRONMENTS`, default 5). Each holds the environment's metadata tables (`ab_roles`, `ab_tables`,
    `ab_apps`, `ab_audit`, ...) **and** the data tables of its default connection (`t_orders`, `t_contacts`, ...).
 
-Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 13`),
+Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 14`),
 `/home/claude/appbuilder-demo/server/core/install-store.ts` (the `ab` registry, access and install audit)
 and, for data tables, `/home/claude/appbuilder-demo/server/connectors/postgres/sql.ts` (`createTableSql`, `sqlType`).
 
@@ -156,6 +156,14 @@ the environment back to 11 and migrates it (`{ from: 11, to: 12 }`, dashboards k
 version 12 refuses the schema (downgrade guard). Nothing existing changes. `server/core/templates/templates.integration.test.ts`
 drops the table, sets the environment back to 12 and migrates it (`{ from: 12, to: 13 }`), and checks the step refuses a schema
 without the table. (Version 13 is shared with P2 package E, WhatsApp: independent steps.)
+
+**13 to 14, solution templates** (P3 package M1; independent environment step `upgradeEnvironmentTo14Templates`,
+`server/core/templates/ddl.ts`): `environmentDdl` adds three columns to `ab_template_installs` with `ADD COLUMN IF NOT
+EXISTS` (`sample_rows`, `reference_rows`, `depends_on`, each jsonb with an empty default, so existing installs read as
+"no SAMPLE rows recorded, no reference rows, no dependencies"); the step checks the three columns exist, so a server of
+version 13 refuses the schema (downgrade guard). Nothing else changes. `server/core/templates/packs.integration.test.ts`
+drops the columns, sets the environment back to 13 and migrates it (`{ from: 13, to: 14 }`, every register row kept),
+and checks the step refuses a schema without them. (Version 14 is shared with P3 package A, chat: independent steps.)
 
 ## Types and conventions
 
@@ -473,13 +481,13 @@ DDL in `server/core/dashboards/ddl.ts` (`dashboardsEnvironmentDdl`). Purpose and
 | `ab_dashboard_snapshots` (12) | `id` (`dss_...`), `dashboard_id` (index), `name`, `owner_id`, `def` jsonb (schedule, recipients, range, filters, optOut), `enabled`, `schedule_id` (its `ab_schedules` row, job `dashboard.snapshot`), `created_on`, `modified_on` | Scheduled email snapshots; not copied |
 | `ab_dashboard_snapshot_runs` (12) | `id` (`dsr_<job id>`), `snapshot_id`, `started_on` (index with `snapshot_id`), `finished_on`, `status` (`running`, `succeeded`, `partial`, `failed`), `trigger`, `job_id`, `recipients` jsonb (per recipient: status, mail id, pages, reason), `message` | Run log; not copied |
 
-### Templates catalogue (P2 package D, version 13)
+### Templates catalogue (P2 package D, version 13; P3 package M1, version 14)
 
 DDL in `server/core/templates/ddl.ts` (`templatesEnvironmentDdl`). Purpose and rules: [templates.md](templates.md).
 
 | Table | Key columns | Notes |
 | --- | --- | --- |
-| `ab_template_installs` (13) | `id` (`tpli_...`), `template_id` (index), `template_version`, `digest` (SHA-256 of the package used), `kind` (`component`, `screen`, `app`, `dataModel`), `mode` (`copy`, `linked`), `name`, `status` (`installed`, `uninstalled`), `bindings` jsonb (slot -> create / map / skip), `created` jsonb (apps, tables, roles, flows, events, mapped tables, SAMPLE row count, the app and screen a UI component or screen went into), `delivered` jsonb (Linked: hash of each created app and table as delivered, for local changes), `solution_id` (Linked), `installed_by`, `installed_on`, `modified_on`, `uninstalled_by`, `uninstalled_on`, `details` jsonb (Linked: the stable component ids; the uninstall list) | The installed-templates register. Rows are never deleted. Partial unique index `ab_ux_template_installs_linked` (one installed Linked copy of a template per environment). Not copied by environment copies, never in solutions |
+| `ab_template_installs` (13) | `id` (`tpli_...`), `template_id` (index), `template_version`, `digest` (SHA-256 of the package used), `kind` (`component`, `screen`, `app`, `dataModel`), `mode` (`copy`, `linked`), `name`, `status` (`installed`, `uninstalled`), `bindings` jsonb (slot -> create / map / skip), `created` jsonb (apps, tables, roles, flows, events, mapped tables, SAMPLE row count, the app and screen a UI component or screen went into), `delivered` jsonb (Linked: hash of each created app and table as delivered, for local changes), `solution_id` (Linked), `installed_by`, `installed_on`, `modified_on`, `uninstalled_by`, `uninstalled_on`, `details` jsonb (Linked: the stable component ids; the uninstall list) | The installed-templates register. Rows are never deleted. Partial unique index `ab_ux_template_installs_linked` (one installed Linked copy of a template per environment). Not copied by environment copies, never in solutions. Version 14: `sample_rows` jsonb (table id -> the SAMPLE row ids the install added; "Remove sample data" deletes exactly those and keeps the ones still used), `reference_rows` jsonb (`<slot>:<local id>` -> `{ table, id, hash }` of each reference row as delivered, so an upgrade keeps rows the customer changed), `depends_on` jsonb (`[{ template, install, name, version }]`: the installs this one needs; uninstall is refused while another installed row depends on it). `created` gains the pack components (approval policies, dashboards, print templates, number sequences, reference row count), `delivered` their hashes, `details` their stable ids and names |
 
 ### `ab_counters`
 
@@ -699,3 +707,7 @@ are in `connectors.md`.
 ### WhatsApp connector (P2 package E, version 13, independent step)
 
 `server/core/whatsapp/ddl.ts`: per environment `ab_whatsapp_optins` (current consent per E.164 number), `ab_whatsapp_optin_history` (append-only), `ab_whatsapp_messages` (message log; unique `(connection_id, idempotency_key)`; indexes on provider id, created_on, phone), `ab_whatsapp_windows` (last inbound per connection and number), `ab_whatsapp_prefs`, `ab_whatsapp_settings` (k/v), `ab_whatsapp_hook_seen` (replay marks). The step checks the tables exist; nothing existing changes. None are copied into new environments.
+
+### Chat (P3 package A, version 14, independent step)
+
+`upgradeEnvironmentTo14Chat` (`server/core/chat/ddl.ts`): `ab_chat_reports` (`id` `crp_...`, `message_id`, `channel_id`, `reporter_id`, `reason`, `state` open / handled, `outcome`, `handled_by`, `handled_on`, `created_on`; one open report per message and reporter) and `ab_chat_exports` (`id` `cex_...`, `channel_id`, `reason`, `by_id`, `created_on`, `token_hash` SHA-256 unique, `expires_on`, `downloaded_on`, `messages`, `files`) come from `environmentDdl`; the step checks they exist and logs a warning when the communication tables hold rows written before chat existed. The columns of Channels, Channel members, Messages, Mentions and Follows are system-table provisioning (`provisionSystemTables`), with indexes from `chatSystemIndexes`. Never copied with an environment, never in solutions.

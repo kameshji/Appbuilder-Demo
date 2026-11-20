@@ -17,7 +17,7 @@ PostgreSQL side gives exactly the rows, values and order described here. Every r
 | `src/fx/query/cursor.ts` | Keyset cursor `encodeCursor` / `decodeCursor`, sort-key normalisation |
 | `src/fx/query/explain.ts` | `explain()` text for the Studio, `bindResult`, `residualScope` |
 | `src/fx/query/validate.ts` | `checkPlan(plan, schema)`: structural validation and the columns a plan reads (column security) |
-| `src/fx/query/testdata.ts`, `testdata-expr.ts`, `*.test.ts` | Sample tables, the generated corpora, parity / unit / cursor tests |
+| `src/fx/query/testdata.ts`, `testdata-expr.ts`, `testdata-lookup.ts`, `*.test.ts` | Sample tables, the generated corpora (the lookup-sort corpus of section 5b), parity / unit / cursor tests |
 | `server/connectors/postgres/query-v2.ts` | Plan -> one PostgreSQL statement (`buildV2`) |
 | `src/platform/query-cache.ts`, `query-wire.ts`, `query-local.ts` | Client cache, wire -> formula values, demo-mode executor |
 | `src/runtime/delegation.ts` | The evaluator's server-mode path (see `frontend.md`) |
@@ -67,6 +67,7 @@ taking the table) is the error `unbounded-consumer`.
 | `Filter(T, c1, c2, ...)`, `Filter(T As t, ...)` | `filter` (AND) |
 | `Search(T, text, "Col", ...)` | `search` (text columns only); a second Search becomes a filter |
 | `Sort(T, Col [, order])`, `SortByColumns(T, "A" [, order], "B" ...)` | `sort` (nested sorts prepend keys: the outer sort is primary) |
+| `Sort(T, Lookup.Col [, order])` | a sort key with `via` (section 5b): by the target row's column as the caller reads it |
 | `FirstN(T [, n])`, `LastN(T [, n])` | `take` |
 | `First(T)`, `Last(T)`, `LookUp(T, c)` | `take: 1` + `single` (shape `record`) |
 | `LookUp(T, c, result)` | `take: 1` rows; residual `LookUp(__q0 [As t], true, result)` |
@@ -115,7 +116,7 @@ interface QueryPlan {
   table: string
   filter?: ConditionV2
   search?: { text: string; columns: string[] }
-  sort?: SortKeyV2[]                       // { col, dir }
+  sort?: SortKeyV2[]                       // { col, dir, via?: { table, col } } (via: section 5b)
   take?: { n: number; from: 'start' | 'end' }
   aggregate?: { groupBy: string[]; measures: MeasureV2[]; sort?: SortKeyV2[]; as?: Record<string, string> }
   select?: string[]
@@ -292,6 +293,49 @@ Each `SortKeyV2 { col, dir }` orders by a **normalised key**, which is how the e
 Do not rely on `NULLS FIRST/LAST`: normalise as above so blanks tie with `0` / `''` / `false` exactly like the engine, then break ties
 by natural order ascending. `Sort(Sort(T, A), B)` = keys `[B, A]`.
 
+## 5b. Sorting by a lookup column (P3-C)
+
+`SortKeyV2.via: { table, col }` sorts by a column of the row the lookup column `col` points at: a list sorted by a lookup's label
+uses the target's primary column (`{ col: 'Customer', dir: 'asc', via: { table: 'Customers', col: 'Name' } }`). The translator
+produces it for `Sort(Orders, Customer.Name [, order])`; the DataTable header and the phone card's "Sort by" produce it for a lookup
+column (`lookupSortKey` in `src/controls/lookups.ts`, `withView` in `src/runtime/delegation.ts`).
+
+**The rule for target rows the viewer cannot read.** The key is the target's column READ AS THE CALLER. A blank lookup, an id whose
+row does not exist (deleted for good, or in the recycle bin) and a row the caller's row security hides all give the blank key of
+`via.col`'s kind (section 5: `''`, `0`, `false`, before every date), exactly the key of a readable target whose name is blank. Ties
+are broken, as always, by the natural order of the LISTED row (its own `createdOn`, `id`). Why this leaks nothing: an unreadable
+target contributes only the constant blank key, so the order of the list is a function of (a) the rows of the list the caller may
+read and (b) the target rows the caller may read; changing, renaming, adding or removing target rows the caller cannot read never
+moves any row and never changes a page boundary or a cursor (pinned by `src/fx/query/lookup-sort.test.ts`, the PostgreSQL parity
+block and the HTTP test in `server/core/query-v2.integration.test.ts`). What the position does say ("this row sorts with the
+blanks") the caller already sees in the cell, which shows the neutral "Not available" for such a row (`lookupCell`) and never
+the id's label. A cursor carries only the normalised key the caller could compute, so forging one reveals nothing a filter could
+not. Hidden COLUMNS are different: if the caller may not read `via.col` (column security), the plan is refused with 403 and a plain
+message ("This list can't be sorted by Customer: you do not have access to the column "Customers.Name" it would be sorted by."),
+never silently sorted as blank, because the caller would then think the list is sorted when it is not.
+
+| Part | Rule |
+| --- | --- |
+| Validation (`checkPlan`) | `col` is a lookup column of the table pointing at `via.table` (the server's `related` callback), `via.col` exists there and is not a file or image; at most 3 such keys per plan (`QUERY_MAX_LOOKUP_SORT_KEYS`); row plans only: a plan with `aggregate` and a sort key with `via` is 422, and the translator refuses `Distinct(Sort(T, L.Name), X)` / `Sum(FirstN(Sort(T, L.Name), 5), X)` (`Sum(Sort(T, L.Name), X)` over the whole table drops the sort) |
+| Security (`server/core/data.ts`) | `col` is checked against the table's column security, `via.col` against the target's; the target's row predicate (RBAC scope, role row filters, record sharing) travels as `related[table].rowFilter` |
+| PostgreSQL (`sortJoins` in `server/connectors/postgres/query-v2.ts`) | per key ONE `LEFT JOIN (SELECT "id" AS "__lid", "<col>" AS "__lv" FROM target WHERE <target's row filter and live-row predicate>) AS "__l<i>" ON "__l<i>"."__lid" = <table>."<col>"`, uncorrelated, in the same statement (no query per row or per target); the key is `sortKeyExpr` of `"__l<i>"."__lv"` (a missing partner is NULL, the blank key); linked (unmanaged) targets use `DISTINCT ON ("id")` so a row never repeats |
+| Cursor | the spec names the path (`Customer>Customers.Name:asc`), so a cursor of a plain sort by the id is refused; the key is the target's normalised value as the caller reads it |
+| Reference executor | `ExecuteOptions.related` gives the target rows the caller may read; `viaSortKey` (`src/fx/query/reference.ts`) |
+| Other connectors | MySQL, data files, Google Sheets: 422 "This list can't be sorted by X: sorting by a lookup's names needs a table in a PostgreSQL database ..."; a target in another connection: 422. The DataTable does not offer such a header (`lookupSortSupport`: the default database, or a connection a maker sees as PostgreSQL) |
+| Offline (phone) | answered from the kept rows of both tables (`answerFromSnapshot` with `related`); without the target's kept rows the plan is not answered offline |
+
+**Cost.** The join reads the target's readable rows once (hash join) or probes its primary key; the sort is a top-N sort over the
+filtered rows, as for any sort on a column without an index: no index can serve a key that lives in another table, so every page
+reads all rows the filter keeps. The statement timeout (15 s) and the page limits apply unchanged. Measured: the browser check
+`scripts/exit-check/p2-autoapp.mjs` sorts a list by a lookup to a 2,500-row table and prints the time of that request; a
+1,000,000-row list sorted this way has not been measured.
+
+**Keyset cursors and changes between pages.** The cursor is a position in the order as it is when the next page is read. When a
+target row is renamed between two pages, the rows pointing at it move together; the next page is exactly "the rows after the
+cursor position in the order as it is now" (tested against the reference executor on PostgreSQL), so a moved row can appear twice
+or not at all across the two pages, as for any sort column that changes while a list is paged. Ties (many rows with the same label,
+or blank) are broken by the listed row's (createdOn, id), so pages never skip or repeat a row that did not change.
+
 ## 6. Aggregates
 
 - Group key per column: text lower-cased (`"Pune"` and `"pune"` are one group), number, boolean, date/datetime by value; **NULL is
@@ -361,9 +405,11 @@ Cursor format (`encodeCursor` / `decodeCursor`): `"c2." + base64url(UTF-8 JSON)`
 { "s": "Status:asc,Due:desc", "k": ["open", "2026-03-01"], "c": "2026-01-01T08:00:00.000Z", "i": "019..." }
 ```
 
-- `s`: the plan's sort spec (`col:dir` joined by `,`, `""` when unsorted); a cursor for another spec is rejected (`CursorError`, HTTP 422).
+- `s`: the plan's sort spec (`col:dir` joined by `,`, `""` when unsorted; a key through a lookup is `col>Table.Col:dir`); a cursor
+  for another spec is rejected (`CursorError`, HTTP 422).
 - `k`: the last row's normalised key per sort key: number for number (NULL -> 0), boolean (0/1) and datetime (epoch ms); string for
-  text (lower-cased, NULL -> `""`) and date (`YYYY-MM-DD`); `null` for a NULL date or datetime (before every value).
+  text (lower-cased, NULL -> `""`) and date (`YYYY-MM-DD`); `null` for a NULL date or datetime (before every value). A key through a
+  lookup has the kind of the target's column and is computed from the target row as the caller reads it (blank when unreadable).
 - `c`, `i`: the row's `createdOn` (ISO, or null) and `id`.
 
 Seek predicate: rows strictly after the cursor in the total order. With mixed directions write it expanded, using the same
@@ -415,6 +461,11 @@ blank, count -> `count`, scalar -> the measure of the single aggregate row. Eval
   gets the rows in reverse to prove it applies natural order itself); every refused formula must have an error diagnostic and no
   plan; every rows plan paged by 7 must concatenate to the full result. With package D: 477 delegated, 173 refused, 0 mismatches;
   plus the computed-number corpus (`testdata-expr.ts`, 220 formulas, 215 delegated, 0 mismatches).
+- `src/fx/query/lookup-sort.test.ts` (P3-C): the lookup-sort corpus (`testdata-lookup.ts`, seed 20261120, 160 formulas over Orders
+  with two lookups to Clients whose names mix NULL, `''`, case variants, accents, spaces, ties, and where every 4th client is hidden
+  from the viewer and some ids point at nothing): 134 delegated (126 with a sort through a lookup), 0 mismatches with the engine (which
+  reads a hidden client as blank); pages of 7 concatenate; hidden targets renamed, re-dated or removed never move a row or a cursor;
+  the next page after a target rename is exactly the reference's; validation and refusals.
 - `src/fx/query/translate.test.ts`: exact plans for each construct, diagnostics, small tables, explain, cursors.
 - `server/connectors/postgres/query-v2.integration.test.ts`: both corpora on real PostgreSQL (section 15), EXPLAIN checks
   (section 13), the documented deviations, limits and errors. `server/core/query-v2.integration.test.ts`: the endpoint over HTTP
@@ -491,7 +542,8 @@ MySQL (external connections), data files and Google Sheets have no `queryV2`. Th
 Sheets filter in memory), converts them to formula values (date cells at local midnight), runs the reference executor (data files
 and Sheets keep file / sheet order as their natural order: `executePlan(..., { inputOrder: true })`) and sets `truncated: true` on the
 answer when the read hit the cap. Counts, sums and pages then cover only those rows; the browser warns (Studio data warnings, a banner
-on the portal grid). Move such a table to the default database to query all of it. Tested by
+on the portal grid). Move such a table to the default database to query all of it. Lookup paths (`via` conditions) and sorts through
+a lookup (section 5b) are refused there with 422, never computed over part of the rows or of the targets. Tested by
 `server/routes/meta/query-v2-fallback.test.ts`.
 
 ## 15. Parity and scale (package D)
@@ -504,9 +556,19 @@ engine, every rows plan also paged by 7):
 | --- | ---: | ---: | ---: | ---: |
 | translator corpus (`testdata.ts`) | 650 | 477 | 245 | 0 |
 | computed numbers and `Year()` (`testdata-expr.ts`) | 220 | 215 | 73 | 0 |
+| sorts through a lookup, restricted viewer (`testdata-lookup.ts`, P3-C) | 160 | 134 | 78 | 0 |
 
 The same run passes with `TZ=Asia/Kolkata`, `TZ=America/Los_Angeles` and `TZ=Pacific/Chatham`. The reference executor's own parity
-test runs both corpora against the engine without a database.
+test runs the corpora against the engine without a database.
+
+**Collations (P3-C).** Text keys are `COALESCE(lower(col) [ICU root], '') COLLATE "C"`, so the column's or the database's collation
+never decides an order. Checked on PostgreSQL 16 (the Windows sandbox): the lookup-sort block of `query-v2.integration.test.ts`
+runs 13 direct plans (every target column kind, both directions, two keys, take from both ends, pages of 1, 7 and 50) against the
+reference executor with the target's name column in the database default collation (`C` on the sandbox), in ICU `en-US-x-icu` and
+in a libc collation made from the `en_US.UTF-8` locale, and first asserts that a plain `ORDER BY` of that column really differs from
+code point order in the two linguistic ones; `postgres.integration.test.ts` checks the bare sort key over the same names in the
+three collations. The whole `query-v2.integration.test.ts` and `query-v2-aggregates.integration.test.ts` (all four corpora) also
+passed once against a scratch database created with `LOCALE 'en_US.UTF-8'` (libc, like CI). CI runs them in its `en_US` database.
 
 **Recycle bin**: `where()` and lookup paths (`via`) always go through the v1 `buildWhere`, which puts the table's live-row
 predicate (`"deletedOn" IS NULL`) in front of every condition of a table with a recycle bin; the partial indexes of such a

@@ -71,7 +71,8 @@ describe('connectivity', () => {
   it('retries only reads, with growing backoff', () => {
     expect(isIdempotentRead('GET', '/workspace')).toBe(true)
     expect(isIdempotentRead('POST', '/query')).toBe(true)
-    expect(isIdempotentRead('POST', '/data/Orders/query')).toBe(true)
+    // P3-C: the v1 query route is gone; a POST there is not a read the client retries
+    expect(isIdempotentRead('POST', '/data/Orders/query')).toBe(false)
     expect(isIdempotentRead('POST', '/data/Orders/rows')).toBe(false)
     expect(isIdempotentRead('PATCH', '/data/Orders/rows/1')).toBe(false)
     expect(backoffMs(1, () => 0)).toBe(400)

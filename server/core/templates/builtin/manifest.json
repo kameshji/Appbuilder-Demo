@@ -24,6 +24,18 @@
       "id": "builtin.customers-contacts",
       "version": "1.0.0",
       "sha256": "eac6a28c2719ae817ba49648fae0aacc6a57f7d4f5d84a7ecd22b10d8b6ba4b1"
+    },
+    {
+      "file": "business-model.json",
+      "id": "builtin.business-model",
+      "version": "1.0.0",
+      "sha256": "b065f313d67cd98a19550af178e3536553331bdf4e001a69189d197140725d00"
+    },
+    {
+      "file": "visitor-log.json",
+      "id": "builtin.visitor-log",
+      "version": "1.0.0",
+      "sha256": "215e02c21fc245ba49a1ec9d993b59d2300c987bd7fdb5f070059d400c0bd765"
     }
   ]
 }

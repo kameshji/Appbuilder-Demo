@@ -259,14 +259,15 @@ export type ColumnInput = Partial<ColumnDef> & { displayName: string; type: Colu
 export interface TableCreateRequest { displayName: string; name?: string; description?: string; columns?: Partial<ColumnDef>[]; connectionId?: string }
 
 /* data (security enforced: RBAC + RLS + CLS)
- *   POST   /api/v1/data/:table/query              Query -> QueryResponse
+ *   POST   /api/v1/query                          { plan: QueryPlan } -> QueryV2Response (src/platform/query.ts; every read)
+ *   (POST  /api/v1/data/:table/query, the v1 read route, was removed in Phase 3: 404. `Query` below stays the
+ *    connectors' internal select shape and the security engine's condition language.)
  *   POST   /api/v1/data/:table/rows               { values } -> { row }        (client may supply values.id, a UUID)
  *   PATCH  /api/v1/data/:table/rows/:id           { changes } -> { row }
  *   POST   /api/v1/data/:table/delete             { ids } -> { deleted: number }
  *   POST   /api/v1/data/:table/import             { csv, mode: 'append'|'replace' } -> { imported: number }
  *   POST   /api/v1/tables/from-csv                { displayName, csv } -> TableDef
  */
-export interface QueryResponse { rows: Record<string, QueryValue>[]; total?: number; truncated: boolean }
 export interface InsertRequest { values: Record<string, QueryValue> }
 export interface UpdateRequest { changes: Record<string, QueryValue> }
 export interface RowResponse { row: Record<string, QueryValue> }
@@ -321,8 +322,8 @@ export interface SourceTableInfo { source: string; columns: { name: string; type
 export type PlanChange = 'new' | 'changed' | 'unchanged' | 'removed'
 export interface PlanColumnChange { name: string; change: 'added' | 'removed' | 'type' | 'changed'; from?: string; to?: string; destructive?: boolean }
 export interface PlanItem {
-  /** event: a table event or validation rule (package G) */
-  kind: 'app' | 'table' | 'role' | 'connection' | 'file' | 'event' | 'flow' | 'approvalPolicy' | 'printTemplate' | 'dashboard'
+  /** event: a table event or validation rule (package G); numberSequence: P3-M1 (name and format of a number sequence) */
+  kind: 'app' | 'table' | 'role' | 'connection' | 'file' | 'event' | 'flow' | 'approvalPolicy' | 'printTemplate' | 'dashboard' | 'numberSequence'
   id: string
   name: string
   change: PlanChange

@@ -14,7 +14,9 @@ import { randomBytes } from 'node:crypto'
 import type { ColumnDef, ColumnType, TableDef } from '../../../src/platform/contracts.ts'
 import type { FxRecord, FxResult, FxValue } from '../../../src/contracts.ts'
 import type { QueryPlan, TableSchemaInfo } from '../../../src/platform/query.ts'
-import type { QueryValue } from '../../../src/platform/http.ts'
+import type { Condition, QueryValue } from '../../../src/platform/http.ts'
+import { executePlan } from '../../../src/fx/query/reference.ts'
+import { LOOKUP_SCHEMA, clientRows, lookupCorpus, lookupScope, orderRows, readableClients } from '../../../src/fx/query/testdata-lookup.ts'
 import { createEngine } from '../../../src/fx/engine.ts'
 import { analyze, bindResult, residualScope, type AnalyzeResult } from '../../../src/fx/query/index.ts'
 import { checkPlan } from '../../../src/fx/query/validate.ts'
@@ -236,6 +238,193 @@ suite(PG_URL ? 'query v2 on PostgreSQL (integration)' : `query v2 on PostgreSQL 
     await expect(q({ version: 2, table: 'Big' })).rejects.toMatchObject({ status: 422, message: expect.stringMatching(/more than 5,000 rows/) })
     await expect(q({ version: 2, table: 'Big', aggregate: { groupBy: ['Name'], measures: [{ name: 'N', fn: 'count' }] } })).rejects.toMatchObject({ status: 422, message: expect.stringMatching(/more than 5,000 groups/) })
     expect((await q({ version: 2, table: 'Big', page: { size: 500 } })).rows.length).toBe(500)
+  })
+
+  /**
+   * P3-C: sorting by a lookup column's label (sort key `via`, docs/dev/query-v2.md 5b). The lookup corpus of
+   * src/fx/query/testdata-lookup.ts runs on PostgreSQL as a viewer who may read only the clients with Hidden = false
+   * (their row filter is ANDed into the target's derived table): every delegated formula must give the engine's value
+   * (the engine reads a hidden client as blank), every rows plan paged by 7 must concatenate, and the order must hold
+   * in the database's collation, in an ICU en-US column collation and in a libc en_US one.
+   */
+  describe('sort by a lookup column (P3-C)', () => {
+    const CLIENTS: TableDef = {
+      id: 'tbl_clients', name: 'Clients', displayName: 'Clients', primaryColumn: 'Name', createdOn: '', modifiedOn: '', source: 'clients_l', managed: true, missingSystem: ['modifiedOn', 'createdBy', 'owner'],
+      columns: [...SYS, col('Name', 'text'), col('Tier', 'decimal'), col('Since', 'date'), col('Seen', 'datetime'), col('Vip', 'boolean'), col('Hidden', 'boolean')],
+    }
+    const ORDERS: TableDef = {
+      id: 'tbl_orders', name: 'Orders', displayName: 'Orders', primaryColumn: 'Title', createdOn: '', modifiedOn: '', source: 'orders_l', managed: true, missingSystem: ['modifiedOn', 'createdBy', 'owner'],
+      columns: [...SYS, col('Title', 'text'), col('Amount', 'number'), col('Client', 'lookup', { lookupTable: 'Clients' }), col('Agent', 'lookup', { lookupTable: 'Clients' })],
+    }
+    const clients = clientRows()
+    const orders = orderRows(clients)
+    const ltables = { Orders: orders, Clients: clients }
+    const lscope = lookupScope(ltables)
+    const INFO = LOOKUP_SCHEMA.tables.Orders!
+    const rel = (t: string, c2: string) => (INFO.lookups?.[c2] === t ? LOOKUP_SCHEMA.tables[t] : undefined)
+    const readFilter: Condition = { col: 'Hidden', op: 'eq', value: false }
+    const statements: string[] = []
+
+    async function lrun(plan: QueryPlan, target: TableDef = CLIENTS): Promise<{ rows: FxRecord[]; count?: number; nextCursor?: string | null }> {
+      const checked = checkPlan(JSON.parse(JSON.stringify(plan)), INFO, 'Orders', { related: rel }).plan
+      const input = { plan: checked, visible: Object.keys(INFO.columns), related: { Clients: { def: target, rowFilter: readFilter } }, maxUnpagedRows: 5000, maxGroups: 5000, timeoutMs: 15000 }
+      if (statements.length < 3 && checked.sort?.some((k) => k.via)) statements.push(buildV2({ schema, icu: true }, ORDERS, checked, input).sql)
+      const res = await c.queryV2!(ORDERS, input)
+      const types = new Map(res.columns.map((x) => [x.name, x.type]))
+      const wire: Record<string, QueryValue>[] = res.rows.map((r) => {
+        const o: Record<string, QueryValue> = {}
+        for (const [k, v] of Object.entries(r)) o[k] = cellOut({ name: k, displayName: k, type: types.get(k) ?? 'text' }, v)
+        return o
+      })
+      return { rows: rowsFromWire(checked, wire, typesOf(ORDERS)), count: res.count, nextCursor: res.nextCursor }
+    }
+    const ref = (plan: QueryPlan, cl = clients) => executePlan(checkPlan(JSON.parse(JSON.stringify(plan)), INFO, 'Orders', { related: rel }).plan, orders, INFO, {
+      related: { rows: (t) => (t === 'Clients' ? readableClients(cl) : undefined), schema: (t) => LOOKUP_SCHEMA.tables[t] },
+    })
+    const ids = (rows: FxRecord[]) => rows.map((r) => String(r.id ?? r.__id))
+    async function pages(plan: QueryPlan, size: number): Promise<string[]> {
+      const out: string[] = []
+      let cursor: string | undefined
+      for (let i = 0; i < 1000; i++) {
+        const p = await lrun({ ...plan, page: { size, cursor } })
+        out.push(...ids(p.rows))
+        if (!p.nextCursor) break
+        cursor = p.nextCursor
+      }
+      return out
+    }
+    /** direct plans: every target column kind, both directions, two keys, take from both ends */
+    const DIRECT: QueryPlan[] = []
+    for (const f of ['Name', 'Tier', 'Since', 'Seen', 'Vip']) for (const dir of ['asc', 'desc'] as const) DIRECT.push({ version: 2, table: 'Orders', sort: [{ col: 'Client', dir, via: { table: 'Clients', col: f } }] })
+    DIRECT.push({ version: 2, table: 'Orders', sort: [{ col: 'Agent', dir: 'desc', via: { table: 'Clients', col: 'Name' } }, { col: 'Client', dir: 'asc', via: { table: 'Clients', col: 'Name' } }, { col: 'Amount', dir: 'desc' }] })
+    DIRECT.push({ version: 2, table: 'Orders', sort: [{ col: 'Client', dir: 'asc', via: { table: 'Clients', col: 'Name' } }], take: { n: 25, from: 'end' } })
+    DIRECT.push({ version: 2, table: 'Orders', filter: { col: 'Amount', op: 'ge', value: 2 }, sort: [{ col: 'Client', dir: 'desc', via: { table: 'Clients', col: 'Name' } }], take: { n: 40, from: 'start' }, count: true })
+
+    beforeAll(async () => {
+      await c.createTable(CLIENTS)
+      await c.insert(CLIENTS, clients.map((r) => toRaw(CLIENTS, r)))
+      await c.createTable(ORDERS)
+      await c.insert(ORDERS, orders.map((r) => toRaw(ORDERS, r)))
+    })
+
+    it('the lookup corpus: every delegated formula gives the engine value as the restricted viewer, and pages concatenate', async () => {
+      const mismatches: string[] = []
+      let delegated = 0
+      let paged = 0
+      for (const f of lookupCorpus()) {
+        const r = analyze(f, LOOKUP_SCHEMA, { scope: lscope, engine })
+        if (!r.fullyDelegated) continue
+        delegated++
+        const want = engine.evaluate(f, lscope)
+        const values: Record<string, FxValue> = {}
+        for (const q of r.plans) values[q.id] = bindResult(q, await lrun(q.plan))
+        const got = !r.residual ? { ok: true as const, value: values[r.plans[0]!.id]! } : engine.evaluate(r.residual.formula, residualScope(values, lscope))
+        const a = want.ok ? canon(want.value, true) : 'error'
+        const b = got.ok ? canon(got.value, true) : 'error'
+        if (JSON.stringify(a) !== JSON.stringify(b)) { mismatches.push(`${f}\n  engine: ${JSON.stringify(a).slice(0, 300)}\n  pg:     ${JSON.stringify(b).slice(0, 300)}`); continue }
+        for (const q of r.plans) {
+          if (q.shape !== 'rows' || q.plan.aggregate || !q.plan.sort?.some((k) => k.via)) continue
+          if (JSON.stringify(await pages(q.plan, 7)) !== JSON.stringify(ids((await lrun(q.plan)).rows))) mismatches.push(`${f}\n  pages differ from the full result`)
+          paged++
+        }
+      }
+      console.log(`[query v2 pg parity] lookup-sort corpus: ${delegated} delegated and executed on PostgreSQL, ${paged} row plans paged, ${mismatches.length} mismatches`)
+      expect(mismatches.slice(0, 5).join('\n\n')).toBe('')
+      expect(delegated).toBeGreaterThanOrEqual(100)
+      // ONE statement per plan: the join is part of it (no query per row or per target)
+      expect(statements.length).toBeGreaterThan(0)
+      for (const s of statements) {
+        expect(s).toMatch(/LEFT JOIN \(SELECT "id" AS "__lid", "\w+" AS "__lv" FROM "[^"]+"\."clients_l" WHERE/)
+        expect(s.split(';').length).toBe(1)
+      }
+    }, 180_000)
+
+    // the database default (C on a developer sandbox, en_US.UTF-8 in CI), ICU en-US, and a libc en_US made for this
+    // database's encoding (Windows: 'en-US'; Linux: 'en_US.UTF-8'), where the server has such a locale
+    for (const collation of ['', 'en-US-x-icu', 'libc']) {
+      it(`direct plans match the reference executor with the target's names in ${collation === 'libc' ? 'a libc en_US' : collation || 'the database default'} collation (pages of 1, 7 and 50)`, async () => {
+        let use = collation
+        if (collation === 'libc') {
+          use = ''
+          for (const locale of ['en_US.UTF-8', 'en_US.utf8', 'en-US', 'English_United States.1252']) {
+            try {
+              await raw.exec(`CREATE COLLATION "${schema}"."en_us_libc" (provider = libc, locale = '${locale}')`)
+              use = `${schema}"."en_us_libc`
+              console.log(`[query v2 pg parity] libc collation from locale ${locale}`)
+              break
+            } catch { /* try the next spelling */ }
+          }
+          if (!use) { console.log('[query v2 pg parity] no libc en_US locale on this server: skipped'); return }
+        } else if (collation) {
+          const ok = await raw.query<{ n: number }>("SELECT count(*)::int AS n FROM pg_collation WHERE collname = $1 AND collencoding IN (-1, pg_char_to_encoding('UTF8'))", [collation])
+          if (!ok[0]?.n) { console.log(`[query v2 pg parity] collation ${collation} is not available: skipped`); return }
+        }
+        if (use) {
+          await raw.exec(`ALTER TABLE "${schema}"."clients_l" ALTER COLUMN "Name" TYPE varchar(255) COLLATE "${use}"`)
+          // the collation is really linguistic: a plain ORDER BY of the column differs from code point order
+          const plain = (await raw.query<{ n: string }>(`SELECT "Name" AS n FROM "${schema}"."clients_l" WHERE "Name" IS NOT NULL ORDER BY "Name", "id"`)).map((x) => x.n)
+          const cp = (await raw.query<{ n: string }>(`SELECT "Name" AS n FROM "${schema}"."clients_l" WHERE "Name" IS NOT NULL ORDER BY "Name" COLLATE "C", "id"`)).map((x) => x.n)
+          expect(plain).not.toEqual(cp)
+        }
+        const bad: string[] = []
+        for (const p of DIRECT) {
+          const want = ids(ref(p).rows)
+          const got = await lrun(p)
+          if (JSON.stringify(ids(got.rows)) !== JSON.stringify(want)) bad.push(`${JSON.stringify(p.sort)} ${JSON.stringify(p.take ?? null)}\n  pg:  ${ids(got.rows).slice(0, 20).join(' ')}\n  ref: ${want.slice(0, 20).join(' ')}`)
+          if (p.count && got.count !== ref(p).count) bad.push(`count ${JSON.stringify(p.sort)}`)
+          if (!p.take) for (const size of [1, 7, 50]) if (JSON.stringify(await pages(p, size)) !== JSON.stringify(want)) bad.push(`pages of ${size}: ${JSON.stringify(p.sort)}`)
+        }
+        expect(bad).toEqual([])
+      }, 120_000)
+    }
+
+    it('hidden targets: renaming them or removing their rows never moves a row, and cursors do not change', async () => {
+      const before = await Promise.all(DIRECT.map((p) => lrun(p)))
+      const cursors = await Promise.all(DIRECT.filter((p) => !p.take).map(async (p) => (await lrun({ ...p, page: { size: 9 } })).nextCursor))
+      await raw.exec(`UPDATE "${schema}"."clients_l" SET "Name" = 'AAAA first', "Tier" = 1e9, "Since" = date '1990-01-01', "Seen" = timestamptz '1970-01-02', "Vip" = true WHERE "Hidden"`)
+      try {
+        const after = await Promise.all(DIRECT.map((p) => lrun(p)))
+        after.forEach((a, i) => expect(ids(a.rows), JSON.stringify(DIRECT[i]!.sort)).toEqual(ids(before[i]!.rows)))
+        const cur2 = await Promise.all(DIRECT.filter((p) => !p.take).map(async (p) => (await lrun({ ...p, page: { size: 9 } })).nextCursor))
+        expect(cur2).toEqual(cursors)
+      } finally {
+        for (const x of clients.filter((y) => y.Hidden)) {
+          const r = toRaw(CLIENTS, x)
+          await c.update(CLIENTS, String(x.id), { Name: r.Name ?? null, Tier: r.Tier ?? null, Since: r.Since ?? null, Seen: r.Seen ?? null, Vip: r.Vip ?? null })
+        }
+      }
+      for (const [i, p] of DIRECT.entries()) expect(ids((await lrun(p)).rows)).toEqual(ids(before[i]!.rows))
+    })
+
+    it('a linked (unmanaged) target is read with DISTINCT ON its id: the same order', async () => {
+      const linked = { ...CLIENTS, managed: false }
+      for (const p of DIRECT) expect(ids((await lrun(p, linked)).rows)).toEqual(ids(ref(p).rows))
+    })
+
+    it('a target renamed between two pages: the next page is exactly what the reference gives for the cursor in the new order', async () => {
+      // the first page ends 8 rows into the named clients (the blank group comes first), one of which is renamed to sort last
+      const sort: QueryPlan['sort'] = [{ col: 'Client', dir: 'asc', via: { table: 'Clients', col: 'Name' } }]
+      const size = ref({ version: 2, table: 'Orders', sort }).rows.findIndex((r) => readableClients(clients).some((x) => x.id === r.Client && x.Name)) + 8
+      const plan: QueryPlan = { version: 2, table: 'Orders', sort, page: { size } }
+      const p1 = await lrun(plan)
+      expect(ids(p1.rows)).toEqual(ids(ref(plan).rows))
+      const moved = String(p1.rows.find((r) => readableClients(clients).some((x) => x.id === r.Client && x.Name))!.Client)
+      const original = clients.find((x) => x.id === moved)!.Name
+      await raw.query(`UPDATE "${schema}"."clients_l" SET "Name" = 'zzzz renamed' WHERE "id" = $1`, [moved])
+      try {
+        const changed = clients.map((x) => (x.id === moved ? { ...x, Name: 'zzzz renamed' } : x))
+        const next = { ...plan, page: { size, cursor: p1.nextCursor! } }
+        expect(ids((await lrun(next)).rows)).toEqual(ids(ref(next, changed).rows))
+      } finally {
+        await raw.query(`UPDATE "${schema}"."clients_l" SET "Name" = $2 WHERE "id" = $1`, [moved, original])
+      }
+    })
+
+    it('refusals: grouping after the sort, a target in the statement without its rows', async () => {
+      await expect(lrun({ version: 2, table: 'Orders', sort: [{ col: 'Client', dir: 'asc', via: { table: 'Clients', col: 'Name' } }], aggregate: { groupBy: ['Title'], measures: [] } })).rejects.toThrow(/not before grouping/)
+      const plan = checkPlan({ version: 2, table: 'Orders', sort: [{ col: 'Client', dir: 'asc', via: { table: 'Clients', col: 'Name' } }] }, INFO, 'Orders', { related: rel }).plan
+      expect(() => buildV2({ schema, icu: true }, ORDERS, plan, { visible: ['id'], maxUnpagedRows: 5000, maxGroups: 5000 })).toThrow(/cannot be read in this query/)
+    })
   })
 
   describe('EXPLAIN: filters and sorts on indexed columns use the indexes', () => {

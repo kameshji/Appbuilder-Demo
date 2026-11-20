@@ -1,13 +1,14 @@
 /**
  * Data routes (security enforced by the DataService) and GET /workspace.
- *   POST /data/:table/query   POST /data/:table/rows   PATCH /data/:table/rows/:id
+ *   POST /query (Query v2)    POST /data/:table/rows   PATCH /data/:table/rows/:id
  *   POST /data/:table/delete  POST /data/:table/import GET /tables/:id/csv   GET /workspace
+ *   (POST /data/:table/query, the v1 query route, was removed in Phase 3: it answers 404)
  *   recycle bin: GET /data/:table/deleted  POST /data/:table/restore  POST /data/:table/purge  GET /data/:table/recycle
  */
 import { HttpError } from './contracts.ts'
 import type { Ctx, UserContext } from './contracts.ts'
 import type { DataFileDef, TableDef } from '../../src/platform/contracts.ts'
-import type { QueryResponse, RowResponse, WorkspaceResponse } from '../../src/platform/http.ts'
+import type { RowResponse, WorkspaceResponse } from '../../src/platform/http.ts'
 import type { QueryV2Response } from '../../src/platform/query.ts'
 import { idempotencyKeyOf, idempotentWrite } from './offline.ts'
 import type { ApiRouter } from './router.ts'
@@ -54,14 +55,8 @@ export function dataRoutes(router: ApiRouter, services: CoreServices): void {
     return services.data.queryV2(ctx.user!, t, plan)
   }, { auth: 'user' })
 
-  router.add('POST', '/data/:table/query', async (ctx): Promise<QueryResponse> => {
-    const t = await tableParam(services, ctx.params.table)
-    ensureTableVisible(ctx.user!, t)
-    const res = await services.data.query(ctx.user!, t, (ctx.body ?? {}) as never)
-    const out: QueryResponse = { rows: res.rows, truncated: res.truncated }
-    if (res.total !== undefined) out.total = res.total
-    return out
-  }, { auth: 'user' })
+  // P3-C: the Data API v1 query route (POST /data/:table/query) is removed (decision 33 of docs/plan/p3-spec.md): every
+  // read is a Query v2 plan (POST /query). The row write routes below stay: they are the write API.
 
   router.add('POST', '/data/:table/rows', async (ctx): Promise<RowResponse> => {
     const t = await tableParam(services, ctx.params.table)

@@ -16,9 +16,10 @@ import type { TemplatePackage } from '../../../src/templates/format.ts'
 const here = path.dirname(fileURLToPath(import.meta.url))
 
 describe('built-in template catalogue', () => {
-  it('has one usable template of each kind, each verified against the manifest', () => {
+  it('has one usable template of each P2 kind and the two solution templates, each verified against the manifest', () => {
     const all = catalogue()
-    expect(all.map((e) => e.pkg.kind).sort()).toEqual(['app', 'component', 'dataModel', 'screen'])
+    expect(all.map((e) => e.pkg.kind).sort()).toEqual(['app', 'component', 'dataModel', 'screen', 'solution', 'solution'])
+    expect(all.filter((e) => e.pkg.kind === 'solution').map((e) => e.pkg.id).sort()).toEqual(['builtin.business-model', 'builtin.visitor-log'])
     for (const e of all) expect(e.integrity, `${e.source}: ${e.note}`).toBe('builtin')
   })
   it('the manifest and the digests are up to date (run node server/core/templates/manifest.ts --write after an edit)', () => {
@@ -51,6 +52,13 @@ describe('built-in template catalogue', () => {
     const reordered = reverse(e.pkg) as TemplatePackage
     expect(JSON.stringify(reordered)).not.toBe(JSON.stringify(e.pkg))
     expect(digestOf(reordered)).toBe(e.digest)
+  })
+  it('the common business model in the catalogue has the tables and columns of the solution package (no drift)', async () => {
+    const { businessModelTables } = await import('../../routes/meta/business-model.ts')
+    const pkg = catalogue().find((e) => e.pkg.id === 'builtin.business-model')!.pkg
+    const want = businessModelTables().map((t) => ({ name: t.name, display: t.displayName, primary: t.primaryColumn, unique: t.uniqueTogether ?? null, cols: t.columns.filter((c) => !c.system).map((c) => [c.name, c.type, c.lookupTable ?? null, !!c.required, !!c.unique, c.default ?? null, c.choices ?? null, c.prefix ?? null]) }))
+    const got = pkg.slots.map((s) => ({ name: s.create!.name, display: s.create!.displayName, primary: s.create!.primaryColumn, unique: s.create!.uniqueTogether ?? null, cols: s.columns.map((c) => [c.id, c.create?.type ?? c.types[0], c.lookupSlot ?? c.lookupSystem ?? null, !!c.create?.required, !!c.create?.unique, c.create?.default ?? null, c.create?.choices ?? null, c.create?.prefix ?? null]) }))
+    expect(got).toEqual(want)
   })
   it('a package that is not built in needs an Ed25519 signature by a trusted key', () => {
     const e = catalogue().find((x) => x.pkg.kind === 'screen')!

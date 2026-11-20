@@ -106,10 +106,12 @@ async function inventory() {
       const h = createHash('sha256')
       let n = 0
       let total = null
-      for (let skip = 0; ; skip += 5000) {
-        const r = await api('POST', `/data/${encodeURIComponent(t.name)}/query`, { orderBy: [{ col: 'id', dir: 'asc' }], top: 5000, skip, count: skip === 0 }, { env: e.id, expect: false })
+      // Query v2 pages in id order (the v1 query route with top / skip was removed in Phase 3)
+      for (let cursor = null, first = true; ; first = false) {
+        const plan = { version: 2, table: t.name, sort: [{ col: 'id', dir: 'asc' }], count: first, page: { size: 500, ...(cursor ? { cursor } : {}) } }
+        const r = await api('POST', '/query', { plan }, { env: e.id, expect: false })
         if (!r.rows) break
-        if (skip === 0) total = r.total ?? null
+        if (first) total = r.count ?? null
         for (const row of r.rows) {
           h.update(JSON.stringify(row))
           n++
@@ -122,7 +124,8 @@ async function inventory() {
             }
           }
         }
-        if (r.rows.length < 5000) break
+        if (!r.nextCursor) break
+        cursor = r.nextCursor
       }
       out.tables[`${e.id}/${t.name}`] = { rows: n, total, sha256: h.digest('hex') }
     }

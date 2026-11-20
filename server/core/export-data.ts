@@ -27,6 +27,7 @@ import { csvExportText } from './values.ts'
 import { requireRecentAuth } from './identity/index.ts'
 import { audit } from '../routes/meta/tables-core.ts'
 import { RECYCLE_COLUMN_NAMES, hasRecycleBin, liveRowsSql } from '../connectors/postgres/sql.ts'
+import { CHAT_SYSTEM_TABLES } from './chat/ddl.ts'
 
 const PAGE = 2000
 
@@ -141,9 +142,13 @@ function cell(v: unknown): string {
   return csvExportText(v as string | number | boolean)
 }
 
-/** the tables of the export: the default database's own tables (system tables with rows included, views left out) */
+/**
+ * the tables of the export: the default database's own tables (system tables with rows included, views left out). Never
+ * the chat tables (P3-A): administrators do not read conversations; one conversation is exported through the audited and
+ * announced chat export (docs/admin/chat.md).
+ */
 export function exportableTables(all: TableDef[]): TableDef[] {
-  return all.filter((t) => (t.connectionId ?? DEFAULT_CONNECTION_ID) === DEFAULT_CONNECTION_ID && !!t.source && t.reporting?.kind !== 'view' && t.systemKind !== 'projection')
+  return all.filter((t) => (t.connectionId ?? DEFAULT_CONNECTION_ID) === DEFAULT_CONNECTION_ID && !!t.source && t.reporting?.kind !== 'view' && t.systemKind !== 'projection' && !CHAT_SYSTEM_TABLES.includes(t.id))
 }
 
 async function physicalColumns(db: SqlDb, schema: string, table: string): Promise<string[]> {
@@ -197,7 +202,8 @@ export function exportStream(db: SqlDb, env: { id: string; schema: string; name:
       yield* zip.entry(file, tableCsv(db, env.schema, t, counts, o.includeDeleted === true))
     }
     const attachments = await db.query<Record<string, unknown>>(
-      `SELECT id, table_id, row_id, col AS column_name, file_name, mime AS content_type, size_bytes AS size, sha256, created_on FROM ${qi(env.schema)}."ab_attachments" ORDER BY id`,
+      `SELECT id, table_id, row_id, col AS column_name, file_name, mime AS content_type, size_bytes AS size, sha256, created_on FROM ${qi(env.schema)}."ab_attachments" WHERE table_id <> ALL($1::text[]) ORDER BY id`,
+      [CHAT_SYSTEM_TABLES],
     )
     const fields = ['id', 'table_id', 'row_id', 'column_name', 'file_name', 'content_type', 'size', 'sha256', 'created_on']
     yield* zip.entry('attachments.csv', (async function* () {

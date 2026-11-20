@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { platform } from '@/platform'
-import { ArrowRight, Boxes, Cable, ClipboardCheck, CircleAlert, FileSpreadsheet, Info, LayoutGrid, Printer, LayoutDashboard, Rocket, ShieldCheck, Table2, TriangleAlert, Workflow, Zap, type LucideIcon } from 'lucide-react'
+import { ArrowRight, Boxes, Cable, ClipboardCheck, CircleAlert, FileSpreadsheet, Hash, Info, LayoutGrid, Printer, LayoutDashboard, Rocket, ShieldCheck, Table2, TriangleAlert, Workflow, Zap, type LucideIcon } from 'lucide-react'
 import { ENVIRONMENT_TYPE_LABEL, usePlatform, type SolutionDef } from '@/platform'
 import type { PlanItem, SolutionPlan } from '@/platform/http'
 import { cn } from '@/lib/utils'
@@ -19,8 +19,11 @@ import { TypeBadge } from './EnvironmentPicker'
 import { Field, errMsg, useToast } from './kit'
 import { deploy, planDeploy, type PlanChoices } from './environmentApi'
 
-const KIND_ICON: Record<PlanItem['kind'], LucideIcon> = { app: LayoutGrid, table: Table2, role: ShieldCheck, connection: Cable, file: FileSpreadsheet, event: Zap, flow: Workflow, approvalPolicy: ClipboardCheck, printTemplate: Printer, dashboard: LayoutDashboard }
-const KIND_LABEL: Record<PlanItem['kind'], string> = { app: 'App', table: 'Table', role: 'Role', connection: 'Connection', file: 'Data file', event: 'Table event', flow: 'Flow', approvalPolicy: 'Approval policy', printTemplate: 'Print template', dashboard: 'Dashboard' }
+const KIND_ICON: Record<PlanItem['kind'], LucideIcon> = { app: LayoutGrid, table: Table2, role: ShieldCheck, connection: Cable, file: FileSpreadsheet, event: Zap, flow: Workflow, approvalPolicy: ClipboardCheck, printTemplate: Printer, dashboard: LayoutDashboard, numberSequence: Hash }
+const KIND_LABEL: Record<PlanItem['kind'], string> = { app: 'App', table: 'Table', role: 'Role', connection: 'Connection', file: 'Data file', event: 'Table event', flow: 'Flow', approvalPolicy: 'Approval policy', printTemplate: 'Print template', dashboard: 'Dashboard', numberSequence: 'Number sequence' }
+/** P3-M1: the plan of a pack is shown grouped by kind, in this order */
+const KIND_ORDER: PlanItem['kind'][] = ['table', 'event', 'app', 'flow', 'approvalPolicy', 'dashboard', 'printTemplate', 'role', 'numberSequence', 'connection', 'file']
+const KIND_GROUP: Record<PlanItem['kind'], string> = { table: 'Tables', event: 'Table events and validation rules', app: 'Apps', flow: 'Flows', approvalPolicy: 'Approval policies', dashboard: 'Dashboards', printTemplate: 'Print templates', role: 'Roles', numberSequence: 'Number sequences', connection: 'Connections', file: 'Data files' }
 const CHANGE_STYLE: Record<PlanItem['change'], string> = {
   new: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
   changed: 'bg-sky-500/15 text-sky-700 dark:text-sky-300',
@@ -28,10 +31,11 @@ const CHANGE_STYLE: Record<PlanItem['change'], string> = {
   unchanged: 'bg-muted text-muted-foreground',
 }
 
-export function PlanView({ plan, mappingEditable }: { plan: SolutionPlan; /** P1-E: the mappings are edited in PlanMappings below */ mappingEditable?: boolean }) {
+export function PlanView({ plan, mappingEditable, grouped }: { plan: SolutionPlan; /** P1-E: the mappings are edited in PlanMappings below */ mappingEditable?: boolean; /** P3-M1: grouped by kind (default: when the plan has four kinds or more, as a pack's does) */ grouped?: boolean }) {
   const [showSame, setShowSame] = useState(false)
   const order: PlanItem['change'][] = ['removed', 'changed', 'new', 'unchanged']
-  const items = [...plan.items].sort((a, b) => order.indexOf(a.change) - order.indexOf(b.change))
+  const byKind = grouped ?? new Set(plan.items.map((i) => i.kind)).size >= 4
+  const items = [...plan.items].sort((a, b) => (byKind ? KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) : 0) || order.indexOf(a.change) - order.indexOf(b.change))
   const same = items.filter((i) => i.change === 'unchanged')
   const shown = showSame ? items : items.filter((i) => i.change !== 'unchanged')
   const count = (c: PlanItem['change']) => plan.items.filter((i) => i.change === c).length
@@ -83,10 +87,13 @@ export function PlanView({ plan, mappingEditable }: { plan: SolutionPlan; /** P1
       )}
       <div className="max-h-72 overflow-auto rounded-md border border-border" data-testid="plan-items">
         {shown.length === 0 && <p className="p-3 text-sm text-muted-foreground">Nothing changes.</p>}
-        {shown.map((i) => {
-          const Icon = KIND_ICON[i.kind]
+        {shown.map((i, n) => {
+          const Icon = KIND_ICON[i.kind] ?? Boxes
+          const heading = byKind && (n === 0 || shown[n - 1].kind !== i.kind)
           return (
-            <div key={`${i.kind}:${i.id}:${i.name}`} className={cn('border-b border-border px-3 py-2 text-sm last:border-0', i.destructive && 'bg-rose-500/5')} data-testid={`plan-item-${i.kind}-${i.change}`} data-destructive={i.destructive ? 'true' : undefined}>
+            <div key={`${i.kind}:${i.id}:${i.name}`}>
+            {heading && <div className="sticky top-0 z-[1] border-b border-border bg-muted/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground backdrop-blur" data-testid={`plan-group-${i.kind}`}>{KIND_GROUP[i.kind] ?? i.kind} ({shown.filter((x) => x.kind === i.kind).length})</div>}
+            <div className={cn('border-b border-border px-3 py-2 text-sm last:border-0', i.destructive && 'bg-rose-500/5')} data-testid={`plan-item-${i.kind}-${i.change}`} data-destructive={i.destructive ? 'true' : undefined}>
               <div className="flex items-center gap-2">
                 <Icon className="size-3.5 shrink-0 text-muted-foreground" />
                 <span className="text-xs text-muted-foreground">{KIND_LABEL[i.kind]}</span>
@@ -104,6 +111,7 @@ export function PlanView({ plan, mappingEditable }: { plan: SolutionPlan; /** P1
                   ))}
                 </ul>
               )}
+            </div>
             </div>
           )
         })}

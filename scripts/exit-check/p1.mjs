@@ -430,7 +430,7 @@ async function checkRecycle() {
     const other = (await admin('POST', `/data/${t.id}/rows`, { values: { Title: 'admin row' } })).row.id
     const d1 = await ivy.api('POST', `/data/${t.id}/delete`, { ids: [mine] })
     const d2 = await admin('POST', `/data/${t.id}/delete`, { ids: [other] })
-    const live = await admin('POST', `/data/${t.id}/query`, {})
+    const live = await admin('POST', '/query', { plan: { version: 2, table: t.id } })
     need(live.rows.length === 0, 'deleted rows are gone from queries')
     const seen = await ivy.api('GET', `/data/${t.id}/deleted`)
     need(seen.rows.length === 1 && seen.rows[0].Title === 'ivy row', 'the Deleted view shows Ivy only her own deleted row')
@@ -439,7 +439,7 @@ async function checkRecycle() {
     const pg = await ivy.api('POST', `/data/${t.id}/purge`, { all: true, confirm: t.name }, { allowError: true })
     need(pg.status === 403, `Ivy cannot empty the recycle bin (${pg.status})`)
     await ivy.api('POST', `/data/${t.id}/restore`, { batch: d1.batch.id })
-    need((await ivy.api('POST', `/data/${t.id}/query`, {})).rows.length === 1, 'her row is back (Undo)')
+    need((await ivy.api('POST', '/query', { plan: { version: 2, table: t.id } })).rows.length === 1, 'her row is back (Undo)')
     notes.push('new table: 30 days; deleted rows out of queries; Deleted view trimmed to her rows; foreign restore 404; Empty now 403 for her; Undo restores hers')
     record('r', 'recycle bin: deleted rows hidden, restorable by their owner only', true, notes.join('; '))
   } catch (e) {

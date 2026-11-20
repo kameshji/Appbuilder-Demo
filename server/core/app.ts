@@ -40,6 +40,7 @@ import { dashboardRoutes } from './dashboards/routes.ts'
 import { templateRoutes } from './templates/routes.ts'
 import { pwaRoutes } from './pwa.ts'
 import { offlineRoutes } from './offline.ts'
+import { chatRoutes } from './chat/routes.ts'
 
 export interface AppServer {
   services: CoreServices
@@ -138,6 +139,8 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   dashboardRoutes(router, services)
   // P2-D: templates catalogue (catalogue, plan, install, installed register, uninstall, Linked upgrade)
   templateRoutes(router, services)
+  // P3-A: chat (routes, chat topics on the hub, digest relevance, retention job)
+  chatRoutes(router, services, live, { env })
   if (opts.boot !== false) {
     await services.boot()
     if (services.ready()) {

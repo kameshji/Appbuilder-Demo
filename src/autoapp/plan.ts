@@ -5,6 +5,7 @@
  */
 import type { ColumnDef, ColumnType, TableDef } from '../platform/contracts.ts'
 import { isEnumName } from './names.ts'
+import { lookupSortSupport } from '../controls/lookups.ts'
 
 export type AutoDevice = 'desktop' | 'phone'
 
@@ -230,7 +231,15 @@ export function planAutoApp(all: TableDef[], opts: AutoAppOptions): AutoAppPlan 
         else {
           sources.add(target.name)
           const shown = target.columns.find((x) => x.name === target.primaryColumn)
-          issue('note', `Picked with a search box that asks the server as you type (any number of ${target.displayName}). Lists show its ${shown?.displayName || target.primaryColumn}; a list cannot be sorted by it (the server would order by record id), and its search box finds it by that name.`, c)
+          const name = shown?.displayName || target.primaryColumn
+          // P3-C: lists sort by the label on the server (each viewer by the names they may read) where the store supports it
+          const sort = lookupSortSupport({ table: t, target, hidden: false })
+          const sortText = sort.ok
+            ? `a list can be sorted by it (by that name, as each viewer may read it; a record they cannot read sorts as blank)`
+            : sort.why === 'store'
+              ? `a list cannot be sorted by it (${target.displayName} or this table is stored outside the default database)`
+              : `a list cannot be sorted by it (${target.displayName} has no name column that can be sorted)`
+          issue('note', `Picked with a search box that asks the server as you type (any number of ${target.displayName}). Lists show its ${name}; ${sortText}, and its search box finds it by that name.`, c)
         }
       }
       if (c.type === 'multiline' || c.type === 'file') issue('note', `Shown in the form only (${c.type === 'file' ? 'files' : 'long text'} are not shown in the list).`, c)
@@ -275,7 +284,9 @@ export function planAutoApp(all: TableDef[], opts: AutoAppOptions): AutoAppPlan 
   if (home) screens.push({ name: 'Home', what: `a tile per table (${plans.map((p) => p.table.displayName).join(', ')}) with its row count` })
   for (const p of plans) {
     const d = p.table.displayName
-    const sortWhat = p.listColumns.some((c) => c.type === 'lookup') ? 'sort by any column but lookups' : 'sort by any column'
+    // lookup columns sort by their label on the server where the store supports it (P3-C)
+    const unsortable = p.listColumns.some((c) => c.type === 'lookup' && !lookupSortSupport({ table: p.table, target: lookupTarget(all, c), hidden: false }).ok)
+    const sortWhat = unsortable ? 'sort by any column but some lookups' : 'sort by any column'
     screens.push({ name: `${d}: list`, what: `${p.search ? 'search, ' : ''}${sortWhat}, ${layout === 'compact' ? 'phone cards' : 'a table'} paged from the server${p.readOnly ? '' : ', New'}` })
     const extras = [p.timeline ? 'timeline' : '', ...p.related.map((r) => r.label)].filter(Boolean)
     screens.push({ name: `${d}: details`, what: `a form with ${p.formFields.length} ${p.formFields.length === 1 ? 'field' : 'fields'}${p.readOnly ? ' (read-only)' : `, Save, Cancel, Delete with confirmation${p.undo ? ' and Undo' : ''}`}${extras.length && layout === 'wide' ? `; ${extras.join(', ')}` : ''}` })

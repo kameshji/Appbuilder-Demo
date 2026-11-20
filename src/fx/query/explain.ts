@@ -50,7 +50,7 @@ export function describePlan(p: QueryPlan): string[] {
   const out = [`read ${p.table}`]
   if (p.filter) out.push(`  where ${describeCondition(p.filter)}`)
   if (p.search) out.push(`  where ${p.search.columns.join(' or ')} contains ${JSON.stringify(p.search.text)}`)
-  if (p.sort?.length) out.push(`  sort by ${p.sort.map((k) => `${k.col} ${k.dir === 'asc' ? 'ascending' : 'descending'}`).join(', ')}`)
+  if (p.sort?.length) out.push(`  sort by ${p.sort.map((k) => `${k.via ? `${k.col}.${k.via.col} (${k.via.table}, as you may read it)` : k.col} ${k.dir === 'asc' ? 'ascending' : 'descending'}`).join(', ')}`)
   if (p.take) out.push(`  keep the ${p.take.from === 'start' ? 'first' : 'last'} ${p.take.n} row${p.take.n === 1 ? '' : 's'}`)
   if (p.aggregate) {
     const a = p.aggregate

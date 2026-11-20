@@ -27,6 +27,9 @@ const SCHEMA = { columns: { id: 'text' as const, createdOn: 'datetime' as const,
 
 /** the fake cache: answers on demand (`resolve()`), notifying changed keys */
 const fake = vi.hoisted(() => ({
+  /** P3-C: extra tables and the session of the lookup-sort tests */
+  extra: [] as unknown[],
+  session: undefined as unknown,
   size: { rowCount: 1_000_000 as number | undefined, fullyLoaded: false },
   states: new Map<string, unknown>(),
   pending: [] as { key: string; plan: unknown; pageSize?: number }[],
@@ -36,10 +39,10 @@ const fake = vi.hoisted(() => ({
 
 vi.mock('@/platform', () => ({
   platform: {
-    getState: () => ({ ready: true, mode: 'server', tables: [TABLE], roles: [], dataVersion: 0, loading: [] }),
+    getState: () => ({ ready: true, mode: 'server', tables: [TABLE, ...fake.extra], roles: [], dataVersion: 0, loading: [], session: fake.session }),
     subscribe: () => () => {},
     tables: {
-      get: (n: string) => (n === 'Orders' ? TABLE : undefined),
+      get: (n: string) => (n === 'Orders' ? TABLE : fake.extra.find((t) => (t as { name: string }).name === n)),
       rows: () => [],
       sizeInfo: () => fake.size,
       queryState(plan: QueryPlan, opts: { pageSize?: number; owner?: string } = {}) {
@@ -97,6 +100,8 @@ function app(props: Record<string, string>, type = 'Label'): AppDef {
 }
 
 beforeEach(() => {
+  fake.extra = []
+  fake.session = undefined
   fake.states.clear()
   fake.pending.length = 0
   fake.size = { rowCount: 1_000_000, fullyLoaded: false }
@@ -176,6 +181,42 @@ describe('evaluator: delegated formulas (server mode)', () => {
     ev.update({ ...sorted, queryVersion: data.queryVersion() }, { w: 1920, h: 1080 })
     const after = ev.evalProp(node, 'Items', ROOT_CTX).value as FxRecord[]
     expect(after.map((r) => r.Title)).toEqual(['Order 29', 'Order 28', 'Order 27', 'Order 26', 'Order 24', 'Order 23', 'Order 22', 'Order 21', 'Order 2'])
+  })
+})
+
+describe('P3-C: a DataTable header sort by a lookup column', () => {
+  const CUSTOMERS = {
+    id: 'tbl_c', name: 'Customers', displayName: 'Customers', primaryColumn: 'Name', createdOn: '', modifiedOn: '',
+    columns: [{ name: 'id', displayName: 'id', type: 'text', system: true }, { name: 'Name', displayName: 'Name', type: 'text' }],
+  }
+  const DEALS = {
+    id: 'tbl_d', name: 'Deals', displayName: 'Deals', primaryColumn: 'Title', createdOn: '', modifiedOn: '',
+    columns: [{ name: 'id', displayName: 'id', type: 'text', system: true }, { name: 'Title', displayName: 'Title', type: 'text' }, { name: 'Customer', displayName: 'Customer', type: 'lookup', lookupTable: 'Customers' }],
+  }
+  const sortBy = (outputs: Record<string, unknown>) => {
+    const ev = new Evaluator(app({ Items: '=Deals' }, 'DataTable'), rt({ outputs: { c1: outputs } }), { w: 1920, h: 1080 })
+    ev.evalProp(ev.byId.get('c1')!.node, 'Items', ROOT_CTX)
+    return fake.pending.map((p) => (p.plan as QueryPlan).sort)
+  }
+
+  it('sorts on the server by the target row\'s primary column (via), never by the record id', async () => {
+    fake.extra = [CUSTOMERS, DEALS]
+    const { lookupSortInfo } = await import('./delegation')
+    expect(lookupSortInfo('Deals', 'Customer').support).toEqual({ ok: true })
+    expect(sortBy({ SortColumn: 'Customer', SortOrder: 'Descending' })).toEqual([[{ col: 'Customer', dir: 'desc', via: { table: 'Customers', col: 'Name' } }]])
+  })
+
+  it('a viewer who cannot see the target\'s primary column, or a target in another store, gets no server sort (and the header says why)', async () => {
+    const { lookupSortInfo } = await import('./delegation')
+    fake.extra = [CUSTOMERS, DEALS]
+    fake.session = { privileges: { isAdmin: false, tables: { tbl_d: { read: 'all', columns: {} }, tbl_c: { read: 'all', columns: { Name: 'none' } } } } }
+    expect(lookupSortInfo('Deals', 'Customer').support).toEqual({ ok: false, why: 'hidden' })
+    expect(sortBy({ SortColumn: 'Customer', SortOrder: 'Ascending' })).toEqual([undefined])
+    fake.pending.length = 0
+    fake.session = undefined
+    fake.extra = [{ ...CUSTOMERS, connectionId: 'conn_sheet' }, DEALS]
+    expect(lookupSortInfo('Deals', 'Customer').support).toEqual({ ok: false, why: 'store' })
+    expect(sortBy({ SortColumn: 'Customer', SortOrder: 'Ascending' })).toEqual([undefined])
   })
 })
 
