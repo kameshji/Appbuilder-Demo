@@ -18,6 +18,7 @@ Phase 2 (Reach), wave 1. Schema version 11.
 
 ### Fixed
 - The record timeline's **Document** button listed print templates of other tables when the timeline's Table property was blank; it now offers only templates of the record's table.
+- **Approvals and Dashboards no longer switch the shell to User mode when opened from the Dev menu.** Both pages are in both menus; they now stay in the mode you are in, and the mode switch still works from them.
 - The flow email step sent a field the Email action refused.
 - The service worker answered navigations to `/api/` addresses (PDF previews, attachments opened in a tab, the unsubscribe page) with the app shell.
 

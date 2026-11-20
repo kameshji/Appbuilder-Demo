@@ -223,3 +223,23 @@ export const moduleByKey = (key: string): ModuleEntry | undefined => MODULES.fin
 export const modulesFor = (mode: ShellMode): ModuleEntry[] => MODULES.filter((m) => m.modes.includes(mode) && m.inMenu !== false)
 /** the route a menu entry opens (live module: its route; planned: its placeholder page) */
 export const moduleRoute = (m: ModuleEntry): Route => (m.status === 'live' && m.route ? m.route : { page: 'soon', id: m.key })
+
+/**
+ * Which mode a route shows. Dev pages show in Dev mode and the launcher (#u) and app tabs (#u-<app id>) in User mode.
+ * A page that both menus list (Approvals, Dashboards: #u-approvals, #u-dashboards) stays in the mode the person is in,
+ * so clicking it in the Dev menu does not throw them into User mode. Settings keeps the mode; a coming-soon page stays
+ * when the module is listed in the current mode, otherwise it shows in the mode that lists it.
+ */
+export function modeOfRoute(route: Route, current: ShellMode): ShellMode {
+  if (route.page === 'u') {
+    if (!('id' in route)) return 'user'
+    const m = MODULES.find((x) => x.status === 'live' && x.route?.page === 'u' && 'id' in x.route && x.route.id === route.id)
+    return m && m.modes.includes(current) ? current : 'user'
+  }
+  if (route.page === 'settings') return current
+  if (route.page === 'soon') {
+    const m = moduleByKey(route.id)
+    return !m || m.modes.includes(current) ? current : m.modes[0]
+  }
+  return 'dev'
+}

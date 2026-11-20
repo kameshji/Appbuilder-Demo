@@ -32,7 +32,7 @@ import { usePrefs } from '@/platform/preferences'
 import { referenceOf, rememberErrorReference } from '@/platform/errorMessages'
 import { useChatDock } from '@/chat/dock'
 import { MyApps, useTabSync } from './UserMode'
-import { moduleByKey, type ShellMode } from './modules'
+import { modeOfRoute, moduleByKey, type ShellMode } from './modules'
 import { DashboardsPage } from './dashboards/DashboardsPage'
 import { useCaps } from './security'
 import { readMode, useUserKey, useWorkspace, useWorkspaceKey, writeMode } from './workspace'
@@ -85,19 +85,7 @@ const replaceRoute = (r: Route) => {
   }
 }
 
-/**
- * Which mode a route shows: User mode routes (#u, #u-<id>) and Dev pages decide it; a coming-soon page stays in the
- * current mode when the module is listed there, otherwise it shows in the mode that lists it.
- */
-export function modeOfRoute(route: Route, current: ShellMode): ShellMode {
-  if (route.page === 'u') return 'user'
-  if (route.page === 'settings') return current
-  if (route.page === 'soon') {
-    const m = moduleByKey(route.id)
-    return !m || m.modes.includes(current) ? current : m.modes[0]
-  }
-  return 'dev'
-}
+export { modeOfRoute }
 
 /**
  * The application shell around every page except the standalone player (#run-<id>) and the chat pop-out (#chat):
@@ -156,12 +144,15 @@ function Frame({ route }: { route: Route }) {
   }, [routed, route, user, canDev])
 
   // built-in User mode pages of the core data model (P0-N): #u-tasks, #u-mentions (not app tabs)
-  const builtin = routed === 'user' && route.page === 'u' && 'id' in route && (route.id === 'tasks' || route.id === 'mentions' || route.id === 'reports' || route.id === 'approvals' || route.id === 'dashboards') ? route.id : null
+  // (Approvals and Dashboards are also in the Dev menu and then show in Dev mode: modeOfRoute)
+  const builtin = route.page === 'u' && 'id' in route && (route.id === 'tasks' || route.id === 'mentions' || route.id === 'reports' || route.id === 'approvals' || route.id === 'dashboards') ? route.id : null
   const activeTab = routed === 'user' && route.page === 'u' && 'id' in route && !builtin ? route.id : null
   useTabSync(activeTab)
 
   const switchMode = (m: ShellMode) => {
     if (m === routed) return
+    // set the mode itself too: a page both menus list (Approvals, Dashboards) keeps whatever mode is current
+    setMode(m)
     const back = lastRoute.current[m]
     go(back ?? (m === 'user' ? { page: 'u' } : { page: 'home' }))
   }

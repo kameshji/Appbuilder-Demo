@@ -1,5 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { MODULES, PHASES, moduleByKey, moduleRoute, modulesFor } from './modules'
+import { MODULES, PHASES, modeOfRoute, moduleByKey, moduleRoute, modulesFor } from './modules'
+
+describe('modeOfRoute', () => {
+  it('keeps the current mode on pages both menus list; other User pages and app tabs are User mode; Dev pages Dev mode', () => {
+    // Approvals and Dashboards are in the Dev menu and the User menu: clicking them never changes the mode
+    for (const id of ['approvals', 'dashboards']) {
+      expect(modeOfRoute({ page: 'u', id }, 'dev'), id).toBe('dev')
+      expect(modeOfRoute({ page: 'u', id }, 'user'), id).toBe('user')
+    }
+    // every live menu entry keeps the mode of the menu it was clicked in
+    for (const mode of ['dev', 'user'] as const) for (const m of modulesFor(mode)) expect(modeOfRoute(moduleRoute(m), mode), `${m.key} in ${mode}`).toBe(mode)
+    // User-only pages, the launcher and app tabs
+    for (const id of ['tasks', 'mentions', 'reports', 'app_123']) expect(modeOfRoute({ page: 'u', id }, 'dev'), id).toBe('user')
+    expect(modeOfRoute({ page: 'u' }, 'dev')).toBe('user')
+    expect(modeOfRoute({ page: 'home' }, 'user')).toBe('dev')
+    expect(modeOfRoute({ page: 'settings' }, 'user')).toBe('user')
+    expect(modeOfRoute({ page: 'settings' }, 'dev')).toBe('dev')
+  })
+})
 
 describe('module registry', () => {
   it('has unique keys, a phase, 2-3 lines and at least one mode per entry', () => {
