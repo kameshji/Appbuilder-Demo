@@ -29,7 +29,7 @@ Below the table:
 - **Do not disturb**: no messages in the corner and no desktop pop-ups in the hours you set. Notifications still collect under the bell.
 - **Desktop notifications**: allow your browser to show them.
 
-WhatsApp messages are shown as coming later; they do not work yet.
+WhatsApp messages can be chosen when your administrator has set WhatsApp up and you have agreed to receive them on your number.
 
 ## "Why did I get this?"
 

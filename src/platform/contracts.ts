@@ -426,6 +426,8 @@ export type ConnectorKind =
   | 'local-csv' | 'rest' | 'sqlserver' | 'supabase' | 'firebase' | 'excel'
   /** P1: action connectors (no tables): generic HTTP / REST APIs and email through the install's relay */
   | 'http' | 'email'
+  /** P2-E: Meta WhatsApp Business Cloud API (actions only; server/core/whatsapp) */
+  | 'whatsapp'
 export interface ConnectionRef {
   id: string
   name: string

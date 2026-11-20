@@ -1,0 +1,350 @@
+{
+  "format": "appbuilder/template",
+  "formatVersion": 1,
+  "id": "builtin.customers-contacts",
+  "version": "1.0.0",
+  "kind": "dataModel",
+  "name": "Customers, contacts and activities",
+  "description": "Three related tables: customers, the people you deal with at each customer, and the calls, meetings, emails and notes you log against them. Optional SAMPLE rows show how they fit together.",
+  "publisher": "Appbuilder",
+  "tags": [
+    "customers",
+    "contacts",
+    "activities",
+    "crm"
+  ],
+  "minPlatformVersion": "0.6.0",
+  "modes": [
+    "copy",
+    "linked"
+  ],
+  "slots": [
+    {
+      "id": "Customers",
+      "label": "Customers",
+      "description": "One row per customer (a company or a person you sell to).",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "Customers",
+        "displayName": "Customers",
+        "primaryColumn": "Name"
+      },
+      "columns": [
+        {
+          "id": "Name",
+          "label": "Name",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true
+          }
+        },
+        {
+          "id": "Industry",
+          "label": "Industry",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "choice",
+            "choices": [
+              "Manufacturing",
+              "Retail",
+              "Services",
+              "Other"
+            ]
+          }
+        },
+        {
+          "id": "Phone",
+          "label": "Phone",
+          "types": [
+            "phone",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "phone"
+          }
+        },
+        {
+          "id": "Website",
+          "label": "Website",
+          "types": [
+            "url",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "url"
+          }
+        },
+        {
+          "id": "City",
+          "label": "City",
+          "types": [
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "text"
+          }
+        }
+      ]
+    },
+    {
+      "id": "Contacts",
+      "label": "Contacts",
+      "description": "People at a customer.",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "Contacts",
+        "displayName": "Contacts",
+        "primaryColumn": "FullName"
+      },
+      "columns": [
+        {
+          "id": "FullName",
+          "label": "Full name",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true
+          }
+        },
+        {
+          "id": "Email",
+          "label": "Email",
+          "types": [
+            "email",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "email"
+          }
+        },
+        {
+          "id": "Phone",
+          "label": "Phone",
+          "types": [
+            "phone",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "phone"
+          }
+        },
+        {
+          "id": "Customer",
+          "label": "Customer",
+          "types": [
+            "lookup"
+          ],
+          "lookupSlot": "Customers",
+          "required": true,
+          "create": {
+            "type": "lookup",
+            "required": true,
+            "onDelete": "restrict"
+          }
+        }
+      ]
+    },
+    {
+      "id": "Activities",
+      "label": "Customer activities",
+      "description": "Calls, meetings, emails and notes about a customer.",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "CustomerActivities",
+        "displayName": "Customer activities",
+        "primaryColumn": "Subject"
+      },
+      "columns": [
+        {
+          "id": "Subject",
+          "label": "Subject",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true
+          }
+        },
+        {
+          "id": "Kind",
+          "label": "Kind",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "choice",
+            "choices": [
+              "Call",
+              "Meeting",
+              "Email",
+              "Note"
+            ],
+            "default": "Call"
+          }
+        },
+        {
+          "id": "Date",
+          "label": "Date",
+          "types": [
+            "datetime",
+            "date"
+          ],
+          "required": false,
+          "create": {
+            "type": "datetime"
+          }
+        },
+        {
+          "id": "Customer",
+          "label": "Customer",
+          "types": [
+            "lookup"
+          ],
+          "lookupSlot": "Customers",
+          "required": true,
+          "create": {
+            "type": "lookup",
+            "required": true,
+            "onDelete": "cascade"
+          }
+        },
+        {
+          "id": "Contact",
+          "label": "Contact",
+          "types": [
+            "lookup"
+          ],
+          "lookupSlot": "Contacts",
+          "required": false,
+          "create": {
+            "type": "lookup",
+            "onDelete": "setBlank"
+          }
+        },
+        {
+          "id": "Notes",
+          "label": "Notes",
+          "types": [
+            "multiline",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "multiline"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "A meeting has a date",
+          "kind": "validation",
+          "timing": "before",
+          "operations": [
+            "create",
+            "update"
+          ],
+          "condition": "Slot_Activities_Kind <> \"Meeting\" || Not(IsBlank(Slot_Activities_Date))",
+          "message": "A meeting needs a date.",
+          "field": "Slot_Activities_Date",
+          "runAs": "caller",
+          "enabled": true
+        }
+      ]
+    }
+  ],
+  "payload": {
+    "sample": {
+      "Customers": [
+        {
+          "_id": "c1",
+          "Name": "SAMPLE Northwind Traders",
+          "Industry": "Retail",
+          "City": "Pune",
+          "Website": "https://example.com/northwind"
+        },
+        {
+          "_id": "c2",
+          "Name": "SAMPLE Contoso Tools",
+          "Industry": "Manufacturing",
+          "City": "Nashik"
+        },
+        {
+          "_id": "c3",
+          "Name": "SAMPLE Fabrikam Services",
+          "Industry": "Services",
+          "City": "Mumbai"
+        }
+      ],
+      "Contacts": [
+        {
+          "_id": "p1",
+          "FullName": "SAMPLE Asha Rao",
+          "Email": "asha.rao@example.com",
+          "Customer": "c1"
+        },
+        {
+          "_id": "p2",
+          "FullName": "SAMPLE Vikram Shah",
+          "Email": "vikram.shah@example.com",
+          "Customer": "c2"
+        },
+        {
+          "_id": "p3",
+          "FullName": "SAMPLE Meera Iyer",
+          "Customer": "c3"
+        }
+      ],
+      "Activities": [
+        {
+          "_id": "a1",
+          "Subject": "SAMPLE First call",
+          "Kind": "Call",
+          "Customer": "c1",
+          "Contact": "p1",
+          "Notes": "SAMPLE row: delete it when you no longer need it."
+        },
+        {
+          "_id": "a2",
+          "Subject": "SAMPLE Plant visit",
+          "Date": "2026-01-15T10:00:00.000Z",
+          "Kind": "Meeting",
+          "Customer": "c2",
+          "Contact": "p2"
+        },
+        {
+          "_id": "a3",
+          "Subject": "SAMPLE Price list sent",
+          "Kind": "Email",
+          "Customer": "c3"
+        }
+      ]
+    }
+  },
+  "signature": {
+    "alg": "sha256",
+    "digest": "eac6a28c2719ae817ba49648fae0aacc6a57f7d4f5d84a7ecd22b10d8b6ba4b1"
+  }
+}

@@ -1063,7 +1063,7 @@ Type: `BarcodeScanner` · default size 160 x 48 · main property: `OnScan` · al
 
 **Events:** `OnScan`.
 
-- QR codes and Data Matrix need a browser with a built-in barcode reader (Chrome on Android). Elsewhere the scanner reads EAN-13/8, Code 128, Code 39 and ITF itself. `Continuous` keeps the camera open for stock counts: OnScan runs for each code (the same code again after 2 seconds). The camera needs HTTPS (see the administrator guide on phones on a LAN).
+- Chrome on Android reads QR, Data Matrix, EAN, UPC, Code 128, Code 39 and ITF with its built-in reader. On browsers without one (iPhone Safari, some desktop browsers) the scanner reads EAN-13/8, Code 128, Code 39 and ITF itself and QR codes with a bundled open-source decoder, jsQR (Apache-2.0). Data Matrix still needs a browser with a built-in reader, or a handheld scanner. `Continuous` keeps the camera open for stock counts: OnScan runs for each code (the same code again after 2 seconds). The camera needs HTTPS (see the administrator guide on phones on a LAN).
 
 ### Scan input
 
@@ -1090,7 +1090,7 @@ Type: `ScanInput` · default size 280 x 48 · main property: `OnScan` · also ha
 
 **Events:** `OnScan`, `OnChange`.
 
-- A burst of keys ending with Enter, faster than a person types, counts as a scan: Value becomes the code and OnScan runs. Typing by hand runs OnChange (and OnScan when you press Enter).
+- The camera button reads QR codes, EAN, UPC, Code 128, Code 39 and ITF. QR codes are read by the built-in reader of the browser where there is one, otherwise by a bundled open-source decoder, jsQR (Apache-2.0), for example on iPhone Safari; Data Matrix still needs a browser with a built-in reader or a handheld scanner. A burst of keys ending with Enter, faster than a person types, counts as a scan: Value becomes the code and OnScan runs. Typing by hand runs OnChange (and OnScan when you press Enter).
 
 ### Signature pad
 

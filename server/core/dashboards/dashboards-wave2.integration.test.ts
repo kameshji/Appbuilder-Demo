@@ -451,8 +451,8 @@ describe.skipIf(!PG_URL)(PG_URL ? 'dashboards wave 2 (PostgreSQL)' : `dashboards
     await h.q('DROP TABLE env_default.ab_dashboard_tokens, env_default.ab_dashboard_snapshots, env_default.ab_dashboard_snapshot_runs')
     await h.q(`UPDATE ab.environments SET schema_version = 11 WHERE id = 'default'`)
     const { migrateEnvironmentSchema, SCHEMA_VERSION } = await import('../meta-store.ts')
-    expect(SCHEMA_VERSION).toBe(12)
-    expect(await migrateEnvironmentSchema(h.app.services.state.db!, { id: 'default', schema: 'env_default' })).toEqual({ from: 11, to: 12 })
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(12)
+    expect(await migrateEnvironmentSchema(h.app.services.state.db!, { id: 'default', schema: 'env_default' })).toEqual({ from: 11, to: SCHEMA_VERSION })
     expect((await h.q<{ n: number }>(`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'env_default' AND table_name IN ('ab_dashboard_tokens', 'ab_dashboard_snapshots', 'ab_dashboard_snapshot_runs')`))[0]!.n).toBe(3)
     expect((await h.q<{ n: number }>('SELECT count(*)::int AS n FROM env_default.ab_dashboards'))[0]!.n).toBe(before)
     // the old tokens went with the dropped table: they no longer open anything

@@ -37,6 +37,7 @@ import { approvalRoutes } from './approvals/routes.ts'
 import { createPrintService } from './print/service.ts'
 import { printRoutes } from './print/routes.ts'
 import { dashboardRoutes } from './dashboards/routes.ts'
+import { templateRoutes } from './templates/routes.ts'
 import { pwaRoutes } from './pwa.ts'
 import { offlineRoutes } from './offline.ts'
 
@@ -135,6 +136,8 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   printRoutes(router, services, () => print)
   // P2-C: dashboards (definitions, settings, the batch query endpoint)
   dashboardRoutes(router, services)
+  // P2-D: templates catalogue (catalogue, plan, install, installed register, uninstall, Linked upgrade)
+  templateRoutes(router, services)
   if (opts.boot !== false) {
     await services.boot()
     if (services.ready()) {

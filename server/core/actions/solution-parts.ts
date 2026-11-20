@@ -31,4 +31,4 @@ export async function importConnectionActions(s: Services, connectionId: string,
 }
 
 /** connector kinds a package may contain */
-export const PACKAGE_CONNECTORS = ['postgres', 'mysql', 'gsheets', 'http', 'email']
+export const PACKAGE_CONNECTORS = ['postgres', 'mysql', 'gsheets', 'http', 'email', 'whatsapp']

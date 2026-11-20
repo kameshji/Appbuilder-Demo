@@ -5,7 +5,7 @@
  *
  *   in-app   stored and pushed (unless the user or a locked administrator default switched it off)
  *   email    off | immediate | digest (hourly, or daily at a chosen time, in the user's time zone)
- *   WhatsApp placeholder (P2), never delivered
+ *   WhatsApp P2-E: a registered extra channel (whatsapp/channel.ts, addChannel below) decides per recipient and logs here
  *
  * Rules, in order: administrator default per kind, optionally locked (users cannot change a locked kind; for example
  * approvals always by email); otherwise the user's choice; otherwise the default. Email needs the SMTP relay; suppressed
@@ -257,7 +257,21 @@ ${href ? `<div style="margin-top:8px"><a href="${esc(href)}" style="display:inli
 
 export interface DeliveryLogEntry { id: string; at: string; userId: string; notificationId: string | null; environmentId: string | null; kind: string; title: string; channel: string; status: string; reason: string; mailId: string | null }
 
+/**
+ * P2-E: an extra delivery channel (WhatsApp, whatsapp/channel.ts). It is called for every delivered notification after the
+ * in-app decision, decides itself whether this person gets it (their choice, consent, quiet hours) and writes its decision
+ * to the delivery log with `log`. A failing channel never stops the others.
+ */
+export interface ExtraChannel {
+  id: string
+  deliver(c: { user: { id: string; email: string; name: string }; item: NotificationItem; prefs: NotificationSettings; log(e: { status: string; reason: string }): Promise<string> }): Promise<void>
+}
+
 export interface DeliveryService extends NotificationDelivery {
+  /** P2-E: registers an extra channel (WhatsApp) */
+  addChannel(ch: ExtraChannel): void
+  /** P2-E: updates the status and reason of a delivery log entry (an extra channel's job finished) */
+  updateLog(id: string, status: string, reason: string): Promise<void>
   policy(): Promise<DeliveryPolicy>
   savePolicy(raw: unknown): Promise<DeliveryPolicy>
   brand(): Promise<Brand>
@@ -277,6 +291,7 @@ export function createDelivery(services: CoreServices): DeliveryService {
   let keyCache: Buffer | null = null
   const key = () => (keyCache ??= signingKey(services))
   let policyCache: { at: number; p: DeliveryPolicy } | null = null
+  const extra: ExtraChannel[] = []
 
   async function policy(): Promise<DeliveryPolicy> {
     if (policyCache && Date.now() - policyCache.at < 5000) return policyCache.p
@@ -347,9 +362,22 @@ export function createDelivery(services: CoreServices): DeliveryService {
       const e = effectiveChannels(await policy(), prefs, kind)
       return { inApp: e.inApp, inAppReason: e.inAppReason, email: e.email, emailReason: e.emailReason }
     },
+    addChannel(ch) {
+      if (!extra.some((x) => x.id === ch.id)) extra.push(ch)
+    },
+    async updateLog(id, status, reason) {
+      await db().exec(`UPDATE "ab"."notification_deliveries" SET status = $2, reason = $3 WHERE id = $1`, [id, status, reason.slice(0, 500)])
+    },
     async deliver(user, item, plan, prefs) {
       const base = { userId: user.id, notificationId: item.id, environmentId: item.environmentId, kind: item.kind, title: item.title, mailId: null }
       await logDelivery({ ...base, channel: 'in_app', status: plan.inApp ? 'delivered' : 'skipped', reason: plan.inAppReason || 'In the app.' })
+      for (const ch of extra) {
+        try {
+          await ch.deliver({ user, item, prefs, log: (e) => logDelivery({ ...base, channel: ch.id, status: e.status, reason: e.reason }) })
+        } catch (e) {
+          log('warn', `notification channel ${ch.id} failed: ${errText(e)}`)
+        }
+      }
       if (plan.email === 'off') return
       const mail = identity(services).mail
       if (!(await mail.configured())) {

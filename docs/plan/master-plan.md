@@ -242,3 +242,25 @@ Rules that keep installs from breaking anything:
 
 Phase placement: catalogue mechanics and the UI component / screen / app / data model kinds in P2;
 solution templates (manufacturing pack, CRM, ERP) in P3.
+
+## 12. Owner decisions, 20 Nov 2026 (supersede the sections above where they differ)
+
+- **Customers are several small organisations (2 to 50 people each), not one large one.** Two ways to buy:
+  **hosted** (we run it; recurring payment) and **on-site** (one server at the customer's site, one-time payment;
+  the owner's words: "LTV option"; whether that means a lifetime licence is to be confirmed).
+- **Licensing is verified online.** A server needs the internet to verify its licence and the organisation it belongs
+  to. Offline is for data entry on phones, never for licensing. This supersedes "signed licence file verified offline"
+  in section 9. Open: how long a server keeps working when the licence service cannot be reached (see
+  `hosting-and-licensing.md`; the plan proposes a stated grace period so a customer's plant does not stop when our
+  service or their line is down).
+- **No cold-start offline on phones** (opening an app with no connection after the browser session ended). D32 stands.
+- **QR codes on iPhone:** use a permissively licensed (Apache-2.0) decoder library; say so in the UI component
+  documentation.
+- **Deferred:** dashboards' automatic use of summary tables, and the pivot table.
+- **No scope cut:** the full phase order stands; the "pilot-minimum" of the launch plan is not adopted.
+- **Hosting:** no server is rented until the product is about 70% complete (the owner wrote "7-%"; 70% assumed).
+  Development continues on the sandbox.
+- **png-js licence exception:** approved (`scripts/licence-exceptions.json`).
+
+How hosted, multi-organisation operation is to be built is proposed in `hosting-and-licensing.md` and is NOT yet
+approved; nothing in it is built.

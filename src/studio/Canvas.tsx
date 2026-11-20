@@ -16,6 +16,7 @@ import {
 } from './geo'
 import type { ControlNode } from '@/contracts'
 import type { Geom } from '@/runtime/evaluator'
+import { ScreenFromTemplateButton } from './StudioTemplates'
 
 /* ------------------------------------------------------------------ gesture state */
 
@@ -797,6 +798,7 @@ export function Canvas() {
         >
           <Plus className="size-3.5" />
         </button>
+        {!readOnly && <ScreenFromTemplateButton />}
       </div>
     </div>
   )

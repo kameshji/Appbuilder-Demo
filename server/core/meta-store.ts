@@ -9,6 +9,8 @@
  */
 import { PRINT_TABLES, printEnvironmentDdl, upgradeEnvironmentTo11Print } from './print/ddl.ts'
 import { dashboardsEnvironmentDdl, upgradeEnvironmentTo11Dashboards, upgradeEnvironmentTo12Dashboards } from './dashboards/ddl.ts'
+import { templatesEnvironmentDdl, upgradeEnvironmentTo13Templates } from './templates/ddl.ts'
+import { whatsappEnvironmentDdl, upgradeEnvironmentTo13Whatsapp } from './whatsapp/ddl.ts'
 import type {
   AttachmentRecord, ConnectionRecord, EnvironmentRecord, EnvironmentRef, MetaStore, MigrationSummary, SecretBox, SqlDb, UserRecord,
 } from './contracts.ts'
@@ -61,8 +63,10 @@ import { RECYCLE_TABLES, recycleEnvironmentDdl, upgradeEnvironmentTo10Recycle } 
  *    dashboards per environment (dashboards/ddl.ts: ab_dashboards, ab_dashboard_settings).
  * 12: P2-C second wave (independent step): dashboard view tokens and scheduled snapshots per environment
  *    (dashboards/ddl.ts: ab_dashboard_tokens, ab_dashboard_snapshots, ab_dashboard_snapshot_runs).
+ * 13: P2 package D (independent step): templates catalogue (templates/ddl.ts). P2 package E (independent step): WhatsApp
+ *    connector (whatsapp/ddl.ts).
  */
-export const SCHEMA_VERSION = 12
+export const SCHEMA_VERSION = 13
 
 /** the database was upgraded by a newer server: this one must not touch it (downgrade guard) */
 export class SchemaTooNewError extends Error {
@@ -310,6 +314,8 @@ export function environmentDdl(schema: string): string[] {
     ...printEnvironmentDdl(schema),
     // P2-C dashboards (version 11, independent step)
     ...dashboardsEnvironmentDdl(schema),
+    ...templatesEnvironmentDdl(schema),
+    ...whatsappEnvironmentDdl(schema),
   ]
 }
 
@@ -419,6 +425,18 @@ export const ENVIRONMENT_STEPS: { to: number; describe: string; run(db: SqlDb, s
     to: 12,
     describe: 'dashboard view tokens and scheduled snapshots (ab_dashboard_tokens, ab_dashboard_snapshots, ab_dashboard_snapshot_runs)',
     run: upgradeEnvironmentTo12Dashboards,
+  },
+  {
+    // P2-D (independent step): templates catalogue; the tables come from environmentDdl
+    to: 13,
+    describe: 'templates catalogue (installed templates)',
+    run: upgradeEnvironmentTo13Templates,
+  },
+  {
+    // P2-E (independent step): WhatsApp connector; the tables come from environmentDdl
+    to: 13,
+    describe: 'WhatsApp connector (opt-in store, message log)',
+    run: upgradeEnvironmentTo13Whatsapp,
   },
 ]
 

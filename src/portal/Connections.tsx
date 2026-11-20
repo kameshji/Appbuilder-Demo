@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Spinner } from '@/components/ui/spinner'
 import { ConfirmDialog, Empty, Field, Panel, PageHeader, errMsg, useToast } from './kit'
 import { CONNECTOR_INFO, ConnectionFlags, connectorInfo } from './ConnectionBits'
+import { WHATSAPP_DEFAULTS, WhatsappConnectionFields, whatsappSettingsOk } from './WhatsappConnectionFields'
 import { ConnectionDetail } from './ConnectionActions'
 import { PasswordInput } from './PasswordFields'
 import { goPortal, matches, useSearch } from './Shell'
@@ -52,6 +53,7 @@ const KINDS: { kind: ConnectorKind; text: string }[] = [
   { kind: 'files', text: 'CSV, Excel and JSON files on this device.' },
   { kind: 'http', text: 'A web (REST) API: actions for flows and events.' },
   { kind: 'email', text: 'Send email from flows and events.' },
+  { kind: 'whatsapp', text: 'WhatsApp template messages to opted-in numbers.' },
 ]
 
 const AUTH_MODES = [
@@ -111,7 +113,7 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
     setKeyInfo(connection?.connector === 'gsheets' && s.serviceAccountEmail ? { email: s.serviceAccountEmail } : null)
     setPaste('')
     setKeyError('')
-    setHttp(connection && (connection.connector === 'http' || connection.connector === 'email') ? { ...s } : { authMode: 'none', apiKeyIn: 'header', verifyTls: 'true', allowPrivateNetwork: 'false' })
+    setHttp(connection && (connection.connector === 'http' || connection.connector === 'email' || connection.connector === 'whatsapp') ? { ...s } : { authMode: 'none', apiKeyIn: 'header', verifyTls: 'true', allowPrivateNetwork: 'false', ...WHATSAPP_DEFAULTS })
     setHsec({})
   }, [open, connection])
 
@@ -140,18 +142,19 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
   const sheetId = extractSpreadsheetId(sheet)
   const gsOk = !!sheetId && (!!keyJson || (editing && !!connection?.hasSecret))
   const httpOk = kind === 'http' && /^https?:\/\/[^/]+/.test(http.baseUrl ?? '')
-  const valid = !!name.trim() && (sqlKind ? sqlOk : kind === 'gsheets' ? gsOk : kind === 'http' ? httpOk : kind === 'email')
+  const valid = !!name.trim() && (sqlKind ? sqlOk : kind === 'gsheets' ? gsOk : kind === 'http' ? httpOk : kind === 'whatsapp' ? whatsappSettingsOk(http) : kind === 'email')
   const hs = (k: string) => (e: { target: { value: string } }) => setHttp((x) => ({ ...x, [k]: e.target.value }))
 
   const run = async () => {
     setBusy(true)
     try {
       let saved: ConnectionRef | null = null
-      if (kind === 'http' || kind === 'email') {
+      if (kind === 'http' || kind === 'email' || kind === 'whatsapp') {
         const settings: Record<string, string> = {}
-        for (const [k, v] of Object.entries(http)) if (typeof v === 'string' && v.trim() !== '') settings[k] = v.trim()
+        const keep = kind === 'whatsapp' ? ['phoneNumberId', 'businessAccountId', 'defaultCountryCode', 'apiVersion', 'sendingEnabled', 'inboundFlowId', 'perMinute', 'maxConcurrent'] : null
+        for (const [k, v] of Object.entries(http)) if (typeof v === 'string' && v.trim() !== '' && (keep ? keep.includes(k) : !(k in WHATSAPP_DEFAULTS))) settings[k] = v.trim()
         const parts = Object.fromEntries(Object.entries(hsec).filter(([, v]) => v))
-        const secret = kind === 'http' && Object.keys(parts).length ? JSON.stringify(parts) : undefined
+        const secret = (kind === 'http' || kind === 'whatsapp') && Object.keys(parts).length ? JSON.stringify(parts) : undefined
         if (connection) await platform.connections.update(connection.id, { name: name.trim(), settings, ...(secret ? { secret } : {}) })
         else saved = await platform.connections.create({ name: name.trim(), connector: kind, settings, ...(secret ? { secret } : {}) })
       } else if (sqlKind) {
@@ -283,6 +286,9 @@ function ConnectionDialog({ open, onOpenChange, connection, onSaved }: { open: b
                     <Switch checked={http.verifyTls !== 'false'} onCheckedChange={(v) => setHttp((x) => ({ ...x, verifyTls: v ? 'true' : 'false' }))} aria-label="Verify TLS certificates" />
                   </label>
                 </div>
+              )}
+              {kind === 'whatsapp' && (
+                <WhatsappConnectionFields settings={http} set={(k, v) => setHttp((x) => ({ ...x, [k]: v }))} secret={hsec} setSecret={(k, v) => setHsec((x) => ({ ...x, [k]: v }))} hasSecret={editing && !!connection?.hasSecret} />
               )}
               {kind === 'email' && (
                 <div className="grid gap-3" data-testid="email-settings">
@@ -440,6 +446,7 @@ function summary(c: ConnectionRef): string {
   if (c.connector === 'files') return 'Copies of your files in the workspace folder'
   if (c.connector === 'http') return s.baseUrl ? `${s.baseUrl}${s.authMode && s.authMode !== 'none' ? ` · ${s.authMode}` : ''}` : 'No base URL'
   if (c.connector === 'email') return `Through the install's mail relay${s.fromName ? ` as "${s.fromName}"` : ''}`
+  if (c.connector === 'whatsapp') return `WhatsApp number id ${s.phoneNumberId ?? '?'}${s.sendingEnabled === 'false' ? ' · sending off' : ''}`
   return ''
 }
 

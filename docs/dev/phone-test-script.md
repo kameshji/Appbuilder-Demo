@@ -33,7 +33,9 @@ Device / OS / browser: ______________________ Tester: __________ Date: _________
 | --- | --- | --- | --- | --- |
 | B1 | Scan input camera button, allow the camera | camera opens (back camera) | [ ] | [ ] |
 | B2 | Scan the EAN-13 and the Code 128 | the field gets the code, OnScan runs | [ ] | [ ] |
-| B3 | Scan the QR code | Android: the code; iPhone: the sheet says QR codes cannot be read here | [ ] | [ ] |
+| B3 | Scan the QR code (Scan input camera button) | the field gets the text, OnScan runs, the sheet closes. On the iPhone this is read by the bundled jsQR fallback (Safari has no BarcodeDetector): also try it dimly lit, at arm's length and about 10 cm away, with a Hindi text code, and with the Barcode scanner set to Continuous (the same QR twice within 2 s counts once) | [ ] | [ ] |
+| B3a | Scan a Data Matrix label with Formats set to "data_matrix" | Android: the code; iPhone: the sheet says Data Matrix needs a browser with a built-in reader or a handheld scanner (or "cannot read these codes" when only Data Matrix is wanted) | [ ] | [ ] |
+| B3b | iPhone: scroll the page or open another app while the scanner is open for 30 s, then scan | no freeze while scanning (QR decoding runs on the main thread: note how the live picture behaves) | [ ] | [ ] |
 | B4 | Torch button (if shown) | the torch lights | [ ] | [ ] |
 | B5 | Barcode scanner, Continuous, scan 3 labels | 3 entries, no duplicates within 2 s | [ ] | [ ] |
 | B6 | Keyboard-wedge scanner into Scan input | value = code, OnScan runs | [ ] | [ ] |

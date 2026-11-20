@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { clientToFrame, containerAt, containerOrigin, snapGrid } from './geo'
 import { CATEGORIES } from './categories'
+import { InsertFromTemplate } from './StudioTemplates'
 
 const RAIL: Array<{ pane: Pane; label: string; icon: typeof Layers }> = [
   { pane: 'tree', label: 'Tree view', icon: Layers },
@@ -331,6 +332,7 @@ function InsertPane() {
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-3 px-2 pb-3">
+          {!q && <InsertFromTemplate />}
           {recentDefs.length > 0 && (
             <section>
               <h4 className="mb-1 flex items-center gap-1 px-1 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">

@@ -3,6 +3,7 @@
  * reference generator (scripts/docs/actions.ts, `npm run docs:gen`).
  */
 import type { ActionDef, JsonSchema } from './contracts.ts'
+import { WHATSAPP_ACTIONS } from '../whatsapp/defs.ts'
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']
 export const MAX_ATTACHMENTS = 10
@@ -98,4 +99,6 @@ export const SEND_ACTION: ActionDef = {
 export const BUILTIN_ACTIONS: { kind: string; label: string; actions: ActionDef[] }[] = [
   { kind: 'http', label: 'HTTP (REST API)', actions: [REQUEST_ACTION] },
   { kind: 'email', label: 'Email', actions: [SEND_ACTION] },
+  // P2-E (server/core/whatsapp/defs.ts)
+  { kind: 'whatsapp', label: 'WhatsApp', actions: WHATSAPP_ACTIONS },
 ]

@@ -305,6 +305,20 @@ describe.skipIf(!PG_URL)('realtime hub (PostgreSQL)', () => {
     expect((await other.waitMsg((m) => m.t === 'table' && m.op === 'insert')).self).toBeUndefined()
   })
 
+  it('a schema change (a unit of work that invalidates security) does not drop the subscriptions of people who keep their access', async () => {
+    const s = (await ready(B)).s
+    await s.sub(`table:${table.id}`, 'default')
+    // creating a table invalidates the security caches inside its transaction; the hub re-checks 250 ms later
+    const made = await A.post('/tables', { displayName: `Recheck ${Date.now()}`, columns: [{ displayName: 'Name', type: 'text' }] })
+    expect(made.status, JSON.stringify(made.data)).toBe(200)
+    await new Promise((r) => setTimeout(r, 900))
+    expect(s.msgs.filter((m) => m.t === 'unsubscribed' || m.t === 'error')).toEqual([])
+    // and the subscription still delivers
+    expect((await B.post(`/data/${table.id}/rows`, { values: { Title: 'still here' } })).status).toBe(200)
+    await s.waitMsg((m) => m.t === 'table' && m.op === 'insert')
+    s.close()
+  })
+
   it('gap detection: prev chains per table; a resubscribe acknowledges the latest seq', async () => {
     const s = (await ready(B)).s
     const ack = await s.sub(`table:${table.id}`, 'default')

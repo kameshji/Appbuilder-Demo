@@ -12,7 +12,7 @@ backups.
 For each kind (from apps, from Appbuilder, from table events, from flows, approvals, mentions, tasks):
 
 - **In the app**: on or off.
-- **Email**: no email, **right away**, or **in a digest**. WhatsApp arrives in Phase 2.
+- **Email**: no email, **right away**, or **in a digest**. **WhatsApp** can be chosen when an administrator has set it up and your number is opted in ([WhatsApp](whatsapp.md)).
 - A lock means your administrator decided for everyone (for example "approvals always by email").
 
 Below the table: the **digest** (hourly, or daily at a time), your **time zone** (for the digest and quiet hours) and

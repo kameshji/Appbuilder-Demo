@@ -39,9 +39,11 @@ without a connection, and testing on a phone.
   seconds), for example `Collect(Counted, {Code: Scanner1.Value})`.
 - **Formats**: "All" or a list such as "qr, ean13, code128".
 - Which codes work where: Chrome on Android reads QR, Data Matrix, EAN, UPC, Code 128, Code 39 and ITF with the camera.
-  iPhones and desktop browsers read EAN, UPC, Code 128, Code 39 and ITF with the camera, **but not QR codes or Data
-  Matrix**. Keyboard scanners work everywhere. If your labels are QR codes and people use iPhones, give them keyboard
-  scanners or use barcodes.
+  iPhones and desktop browsers without a built-in reader read EAN, UPC, Code 128, Code 39 and ITF with the camera, and
+  **QR codes** with a bundled open-source decoder (jsQR, Apache-2.0, built into the product). **Data Matrix** is not
+  read on those browsers: use Chrome on Android, a keyboard scanner or a different label. Keyboard scanners work
+  everywhere. QR codes on an iPhone are read a little slower than on Android and need a steady, well-lit code that
+  fills a good part of the frame; the iPhone path has not been tried on a real phone yet (see the phone test script).
 - **Scan to find a record**: `LookUp(Parts, Code = ScanInput1.Value)` in a label or a form's Item.
 - **Scan to fill a form**: a form in New mode takes starting values from an Item that is not a row:
   set the form's **Item** to `{Code: ScanInput1.Value}` and scan before filling the other fields.

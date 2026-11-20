@@ -13,8 +13,10 @@
  *    412x915). It is NOT a real phone, NOT iOS Safari. docs/dev/phone-test-script.md is the manual script for real phones.
  *  - The camera is Chrome's fake capture device playing a generated Y4M video that shows a Code 128 barcode
  *    ("LOT-4711"): getUserMedia, the video element and frame grabbing are real. Headless Chrome on Linux has no
- *    BarcodeDetector, so the scan goes through our own 1D decoder (src/phone/scan/decode1d.ts). QR codes need the
- *    browser's BarcodeDetector and are NOT tested here.
+ *    BarcodeDetector, so the scan goes through our own 1D decoder (src/phone/scan/decode1d.ts). The video has a
+ *    second half that shows a QR code: a scanner app (step QR, before the sign-out check) deletes window.BarcodeDetector
+ *    so that the QR code is read by the bundled jsQR fallback (src/phone/scan/qr.ts), the path iPhone Safari takes;
+ *    a Data Matrix scanner must say that this browser cannot read it. A real iPhone is NOT tested.
  *  - "Take photo" on a phone opens the native camera through <input capture>; here the file is handed to that input
  *    (a generated 3000x2000 JPEG), then resized in the page (real canvas pipeline).
  *  - The plant Wi-Fi is Chrome's network emulation: offline toggling, a slow-3G profile and a flapping connection.
@@ -30,6 +32,7 @@ import path from 'node:path'
 import http from 'node:http'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import pg from 'pg'
+import qrcode from 'qrcode-generator'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const E = process.env
@@ -41,6 +44,8 @@ const SHOTS = E.SHOTS || ''
 const ADMIN = { name: 'Sam Supervisor', email: 'sam@example.test', password: 'Exit-Example-Pass-2026' }
 if (!/^appbuilder_exit/.test(DB.database)) { console.error('The exit-check database name must start with appbuilder_exit (it is dropped).'); process.exit(2) }
 const DIST = E.EXIT_DIST ? path.resolve(E.EXIT_DIST) : path.join(root, 'dist')
+const QR_TEXT = 'QR-LOT-4711 नमस्ते' // ASCII and Hindi (UTF-8 bytes in the code)
+const ONLY_QR = !!E.EXIT_ONLY_QR // sign in and run the QR fallback step only
 const ONLY_TOUCH = !!E.EXIT_ONLY_TOUCH // sign in and run section E only (touch pickers, cards, sheets)
 if (!fs.existsSync(path.join(DIST, 'index.html'))) { console.error('Build the app first (npx vite build).'); process.exit(2) }
 
@@ -99,7 +104,16 @@ function code128Modules(text) {
   widths.forEach((w, i) => { for (let k = 0; k < w; k++) out.push(i % 2 === 0 ? 1 : 0) })
   return out
 }
-function makeY4m(file, text) {
+/** a QR code (error correction M, UTF-8 bytes) as rows of dark/light modules */
+function qrModules(text) {
+  const q = qrcode(0, 'M')
+  q.addData(String.fromCharCode(...Buffer.from(text, 'utf8')), 'Byte')
+  q.make()
+  const n = q.getModuleCount()
+  return Array.from({ length: n }, (_, r) => Array.from({ length: n }, (_, c) => q.isDark(r, c)))
+}
+/** 20 frames at 10 per second, looped by Chrome: the first 10 show the Code 128 barcode, the last 10 the QR code (when qrText is given) */
+function makeY4m(file, text, qrText) {
   const W = 640, H = 480, px = 4
   const mods = code128Modules(text)
   const x0 = Math.floor((W - mods.length * px) / 2)
@@ -109,6 +123,16 @@ function makeY4m(file, text) {
   const frame = Buffer.concat([Buffer.from('FRAME\n'), y, uv, uv])
   const frames = []
   for (let i = 0; i < 10; i++) frames.push(frame)
+  if (qrText) {
+    const grid = qrModules(qrText)
+    const qpx = 8
+    const side = grid.length * qpx
+    const qx = Math.floor((W - side) / 2), qy = Math.floor((H - side) / 2)
+    const yq = Buffer.alloc(W * H, 235)
+    for (let r = 0; r < grid.length; r++) for (let c = 0; c < grid.length; c++) if (grid[r][c]) for (let k = 0; k < qpx; k++) yq.fill(20, (qy + r * qpx + k) * W + qx + c * qpx, (qy + r * qpx + k) * W + qx + (c + 1) * qpx)
+    const qframe = Buffer.concat([Buffer.from('FRAME\n'), yq, uv, uv])
+    for (let i = 0; i < 10; i++) frames.push(qframe)
+  }
   fs.writeFileSync(file, Buffer.concat([Buffer.from(`YUV4MPEG2 W${W} H${H} F10:1 Ip A1:1 C420jpeg\n`), ...frames]))
 }
 
@@ -164,7 +188,7 @@ async function setupData() {
   def.dataSources = ['Production']
   def.offline = { entry: true }
   const kids = def.screens[0].children
-  kids.push({ id: 'n_scan', name: 'ScanCode', type: 'ScanInput', props: { X: '=16', Y: '=12', Width: '=328', Height: '=48', AnchorH: '=Anchor.Stretch' }, children: [] })
+  kids.push({ id: 'n_scan', name: 'ScanCode', type: 'ScanInput', props: { X: '=16', Y: '=12', Width: '=328', Height: '=48', AnchorH: '=Anchor.Stretch', Formats: '="code_128"' }, children: [] })
   kids.push({ id: 'n_scans', name: 'LblScans', type: 'Label', props: { X: '=16', Y: '=64', Width: '=328', Height: '=24', Text: '="Scans: " & ScanCode.ScanCount & " " & ScanCode.Value' }, children: [] })
   kids.push({ id: 'n_dev', name: 'LblDevice', type: 'Label', props: { X: '=16', Y: '=88', Width: '=328', Height: '=24', Text: '=Device().Kind & "|" & Device().Touch & "|" & Device().Online' }, children: [] })
   kids.push({ id: 'n_tiny', name: 'TinyCheck', type: 'Checkbox', props: { X: '=16', Y: '=114', Width: '=160', Height: '=24' }, children: [] })
@@ -235,6 +259,33 @@ async function scanWithCamera() {
   check(!(await page.$(T('scanner-sheet'))), 'one-shot scan closes the camera', '')
   const label = await page.$eval(T('control-LblScans'), (e) => e.textContent)
   check(/Scans: 1 LOT-4711/.test(label), 'OnScan / ScanCount / Value outputs', label)
+}
+
+/** QR codes on a browser without BarcodeDetector (what iPhone Safari is): jsQR reads them from the same frames */
+async function scanQrFallback() {
+  const id = await makeApp('QR scan', [
+    node('QrBtn', 'BarcodeScanner', { X: '=16', Y: '=16', Width: '=328', Height: '=48', Formats: '="qr_code"' }),
+    node('DmBtn', 'BarcodeScanner', { X: '=16', Y: '=80', Width: '=328', Height: '=48', Formats: '="data_matrix"' }),
+    lbl('LblQr', 144, '="QR:" & QrBtn.ScanCount & "|" & QrBtn.Format & "|" & QrBtn.Value'),
+  ])
+  await openApp(id)
+  // force the fallback path: this Chrome may have a BarcodeDetector, iPhone Safari does not
+  await page.evaluate(() => { Object.defineProperty(window, 'BarcodeDetector', { value: undefined, configurable: true, writable: true }) })
+  check(await page.evaluate(() => !window.BarcodeDetector), 'QR step: BarcodeDetector removed, the fallback path is forced', '')
+  await tap(ctl('QrBtn') + ' button')
+  await waitFor(T('scanner-sheet'))
+  const want = 'QR:1|qr_code|' + QR_TEXT
+  const got = await page.waitForFunction((w) => document.querySelector('[data-testid="control-LblQr"]')?.textContent.trim() === w, { timeout: 25000 }, want).then(() => true, () => false)
+  const shown = await page.$eval(ctl('LblQr'), (e) => e.textContent.trim())
+  check(got, 'QR code (with Hindi text) from the camera is read by the bundled jsQR fallback: Value, Format qr_code, ScanCount 1', shown)
+  check(!(await page.$(T('scanner-sheet'))), 'QR scan closes the camera (one-shot)', '')
+  await tap(ctl('DmBtn') + ' button')
+  await waitFor(T('scanner-sheet'))
+  await waitFor(T('scanner-sheet') + ' p.text-xs')
+  const note = await page.$eval(T('scanner-sheet') + ' p.text-xs', (e) => e.textContent)
+  check(/cannot read these codes/.test(note), 'Data Matrix only: the sheet says this browser cannot read it with the camera', note)
+  await tap(T('scanner-close'))
+  await sleep(300)
 }
 
 async function keyboardWedge() {
@@ -1117,7 +1168,7 @@ try {
   must(await api('POST', '/auth/login', { email: ADMIN.email, password: ADMIN.password }), 'login')
   const appId = await setupData()
   const y4m = path.join(WORK, 'barcode.y4m')
-  makeY4m(y4m, 'LOT-4711')
+  makeY4m(y4m, 'LOT-4711', QR_TEXT)
   browser = await puppeteer.launch({
     executablePath: E.CHROME_PATH || '/usr/bin/google-chrome', headless: 'new',
     args: ['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-video-capture=${y4m}`],
@@ -1151,6 +1202,11 @@ try {
     await page.waitForFunction(() => !!navigator.serviceWorker.controller, { timeout: 20000 }).catch(() => {})
     const pk = await makeApp('Back pickers', [node('DD', 'Dropdown', { X: '=16', Y: '=8', Width: '=328', Height: '=40', Items: '=["Alpha","Bravo","Charlie","Delta"]' })])
     await sectionF(pk)
+  } else if (ONLY_QR) {
+    log('QR fallback only')
+    await signIn()
+    await page.goto(`${BASE}/#u`, { waitUntil: 'networkidle2' })
+    await scanQrFallback()
   } else {
   log('A. sign-in at 360 px, the PWA')
   await signIn()
@@ -1181,6 +1237,9 @@ try {
   await desktopUnchanged(ids.pickers, ids.table, ids.dialog)
   await phone(360, 800)
   await sectionF(ids.pickers)
+  log('QR. the QR code fallback (no BarcodeDetector)')
+  await phone(360, 800)
+  await scanQrFallback()
   await signOutClears()
   await wipe()
   }

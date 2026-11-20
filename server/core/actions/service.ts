@@ -55,6 +55,9 @@ export interface ProviderCall {
   note(details: Record<string, unknown>): void
   runId: string
   idempotencyKey?: string
+  /** who called (`flow:<id>`, `event:<id>`, `test`) and the caller's correlation id (P2-E: the WhatsApp message log) */
+  source?: string
+  correlationId?: string
 }
 
 export interface ActionProvider {
@@ -447,7 +450,7 @@ export function createActionsService(services: CoreServices): ActionsServiceImpl
       const timer = setTimeout(() => ac.abort(), timeoutMs)
       try {
         const output = await Promise.race([
-          p.invoke({ env, connection: rec, action: def, inputs: v.value as Record<string, unknown>, identity, timeoutMs, signal: ac.signal, services, cache: s.cache, note: (d) => Object.assign(details, d), runId, idempotencyKey: opts.idempotencyKey }),
+          p.invoke({ env, connection: rec, action: def, inputs: v.value as Record<string, unknown>, identity, timeoutMs, signal: ac.signal, services, cache: s.cache, note: (d) => Object.assign(details, d), runId, idempotencyKey: opts.idempotencyKey, source: opts.source, correlationId: opts.correlationId }),
           new Promise<never>((_, reject) => ac.signal.addEventListener('abort', () => reject(new OutboundError('timeout', `The action did not finish within ${Math.round(timeoutMs / 100) / 10} s.`, true)), { once: true })),
         ])
         let outSize = 0

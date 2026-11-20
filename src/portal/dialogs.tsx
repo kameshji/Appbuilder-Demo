@@ -135,7 +135,7 @@ export function StartWithDataDialog({ open, onOpenChange }: { open: boolean; onO
       <DialogContent data-testid="start-with-data-dialog">
         <DialogHeader>
           <DialogTitle>Start with data</DialogTitle>
-          <DialogDescription>Creates an app with a list and an edit form already connected to your table. Phone apps get the list and the form on separate screens.</DialogDescription>
+          <DialogDescription>Creates an app connected to your table: a list with search and sort, a detail screen with an edit form, Delete with confirmation, related records and the timeline. Phone sizes get one column. For several tables or a preview, use Apps &gt; From the data model.</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); if (ok) void run() }}>
           <Segmented label="Table source" value={mode} onChange={setMode} options={[{ value: 'existing', label: 'Use an existing table' }, { value: 'new', label: 'Create a new table' }]} />

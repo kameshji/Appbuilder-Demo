@@ -124,10 +124,10 @@ export const MODULES: readonly ModuleEntry[] = [
     ],
   },
   {
-    key: 'templates', label: 'Templates', icon: LayoutTemplate, modes: ['dev'], status: 'soon', phase: 'P2', need: 'maker',
-    tagline: 'Ready-made UI components, screens, apps and solutions.',
+    key: 'templates', label: 'Templates', icon: LayoutTemplate, modes: ['dev'], status: 'live', route: { page: 'templates' }, phase: 'P2', need: 'maker',
+    tagline: 'Ready-made UI components, screens, apps and data models.',
     details: [
-      'The catalogue with UI component, screen, app and data model templates in P2 Reach; solution templates (manufacturing pack with OEE, quality inspection with NCR, maintenance; CRM) in P3 Collaboration and templates.',
+      'The built-in catalogue (works offline): UI component, screen, app and data model templates, bound to your tables in one step and installed after a plan, without overwriting anything. Solution templates (manufacturing pack with OEE, quality inspection with NCR, maintenance; CRM) in P3 Collaboration and templates.',
       'ERP templates (inventory, purchase, sales, ledgers and GST) built on the platform; data import from other systems, with an optional Tally exchange.',
     ],
   },

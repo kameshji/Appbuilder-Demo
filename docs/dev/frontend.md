@@ -241,8 +241,8 @@ their state while you build.
 - **Design sizes**: presets and the size rule are in `/home/claude/appbuilder-demo/src/runtime/sizes.ts` (`SIZE_PRESETS`, `sizeError`, `deviceOf`),
   the picker is `/home/claude/appbuilder-demo/src/portal/SizePicker.tsx` (New app, Start with data, App settings). `surfaceSize` in
   `src/runtime/layout.ts` keeps a portrait design at its size (scaled to fit, centred) in a landscape area and fills a portrait
-  one. The Start with data generator (`addDataScreenContent` in `src/portal/actions.ts`) has a desktop, a portrait and a phone
-  (list screen + form screen) layout.
+  one. Start with data (`src/portal/actions.ts`) uses the auto app generator (`src/autoapp`, [auto-apps.md](auto-apps.md)):
+  a wide layout for desktop and landscape sizes, a one-column layout for phones and portrait sizes.
 - **Top bar** (`Shell.tsx`), right end, in this order (as in Power Platform): theme toggle and, in Dev mode, the storage badge;
   then `ChatButton`, `EnvironmentPicker` (`src/portal/EnvironmentPicker.tsx`) and `ProfileAvatar` (`src/portal/Profile.tsx`) last.
   The Studio command bar ends with the same `ProfileAvatar`.

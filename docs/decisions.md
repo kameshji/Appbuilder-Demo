@@ -682,3 +682,33 @@ table rebuilds its indexes (1,000,000 rows: 17 s); deleted rows take space until
 **Decision.** Pins are ids only in `ab.user_settings` under `dashboard-pins:<environment>` (no table; schema stays 12) and are computed in the browser as the viewer through the normal batch endpoint. A pin the person can no longer open says nothing about its dashboard; a new pin must be openable. The kiosk page is mounted by `App.tsx` before `platform.init()`, so it never reads or uses the browser's session; it makes only the two token routes' requests with `credentials: 'omit'` and a Bearer header, and keeps the token in the URL fragment. Rejected: the kiosk inside the shell with the platform's fetch wrapper, which sends the session cookie and the CSRF header.
 
 **Consequences.** The token is readable in the kiosk browser's address bar and history; a reverse proxy that logs `Authorization` headers would capture it. The snapshot screen copies the reports' schedule and recipient fields instead of sharing one component (to be extracted). Details: `docs/dev/dashboards.md`.
+
+## D41. Auto apps are generated once into an ordinary app (P2 package D, Nov 2026)
+
+**Decision.** The generator (`src/autoapp`, pure shared code) writes an ordinary `AppDef`: no link back and no regeneration in place, so generating again creates a new app. Every generated formula is tested by translating it with the query translator against generated table shapes. It uses only UI components and runtime behaviour that exist, so their limits (lookup picker, lookup labels in lists, fixed colours) are shown as issues in the dialog, not worked around. Start with data uses the same generator.
+
+**Consequences.** Auto apps on tables with large lookup targets need a searchable lookup in the Form. Details: `docs/dev/auto-apps.md`.
+
+## D42. Templates: slot tokens rewritten by the formula parser; Linked installs are solutions; integrity by a manifest of hashes (P2 package D, Nov 2026)
+
+**Decision.** Templates are JSON packages whose formulas name data only through slot tokens, rewritten through the formula parser at binding. Copy installs create tables through the data model plan path, then the app, roles, rules and SAMPLE rows, in one unit of work; Linked installs are in-memory solutions with stable ids, so upgrades reuse the solution upgrade plan. Built-in integrity is a manifest of canonical-JSON SHA-256 digests shipped in (and signed with) the release; per-template Ed25519 signatures are reserved for an online catalogue. UI component and screen templates are inserted by the Studio as an undo step, so Linked is not offered for them.
+
+**Consequences.** Integrity does not protect against someone who can write to the install folder, and means little while releases are unsigned (no release key yet). Details: `docs/dev/templates.md`.
+
+## D43. WhatsApp: a fixed provider address, one send path that checks opt-in, no data in environment copies (P2 package E, Nov 2026)
+
+**Decision.** Meta's Cloud API through the connector actions framework with a fixed address (no address setting; the HTTP connector refuses Meta's host). The opt-in check lives in the one send path on the server and also covers session replies. Numbers are stored in plain E.164 for exact matching and masked outside the admin pages; message text is not stored. Environment copies take no WhatsApp data and no secrets. The webhook answers repeated signatures with 200; a STOP always applies, a START only when newer than the current record. SMS is deferred.
+
+**Consequences.** The fake Graph API is modelled on Meta's documentation; nothing was recorded from a real account, so the points listed in `docs/dev/whatsapp.md` stay unverified. A maker with "use" can record an opt-in (attributed, not prevented). Details: `docs/dev/whatsapp.md`.
+
+## D44. Camera QR fallback: jsQR (P2, owner decision 20 Nov 2026)
+
+**Decision.** jsQR 1.4.0 (Apache-2.0, pure JavaScript, no dependencies) is the one production dependency added. It runs on the main thread on the same frames as the 1D decoder, with a time budget that skips frames after a slow decode, under the current CSP (no WASM, no worker). Data Matrix stays unsupported on browsers without `BarcodeDetector`.
+
+**Consequences.** About +130 kB in the single-file build. Verified with generated images and Chrome's fake camera only; a real iPhone is not tested. Details: `docs/dev/phone.md`.
+
+## D45. Owner decisions of 20 Nov 2026: several organisations, online licence verification, no scope cut
+
+**Decision.** Recorded in `docs/plan/master-plan.md` section 12: customers are several small organisations (hosted with recurring payment, or on-site with a one-time payment); licences are verified online (supersedes the offline licence file); no cold-start offline on phones; summary-table use and the pivot table are deferred; the full phase order stands. How to host several organisations is proposed, not decided, in `docs/plan/hosting-and-licensing.md`.
+
+**Consequences.** The product is not multi-tenant today; hosting many organisations needs either a fleet of installs or a kernel change.

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CircleAlert, Loader2, Lock } from 'lucide-react'
 import { platform, usePlatform } from '@/platform'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -20,6 +20,7 @@ import { PropertiesPanel } from './PropertiesPanel'
 import { StatusBar } from './StatusBar'
 import { Toasts } from './Toasts'
 import { StudioLiveBanner, useStudioLock } from './live'
+import { StudioTemplates } from './StudioTemplates'
 
 function isTyping(t: EventTarget | null): boolean {
   const el = t as HTMLElement | null
@@ -166,6 +167,8 @@ export function Studio({ appId }: { appId: string }) {
   const loadedId = useStore((s) => s.appId)
   const loadError = useStore((s) => s.loadError)
   const loaded = loadedId === appId && loadState === 'ready'
+  // #studio-<app>?template=<id> (the Templates page): read before anything can rewrite the address
+  const [initialTemplate] = useState(() => /[?&]template=([^&]+)/.exec(location.hash)?.[1])
   useShortcuts()
   usePrefs(appId)
   useEffect(() => {
@@ -262,6 +265,7 @@ export function Studio({ appId }: { appId: string }) {
         <InsertGhost />
         <AppSettingsDialog />
         <PackageDialog />
+        <StudioTemplates appId={appId} initialTemplate={initialTemplate ? decodeURIComponent(initialTemplate) : undefined} />
       </div>
     </TooltipProvider>
   )

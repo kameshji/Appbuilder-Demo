@@ -112,13 +112,40 @@ emulation (all pass; 28 of them need the extended area).
 - `BarcodeScanner` (a button that opens the camera; `Value`, `Format`, `ScanCount`, `OnScan`; `Continuous` for stock
   counts, the same code again only after 2 s; torch where the camera track supports it) and `ScanInput` (a field that
   recognises keyboard-wedge scanners and has a camera button): `src/controls/inputs/Scan.tsx`.
-- Engines (`src/phone/scan/scanner.ts`): the browser's `BarcodeDetector` when it supports the wanted formats (Android
-  Chrome: QR, Data Matrix, EAN, Code 128/39, ITF, ...), otherwise **our own 1D decoder** (`decode1d.ts`: EAN-13 (UPC-A),
-  EAN-8, Code 128 A/B/C, Code 39, ITF; checksums verified, 5-module quiet zones, two rows must agree; 0 false reads in
-  3,000 random bar rows during development). **No QR or Data Matrix fallback**: on iOS Safari and desktop Firefox/Linux
-  Chrome QR codes cannot be scanned with the camera (a keyboard-wedge scanner works everywhere). The sheet says so.
+- Engines (`src/phone/scan/scanner.ts`): the browser's `BarcodeDetector` for the wanted formats it supports (Android
+  Chrome: QR, Data Matrix, EAN, Code 128/39, ITF, ...). Whatever it does not support is read from frames by our own
+  decoders (`createEngine` merges both; `Engine.formats` lists what can be read, `Engine.unreadable` what cannot):
+  - **1D**: our own decoder (`decode1d.ts`: EAN-13 (UPC-A), EAN-8, Code 128 A/B/C, Code 39, ITF; checksums verified,
+    5-module quiet zones, two rows must agree; 0 false reads in 3,000 random bar rows during development).
+  - **QR**: **jsQR 1.4.0** (`qr.ts`; Apache-2.0, pure JavaScript, no dependencies, Cosmo Wolfe; last published
+    2025-11-13), for browsers where `BarcodeDetector` is missing or does not list `qr_code` (iPhone Safari, Firefox,
+    Linux Chrome). Tried only when QR is among the wanted formats. It is a production dependency (listed in
+    `THIRD-PARTY-NOTICES.md`, mentioned in the UI component notes of Barcode scanner and Scan input). 1D is tried
+    first on each frame, then QR.
+  - **Data Matrix**: no fallback. A browser without a built-in reader cannot read it; the sheet says so (`engineNotice`:
+    "Data Matrix needs a browser with a built-in reader (Chrome on Android) or a handheld scanner."; when nothing wanted
+    can be read: "This browser cannot read these codes with the camera."). A keyboard-wedge scanner works everywhere.
+- jsQR is loaded with a dynamic `import('jsqr')` the first time a scanner sheet needs it. The client is a single-file
+  build (`vite-plugin-singlefile`), so this does not make a separate file: the code is inside `index.html` (+130 kB,
+  +47 kB gzip) and is only parsed at start, evaluated on first use (it is CommonJS, so its module body is lazy). If the
+  load fails the sheet says QR codes could not be loaded and 1D keeps working.
+- jsQR handling (`makeQrDecode`): normal polarity on every frame, an inverted image (light modules on dark) on every
+  4th frame (jsQR's own `onlyInvert` option throws in 1.4.0, so we invert the pixels ourselves); an exception from jsQR
+  counts as "no code"; and a **time budget**: after a decode that took d ms the next calls within 2 x d ms are skipped,
+  so QR never takes more than about a third of the main thread however slow the phone or busy the picture. Measured in
+  `qr.test.ts` on the development PC (Node, 960 x 540): about 10 ms for a frame without a code, 17 ms with a long-URL
+  code, 300 ms for pure white noise (the worst case, which the budget limits). A phone is several times slower: not
+  measured on a real phone.
+- Frames: the same ones the 1D decoder gets, about 6 per second, scaled to at most 960 px wide (no centre crop: the
+  measured cost does not need it).
 - Keyboard wedge (`wedge.ts`): at least 3 characters, each within 45 ms of the previous, ending with Enter or Tab.
-- Frames: about 6 per second, scaled to at most 960 px, decoded on the main thread (no worker, no CSP change).
+- Frames: about 6 per second, scaled to at most 960 px, decoded on the main thread (no worker, no CSP change: jsQR is
+  plain JavaScript, `script-src 'self'` and the missing `wasm-unsafe-eval` are untouched).
+- Tests: `qr.test.ts` renders QR codes with `qrcode-generator` into RGBA frames (module sizes, error-correction levels,
+  quiet zones, 90/180/270 degree turns, noise, blur, low contrast, inverted colours, Hindi text, a 200-character URL) and
+  checks that noise, a 1D barcode, a cut-off code and a code with two finder patterns hidden give nothing; plus the
+  engine-selection cases (native with QR, no `BarcodeDetector`, QR not wanted so jsQR is never loaded, load failure).
+  The exit script plays a QR video through Chrome's fake camera with `BarcodeDetector` removed (step QR).
 
 ## Camera and photos
 
@@ -378,7 +405,7 @@ stays in the app), a normal close leaving no history entry, and a phone-width Di
 everything, the device wipe. 120 checks in total.
 
 **Not proven here** (manual, `docs/dev/phone-test-script.md`): real Android and iOS devices, iOS Safari at all, the
-native camera of `capture`, every touch control above on a real phone (the native pickers, the sheets with a real on-screen keyboard, iOS `visualViewport` behaviour), QR codes and the BarcodeDetector path, real torch, real keyboard behaviour, real Wi-Fi
+native camera of `capture`, every touch control above on a real phone (the native pickers, the sheets with a real on-screen keyboard, iOS `visualViewport` behaviour), the QR fallback (jsQR) on a real iPhone and the BarcodeDetector path, real torch, real keyboard behaviour, real Wi-Fi
 dropouts and packet loss, installing to the home screen, the LAN HTTPS certificate on phones, signing with a real finger
 or stylus (palm rejection, pressure, iOS Safari's pointer events), the real Android Back gesture and predictive back,
 a real tab discard by the phone's memory pressure (the exit script reloads instead), IndexedDB quota and eviction on a

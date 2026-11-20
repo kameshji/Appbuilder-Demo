@@ -1,0 +1,29 @@
+{
+  "format": "appbuilder/template-manifest",
+  "templates": [
+    {
+      "file": "approval-bar.json",
+      "id": "builtin.approval-bar",
+      "version": "1.0.0",
+      "sha256": "83ea953a985a8b2016534d7ab116bb0e903d6147ee5db7353b3a7cddce151c0f"
+    },
+    {
+      "file": "list-detail.json",
+      "id": "builtin.list-detail",
+      "version": "1.0.0",
+      "sha256": "bca301d832dd50a433c85f5fc4275903a7ce7de31b0c0455fdf389b43cfb8889"
+    },
+    {
+      "file": "request-tracker.json",
+      "id": "builtin.request-tracker",
+      "version": "1.0.0",
+      "sha256": "3bb095446f54ed891570e60d2f5a58369dec6774e1cb07d659bbcd3cbf56c7d3"
+    },
+    {
+      "file": "customers-contacts.json",
+      "id": "builtin.customers-contacts",
+      "version": "1.0.0",
+      "sha256": "eac6a28c2719ae817ba49648fae0aacc6a57f7d4f5d84a7ecd22b10d8b6ba4b1"
+    }
+  ]
+}

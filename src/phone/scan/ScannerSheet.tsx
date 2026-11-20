@@ -1,13 +1,13 @@
 /**
  * The full-screen camera scanner (P2-A): live camera (back camera preferred), an aiming frame, the torch where the
- * device has one, and the engine (native BarcodeDetector or our 1D decoder). One-shot: closes on the first code.
+ * device has one, and the engine (native BarcodeDetector, our 1D decoder, jsQR for QR codes). One-shot: closes on the first code.
  * Continuous (stock counts): stays open, lists what was scanned, and reports each code once per 2 seconds.
  */
 import { useEffect, useRef, useState } from 'react'
 import { Flashlight, Loader2, X, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cameraErrorText } from '../CameraSheet'
-import { createEngine, Debounce, setTorch, torchSupported, type ScanFormat, type ScanResult } from './scanner'
+import { createEngine, Debounce, engineNotice, setTorch, torchSupported, type ScanFormat, type ScanResult } from './scanner'
 
 export function ScannerSheet({ formats, continuous, onScan, onClose }: { formats: ScanFormat[]; continuous: boolean; onScan(r: ScanResult): void; onClose(): void }) {
   const video = useRef<HTMLVideoElement>(null)
@@ -49,7 +49,7 @@ export function ScannerSheet({ formats, continuous, onScan, onClose }: { formats
       await v.play().catch(() => {})
       setReady(true)
       const engine = await createEngine(formats)
-      setEngineInfo(engine.kind === 'native' ? '' : engine.formats.length ? 'Reads EAN, Code 128, Code 39 and ITF barcodes on this browser (no QR codes).' : 'This browser cannot read these codes with the camera.')
+      setEngineInfo(engineNotice(engine))
       const tick = async () => {
         if (!alive) return
         try {

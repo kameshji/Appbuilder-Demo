@@ -1,6 +1,6 @@
 # Phase 2 (Reach) specification
 
-Status: IN PROGRESS (started 19 Nov 2026). Phase 1 closed at 0.6.0 (`p1-spec.md`).
+Status: IN PROGRESS (started 19 Nov 2026). Waves 1 and 2 (packages A to E) are built as of 20 Nov 2026; package F (phase close: security re-check, docs sweep, `scripts/exit-check/p2.mjs`, P0 and P1 exit checks re-run, 0.7.0) is open. Phase 1 closed at 0.6.0 (`p1-spec.md`).
 
 ## Exit check
 

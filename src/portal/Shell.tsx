@@ -67,12 +67,12 @@ function activeNav(route: PortalRoute): string {
 /** may the signed-in user open this page? (UX only; the server enforces) */
 export function pageAllowed(page: PortalRoute['page'], caps: { isAdmin: boolean; isMaker: boolean }): boolean {
   if (page === 'roles' || page === 'admin') return caps.isAdmin
-  if (['tables', 'table', 'datafiles', 'solutions', 'solution', 'connections', 'datamodel', 'flows', 'flow', 'printtemplates', 'printtemplate'].includes(page)) return caps.isMaker
+  if (['tables', 'table', 'datafiles', 'solutions', 'solution', 'connections', 'datamodel', 'flows', 'flow', 'printtemplates', 'printtemplate', 'templates'].includes(page)) return caps.isMaker
   return true
 }
 
 /** pages that belong to Dev mode (the maker portal) */
-export const DEV_PAGES: ReadonlySet<PortalRoute['page']> = new Set(['home', 'apps', 'tables', 'table', 'datafiles', 'roles', 'solutions', 'solution', 'connections', 'studio', 'admin', 'datamodel', 'reports', 'flows', 'flow', 'printtemplates', 'printtemplate'])
+export const DEV_PAGES: ReadonlySet<PortalRoute['page']> = new Set(['home', 'apps', 'tables', 'table', 'datafiles', 'roles', 'solutions', 'solution', 'connections', 'studio', 'admin', 'datamodel', 'reports', 'flows', 'flow', 'printtemplates', 'printtemplate', 'templates'])
 
 const allowedEntry = (m: ModuleEntry, caps: { isAdmin: boolean; isMaker: boolean }) => !m.need || (m.need === 'admin' ? caps.isAdmin : caps.isMaker)
 

@@ -1,5 +1,5 @@
 /**
- * P1 package D wiring (called once from app.ts): services.actions with the HTTP and Email providers, their routes,
+ * P1 package D wiring (called once from app.ts): services.actions with the HTTP, Email (and P2-E WhatsApp) providers, their routes,
  * inbound webhooks, RunConnector of table after-events, notification delivery (email channel, digests, unsubscribe)
  * and scheduled reports.
  */
@@ -15,6 +15,7 @@ import { createWebhookService, webhookRoutes, type WebhookService } from './webh
 import { createDelivery, deliveryRoutes, registerDeliveryJobs, type DeliveryService } from '../notifications-delivery.ts'
 import { createReports, reportRoutes, type Reports } from '../reports.ts'
 import type { createNotificationService } from '../notifications.ts'
+import { wireWhatsapp } from '../whatsapp/index.ts'
 
 /** a formula value -> plain JSON for action inputs (dates as ISO text, internal fields dropped) */
 export function fxToJson(v: FxValue, depth = 0): unknown {
@@ -64,6 +65,8 @@ export function wireActions(router: ApiRouter, services: CoreServices, notificat
   const delivery = createDelivery(services)
   notifications.setDelivery(delivery)
   registerDeliveryJobs(services, delivery)
+  // P2-E: the WhatsApp connector (provider, inbound webhook, opt-ins, message log, notification channel)
+  wireWhatsapp(router, services, actions, delivery)
   const reports = createReports(services, delivery)
   deliveryRoutes(router, services, delivery, { reportUnsubscribe: () => reports.unsubscribe })
   reportRoutes(router, services, reports)

@@ -34,6 +34,7 @@ import { useChatDock } from '@/chat/dock'
 import { MyApps, useTabSync } from './UserMode'
 import { modeOfRoute, moduleByKey, type ShellMode } from './modules'
 import { DashboardsPage } from './dashboards/DashboardsPage'
+import { TemplatesPage } from '@/templates/TemplatesPage'
 import { useCaps } from './security'
 import { readMode, useUserKey, useWorkspace, useWorkspaceKey, writeMode } from './workspace'
 
@@ -58,6 +59,7 @@ function DevPage({ route }: { route: PortalRoute }) {
     case 'reports': return <ReportsPage />
     case 'printtemplates': return <PrintTemplatesPage />
     case 'printtemplate': return <PrintTemplatesPage id={route.id} />
+    case 'templates': return <TemplatesPage />
     default: return <Home />
   }
 }

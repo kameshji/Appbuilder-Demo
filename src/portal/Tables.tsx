@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, FileUp, HardDrive, Lock, Plus, Table2, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileUp, HardDrive, Lock, Plus, Table2, Wand2, X } from 'lucide-react'
 import { SYSTEM_GROUP_LABELS } from '@/platform/system-tables'
 import { platform, usePlatform, type ColumnDef, type ColumnType, type TableDef } from '@/platform'
 import { go } from '@/router'
@@ -13,6 +13,8 @@ import { Empty, Field, Panel, PageHeader, fmtDate, useToast } from './kit'
 import { TYPE_GROUPS, TYPE_INFO } from './columnTypes'
 import { matches, useSearch } from './Shell'
 import { TABLE_HOSTS, connectorInfo } from './ConnectionBits'
+import { useCaps } from './security'
+import { AutoAppDialog } from '@/autoapp/AutoAppDialog'
 
 export function TypeSelect({ value, onChange, disabled, id, className }: { value: ColumnType; onChange(t: ColumnType): void; disabled?: boolean; id?: string; className?: string }) {
   return (
@@ -198,8 +200,9 @@ export function Tables() {
   usePlatform((s) => s.dataVersion)
   const mode = usePlatform((s) => s.mode)
   const q = useSearch()
-  const [dlg, setDlg] = useState<'new' | 'csv' | null>(null)
+  const [dlg, setDlg] = useState<'new' | 'csv' | 'app' | null>(null)
   const close = (o: boolean) => { if (!o) setDlg(null) }
+  const caps = useCaps()
   // core data model: system tables are listed apart, grouped (they exist in every environment)
   const list = tables.filter((t) => !t.system && matches(q, t.displayName, t.name, t.description))
   const system = tables.filter((t) => t.system && matches(q, t.displayName, t.name, t.description))
@@ -212,6 +215,7 @@ export function Tables() {
         subtitle={mode === 'server' ? 'Your data. Tables live in a connection: the default database, a linked sheet or a data file.' : 'Your data. Each table is stored in this browser.'}
         actions={
           <>
+            {caps.isMaker && tables.some((t) => !t.system) && <Button variant="outline" size="sm" onClick={() => setDlg('app')} data-testid="tables-create-app"><Wand2 /> Create app</Button>}
             <Button variant="outline" size="sm" onClick={() => setDlg('csv')} data-testid="import-csv-table-button"><FileUp /> Import CSV</Button>
             <Button size="sm" onClick={() => setDlg('new')} data-testid="new-table-button"><Plus /> New table</Button>
           </>
@@ -267,6 +271,7 @@ export function Tables() {
       {system.length > 0 && <SystemTables tables={system} open={!!q} />}
       <NewTableDialog open={dlg === 'new'} onOpenChange={close} />
       <CsvNewTableDialog open={dlg === 'csv'} onOpenChange={close} />
+      <AutoAppDialog open={dlg === 'app'} onOpenChange={close} multi />
     </div>
   )
 }

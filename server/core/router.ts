@@ -50,6 +50,8 @@ export const DESIGN_ROUTES: ReadonlySet<string> = new Set([
   'POST /solutions', 'PATCH /solutions/:id', 'DELETE /solutions/:id', 'POST /solutions/:id/components', 'DELETE /solutions/:id/components/:kind/:cid',
   'POST /files', 'POST /files/:id/replace', 'DELETE /files/:id',
   'POST /connections/:id/link',
+  // P2-D templates: installs, uninstalls and upgrades change the design (and clients reload their metadata)
+  'POST /templates/:id/install', 'POST /templates/installed/:iid/uninstall', 'POST /templates/installed/:iid/upgrade',
 ])
 
 export const LOCKED_MESSAGE = 'This environment is locked: apps, tables and roles change only by importing or deploying a solution into it. An install administrator can unlock it in Admin console > Environments.'

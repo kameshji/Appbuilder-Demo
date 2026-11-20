@@ -9,7 +9,7 @@ Decision D14 in `/home/claude/appbuilder-demo/docs/decisions.md` records the mov
    (at most `APPBUILDER_MAX_ENVIRONMENTS`, default 5). Each holds the environment's metadata tables (`ab_roles`, `ab_tables`,
    `ab_apps`, `ab_audit`, ...) **and** the data tables of its default connection (`t_orders`, `t_contacts`, ...).
 
-Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 12`),
+Defined in `/home/claude/appbuilder-demo/server/core/meta-store.ts` (`INSTALL_DDL`, `environmentDdl()`, `SCHEMA_VERSION = 13`),
 `/home/claude/appbuilder-demo/server/core/install-store.ts` (the `ab` registry, access and install audit)
 and, for data tables, `/home/claude/appbuilder-demo/server/connectors/postgres/sql.ts` (`createTableSql`, `sqlType`).
 
@@ -150,6 +150,12 @@ rebuilds the partial indexes of that table). A server of version 9 refuses a ver
 `ab_dashboard_snapshot_runs` come from `environmentDdl`; the step checks they exist, so a server of version 11 refuses the schema
 (downgrade guard). Nothing existing changes. `server/core/dashboards/dashboards-wave2.integration.test.ts` drops the three tables, sets
 the environment back to 11 and migrates it (`{ from: 11, to: 12 }`, dashboards kept).
+
+**12 to 13, templates catalogue** (P2 package D; independent environment step `upgradeEnvironmentTo13Templates`,
+`server/core/templates/ddl.ts`): `ab_template_installs` comes from `environmentDdl`; the step checks it exists, so a server of
+version 12 refuses the schema (downgrade guard). Nothing existing changes. `server/core/templates/templates.integration.test.ts`
+drops the table, sets the environment back to 12 and migrates it (`{ from: 12, to: 13 }`), and checks the step refuses a schema
+without the table. (Version 13 is shared with P2 package E, WhatsApp: independent steps.)
 
 ## Types and conventions
 
@@ -467,6 +473,14 @@ DDL in `server/core/dashboards/ddl.ts` (`dashboardsEnvironmentDdl`). Purpose and
 | `ab_dashboard_snapshots` (12) | `id` (`dss_...`), `dashboard_id` (index), `name`, `owner_id`, `def` jsonb (schedule, recipients, range, filters, optOut), `enabled`, `schedule_id` (its `ab_schedules` row, job `dashboard.snapshot`), `created_on`, `modified_on` | Scheduled email snapshots; not copied |
 | `ab_dashboard_snapshot_runs` (12) | `id` (`dsr_<job id>`), `snapshot_id`, `started_on` (index with `snapshot_id`), `finished_on`, `status` (`running`, `succeeded`, `partial`, `failed`), `trigger`, `job_id`, `recipients` jsonb (per recipient: status, mail id, pages, reason), `message` | Run log; not copied |
 
+### Templates catalogue (P2 package D, version 13)
+
+DDL in `server/core/templates/ddl.ts` (`templatesEnvironmentDdl`). Purpose and rules: [templates.md](templates.md).
+
+| Table | Key columns | Notes |
+| --- | --- | --- |
+| `ab_template_installs` (13) | `id` (`tpli_...`), `template_id` (index), `template_version`, `digest` (SHA-256 of the package used), `kind` (`component`, `screen`, `app`, `dataModel`), `mode` (`copy`, `linked`), `name`, `status` (`installed`, `uninstalled`), `bindings` jsonb (slot -> create / map / skip), `created` jsonb (apps, tables, roles, flows, events, mapped tables, SAMPLE row count, the app and screen a UI component or screen went into), `delivered` jsonb (Linked: hash of each created app and table as delivered, for local changes), `solution_id` (Linked), `installed_by`, `installed_on`, `modified_on`, `uninstalled_by`, `uninstalled_on`, `details` jsonb (Linked: the stable component ids; the uninstall list) | The installed-templates register. Rows are never deleted. Partial unique index `ab_ux_template_installs_linked` (one installed Linked copy of a template per environment). Not copied by environment copies, never in solutions |
+
 ### `ab_counters`
 
 `k text` primary key (`<tableId>:<column>` for autonumber), `v bigint NOT NULL` (last number issued). `nextCounter` is one atomic
@@ -681,3 +695,7 @@ are in `connectors.md`.
 4. Update the `MetaStore` repository code, the `FakeMetaStore` in `/home/claude/appbuilder-demo/server/routes/meta/testing.ts`, the
    contract in `server/core/contracts.ts` if the interface changes, and this page.
 5. Run the integration tests against a real server (see `testing.md`). Unit tests cannot catch SQL problems.
+
+### WhatsApp connector (P2 package E, version 13, independent step)
+
+`server/core/whatsapp/ddl.ts`: per environment `ab_whatsapp_optins` (current consent per E.164 number), `ab_whatsapp_optin_history` (append-only), `ab_whatsapp_messages` (message log; unique `(connection_id, idempotency_key)`; indexes on provider id, created_on, phone), `ab_whatsapp_windows` (last inbound per connection and number), `ab_whatsapp_prefs`, `ab_whatsapp_settings` (k/v), `ab_whatsapp_hook_seen` (replay marks). The step checks the tables exist; nothing existing changes. None are copied into new environments.

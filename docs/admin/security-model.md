@@ -278,6 +278,12 @@ with no CSP violation in the console.
   running server's memory or environment.
 - Secrets are never returned by the API (a connection shows only "has secret"), are removed from error messages, and are
   not in the audit log. Solution packages contain connection settings but **never** passwords or keys.
+- Templates (the built-in catalogue, [templates](../guide/maker/templates.md)) never install passwords, keys, connections or
+  people: a package that carries any is stripped and the plan says so. Table events that run as the system need an
+  administrator who approves them on the plan screen (audited). Installing a copy needs the Maker role; roles, deleting
+  tables with data on uninstall, and upgrading a Linked template in place need an administrator. A locked production
+  environment refuses installs. Built-in templates are checked against a manifest of SHA-256 digests that ships with (and is
+  signed with) the release; a changed template cannot be used ([details](../dev/templates.md#integrity-digest-manifest-signature)).
 - Losing `.secret-key` makes every sealed secret unreadable. See [Backup and restore](backup-and-restore.md).
 - `server.json`, `.secret-key` and attachment files are created with owner-only permissions (`0600`) on Linux and macOS.
   **On Windows that setting has no effect**; rely on the folder's permissions.

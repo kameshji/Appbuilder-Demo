@@ -15,16 +15,59 @@ An app is a set of screens with UI components, formulas and links to tables. App
   | Tablet | 800x1280 portrait, 1280x800 landscape |
   | Custom | any width and height from 320 to 7680 px, landscape or portrait (the swap button turns one into the other) |
 
-- **Start with data**: on Home, pick a table and a design size. Appbuilder creates "<Table> app" with the data source
-  added and screens already connected to the table:
-  - desktop and landscape sizes: a table UI component and an edit form side by side;
-  - tablet portrait: the table above the form;
-  - phone: a list screen (a gallery with a **+ New** button) and a separate form screen with **< Back**; tapping a row
-    opens the form, saving or cancelling goes back to the list.
+- **From a table** / **From the data model** (Apps page), **Create app** (Tables page and a table's page) and
+  **Start with data** (Home): Appbuilder generates a working app from your tables. See below.
 
 ![Start with data](../../images/home-start-with-data.png)
 
 A table UI component with an empty **Columns** property shows every column, including system ones (id, createdOn and so on). Set **Columns** to the ones you want.
+
+## Create an app from a table or the data model
+
+Makers can let Appbuilder build a list / detail / edit app from tables in one step. Where:
+
+| Entry point | What it does |
+|---|---|
+| A table's page, **Create app** | that table |
+| Tables page, **Create app** and Apps page, **From the data model** | several tables you tick; **Add related tables** ticks the tables they point at and the tables that point at them |
+| Apps page, **From a table** | one table you pick |
+| Home, **Start with data** | one table (or a new one) at any design size; no preview |
+
+The dialog asks for the app's name, the device (**Desktop** 1920 x 1080 or **Phone** 360 x 800) and the tables, and shows
+what will be created before you confirm: the screens, the fields of each form, the list columns, and a list of what it
+cannot do or does only partly (marked **Not used**, **Left out**, **Limited** or **Note**). Nothing is skipped without
+being listed there. **Create and open** creates the app the normal way and opens it in the Studio.
+
+What you get, per table:
+
+- **List screen**: a table of the records (on phones: cards), newest first, a search box (when the table has a text
+  column), sorting by any column (the column headers; on phones the **Sort by** box), and paging from the server, so it
+  works on large tables. **+ New** opens an empty form.
+- **Detail screen**: a form with the record. The title column comes first, then required columns, then the others by
+  kind (short text, choices, lookups, numbers, dates, yes/no, long text, images, files). System columns (id, created and
+  modified on and by, owner) are left out; calculated columns are shown read-only. **Save**, **Cancel**, and **Delete**,
+  which asks first; if the table keeps deleted rows (recycle bin), the delete can be undone from the message that
+  follows. On phones an image column offers **Take photo**.
+- **Related records**: for every table that has a lookup to this one, a list of the rows that point at this record. If
+  that table is in the app too, a row opens its detail screen and **+ Add** creates a new row with the lookup already
+  filled in. On desktop the related lists and the **Activity** timeline (comments, tasks, files, history) are tabs beside
+  the form; on phones they are on a separate **Related** screen.
+- Several tables: a **Home** screen with a tile per table and its number of records. On desktop a lookup to another
+  table of the app gets an **Open ...** button on the detail screen (at most two).
+
+The result is an ordinary app: change, move or delete anything in the Studio. Nothing stays linked to the generator, so
+generating again creates a new app; it never changes the one you have. Who can use the app and its data is decided by
+security roles, as for any app.
+
+Not supported yet:
+
+- Lookup fields in the generated form are a plain drop-down list, not a search box, and only list rows the browser holds
+  (up to 2,000). Lists do not show lookup columns (they would show the row id).
+- Pick-and-choose of fields or columns in the dialog (change them in the Studio afterwards), tablet-specific layouts
+  (the phone layout is used for portrait sizes), and dashboards beyond the record counts on the home screen.
+- System tables (people, collaboration, logs) are not offered; tables whose formula name is a built-in name of the
+  formula language (such as `Color`) cannot be used until renamed.
+- The generated screens use fixed colours (a coloured header bar); the app's dark theme does not change them.
 
 ## Phone and tablet apps
 

@@ -20,6 +20,7 @@
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { randomBytes } from 'node:crypto'
+import { AsyncResource } from 'node:async_hooks'
 import { WebSocketServer, WebSocket } from 'ws'
 import type { RawData } from 'ws'
 import { HttpError } from '../contracts.ts'
@@ -275,14 +276,18 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
   // every role / user / table change drops the cached contexts (and re-checks subscriptions)
   const invalidateSecurity = services.security.invalidate
   let recheckTimer: NodeJS.Timeout | null = null
+  // invalidate() is often called INSIDE a unit of work (a table, role or solution change). A timer armed there
+  // inherits that transaction's async context and would run the re-check on the ended transaction: every query fails
+  // and the subscriptions would be dropped. The re-check therefore runs in the context the hub was created in.
+  const outside = new AsyncResource('live-hub-recheck')
   services.security.invalidate = (scope) => {
     invalidateSecurity(scope)
     for (const c of conns.values()) c.ctx.clear()
     if (!recheckTimer && conns.size) {
-      recheckTimer = setTimeout(() => {
+      recheckTimer = outside.runInAsyncScope(() => setTimeout(() => {
         recheckTimer = null
         for (const c of conns.values()) enqueue(c, () => recheck(c))
-      }, 250)
+      }, 250))
       recheckTimer.unref()
     }
   }
@@ -295,6 +300,11 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
       try {
         await authorize(c, env, topic)
       } catch (e) {
+        // only a refusal ends a subscription; a failure to check (the database, a bug) must not look like lost access
+        if (!(e instanceof HttpError) || ![401, 403, 404].includes(e.status)) {
+          log('warn', `live: could not re-check a subscription: ${errText(e)}`)
+          continue
+        }
         unsubscribeKey(c, key)
         send(c, { t: 'unsubscribed', topic, env })
         send(c, { t: 'error', code: codeOf(e), message: 'You no longer have access to this.', topic })

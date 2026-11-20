@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Calculator, CheckCheck, Columns3, Link2, Lock, Settings2, ShieldCheck, Sigma, Table2, Trash2, UserCheck, Workflow, Zap } from 'lucide-react'
+import { ArrowLeft, Calculator, CheckCheck, Columns3, Link2, Lock, Settings2, ShieldCheck, Sigma, Table2, Trash2, UserCheck, Wand2, Workflow, Zap } from 'lucide-react'
+import { AutoAppDialog } from '@/autoapp/AutoAppDialog'
 import { automate } from '@/flows/intent'
 import { EventsPanel, FormulaColumnsPanel, RollupsPanel, ValidationRulesPanel } from './TableLogic'
 import { platform, usePlatform } from '@/platform'
@@ -36,6 +37,7 @@ export function TableDesigner({ tableId }: { tableId: string }) {
   const [del, setDel] = useState(false)
   const [dropSource, setDropSource] = useState(false)
   const [assigning, setAssigning] = useState(false)
+  const [appDlg, setAppDlg] = useState(false)
   const caps = useCaps()
   useEffect(() => { setName(table?.displayName ?? ''); setDesc(table?.description ?? '') }, [table?.id, table?.displayName, table?.description])
   useEffect(() => { setTab('data') }, [tableId])
@@ -110,6 +112,7 @@ export function TableDesigner({ tableId }: { tableId: string }) {
           />
         </div>
         {/* P1 package B: start a flow on this table (server mode, own tables) */}
+        {caps.isMaker && !table.system && <Button size="sm" variant="outline" className="mt-1 shrink-0" onClick={() => setAppDlg(true)} data-testid="table-create-app"><Wand2 className="size-4" />Create app</Button>}
         {caps.server && own && !table.system && <Button size="sm" variant="outline" className="mt-1 shrink-0" onClick={() => automate({ table: table.name })} data-testid="table-automate"><Workflow className="size-4" />Automate</Button>}
         <div className="shrink-0 pt-1.5 text-right text-xs text-muted-foreground">
           <div className="flex items-center justify-end gap-1.5">
@@ -204,6 +207,7 @@ export function TableDesigner({ tableId }: { tableId: string }) {
         </TabsContent>
       </Tabs>
 
+      <AutoAppDialog open={appDlg} onOpenChange={setAppDlg} tables={[table.name]} />
       <ConfirmDialog
         open={del}
         onOpenChange={setDel}

@@ -316,7 +316,7 @@ column (`ensureIdColumn` adds it).
 ## Connector actions
 
 P1 package D, decision D26. Flows (package A), table after-events (`RunConnector`) and the "Test action" form call
-**actions** of a connection: named operations with JSON Schemas. Two action connectors ship: `http` (generic REST, custom
+**actions** of a connection: named operations with JSON Schemas. Three action connectors ship: `whatsapp` (Meta WhatsApp Business Cloud API: [whatsapp.md](whatsapp.md)), `http` (generic REST, custom
 actions, OpenAPI import) and `email` (send through the install's relay). Table connectors offer no actions yet (flows use
 data steps; no raw SQL from makers in this phase). Maker view: [connections and actions](../guide/maker/connections-and-actions.md);
 administrator view: [connections](../admin/connections.md); generated list of built-in actions:

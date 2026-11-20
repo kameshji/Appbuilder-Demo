@@ -1,11 +1,10 @@
 /**
  * Settings > Notifications, server mode (P1 package D): channels per kind (in the app, email: off / right away /
- * digest; WhatsApp is P2), the digest time, the time zone, quiet hours for email, and the delivery log ("why did I get
+ * digest; WhatsApp when offered: WhatsappNotificationChoice.tsx, P2-E), the digest time, the time zone, quiet hours for email, and the delivery log ("why did I get
  * this"). Kinds an administrator locked show their fixed choice.
  */
 import { useEffect, useState } from 'react'
 import { Lock, MessageCircle } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
@@ -13,6 +12,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { errMsg, fmtRelative, useToast } from './kit'
 import { useNotificationSettings } from './Notifications'
 import { deliveryApi, type Channels, type DeliveryEntry, type EmailMode } from './actionsApi'
+import { WhatsappCell, WhatsappConsent, useWhatsappMe } from './WhatsappNotificationChoice'
 
 const sel = 'h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30'
 
@@ -22,6 +22,7 @@ export function NotificationChannels() {
   const [ch, setCh] = useState<Channels | null>(null)
   const [error, setError] = useState('')
   const [log, setLog] = useState<DeliveryEntry[] | null>(null)
+  const wa = useWhatsappMe()
   const reload = () => deliveryApi.channels().then(setCh).catch((e) => setError(errMsg(e)))
   useEffect(() => { void reload() }, [])
   const put = async (patch: Parameters<typeof save>[0]) => {
@@ -58,11 +59,12 @@ export function NotificationChannels() {
                   </select>
                 )}
               </td>
-              <td className="py-2"><Badge variant="outline" title="Arrives with P2 Reach">P2</Badge></td>
+              <td className="py-2"><WhatsappCell kind={k.kind} label={k.label} me={wa.me} onChange={wa.set} /></td>
             </tr>
           ))}
         </tbody>
       </table>
+      <WhatsappConsent me={wa.me} onChange={wa.set} />
       <div className="grid gap-3 sm:grid-cols-3">
         <label className="grid gap-1 text-xs font-medium">Digest
           <div className="flex gap-2">

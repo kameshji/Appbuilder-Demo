@@ -11,6 +11,7 @@ OpenAPI) are listed on the connection's Actions tab. How actions run, the limits
 | --- | --- | --- |
 | HTTP (REST API) | `http` | `request` |
 | Email | `email` | `send` |
+| WhatsApp | `whatsapp` | `sendTemplate`, `sendText`, `listTemplates`, `checkOptIn`, `recordOptIn` |
 
 ## Error codes
 
@@ -88,3 +89,118 @@ Idempotent: no. Side effect: external (a flow must pass an idempotency key; a re
 | `mailId` | string |  | The entry in the email delivery log |
 | `recipients` | integer |  |  |
 | `suppressed` | integer |  | Recipients left out because they are on the suppression list |
+
+### WhatsApp: `sendTemplate` (Send a template message)
+
+Sends an approved message template to a number that has a current opt-in. Refused, and nothing is sent, without an opt-in. Business-initiated messages outside the 24-hour window must be template messages.
+
+Idempotent: no. Side effect: external (a flow must pass an idempotency key; a repeated key returns the stored result for 24 hours). Time limit: 30 s.
+
+**Inputs**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `to` | string or number | yes | The customer's phone number. Without a country code the connection's default country code is used (for example 98765 43210 -> +91 98765 43210). |
+| `template` | string | yes | The template's name as approved in WhatsApp Manager (lowercase letters, digits and _). |
+| `language` | string |  | The template's language code, for example en, en_US or hi. Default `"en"`. |
+| `bodyParams` | list of string or number or object |  | Values for {{1}}, {{2}} ... of the template body, in order (text or numbers). |
+| `headerParams` | list of string or number or object |  | Values for the template header, in order (text headers only). |
+| `buttonParams` | list of object |  | Dynamic button parts: { index, subType: "url" \| "quick_reply", value }. |
+
+**Outputs**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `messageId` | string |  | The entry in the WhatsApp message log |
+| `providerMessageId` | string |  | Meta's message id (wamid...) |
+| `to` | string |  | The number, masked (country code and last three digits) |
+| `status` | string |  | accepted (by Meta); later sent, delivered, read or failed in the message log |
+
+### WhatsApp: `sendText` (Reply with a text message)
+
+Sends a free-text reply. Only inside the 24-hour customer service window: the number must have written to this WhatsApp number in the last 24 hours (as recorded by this server from the webhook), and must have a current opt-in. Otherwise it is refused with the reason and nothing is sent.
+
+Idempotent: no. Side effect: external (a flow must pass an idempotency key; a repeated key returns the stored result for 24 hours). Time limit: 30 s.
+
+**Inputs**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `to` | string or number | yes | The customer's phone number. Without a country code the connection's default country code is used (for example 98765 43210 -> +91 98765 43210). |
+| `text` | string | yes | Text |
+| `previewUrl` | boolean |  | Show link preview Default `false`. |
+
+**Outputs**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `messageId` | string |  | The entry in the WhatsApp message log |
+| `providerMessageId` | string |  | Meta's message id (wamid...) |
+| `to` | string |  | The number, masked (country code and last three digits) |
+| `status` | string |  | accepted (by Meta); later sent, delivered, read or failed in the message log |
+
+### WhatsApp: `listTemplates` (List message templates)
+
+Reads the message templates of the WhatsApp Business account from Meta (name, language, status, category, number of body values).
+
+Idempotent: yes. Side effect: none. Time limit: 30 s.
+
+**Inputs**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `status` | `APPROVED`, `PENDING`, `REJECTED`, `PAUSED`, `DISABLED`, `ANY` |  | Status Default `"APPROVED"`. |
+| `name` | string |  | Name contains |
+
+**Outputs**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `templates` | array |  | name, language, status, category, bodyParams (count), headerParams (count) |
+
+### WhatsApp: `checkOptIn` (Check a number's opt-in)
+
+Whether a number has a current WhatsApp opt-in in this environment (status, source and when it was recorded).
+
+Idempotent: yes. Side effect: none. Time limit: 10 s.
+
+**Inputs**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `to` | string or number | yes | The customer's phone number. Without a country code the connection's default country code is used (for example 98765 43210 -> +91 98765 43210). |
+
+**Outputs**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `optedIn` | boolean |  |  |
+| `status` | string |  | opted_in, opted_out or none |
+| `source` | string |  |  |
+| `recordedOn` | string (date-time) |  |  |
+| `to` | string |  | The number, masked |
+
+### WhatsApp: `recordOptIn` (Record an opt-in or opt-out)
+
+Records that a number opted in or out, with the source and evidence (for example the form and the consent text the person agreed to). The run-as identity and the time are recorded; the full history is kept. Your business is responsible for the consent being real.
+
+Idempotent: yes. Side effect: none. Time limit: 10 s.
+
+**Inputs**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `to` | string or number | yes | The customer's phone number. Without a country code the connection's default country code is used (for example 98765 43210 -> +91 98765 43210). |
+| `status` | `opted_in`, `opted_out` | yes | Status |
+| `source` | `form`, `import`, `inbound keyword` | yes | Where the consent came from ("administrator" is only for administrators in the Admin console). |
+| `evidence` | string | yes | What the person agreed to and how, for example "Ticked 'Send me order updates on WhatsApp' on the order form, order SO-1001". |
+| `contactTable` | string |  | Optional: the table of the person or contact row. |
+| `contactRow` | string |  | Optional: the row id. |
+
+**Outputs**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `to` | string |  | The number, masked |
+| `status` | string |  |  |
+| `recordedOn` | string (date-time) |  |  |

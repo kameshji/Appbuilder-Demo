@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { LayoutGrid, List, Plus, Upload } from 'lucide-react'
+import { Database, LayoutGrid, List, Network, Plus, Upload } from 'lucide-react'
 import { usePlatform } from '@/platform'
 import { go } from '@/router'
 import { Button } from '@/components/ui/button'
@@ -9,13 +9,16 @@ import { DeviceIcon, RunChoice } from './UserMode'
 import { AppCard } from './Home'
 import { ImportDialog, NewAppDialog } from './dialogs'
 import { matches, useSearch } from './Shell'
+import { useCaps } from './security'
+import { AutoAppDialog } from '@/autoapp/AutoAppDialog'
 
 export function Apps() {
   const apps = usePlatform((s) => s.apps)
   const users = usePlatform((s) => s.users)
   const q = useSearch()
   const [view, setView] = useState<'grid' | 'table'>('table')
-  const [dlg, setDlg] = useState<'blank' | 'import' | null>(null)
+  const [dlg, setDlg] = useState<'blank' | 'import' | 'table' | 'model' | null>(null)
+  const caps = useCaps()
   const close = (o: boolean) => { if (!o) setDlg(null) }
   const list = apps.filter((a) => matches(q, a.name, a.description)).sort((a, b) => b.modifiedOn.localeCompare(a.modifiedOn))
   const who = (id: string) => users.find((u) => u.id === id)?.name ?? id
@@ -39,6 +42,8 @@ export function Apps() {
               ]}
             />
             <Button variant="outline" size="sm" onClick={() => setDlg('import')} data-testid="import-app-button"><Upload /> Import</Button>
+            {caps.isMaker && <Button variant="outline" size="sm" onClick={() => setDlg('table')} data-testid="app-from-table-button"><Database /> From a table</Button>}
+            {caps.isMaker && <Button variant="outline" size="sm" onClick={() => setDlg('model')} data-testid="app-from-model-button"><Network /> From the data model</Button>}
             <Button size="sm" onClick={() => setDlg('blank')} data-testid="new-app-button"><Plus /> New app</Button>
           </>
         }
@@ -87,6 +92,8 @@ export function Apps() {
         </Panel>
       )}
       <NewAppDialog open={dlg === 'blank'} onOpenChange={close} />
+      <AutoAppDialog open={dlg === 'table'} onOpenChange={close} />
+      <AutoAppDialog open={dlg === 'model'} onOpenChange={close} multi />
       <ImportDialog open={dlg === 'import'} onOpenChange={close} kind="app" onDone={(r) => go({ page: 'studio', id: r.id })} />
     </div>
   )

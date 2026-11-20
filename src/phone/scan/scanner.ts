@@ -1,10 +1,12 @@
 /**
- * Camera barcode scanning (P2-A, docs/dev/phone.md "Scanner"). Uses the browser's BarcodeDetector when it exists and
- * supports the wanted formats (Android Chrome: QR, Data Matrix, EAN, Code 128/39, ITF ...); otherwise grabs frames into
- * a canvas and runs our own 1D decoder (decode1d.ts: EAN-13/8, Code 128, Code 39, ITF; no QR, no Data Matrix).
+ * Camera code scanning (P2-A, docs/dev/phone.md "Scanner"). Uses the browser's BarcodeDetector for the formats it
+ * supports (Android Chrome: QR, Data Matrix, EAN, Code 128/39, ITF ...). Whatever it does not support is read from
+ * frames grabbed into a canvas: 1D barcodes by our own decoder (decode1d.ts: EAN-13/8, Code 128, Code 39, ITF) and QR
+ * codes by jsQR (qr.ts, Apache-2.0, loaded on first use). Data Matrix has no fallback.
  * About 6 frames a second, on the main thread, frames scaled to at most 960 px wide.
  */
 import { decodeImage, toGray, type Format1D } from './decode1d'
+import { loadQrDecoder, type QrDecode } from './qr'
 
 export type ScanFormat = Format1D | 'qr_code' | 'data_matrix'
 export const ALL_FORMATS: ScanFormat[] = ['qr_code', 'data_matrix', 'ean_13', 'ean_8', 'code_128', 'code_39', 'itf']
@@ -23,57 +25,128 @@ export function parseFormats(text: string): ScanFormat[] {
   return [...new Set(t.split(/[\s,;]+/).map((s) => alias[s.replace(/-/g, '_')] ?? (s.replace(/-/g, '_') as ScanFormat)).filter((f) => ALL_FORMATS.includes(f)))]
 }
 
+/** a camera frame as RGBA pixels (canvas ImageData layout) */
+export interface Frame { data: Uint8ClampedArray; width: number; height: number }
+
+/**
+ * Reads one frame with our own decoders: 1D barcodes first (cheap), then a QR code when `qr` is given.
+ * Pure (no DOM), so tests feed it generated images.
+ */
+export function decodeFrame(f: Frame, oneD: ReadonlySet<Format1D>, qr: QrDecode | null): ScanResult | null {
+  if (oneD.size) {
+    const d = decodeImage(toGray(f.data, f.width, f.height), f.width, f.height, oneD)
+    if (d) return { text: d.text, format: d.format }
+  }
+  if (qr) {
+    const text = qr(f.data, f.width, f.height)
+    if (text) return { text, format: 'qr_code' }
+  }
+  return null
+}
+
 export interface Engine {
-  /** 'native' (BarcodeDetector) or 'fallback' (our 1D decoder) */
+  /** 'native' (BarcodeDetector reads at least one wanted format) or 'fallback' (only our decoders: 1D and QR) */
   kind: 'native' | 'fallback'
-  /** formats that can actually be read with this engine */
+  /** formats that can actually be read with this engine (native and our decoders together) */
   formats: ScanFormat[]
+  /** wanted formats nothing here can read (Data Matrix without a native reader; QR when jsQR did not load) */
+  unreadable: ScanFormat[]
   detect(video: HTMLVideoElement): Promise<ScanResult | null>
+}
+
+/** what createEngine needs from the outside; tests replace these (no DOM there) */
+export interface EngineDeps {
+  /** the BarcodeDetector constructor; the key present with undefined means "this browser has none" */
+  detector?: NativeDetectorCtor | undefined
+  loadQr?: () => Promise<QrDecode>
+  grab?: (video: HTMLVideoElement) => Frame | null
 }
 
 let canvas: HTMLCanvasElement | null = null
 
-export async function createEngine(wanted: ScanFormat[]): Promise<Engine> {
-  const Ctor = (globalThis as { BarcodeDetector?: NativeDetectorCtor }).BarcodeDetector
+/** the current video frame scaled to at most 960 px wide */
+function grabFrame(video: HTMLVideoElement): Frame | null {
+  if (!video.videoWidth) return null
+  const scale = Math.min(1, 960 / video.videoWidth)
+  const w = Math.round(video.videoWidth * scale)
+  const h = Math.round(video.videoHeight * scale)
+  canvas ??= document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) return null
+  ctx.drawImage(video, 0, 0, w, h)
+  return { data: ctx.getImageData(0, 0, w, h).data, width: w, height: h }
+}
+
+export async function createEngine(wanted: ScanFormat[], deps: EngineDeps = {}): Promise<Engine> {
+  const Ctor = 'detector' in deps ? deps.detector : (globalThis as { BarcodeDetector?: NativeDetectorCtor }).BarcodeDetector
+  let det: NativeDetector | null = null
+  let native: ScanFormat[] = []
   if (Ctor) {
     try {
       const supported = (await Ctor.getSupportedFormats?.()) ?? []
       const use = wanted.filter((f) => supported.includes(f))
       if (use.length) {
-        const det = new Ctor({ formats: use })
-        return {
-          kind: 'native',
-          formats: use,
-          async detect(video) {
-            const r = await det.detect(video)
-            return r[0] ? { text: r[0].rawValue, format: r[0].format as ScanFormat } : null
-          },
-        }
+        det = new Ctor({ formats: use })
+        native = use
       }
     } catch {
-      /* fall back */
+      det = null
+      native = []
     }
   }
-  const fb = wanted.filter((f): f is Format1D => (FALLBACK_FORMATS as string[]).includes(f))
-  const set = new Set<Format1D>(fb)
+  // what the browser's reader does not do: our 1D decoder, and jsQR for QR codes (loaded only when QR is wanted and missing)
+  const rest = wanted.filter((f) => !native.includes(f))
+  const oneD = new Set(rest.filter((f): f is Format1D => (FALLBACK_FORMATS as string[]).includes(f)))
+  let qr: QrDecode | null = null
+  if (rest.includes('qr_code')) {
+    try {
+      qr = await (deps.loadQr ?? loadQrDecoder)()
+    } catch {
+      qr = null
+    }
+  }
+  const viaFrames: ScanFormat[] = [...oneD, ...(qr ? (['qr_code'] as const) : [])]
+  const unreadable = rest.filter((f) => !viaFrames.includes(f))
+  const grab = deps.grab ?? grabFrame
   return {
-    kind: 'fallback',
-    formats: fb,
+    kind: det ? 'native' : 'fallback',
+    formats: [...native, ...viaFrames],
+    unreadable,
     async detect(video) {
-      if (!video.videoWidth || !set.size) return null
-      const scale = Math.min(1, 960 / video.videoWidth)
-      const w = Math.round(video.videoWidth * scale)
-      const h = Math.round(video.videoHeight * scale)
-      canvas ??= document.createElement('canvas')
-      canvas.width = w
-      canvas.height = h
-      const ctx = canvas.getContext('2d', { willReadFrequently: true })
-      if (!ctx) return null
-      ctx.drawImage(video, 0, 0, w, h)
-      const d = decodeImage(toGray(ctx.getImageData(0, 0, w, h).data, w, h), w, h, set)
-      return d ? { text: d.text, format: d.format } : null
+      if (det) {
+        try {
+          const r = await det.detect(video)
+          if (r[0]) return { text: r[0].rawValue, format: r[0].format as ScanFormat }
+        } catch {
+          /* a frame the browser's reader refused: our decoders still get it */
+        }
+      }
+      if (!oneD.size && !qr) return null
+      const f = grab(video)
+      return f ? decodeFrame(f, oneD, qr) : null
     },
   }
+}
+
+const FORMAT_NAME: Record<ScanFormat, string> = { qr_code: 'QR codes', data_matrix: 'Data Matrix', ean_13: 'EAN', ean_8: 'EAN', code_128: 'Code 128', code_39: 'Code 39', itf: 'ITF' }
+const names = (fs: ScanFormat[]) => {
+  const n = [...new Set(fs.map((f) => FORMAT_NAME[f]))]
+  return n.length > 1 ? `${n.slice(0, -1).join(', ')} and ${n[n.length - 1]}` : n[0] ?? ''
+}
+
+/** the line the scanner sheet shows when this browser cannot read some wanted format; '' when everything wanted works */
+export function engineNotice(e: Pick<Engine, 'formats' | 'unreadable'>): string {
+  if (!e.unreadable.length) return ''
+  if (!e.formats.length) return 'This browser cannot read these codes with the camera.'
+  const dm = e.unreadable.includes('data_matrix')
+  const other = e.unreadable.filter((f) => f !== 'data_matrix')
+  return [
+    `Reads ${names(e.formats)} on this browser.`,
+    dm ? 'Data Matrix needs a browser with a built-in reader (Chrome on Android) or a handheld scanner.' : '',
+    other.length ? `${names(other)} could not be loaded.` : '',
+  ].filter(Boolean).join(' ')
 }
 
 /** continuous scanning: the same code is reported again only after `ms` without it */

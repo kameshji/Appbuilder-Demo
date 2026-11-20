@@ -3,6 +3,7 @@
  *   #home  #apps  #tables  #datafiles  #table-<tableId>  #roles  #solutions  #solution-<id>  #connections  #datamodel
  *   #flows  #flow-<flowId>   Flows (P1): the list, one flow
  *   #printtemplates  #printtemplate-<id>   Print templates (P2-B): the list, the designer
+ *   #templates        the templates catalogue (P2-D); #studio-<appId>?template=<id> opens the Studio with that template's use dialog
  *   #studio-<appId>   the editor
  *   #run-<appId>      the running app (debug window / player, standalone window)
  *   #u                User mode: the app launcher ("My apps")
@@ -17,10 +18,10 @@
 import { useSyncExternalStore } from 'react'
 
 export type Route =
-  | { page: 'home' | 'apps' | 'tables' | 'roles' | 'solutions' | 'connections' | 'datafiles' | 'u' | 'chat' | 'settings' | 'admin' | 'datamodel' | 'reports' | 'flows' | 'printtemplates' }
+  | { page: 'home' | 'apps' | 'tables' | 'roles' | 'solutions' | 'connections' | 'datafiles' | 'u' | 'chat' | 'settings' | 'admin' | 'datamodel' | 'reports' | 'flows' | 'printtemplates' | 'templates' }
   | { page: 'table' | 'solution' | 'studio' | 'run' | 'u' | 'soon' | 'settings' | 'admin' | 'flow' | 'printtemplate'; id: string }
 
-const SIMPLE = ['home', 'apps', 'tables', 'roles', 'solutions', 'connections', 'datafiles', 'u', 'chat', 'settings', 'admin', 'datamodel', 'reports', 'flows', 'printtemplates'] as const
+const SIMPLE = ['home', 'apps', 'tables', 'roles', 'solutions', 'connections', 'datafiles', 'u', 'chat', 'settings', 'admin', 'datamodel', 'reports', 'flows', 'printtemplates', 'templates'] as const
 const WITH_ID = ['table', 'solution', 'studio', 'run', 'u', 'soon', 'settings', 'admin', 'flow', 'printtemplate'] as const
 
 export function parseRoute(hash: string): Route {

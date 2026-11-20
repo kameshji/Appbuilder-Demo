@@ -19,7 +19,7 @@ service, and records why. Maker and user view: [notifications](../guide/maker/no
 | --- | --- |
 | In the app | Stored and pushed unless switched off for the kind (user, or a locked administrator default) |
 | Email | `off`, `immediate` or `digest` per kind |
-| WhatsApp | Placeholder: listed as P2, never delivered |
+| WhatsApp | Delivered through the WhatsApp connector when an administrator mapped an approved template and the person's number is opted in ([whatsapp.md](whatsapp.md)); immediate or held for quiet hours, no digest |
 
 Effective choice per kind (`effectiveChannels`): an administrator's **locked** default wins (users cannot change it, and
 the unsubscribe link answers "required"); otherwise the user's choice; otherwise the administrator's default; otherwise
@@ -84,7 +84,7 @@ Retention 90 days (`notifications.delivery-retention`).
 ## Limits and what is not done
 
 - Bounces are not detected (Appbuilder receives no mail); the suppression list is manual.
-- WhatsApp delivery is Phase 2.
+- WhatsApp has no digest (immediate, or held for quiet hours).
 - The digest job runs every 5 minutes, so a daily digest at 08:00 leaves between 08:00 and 08:05.
 - Rate limits and breaker state of connector actions are per process (D19); the delivery limits are counted in the
   database and survive restarts.

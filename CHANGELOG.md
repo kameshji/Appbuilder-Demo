@@ -22,10 +22,16 @@ Phase 2 (Reach), wave 1. Schema version 11.
 
 - **Dashboards: screens for the wall, email and Home.** **Screens** creates and revokes TV / kiosk view tokens; a new token is shown once, with its warnings and a ready-made address that shows the dashboard full screen without sign-in and without cookies. **Email** schedules PDF snapshots (send now, history per recipient; each recipient gets their own access, people who cannot open the dashboard get nothing). Tiles can be pinned to **My dashboard** on My apps and the Dev home (per person, at most 24, computed with your own access).
 
+- **Auto apps.** **Create app** on a table's page and the Tables page, **From a table** and **From the data model** on the Apps page, and Home's Start with data generate a working list / detail / edit app for desktop (1920x1080) or phone (360x800): search, sort and server paging, a form, Delete with confirmation (Undo when the table keeps deleted rows), related lists with + Add, the timeline, and a home screen for several tables. The dialog previews the screens and lists everything it cannot handle. The result is an ordinary app in the Studio.
+- **Templates catalogue** (Dev mode > Templates; schema version 13): built-in UI component, screen, app and data model templates, bound to your tables in a binding step (type mismatches and name clashes explained, resolved by mapping or another name), installed after the solution plan screen in one transaction with a pre-install backup; nothing existing is overwritten. Copy for all kinds; Linked (versioned, upgrade plan with local changes kept or replaced) for apps and data models. Uninstall keeps tables with data unless an administrator confirms.
+- **WhatsApp connector** (Meta WhatsApp Business Cloud API; schema version 13): send approved template messages and 24-hour-window replies from flows; nothing is sent to a number without a current opt-in (recorded with source, evidence and full history; STOP and START keywords, Hindi included). Signed webhook for delivery statuses and inbound messages, a message log for administrators, and WhatsApp as a notification channel. Tested against a mock built from Meta's documentation only: no real account has been used. Your business remains responsible for consent and template approval.
+- **QR codes on iPhone.** QR codes are scanned with the camera on browsers without a built-in reader, such as iPhone Safari, using the bundled open-source decoder jsQR (Apache-2.0). Data Matrix still needs a browser with a built-in reader or a handheld scanner. Adds about 130 kB (47 kB gzip) to the app file.
+
 ### Changed
 - Notifications (toasts) appear at the bottom centre, no longer the bottom right where they covered the buttons of side panels and tiles.
 
 ### Fixed
+- **Live updates stopped for everyone after a table, role or solution change.** The realtime hub re-checked subscriptions inside the finished transaction of the change, every check failed, and browsers lost their subscriptions (new tables then showed `Name isn't recognised` in the Studio until a reload). The re-check now runs outside the transaction, and only a real refusal ends a subscription. Present since 0.5.0.
 - Chart legends that did not fit on one line dropped the remaining series (seen in a narrow PDF chart); they now wrap onto up to three lines.
 - The record timeline's **Document** button listed print templates of other tables when the timeline's Table property was blank; it now offers only templates of the record's table.
 - **Approvals and Dashboards no longer switch the shell to User mode when opened from the Dev menu.** Both pages are in both menus; they now stay in the mode you are in, and the mode switch still works from them.
@@ -38,7 +44,10 @@ Phase 2 (Reach), wave 1. Schema version 11.
 
 ### Known gaps in this wave
 - Dashboards: drill-through opens an app, not a chosen screen; the kiosk page does not cycle ranges or pages; a kiosk address holds its token (browser history of the screen); the tile editor cannot edit row calculations, nested conditions or series styling.
-- Phones: nothing is tested on real devices; QR scanning needs a browser with a built-in reader; no cold-start offline; no Android back-button handling for bottom sheets; the save bar moves when the offline strip appears.
+- Auto apps: lookup fields are a plain list, not searchable, and empty in server mode when the target table has more than 2,000 rows; lists leave lookups out; generated colours do not follow a dark app theme.
+- Templates: Linked mode is not offered for UI component and screen templates; uninstall, upgrade and Linked were tested through the API, not in a browser.
+- WhatsApp: unverified against Meta's real API (list in `docs/dev/whatsapp.md`); no SMS.
+- Phones: nothing is tested on real devices; Data Matrix needs a browser with a built-in reader; no cold-start offline (owner decision); no Android back-button handling for bottom sheets; the save bar moves when the offline strip appears.
 - Print templates offer only four of the 15 chart kinds the PDF engine can draw.
 
 ## [0.6.0] - 2026-11-19

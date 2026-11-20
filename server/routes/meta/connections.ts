@@ -15,9 +15,9 @@ import {
 import { FILES_CONNECTION_ID, audit, ensureFilesConnection, friendly, grantDefaults, resolveConnection, toRef } from './tables-core.ts'
 import { assertOutboundHost, hostProblem } from '../../core/net-policy.ts'
 
-const KINDS: ConnectorKind[] = ['postgres', 'mysql', 'files', 'gsheets', 'http', 'email']
+const KINDS: ConnectorKind[] = ['postgres', 'mysql', 'files', 'gsheets', 'http', 'email', 'whatsapp']
 /** kinds that offer actions only (P1 package D, server/core/actions): no tables, tested by their action provider */
-const ACTION_KINDS = new Set<string>(['http', 'email'])
+const ACTION_KINDS = new Set<string>(['http', 'email', 'whatsapp'])
 
 /** P1-D: settings and secret of an action connection, checked by its provider (base URL, allow-list, auth ...) */
 function checkActionConnection(s: Services, kind: ConnectorKind, settings: Record<string, string>, secret: string | undefined): void {
@@ -183,7 +183,7 @@ export function registerConnectionRoutes(router: Router, s: Services): void {
     const b = bodyObj(ctx)
     const name = reqString(b, 'name', 'A connection needs a name.', 100)
     const kind = b.connector as ConnectorKind
-    if (!KINDS.includes(kind)) throw invalid(`The connector "${String(b.connector)}" is not available yet (use postgres, mysql, gsheets, files, http or email).`, 'connector')
+    if (!KINDS.includes(kind)) throw invalid(`The connector "${String(b.connector)}" is not available yet (use postgres, mysql, gsheets, files, http, email or whatsapp).`, 'connector')
     const existing = await s.meta.connections.list()
     if (existing.some((c) => c.name.toLowerCase() === name.toLowerCase())) throw conflict(`A connection named "${name}" already exists.`)
     if (kind === 'files' && existing.some((c) => c.connector === 'files')) throw conflict('The Data files connection already exists.')

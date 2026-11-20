@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  Activity, Archive, BadgeCheck, KeySquare, Mail, ShieldCheck, ChevronLeft, ChevronRight, FileKey2, GitFork, Layers, ListChecks, Network, PackageCheck, RefreshCw, ScrollText, ShieldHalf, Upload, Users, UsersRound, Workflow, Zap,
+  Activity, Archive, BadgeCheck, KeySquare, Mail, MessageCircle, ShieldCheck, ChevronLeft, ChevronRight, FileKey2, GitFork, Layers, ListChecks, Network, PackageCheck, RefreshCw, ScrollText, ShieldHalf, Upload, Users, UsersRound, Workflow, Zap,
   type LucideIcon,
 } from 'lucide-react'
 import { usePlatform, type UserDef } from '@/platform'
@@ -32,14 +32,16 @@ import { UsersPanel } from './Users'
 import { DepartmentsSection, OrgChartSection, TeamsSection } from './Organisation'
 import { EmailSection, ServiceAccountsSection, SignInSecuritySection } from './AdminIdentity'
 import { NotificationAdmin } from './AdminNotifications'
+import { WhatsappAdminSection } from './AdminWhatsapp'
 
-export type AdminSection = 'environments' | 'users' | 'security' | 'email' | 'service-accounts' | 'departments' | 'teams' | 'orgchart' | 'licences' | 'audit' | 'jobs' | 'flows' | 'events' | 'backups' | 'logs' | 'usage' | 'updates'
+export type AdminSection = 'environments' | 'users' | 'security' | 'email' | 'whatsapp' | 'service-accounts' | 'departments' | 'teams' | 'orgchart' | 'licences' | 'audit' | 'jobs' | 'flows' | 'events' | 'backups' | 'logs' | 'usage' | 'updates'
 interface SectionDef { key: AdminSection; label: string; icon: LucideIcon; soon?: boolean }
 export const ADMIN_SECTIONS: SectionDef[] = [
   { key: 'environments', label: 'Environments', icon: Layers },
   { key: 'users', label: 'Users', icon: Users },
   { key: 'security', label: 'Sign-in and security', icon: ShieldCheck },
   { key: 'email', label: 'Email', icon: Mail },
+  { key: 'whatsapp', label: 'WhatsApp', icon: MessageCircle },
   { key: 'service-accounts', label: 'Service accounts', icon: KeySquare },
   { key: 'departments', label: 'Departments', icon: Network },
   { key: 'teams', label: 'Teams', icon: UsersRound },
@@ -88,6 +90,7 @@ export function AdminConsole({ section }: { section?: string }) {
           {current === 'users' && <UsersPanel />}
           {current === 'security' && <SignInSecuritySection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'email' && <><EmailSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} /><NotificationAdmin /></>}
+          {current === 'whatsapp' && <WhatsappAdminSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'service-accounts' && <ServiceAccountsSection title={(t, sub, actions) => <SectionTitle title={t} subtitle={sub} actions={actions} />} />}
           {current === 'departments' && <DepartmentsSection />}
           {current === 'teams' && <TeamsSection />}

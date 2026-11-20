@@ -1,0 +1,173 @@
+{
+  "format": "appbuilder/template",
+  "formatVersion": 1,
+  "id": "builtin.approval-bar",
+  "version": "1.0.0",
+  "kind": "component",
+  "name": "Approval bar",
+  "description": "A bar that lists the pending requests of a table and approves or rejects the one you pick. The status column receives Approved or Rejected (a choice column needs those choices).",
+  "publisher": "Appbuilder",
+  "tags": [
+    "approvals",
+    "requests",
+    "status"
+  ],
+  "minPlatformVersion": "0.6.0",
+  "modes": [
+    "copy"
+  ],
+  "slots": [
+    {
+      "id": "Request",
+      "label": "Requests table",
+      "description": "The table whose rows wait for a decision.",
+      "required": true,
+      "create": {
+        "name": "Decisions",
+        "displayName": "Decisions",
+        "primaryColumn": "Title"
+      },
+      "columns": [
+        {
+          "id": "Title",
+          "label": "Title",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true
+          }
+        },
+        {
+          "id": "Status",
+          "label": "Status",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "choice",
+            "choices": [
+              "Pending",
+              "Approved",
+              "Rejected"
+            ],
+            "default": "Pending"
+          }
+        },
+        {
+          "id": "Details",
+          "label": "Details",
+          "types": [
+            "multiline",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "multiline"
+          }
+        }
+      ]
+    }
+  ],
+  "payload": {
+    "controls": [
+      {
+        "id": "tpl_ab_bar",
+        "name": "ApprovalBar",
+        "type": "Container",
+        "props": {
+          "X": "=40",
+          "Y": "=40",
+          "Width": "=880",
+          "Height": "=148",
+          "Fill": "=Color.White",
+          "Radius": "=12",
+          "BorderWidth": "=1"
+        },
+        "children": [
+          {
+            "id": "tpl_ab_title",
+            "name": "ApprovalBarTitle",
+            "type": "Label",
+            "props": {
+              "X": "=16",
+              "Y": "=12",
+              "Width": "=840",
+              "Height": "=28",
+              "Text": "=\"Waiting for a decision: \" & CountRows(Filter(Slot_Request, Slot_Request_Status = \"Pending\"))",
+              "Size": "=16",
+              "FontWeight": "=FontWeight.Semibold"
+            },
+            "children": []
+          },
+          {
+            "id": "tpl_ab_pick",
+            "name": "ApprovalPick",
+            "type": "Dropdown",
+            "props": {
+              "X": "=16",
+              "Y": "=48",
+              "Width": "=420",
+              "Height": "=40",
+              "Items": "=Filter(Slot_Request, Slot_Request_Status = \"Pending\")",
+              "Placeholder": "=\"Choose a request\""
+            },
+            "children": []
+          },
+          {
+            "id": "tpl_ab_approve",
+            "name": "ApproveButton",
+            "type": "Button",
+            "props": {
+              "X": "=452",
+              "Y": "=48",
+              "Width": "=130",
+              "Height": "=40",
+              "Text": "=\"Approve\"",
+              "OnSelect": "=If(IsBlank(ApprovalPick.Selected), Notify(\"Choose a request first\", NotificationType.Warning), Patch(Slot_Request, ApprovalPick.Selected, {Slot_Request_Status: \"Approved\"}); Notify(\"Approved\", NotificationType.Success))"
+            },
+            "children": []
+          },
+          {
+            "id": "tpl_ab_reject",
+            "name": "RejectButton",
+            "type": "Button",
+            "props": {
+              "X": "=594",
+              "Y": "=48",
+              "Width": "=130",
+              "Height": "=40",
+              "Text": "=\"Reject\"",
+              "Style": "=ButtonStyle.Outline",
+              "OnSelect": "=If(IsBlank(ApprovalPick.Selected), Notify(\"Choose a request first\", NotificationType.Warning), Patch(Slot_Request, ApprovalPick.Selected, {Slot_Request_Status: \"Rejected\"}); Notify(\"Rejected\", NotificationType.Info))"
+            },
+            "children": []
+          },
+          {
+            "id": "tpl_ab_details",
+            "name": "ApprovalDetails",
+            "type": "Label",
+            "props": {
+              "X": "=16",
+              "Y": "=100",
+              "Width": "=840",
+              "Height": "=36",
+              "Text": "=Coalesce(ApprovalPick.Selected.Slot_Request_Details, \"\")",
+              "Size": "=13",
+              "Color": "=RGBA(100, 116, 139, 1)"
+            },
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
+  "signature": {
+    "alg": "sha256",
+    "digest": "83ea953a985a8b2016534d7ab116bb0e903d6147ee5db7353b3a7cddce151c0f"
+  }
+}

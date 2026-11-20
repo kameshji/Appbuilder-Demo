@@ -1,0 +1,297 @@
+{
+  "format": "appbuilder/template",
+  "formatVersion": 1,
+  "id": "builtin.request-tracker",
+  "version": "1.0.0",
+  "kind": "app",
+  "name": "Request tracker",
+  "description": "A small app to log requests (or issues), filter them by status, and edit them in a form. Creates its Requests table, or uses one you have.",
+  "publisher": "Appbuilder",
+  "tags": [
+    "requests",
+    "issues",
+    "tracker",
+    "helpdesk"
+  ],
+  "minPlatformVersion": "0.6.0",
+  "modes": [
+    "copy",
+    "linked"
+  ],
+  "slots": [
+    {
+      "id": "Requests",
+      "label": "Requests table",
+      "description": "One row per request.",
+      "required": true,
+      "defaultMode": "create",
+      "create": {
+        "name": "Requests",
+        "displayName": "Requests",
+        "primaryColumn": "Title",
+        "description": "Requests logged in the Request tracker app."
+      },
+      "columns": [
+        {
+          "id": "Title",
+          "label": "Title",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true
+          }
+        },
+        {
+          "id": "Status",
+          "label": "Status",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "choice",
+            "choices": [
+              "New",
+              "In progress",
+              "Done"
+            ],
+            "default": "New"
+          }
+        },
+        {
+          "id": "Priority",
+          "label": "Priority",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "choice",
+            "choices": [
+              "Low",
+              "Normal",
+              "High"
+            ],
+            "default": "Normal"
+          }
+        },
+        {
+          "id": "DueDate",
+          "label": "Due date",
+          "types": [
+            "date",
+            "datetime"
+          ],
+          "required": false,
+          "create": {
+            "type": "date"
+          }
+        },
+        {
+          "id": "Details",
+          "label": "Details",
+          "types": [
+            "multiline",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "multiline"
+          }
+        }
+      ]
+    }
+  ],
+  "payload": {
+    "app": {
+      "formatVersion": 2,
+      "name": "Request tracker",
+      "width": 1920,
+      "height": 1080,
+      "scaleMode": "responsive",
+      "theme": {
+        "mode": "light"
+      },
+      "dataSources": [
+        "Slot_Requests"
+      ],
+      "appProps": {
+        "OnStart": "=false"
+      },
+      "screens": [
+        {
+          "id": "tpl_rt_screen",
+          "name": "RequestsScreen",
+          "type": "Screen",
+          "props": {
+            "Fill": "=RGBA(248, 250, 252, 1)"
+          },
+          "children": [
+            {
+              "id": "tpl_rt_title",
+              "name": "TrackerTitle",
+              "type": "Label",
+              "props": {
+                "X": "=32",
+                "Y": "=20",
+                "Width": "=600",
+                "Height": "=44",
+                "Text": "=\"Requests\"",
+                "Size": "=28",
+                "FontWeight": "=FontWeight.Bold"
+              },
+              "children": []
+            },
+            {
+              "id": "tpl_rt_counts",
+              "name": "TrackerCounts",
+              "type": "Label",
+              "props": {
+                "X": "=660",
+                "Y": "=30",
+                "Width": "=700",
+                "Height": "=24",
+                "Text": "=\"Open: \" & CountRows(Filter(Slot_Requests, Slot_Requests_Status <> \"Done\")) & \"   Done: \" & CountRows(Filter(Slot_Requests, Slot_Requests_Status = \"Done\"))",
+                "Size": "=14",
+                "Color": "=RGBA(100, 116, 139, 1)"
+              },
+              "children": []
+            },
+            {
+              "id": "tpl_rt_new",
+              "name": "TrackerNewButton",
+              "type": "Button",
+              "props": {
+                "X": "=1728",
+                "Y": "=20",
+                "Width": "=160",
+                "Height": "=40",
+                "AnchorH": "=Anchor.End",
+                "Text": "=\"+ New request\"",
+                "OnSelect": "=NewForm(RequestForm)"
+              },
+              "children": []
+            },
+            {
+              "id": "tpl_rt_filter",
+              "name": "StatusFilter",
+              "type": "Dropdown",
+              "props": {
+                "X": "=32",
+                "Y": "=88",
+                "Width": "=240",
+                "Height": "=40",
+                "Items": "=[\"All\", \"New\", \"In progress\", \"Done\"]",
+                "Default": "=\"All\""
+              },
+              "children": []
+            },
+            {
+              "id": "tpl_rt_search",
+              "name": "TrackerSearch",
+              "type": "SearchBox",
+              "props": {
+                "X": "=288",
+                "Y": "=88",
+                "Width": "=480",
+                "Height": "=40",
+                "Placeholder": "=\"Search titles\""
+              },
+              "children": []
+            },
+            {
+              "id": "tpl_rt_table",
+              "name": "RequestsTable",
+              "type": "DataTable",
+              "props": {
+                "X": "=32",
+                "Y": "=144",
+                "Width": "=1096",
+                "Height": "=904",
+                "AnchorH": "=Anchor.Stretch",
+                "AnchorV": "=Anchor.Stretch",
+                "Items": "=Filter(Slot_Requests, (IsBlank(StatusFilter.SelectedText) || StatusFilter.SelectedText = \"All\" || Slot_Requests_Status = StatusFilter.SelectedText) && (IsBlank(TrackerSearch.Value) || TrackerSearch.Value in Slot_Requests_Title))",
+                "Columns": "=\"Slot_Requests_Title, Slot_Requests_Status, Slot_Requests_Priority, Slot_Requests_DueDate\""
+              },
+              "children": []
+            },
+            {
+              "id": "tpl_rt_panel",
+              "name": "RequestPanel",
+              "type": "Container",
+              "props": {
+                "X": "=1160",
+                "Y": "=144",
+                "Width": "=728",
+                "Height": "=904",
+                "AnchorH": "=Anchor.End",
+                "AnchorV": "=Anchor.Stretch",
+                "Fill": "=Color.White",
+                "Radius": "=12"
+              },
+              "children": [
+                {
+                  "id": "tpl_rt_ptitle",
+                  "name": "RequestPanelTitle",
+                  "type": "Label",
+                  "props": {
+                    "X": "=24",
+                    "Y": "=20",
+                    "Width": "=680",
+                    "Height": "=32",
+                    "Text": "=If(RequestForm.Mode = \"New\", \"New request\", Coalesce(RequestsTable.Selected.Slot_Requests_Title, \"Select a request\"))",
+                    "Size": "=20",
+                    "FontWeight": "=FontWeight.Semibold"
+                  },
+                  "children": []
+                },
+                {
+                  "id": "tpl_rt_form",
+                  "name": "RequestForm",
+                  "type": "Form",
+                  "props": {
+                    "X": "=24",
+                    "Y": "=64",
+                    "Width": "=680",
+                    "Height": "=600",
+                    "DataSource": "=\"Slot_Requests\"",
+                    "Item": "=RequestsTable.Selected",
+                    "Mode": "=FormMode.Edit",
+                    "Fields": "=\"Slot_Requests_Title, Slot_Requests_Status, Slot_Requests_Priority, Slot_Requests_DueDate, Slot_Requests_Details\"",
+                    "Columns": "=1",
+                    "OnSuccess": "=Notify(\"Request saved\", NotificationType.Success)",
+                    "OnFailure": "=Notify(RequestForm.Error, NotificationType.Error)"
+                  },
+                  "children": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "roles": [
+      {
+        "name": "Request tracker user",
+        "description": "Logs requests and works on them in the Request tracker app.",
+        "tables": {
+          "Requests": {
+            "create": true,
+            "read": "all",
+            "update": "all",
+            "delete": "own"
+          }
+        }
+      }
+    ]
+  },
+  "signature": {
+    "alg": "sha256",
+    "digest": "3bb095446f54ed891570e60d2f5a58369dec6774e1cb07d659bbcd3cbf56c7d3"
+  }
+}

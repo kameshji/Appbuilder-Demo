@@ -18,6 +18,7 @@ import { OutboundError, allowListProblem, hostAllowed, safeRequest, type Outboun
 import { TemplateError, lookupPath, renderJson, renderPath, renderText } from './template.ts'
 import { checkSchema } from './schema.ts'
 import { REQUEST_ACTION } from './builtin-defs.ts'
+import { isReservedGraphHost } from '../whatsapp/graph.ts'
 export { REQUEST_ACTION }
 
 export type AuthMode = 'none' | 'apiKey' | 'basic' | 'bearer' | 'oauth2cc'
@@ -105,7 +106,8 @@ export function policyOf(c: ConnectionRecord, cache: Map<string, unknown>, extra
   const sensitive = Object.keys(sec.headers ?? {}).map((h) => h.toLowerCase())
   if (st.authMode === 'apiKey' && (st.apiKeyIn ?? 'header') === 'header' && st.apiKeyName) sensitive.push(st.apiKeyName.toLowerCase())
   return {
-    allowedHosts: allowedHostsOf(st),
+    // P2-E: Meta's Graph API is reserved for the WhatsApp connector (its send path enforces opt-ins)
+    allowedHosts: allowedHostsOf(st).filter((h) => !isReservedGraphHost(h)),
     allowPrivate: st.allowPrivateNetwork === 'true',
     maxRedirects: num(st.maxRedirects, 3, 0, 10),
     maxResponseBytes: num(st.maxResponseKB, 5120, 1, 20480) * 1024,
@@ -134,6 +136,7 @@ export function checkHttpSettings(st: Record<string, string>, secret: string | u
   for (const h of hosts) {
     const p = allowListProblem(h)
     if (p) out.push(p)
+    else if (isReservedGraphHost(h)) out.push(`"${h}" includes Meta's Graph API, which only the WhatsApp connector may call (it checks opt-ins before sending). Use a WhatsApp connection instead.`)
   }
   if (base && hosts.length && !hostAllowed(base.hostname, hosts)) out.push(`The host of the base URL (${base.hostname}) must be on the list of allowed hosts.`)
   const mode = (st.authMode || 'none') as AuthMode

@@ -1,0 +1,199 @@
+{
+  "format": "appbuilder/template",
+  "formatVersion": 1,
+  "id": "builtin.list-detail",
+  "version": "1.0.0",
+  "kind": "screen",
+  "name": "List and detail",
+  "description": "A screen with a searchable list of the rows of a table on the left and a form for the chosen row on the right; New adds a row.",
+  "publisher": "Appbuilder",
+  "tags": [
+    "list",
+    "form",
+    "master-detail"
+  ],
+  "minPlatformVersion": "0.6.0",
+  "modes": [
+    "copy"
+  ],
+  "slots": [
+    {
+      "id": "Items",
+      "label": "Table",
+      "description": "The table the screen lists and edits.",
+      "required": true,
+      "create": {
+        "name": "Items",
+        "displayName": "Items",
+        "primaryColumn": "Title"
+      },
+      "columns": [
+        {
+          "id": "Title",
+          "label": "Title",
+          "types": [
+            "text"
+          ],
+          "required": true,
+          "create": {
+            "type": "text",
+            "required": true
+          }
+        },
+        {
+          "id": "Status",
+          "label": "Status",
+          "types": [
+            "choice",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "choice",
+            "choices": [
+              "Open",
+              "Closed"
+            ],
+            "default": "Open"
+          }
+        },
+        {
+          "id": "Notes",
+          "label": "Notes",
+          "types": [
+            "multiline",
+            "text"
+          ],
+          "required": false,
+          "create": {
+            "type": "multiline"
+          }
+        }
+      ]
+    }
+  ],
+  "payload": {
+    "screen": {
+      "id": "tpl_ld_screen",
+      "name": "ListDetail",
+      "type": "Screen",
+      "props": {
+        "Fill": "=RGBA(248, 250, 252, 1)"
+      },
+      "children": [
+        {
+          "id": "tpl_ld_heading",
+          "name": "ListHeading",
+          "type": "Label",
+          "props": {
+            "X": "=32",
+            "Y": "=24",
+            "Width": "=800",
+            "Height": "=40",
+            "Text": "=\"Records\"",
+            "Size": "=26",
+            "FontWeight": "=FontWeight.Bold"
+          },
+          "children": []
+        },
+        {
+          "id": "tpl_ld_search",
+          "name": "ListSearch",
+          "type": "SearchBox",
+          "props": {
+            "X": "=32",
+            "Y": "=88",
+            "Width": "=520",
+            "Height": "=40",
+            "Placeholder": "=\"Search\""
+          },
+          "children": []
+        },
+        {
+          "id": "tpl_ld_new",
+          "name": "ListNewButton",
+          "type": "Button",
+          "props": {
+            "X": "=968",
+            "Y": "=88",
+            "Width": "=160",
+            "Height": "=40",
+            "Text": "=\"+ New\"",
+            "OnSelect": "=NewForm(ListForm)"
+          },
+          "children": []
+        },
+        {
+          "id": "tpl_ld_table",
+          "name": "ListTable",
+          "type": "DataTable",
+          "props": {
+            "X": "=32",
+            "Y": "=144",
+            "Width": "=1096",
+            "Height": "=900",
+            "AnchorV": "=Anchor.Stretch",
+            "Items": "=Filter(Slot_Items, IsBlank(ListSearch.Value) || ListSearch.Value in Slot_Items_Title)",
+            "Columns": "=\"Slot_Items_Title, Slot_Items_Status\""
+          },
+          "children": []
+        },
+        {
+          "id": "tpl_ld_panel",
+          "name": "ListDetailPanel",
+          "type": "Container",
+          "props": {
+            "X": "=1160",
+            "Y": "=144",
+            "Width": "=728",
+            "Height": "=900",
+            "AnchorH": "=Anchor.End",
+            "AnchorV": "=Anchor.Stretch",
+            "Fill": "=Color.White",
+            "Radius": "=12"
+          },
+          "children": [
+            {
+              "id": "tpl_ld_dtitle",
+              "name": "ListDetailTitle",
+              "type": "Label",
+              "props": {
+                "X": "=24",
+                "Y": "=20",
+                "Width": "=680",
+                "Height": "=32",
+                "Text": "=If(ListForm.Mode = \"New\", \"New record\", Coalesce(ListTable.Selected.Slot_Items_Title, \"Select a record\"))",
+                "Size": "=20",
+                "FontWeight": "=FontWeight.Semibold"
+              },
+              "children": []
+            },
+            {
+              "id": "tpl_ld_form",
+              "name": "ListForm",
+              "type": "Form",
+              "props": {
+                "X": "=24",
+                "Y": "=64",
+                "Width": "=680",
+                "Height": "=520",
+                "DataSource": "=\"Slot_Items\"",
+                "Item": "=ListTable.Selected",
+                "Mode": "=FormMode.Edit",
+                "Fields": "=\"Slot_Items_Title, Slot_Items_Status, Slot_Items_Notes\"",
+                "Columns": "=1",
+                "OnSuccess": "=Notify(\"Saved\", NotificationType.Success)",
+                "OnFailure": "=Notify(ListForm.Error, NotificationType.Error)"
+              },
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "signature": {
+    "alg": "sha256",
+    "digest": "bca301d832dd50a433c85f5fc4275903a7ce7de31b0c0455fdf389b43cfb8889"
+  }
+}
