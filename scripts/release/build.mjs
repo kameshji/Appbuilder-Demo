@@ -83,7 +83,8 @@ const IMPORT_RE = /^\s*(?:import|export)\s[^'"`;]*?\sfrom\s*['"]([^'"]+)['"]|^\s
 const isTest = (f) => /\.(test|spec)\.[cm]?[tj]s$/.test(f) || /(^|\/)(testdb|kernel-testkit)\.ts$/.test(f)
 const files = new Set()
 const externals = new Set()
-const queue = ['server/main.ts']
+// the licence service is a second entry point: the fleet tool runs it from the release folder (scripts/fleet/lib/licence.ts)
+const queue = ['server/main.ts', 'server/licence-service/main.ts']
 while (queue.length) {
   const rel = queue.shift()
   if (files.has(rel)) continue
