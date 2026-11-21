@@ -95,7 +95,10 @@ A=$(id_of acme) B=$(id_of beta) C=$(id_of core)
 CA=/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt
 for _ in $(seq 1 60); do sudo test -f "$CA" && break; sleep 1; done
 sudo cp "$CA" "$WORK/ca.crt" && sudo chmod 644 "$WORK/ca.crt"
-https() { # host method path [json body] [cookie jar]
+https() { # host method path [json body ('' for none)] [cookie jar]
+  # exactly 3 to 5 arguments: an extra '' once shifted the jar to a 6th, ignored argument, so every session went
+  # into the shared none.jar and a check with the right jar found it empty
+  [ $# -ge 3 ] && [ $# -le 5 ] || { printf 'fleet-ci: https() takes host method path [body] [jar], got %s arguments\n' "$#" >&2; return 2; }
   set -- "$1" "$2" "$3" "${4:-}" "${5:-$WORK/none.jar}"
   if [ -n "$4" ]; then
     curl -sS --cacert "$WORK/ca.crt" --resolve "$1.$DOMAIN:443:127.0.0.1" -X "$2" -H 'X-Appbuilder: 1' -H 'Content-Type: application/json' -b "$5" -c "$5" --data "$4" "https://$1.$DOMAIN/api/v1$3"
@@ -112,10 +115,10 @@ done
 ok "an unknown host name gets no install (404 on http, no certificate on https)" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: nobody.$DOMAIN' http://127.0.0.1/)\" = 404 ] && ! curl -s --cacert '$WORK/ca.crt' --resolve nobody.$DOMAIN:443:127.0.0.1 https://nobody.$DOMAIN/ >/dev/null 2>&1"
 for s in acme beta core; do
   tok=$(jq -r .result.link "$WORK/$s.json" | sed 's/.*#invite=//')
-  https "$s" POST /auth/invitation/accept "{\"token\":\"$tok\",\"password\":\"Fleet-ci-$s-pw1\"}" "" "$WORK/$s.jar" >/dev/null
-  tid=$(https "$s" POST /tables '{"displayName":"Fleet mark","name":"FleetMark","columns":[{"displayName":"Title","type":"text"}]}' "" "$WORK/$s.jar" | jq -r .id)
+  https "$s" POST /auth/invitation/accept "{\"token\":\"$tok\",\"password\":\"Fleet-ci-$s-pw1\"}" "$WORK/$s.jar" >/dev/null
+  tid=$(https "$s" POST /tables '{"displayName":"Fleet mark","name":"FleetMark","columns":[{"displayName":"Title","type":"text"}]}' "$WORK/$s.jar" | jq -r .id)
   echo "$tid" > "$WORK/$s.table"
-  ok "$s: the first administrator signs in through the one-time link and writes a row" "https '$s' POST /data/$tid/rows '{\"values\":{\"Title\":\"MARK-$s\"}}' '' '$WORK/$s.jar' | grep -q MARK-$s"
+  ok "$s: the first administrator signs in through the one-time link and writes a row" "https '$s' POST /data/$tid/rows '{\"values\":{\"Title\":\"MARK-$s\"}}' '$WORK/$s.jar' | grep -q MARK-$s"
 done
 
 step "Isolation at the OS level (what local mode cannot show)"
@@ -147,10 +150,10 @@ step "Backups off the machine, restore of ONE organisation"
 ok "backup run --all" "ab backup run --all >/dev/null"
 ok "three encrypted copies off the machine" "[ \$(sudo find $OFFSITE -name '*-nightly-*.abbak' | wc -l) -eq 3 ]"
 tidb=$(cat "$WORK/beta.table")
-https beta POST "/data/$tidb/rows" '{"values":{"Title":"AFTER-BACKUP"}}' "" "$WORK/beta.jar" >/dev/null
+https beta POST "/data/$tidb/rows" '{"values":{"Title":"AFTER-BACKUP"}}' "$WORK/beta.jar" >/dev/null
 ok "backup restore beta" "ab backup restore beta >/dev/null"
-https beta POST /auth/login '{"email":"it@beta.example","password":"Fleet-ci-beta-pw1"}' "" "$WORK/beta.jar" >/dev/null
-ok "beta is back at its backup" "https beta POST /query '{\"plan\":{\"version\":2,\"table\":\"FleetMark\"}}' '' '$WORK/beta.jar' | grep -q MARK-beta && ! https beta POST /query '{\"plan\":{\"version\":2,\"table\":\"FleetMark\"}}' '' '$WORK/beta.jar' | grep -q AFTER-BACKUP"
+https beta POST /auth/login '{"email":"it@beta.example","password":"Fleet-ci-beta-pw1"}' "$WORK/beta.jar" >/dev/null
+ok "beta is back at its backup" "https beta POST /query '{\"plan\":{\"version\":2,\"table\":\"FleetMark\"}}' '$WORK/beta.jar' | grep -q MARK-beta && ! https beta POST /query '{\"plan\":{\"version\":2,\"table\":\"FleetMark\"}}' '$WORK/beta.jar' | grep -q AFTER-BACKUP"
 printf '  acme session answer: %s
 ' "$(https acme GET /auth/session '' "$WORK/acme.jar" 2>&1 | cut -c1-300)"; printf '  acme cookie names: %s
 ' "$(awk '!/^# /&&NF>=7{print $6}' "$WORK/acme.jar" | tr '
