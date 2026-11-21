@@ -126,7 +126,8 @@ jobs:
   # packages and changes the runner's PostgreSQL, so it has its own job. What a hosted runner cannot show is printed as
   # SKIP by scripts/fleet/ci/fleet-ci.sh.
   fleet:
-    runs-on: ubuntu-latest
+    # the fleet installer supports Ubuntu 24.04 and 22.04 (the hosting target); ubuntu-latest moved to 26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
