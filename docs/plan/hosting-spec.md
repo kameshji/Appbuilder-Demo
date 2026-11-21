@@ -519,7 +519,7 @@ Built and tested as far as a Windows developer PC and GitHub's Linux runners all
 
 | Exit check | State |
 | --- | --- |
-| 1 Twenty installs created by the tool on HTTPS | Three created locally with no manual step (`h-fleet.mjs`); HTTPS by host name is the CI job `fleet`; twenty on a real server: not done |
+| 1 Twenty installs created by the tool on HTTPS | Three created locally with no manual step (`h-fleet.mjs`); HTTPS by host name is the CI job `fleet`, which does not pass yet (it stops at `abfleet init`: PostgreSQL version mismatch on the runner); twenty on a real server: not done |
 | 2 Cross-instance isolation | PASS locally (112 of 113; the socket check needs Linux) and in the CI job `isolation`; OS users and file permissions need the server |
 | 3 Fleet update with a canary and a forced failure | PASS locally |
 | 4 Per-organisation backup and restore | PASS locally |

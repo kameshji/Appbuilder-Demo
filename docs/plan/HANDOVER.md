@@ -10,7 +10,7 @@ Read first: `docs/plan/master-plan.md` (sections 9 to 16 are the owner's decisio
 
 ## How to verify
 
-`npm run typecheck`, `npm run lint`, full `npx vitest run` with `APPBUILDER_TEST_DB` and `APPBUILDER_TEST_MYSQL` (twice), `npm run licences`, `npm run build`, then `node scripts/exit-check/p3.mjs` (runs every Phase 3 and local hosting check and the Phase 2 regression with P0 and P1). CI has three jobs: `test`, `isolation`, `fleet`.
+`npm run typecheck`, `npm run lint`, full `npx vitest run` with `APPBUILDER_TEST_DB` and `APPBUILDER_TEST_MYSQL` (twice), `npm run licences`, `npm run build`, then `node scripts/exit-check/p3.mjs` (runs every Phase 3 and local hosting check and the Phase 2 regression with P0 and P1). CI has three jobs: `test`, `isolation` and `fleet`. **The `fleet` job does not pass yet** and is marked non-blocking: on its first real Linux runs the installer set up the runner's PostgreSQL 16 and `abfleet init` then looked for PostgreSQL 17's tools (`/usr/lib/postgresql/17/bin/psql`). Fix the installer / init agreement on the PostgreSQL version first; everything after that step in the job has never run.
 
 ## What remains, in order
 
