@@ -261,8 +261,9 @@ and the service only; `APPBUILDER_SETUP_CODE_FILE` names the file). The file is 
 ```
 
 Type it in the setup code field, with or without the dash. The field says where the code is: *shown in the server
-window* when you started the server by hand, or *in the setup-code file on the server* when the server runs as a service
-(it knows `APPBUILDER_SETUP_CODE_FILE` is set; the page never shows the path). Then it shows the command for this
+window* when you started the server by hand, *shown in the server window, also in the setup-code file* when you started it
+by hand with `APPBUILDER_SETUP_CODE_FILE` set, or *in the setup-code file on the server* when the server runs as a service
+(the variable is set and the server has no console window; the page never shows the path). Then it shows the command for this
 system: `sudo appbuilder setup-code` (Linux) or `appbuilder setup-code` in an administrator PowerShell (Windows), which
 prints the code from the service's file, or `sudo cat /var/lib/appbuilder/workspace/setup-code.txt` /
 `Get-Content 'C:\ProgramData\Appbuilder\workspace\setup-code.txt'` for a default install. It is 8 characters from an

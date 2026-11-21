@@ -103,8 +103,12 @@ function SetupCodeField({ value, onChange, autoFocus }: { value: string; onChang
   const where = usePlatform((s) => s.setup.codeIn)
   const os = usePlatform((s) => s.setup.platform)
   const inFile = where === 'file'
-  const label = inFile ? 'Setup code (in the setup-code file on the server)' : 'Setup code (shown in the server window)'
-  const hint = inFile ? (
+  // started by hand with APPBUILDER_SETUP_CODE_FILE set: the window shows it, and the file has it too
+  const both = where === 'both'
+  const label = inFile ? 'Setup code (in the setup-code file on the server)' : both ? 'Setup code (shown in the server window, also in the setup-code file)' : 'Setup code (shown in the server window)'
+  const hint = both
+    ? 'Printed in the window where you started the Appbuilder server, for example ABCD-EFGH. It is also written to the server\'s setup-code file. It proves you are at this computer.'
+    : inFile ? (
     <span data-testid="setup-code-file-hint">
       Appbuilder runs as a service, so the code is in a file on this computer. {os === 'windows'
         ? <>In an <b>administrator</b> PowerShell, type <code className="rounded bg-muted px-1">appbuilder setup-code</code> (or <code className="rounded bg-muted px-1">Get-Content 'C:\ProgramData\Appbuilder\workspace\setup-code.txt'</code> for a default install).</>

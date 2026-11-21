@@ -116,6 +116,19 @@ describe('layout', () => {
     expect(pos[loose.id].y).toBeGreaterThan(Math.max(pos[cust].y + cardHeight(tableById(m, cust)!), pos[line].y))
     expect(autoLayout(m)).toEqual(pos)
   })
+  it('a cycle of lookups (A -> C -> B -> A) still gets finite positions (an empty first layer is not NaN)', () => {
+    let m = orders().m
+    const ids: string[] = []
+    for (const n of ['Alpha', 'Beta', 'Gamma']) { const r = addTable(m, { displayName: n }); m = r.model; ids.push(m.tables.find((t) => t.name === n)!.id) }
+    const link = (from: string, to: string) => tableById(m, ids[['Alpha', 'Beta', 'Gamma'].indexOf(from)])!.columns.push({ name: `${to}Ref`, displayName: `${to} ref`, type: 'lookup', lookupTable: to })
+    link('Alpha', 'Gamma')
+    link('Gamma', 'Beta')
+    link('Beta', 'Alpha')
+    // only the three: nothing else fills the first layer
+    const pos = autoLayout(m, { ids })
+    for (const id of ids) expect(Number.isFinite(pos[id].x) && Number.isFinite(pos[id].y), JSON.stringify(pos[id])).toBe(true)
+    expect(Object.values(pos).every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))).toBe(true)
+  })
   it('auto-layout by area keeps areas apart (stacked blocks)', () => {
     const { m, cust, ord, line } = orders()
     const pos = autoLayoutByArea(m, { positions: {}, areas: [{ id: 'a', name: 'Lines', color: 'blue', tables: [line] }] })

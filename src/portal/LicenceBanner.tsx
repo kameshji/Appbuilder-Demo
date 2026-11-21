@@ -12,6 +12,7 @@ import { usePlatform } from '@/platform'
 import { useCaps } from './security'
 import { fetchLicence, type LicenceView } from './licenceApi'
 import { licenceBanner } from './licenceGrace'
+import { fmtDate } from './kit'
 
 const POLL_MS = 5 * 60_000
 
@@ -39,7 +40,8 @@ export function LicenceBanner() {
       window.removeEventListener('focus', load)
     }
   }, [admin])
-  const b = admin ? licenceBanner(view, now, caps.isInstallAdmin) : null
+  // the same date format as Admin console > Licences, so the strip and the page show the same time the same way
+  const b = admin ? licenceBanner(view, now, caps.isInstallAdmin, (ms) => fmtDate(new Date(ms).toISOString())) : null
   if (!b) return null
   const Icon = b.kind === 'grace' ? AlertTriangle : KeyRound
   return (

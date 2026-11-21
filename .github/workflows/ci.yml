@@ -128,11 +128,8 @@ jobs:
   fleet:
     # the fleet installer supports Ubuntu 24.04 and 22.04 (the hosting target); ubuntu-latest moved to 26.04
     runs-on: ubuntu-24.04
-    # NOT PASSING YET (21 Nov 2026): its first real runs stopped at "abfleet init" (the runner has PostgreSQL 16; init
-    # looked for /usr/lib/postgresql/17/bin). Fixed: the installer records the folder of the RUNNING server's tools and
-    # every fleet command reads it (scripts/fleet/lib/pg.ts); nothing after init has run on Linux yet. Non-blocking
-    # until it is green: docs/plan/HANDOVER.md. On a failure fleet-ci.sh prints DIAGNOSTICS (units, journals, registry).
-    continue-on-error: true
+    # Green since 21 Nov 2026 (41 checks, 5 skipped as needing a rented server). On a failure fleet-ci.sh prints
+    # DIAGNOSTICS (units, journals, registry).
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4

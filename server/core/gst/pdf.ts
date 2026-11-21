@@ -10,7 +10,7 @@
 import { MM, type RichParagraph } from '../../../src/platform/print.ts'
 import { layoutDocument, PAGE_COUNT, PAGE_NUMBER, type Page, type RBlock, type RTableRow } from '../print/layout.ts'
 import { pdfBuffer } from '../print/pdf.ts'
-import { rupeesIN } from './money.ts'
+import { groupIN, rupeesIN } from './money.ts'
 import type { DocView } from './documents.ts'
 
 export const PRINTABLE = ['tax_invoice', 'bill_of_supply', 'credit_note', 'debit_note'] as const
@@ -19,6 +19,9 @@ export const COMPOSITION_HEADER = 'Composition taxable person, not eligible to c
 /** rule 46 proviso (G7.2) */
 export const ENDORSEMENT_LUT = 'SUPPLY MEANT FOR EXPORT/SUPPLY TO SEZ UNIT OR SEZ DEVELOPER FOR AUTHORISED OPERATIONS UNDER BOND OR LETTER OF UNDERTAKING WITHOUT PAYMENT OF INTEGRATED TAX'
 export const ENDORSEMENT_PAID = 'SUPPLY MEANT FOR EXPORT/SUPPLY TO SEZ UNIT OR SEZ DEVELOPER FOR AUTHORISED OPERATIONS ON PAYMENT OF INTEGRATED TAX'
+
+/** the reason of a credit note as printed for the customer (the stored codes are the editor's choices) */
+const CREDIT_REASON: Record<string, string> = { return: 'goods returned', 'post-sale discount': 'post-sale discount', deficiency: 'goods or services deficient', 'price revision': 'price revision', other: 'other' }
 
 const para = (t: string, o: { bold?: boolean } = {}): RichParagraph => ({ runs: [{ text: t, ...(o.bold ? { bold: true } : {}) }] })
 const textBlock = (lines: (string | [string, true])[], extra: Partial<Extract<RBlock, { k: 'text' }>> = {}): RBlock =>
@@ -91,7 +94,7 @@ export function documentBlocks(doc: DocView, otherCountryCode: string): RBlock[]
     cols.push({ header: 'Total', width: 18, align: 'right' })
   }
   const rows: RTableRow[] = doc.lines.map((l, i) => {
-    const cells = [String(i + 1), l.description, l.hsn, l.quantity, l.uqc, l.unitPrice, l.discount ? rupeesIN(l.discount) : '']
+    const cells = [String(i + 1), l.description, l.hsn, l.quantity, l.uqc, groupIN(l.unitPrice), l.discount ? rupeesIN(l.discount) : '']
     cells.push(rupeesIN(l.taxable))
     if (!bos) {
       if (intra) cells.push(l.taxed ? l.cgstRate : '', rupeesIN(l.cgst), l.taxed ? l.sgstRate : '', rupeesIN(l.sgst))
@@ -115,7 +118,7 @@ export function documentBlocks(doc: DocView, otherCountryCode: string): RBlock[]
   const left: RBlock[] = []
   if (snap.charges.length) left.push(textBlock([`The values include: ${snap.charges.map((c) => `${c.description} ${rupeesIN(c.amount)}`).join('; ')}.`], { size: 8 }))
   if (snap.taxInclusive && !bos) left.push(textBlock(['Prices were quoted inclusive of tax.'], { size: 8 }))
-  if (doc.docType === 'credit_note' && doc.reason) left.push(textBlock([`Reason: ${doc.reason}`], { size: 8 }))
+  if (doc.docType === 'credit_note' && doc.reason) left.push(textBlock([`Reason: ${CREDIT_REASON[doc.reason] ?? doc.reason}`], { size: 8 }))
   if (b.footer) left.push(textBlock(b.footer.split(/\r?\n/), { size: 8 }))
   // (r) the QR code received from the invoice registration portal, when its text was entered
   if (doc.irnQr && doc.irnQr.length <= 900) left.push({ k: 'barcode', symbology: 'qr', text: doc.irnQr, width: 34, height: 34, showText: false, align: 'left' })

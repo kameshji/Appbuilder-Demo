@@ -81,8 +81,8 @@ export function CrudTable<R extends Row>({ title, fields, rows, onSave, onDelete
                   {cols.map((f) => <td key={f.key} className={td}>{show(f, cellOf(r, f.key))}</td>)}
                   {canEdit && (
                     <td className={`${td} whitespace-nowrap text-right`}>
-                      <Button size="icon-sm" variant="ghost" aria-label="Edit" onClick={() => start(r)}><Pencil /></Button>
-                      {onDelete && <Button size="icon-sm" variant="ghost" aria-label="Delete" onClick={() => onDelete(r).catch(fail)}><Trash2 /></Button>}
+                      <Button size="icon-sm" variant="ghost" className="max-md:size-11" aria-label="Edit" onClick={() => start(r)}><Pencil /></Button>
+                      {onDelete && <Button size="icon-sm" variant="ghost" className="max-md:size-11" aria-label="Delete" onClick={() => onDelete(r).catch(fail)}><Trash2 /></Button>}
                     </td>
                   )}
                 </tr>

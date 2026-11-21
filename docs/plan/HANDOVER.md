@@ -10,14 +10,14 @@ Read first: `docs/plan/master-plan.md` (sections 9 to 16 are the owner's decisio
 
 ## How to verify
 
-`npm run typecheck`, `npm run lint`, full `npx vitest run` with `APPBUILDER_TEST_DB` and `APPBUILDER_TEST_MYSQL` (twice), `npm run licences`, `npm run build`, then `node scripts/exit-check/p3.mjs` (runs every Phase 3 and local hosting check and the Phase 2 regression with P0 and P1). CI has three jobs: `test`, `isolation` and `fleet`. **The `fleet` job does not pass yet** and is marked non-blocking: on its first real Linux runs the installer set up the runner's PostgreSQL 16 and `abfleet init` then looked for PostgreSQL 17's tools (`/usr/lib/postgresql/17/bin/psql`). Fix the installer / init agreement on the PostgreSQL version first; everything after that step in the job has never run.
+`npm run typecheck`, `npm run lint`, full `npx vitest run` with `APPBUILDER_TEST_DB` and `APPBUILDER_TEST_MYSQL` (twice), `npm run licences`, `npm run build`, then `node scripts/exit-check/p3.mjs` (runs every Phase 3 and local hosting check and the Phase 2 regression with P0 and P1). CI has three jobs: `test`, `isolation` and `fleet`. All three pass; the `fleet` job (real Ubuntu: systemd units, one OS user per install, Caddy with HTTPS, canary update with rollback, off-machine backups, restore, operator access, delete) passes since 21 Nov 2026 (41 checks passed, 5 skipped as needing a rented server: disk quotas, public DNS and real certificates, reboot, load, mail).
 
 ## What remains, in order
 
 1. Owner: rent the Linux server when ready; then run the fleet installer, `abfleet init`, the isolation suite, the pilot load profile and exit checks 1, 7 and 8 there; write H-M (tester on-boarding, incident procedure) and close the hosting phase.
 2. Still open from the load test: import speed (about 26 ms a row, per-row rules in the kernel); a Manufacturing dashboard tile the Quality role cannot read. Done in 0.9.0: print workers, sliced imports, table list cache, event-loop delay.
 3. Server commands still missing: `rekey` (needs a registry of sealed columns first) and locked SMTP settings by environment.
-4. Accounts, not built: ERP-lite sales invoice as a GST tax invoice, delivery challan fields, year-end closing, several originals per note; backup/restore of the Accounts tables untested; environment copy does not copy the books.
+4. Seen in the click-through (`scripts/exit-check/p3-clickthrough.mjs`), not fixed: the flow designer trigger card can close right after load; kiosk header flashes "All time"; read-only home page still shows Start and Edit buttons; no form-submitted starting point in the new-flow gallery. Accounts, not built: ERP-lite sales invoice as a GST tax invoice, delivery challan fields, year-end closing, several originals per note; backup/restore of the Accounts tables untested; environment copy does not copy the books.
 5. Known bugs and unbuilt items: the "Carried forward" list at the end of `docs/plan/p3-spec.md`.
 6. The accountant's corrections to Accounts when the owner sends them. Then the master plan's later phases (single sign-on and passkeys, AI agents, documents, sites).
 

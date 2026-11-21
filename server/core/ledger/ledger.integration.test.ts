@@ -491,13 +491,15 @@ describe.skipIf(!PG_URL)(PG_URL ? 'ledgers and GST (PostgreSQL)' : `ledgers and 
     const inv = await view(ids.w1)
     const text = JSON.stringify(documentBlocks(inv, '96'))
     for (const s of ['Asha Pumps Private Limited', '12 Industrial Area, Indore 452001', 'GSTIN: 23ABCDE1234F1Z5', 'INV/26-27/00001', '10-06-2026', 'Bhopal Traders', 'GSTIN/UIN: 23AAAAA0000A1Z5', 'State: Madhya Pradesh (code 23)',
-      '84137010', 'Monoblock pump 1 HP', 'NOS', '12,500.00', 'CGST %', 'SGST %', '1,125.00', '14,750.00', 'Madhya Pradesh (23)', 'Tax payable on reverse charge', 'authorised signatory', 'Bank: Example Bank, Indore']) expect(text, s).toContain(s)
+      '84137010', 'Monoblock pump 1 HP', 'NOS', '12,500.00', 'CGST %', 'SGST %', '1,125.00', '14,750.00', 'Madhya Pradesh (23)', 'Tax payable on reverse charge', 'authorised signatory', 'Bank: Example Bank, Indore', '"1,250.00"']) expect(text, s).toContain(s)
+    // the unit price is printed like every other amount (grouped), not as it was typed
+    expect(text).not.toContain('"1250.00"')
     expect(text).not.toMatch(/draft|not reviewed|accountant/i)
     expect(copyMarks(inv)).toEqual(['ORIGINAL FOR RECIPIENT', 'DUPLICATE FOR TRANSPORTER', 'TRIPLICATE FOR SUPPLIER'])
     await pdf(ids.w1)
     await pdf(ids.w2)
     const cn = JSON.stringify(documentBlocks(await view(ids.cn), '96'))
-    for (const s of ['CN/26-27/00001', 'Against invoice', 'INV/26-27/00001 dated 10-06-2026', 'Reason: return', '2,950.00', 'Total credited (INR)']) expect(cn, s).toContain(s)
+    for (const s of ['CN/26-27/00001', 'Against invoice', 'INV/26-27/00001 dated 10-06-2026', 'Reason: goods returned', '2,950.00', 'Total credited (INR)']) expect(cn, s).toContain(s)
     await pdf(ids.cn)
     // the invoice with an IRN prints one unmarked copy with the IRN; a cancelled one says so
     const big = await view(ids.big)

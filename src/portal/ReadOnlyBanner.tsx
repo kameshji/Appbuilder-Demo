@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react'
 import { Lock } from 'lucide-react'
 import { usePlatform } from '@/platform'
 import { getJson } from './serverApi'
+import { fmtDate } from './kit'
 
 interface ReadOnlyInfo {
   reason: 'suspended' | 'payment' | 'maintenance' | 'licence'
@@ -50,7 +51,7 @@ export function ReadOnlyBanner() {
       <span>
         <strong className="font-medium">{info.text}</strong>
         {info.message ? ` ${info.message}` : ''} {info.stillWorks} Changes are not saved until it is writable again; a phone keeps its offline changes waiting and sends them then.
-        {!Number.isNaN(since.getTime()) && <span className="text-amber-800/80 dark:text-amber-200/80"> Since {since.toLocaleString()}.</span>}
+        {!Number.isNaN(since.getTime()) && <span className="text-amber-800/80 dark:text-amber-200/80"> Since {fmtDate(info.since)}.</span>}
         {info.leave && <span className="text-amber-800/80 dark:text-amber-200/80"> {info.leave}</span>}
       </span>
     </div>

@@ -126,7 +126,9 @@ export function autoLayout(m: Model, o: CardOptions & { ids?: string[]; origin?:
   const ox = o.origin?.x ?? 0
   const oy = o.origin?.y ?? 0
   const out: Record<string, { x: number; y: number }> = {}
-  const colHeights = layers.map((L) => (L ?? []).reduce((s, id) => s + height(id) + GAP_Y, -GAP_Y))
+  // Array.from, not map: a cycle of lookups can leave a layer empty (a hole), and map keeps holes, which Math.max reads
+  // as undefined and every y became NaN
+  const colHeights = Array.from(layers, (L) => (L ?? []).reduce((s, id) => s + height(id) + GAP_Y, -GAP_Y))
   const tallest = Math.max(0, ...colHeights)
   layers.forEach((L, l) => {
     let y = oy + Math.max(0, (tallest - colHeights[l]) / 2)

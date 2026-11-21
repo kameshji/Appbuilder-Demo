@@ -11,13 +11,17 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { createApp, type AppServer } from '../app.ts'
 import { setQuiet } from '../util.ts'
 import { runSetupCodeCli } from './admin-cli.ts'
+import { setupCodeWhere } from '../auth.ts'
 
 setQuiet(true)
 
 describe('setup code location', () => {
   const dirs: string[] = []
   const apps: { app: AppServer; server: http.Server }[] = []
-  const start = async (env: NodeJS.ProcessEnv) => {
+  // the status reads whether the server's console is interactive (a service has none); each test says which it is
+  const tty = process.stdout.isTTY
+  const setTty = (v: boolean | undefined) => Object.defineProperty(process.stdout, 'isTTY', { value: v, configurable: true, writable: true })
+  const start = async (env: NodeJS.ProcessEnv, consoleIsTty = true) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ab-setupcode-'))
     dirs.push(tmp)
     const write = process.stdout.write.bind(process.stdout)
@@ -31,7 +35,9 @@ describe('setup code location', () => {
     const server = http.createServer((req, res) => { app.handle(req, res).then((h) => { if (!h) res.writeHead(404).end() }) })
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
     apps.push({ app, server })
+    setTty(consoleIsTty)
     const status = await (await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/v1/status`)).json()
+    setTty(tty)
     return { tmp, app, status }
   }
   afterAll(async () => {
@@ -48,8 +54,20 @@ describe('setup code location', () => {
     expect(['windows', 'linux', 'macos']).toContain(status.setup.platform)
   })
 
+  it('started by hand in a console WITH APPBUILDER_SETUP_CODE_FILE: the window and the file, not "a service"', async () => {
+    const { status } = await start({ APPBUILDER_SETUP_CODE_FILE: '<tmp>/setup-code.txt' }, true)
+    expect(status.setup.codeIn).toBe('both')
+  })
+
+  it('the rule: no file -> console; a file and a console -> both; a file and no console (a service) -> file', () => {
+    expect(setupCodeWhere(false, true)).toBe('console')
+    expect(setupCodeWhere(false, false)).toBe('console')
+    expect(setupCodeWhere(true, true)).toBe('both')
+    expect(setupCodeWhere(true, false)).toBe('file')
+  })
+
   it('installed as a service: the code is in its file (the path is not sent); appbuilder setup-code prints it', async () => {
-    const { tmp, app, status } = await start({ APPBUILDER_SETUP_CODE_FILE: '<tmp>/setup-code.txt' })
+    const { tmp, app, status } = await start({ APPBUILDER_SETUP_CODE_FILE: '<tmp>/setup-code.txt' }, false)
     expect(status.setup.codeIn).toBe('file')
     expect(JSON.stringify(status)).not.toContain('setup-code.txt')
     const out: string[] = []

@@ -40,6 +40,7 @@ const PARTS = [
   ['ledgers', 'P3 14', 'Accounts: ledgers and India GST on the unsigned draft (invoices, credit note, trial balance, PDFs, period lock)', 'scripts/exit-check/p3-ledgers.mjs', []],
   ['templates', 'P3 13', 'Solution template rules: nothing overwritten, plan screen, one transaction, upgrade keeping local changes', 'scripts/exit-check/p3-templates.mjs', []],
   ['misc', 'P3 15', 'Carried-forward items: drill-through to a screen, kiosk cycling, form-submitted trigger, error boundaries', 'scripts/exit-check/p3-misc.mjs', []],
+  ['clickthrough', 'P3 17', 'Click-through in Chrome: Accounts (also at phone width), Licences, seat passes, form trigger, kiosk cycling, template install and widening upgrade, every side-menu item; fails on any page, console or server error', 'scripts/exit-check/p3-clickthrough.mjs', []],
   ['isolation', 'H 2', 'Hosting: cross-instance isolation suite (three installs)', 'scripts/exit-check/h-isolation.mjs', []],
   ['licence', 'H 6', 'Hosting: licence check, 72 hours of grace on a driven clock, read-only, seat counts', 'scripts/exit-check/h-licence.mjs', []],
   ['fleet', 'H 1,3,4,5,10', 'Hosting: fleet tool in local mode (create, update with a forced failure, backup and restore, delete, rotation)', 'scripts/exit-check/h-fleet.mjs', []],

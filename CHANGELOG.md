@@ -13,18 +13,25 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 - Server commands `appbuilder status --json`, `appbuilder backup create`, `appbuilder admin operator-access open|close`; the fleet tool uses them when the release has them.
 - `GET /api/v1/admin/health` shows the event-loop delay (p50, p99, max for the last minute and since start) with a warning check above 100 ms, plus print-pool and table-cache counters; the load harness records them.
 - Administrators see a strip under the top bar during the licence grace period (time left, what to do) and the steps out of a licence read-only state.
+- `scripts/exit-check/p3-clickthrough.mjs`: a browser click-through of Accounts (also at phone width), Licences, seat passes, the form-submitted trigger, kiosk cycling, template install and widening upgrade, a Form's starting Item and every side-menu item in both modes. It fails on any page error, console error or server error. It found the nine bugs fixed below.
 
 ### Changed
 - Prints (PDF layout and writing) run in a small pool of worker threads (`APPBUILDER_PRINT_WORKERS`, `APPBUILDER_PRINT_QUEUE`) and no longer hold up other requests; a full queue answers 503; the PDF bytes are unchanged.
 - CSV imports parse, check and insert in slices that let other requests run; still all or nothing (`APPBUILDER_IMPORT_YIELD=off` restores the old path).
 - The table list is cached per environment and refreshed after every data-model change or after 60 s; permissions are still applied per request (`APPBUILDER_TABLE_CACHE`, `APPBUILDER_TABLE_CACHE_TTL_MS`).
 - An Activity can be moved to another record (or unlinked) after creation; the writer must be able to read the new record; audited as `activity.regarding`.
-- Fleet: one source of truth for the PostgreSQL tools folder (recorded by `abfleet init`, detected when unset); commands wait up to 120 s for the lock; diagnostics on CI failure. The Linux CI job `fleet` is still marked non-blocking until it has passed.
+- Fleet: one source of truth for the PostgreSQL tools folder (recorded by `abfleet init`, detected when unset); commands wait up to 120 s for the lock; diagnostics on CI failure. The Linux CI job `fleet` now passes on Ubuntu 24.04 (41 checks; 5 need a rented server) and is a blocking job; the release now contains the licence service, which the fleet tool runs from it.
 
 ### Fixed
 - Uninstalling a solution with "Delete tables" failed when a table rolled up its own child lines.
 - A Form in New mode with a starting `Item` dropped that record's values for columns not in `Fields`.
 - Tests: test-database drops no longer hold a suite's shutdown for more than 15 s.
+- The setup screen no longer says "runs as a service" for a server started by hand with `APPBUILDER_SETUP_CODE_FILE`.
+- Accounts stays on Settings after the registration is saved; switching Reference data, Ledger or Return summaries no longer briefly shows the previous list; buttons and check boxes are tap-sized on phones.
+- Printed GST documents group the unit price and print the credit-note reason in words.
+- The data model page no longer breaks when lookups form a cycle (cards and lines vanished after installing ERP-lite).
+- A cycling kiosk screen no longer skips a date range in its first round.
+- The licence and read-only strips write dates like the Licences page.
 
 ### Security
 - (P3-15) MySQL / MariaDB connections over SSL check that the certificate names the host typed, IP addresses included. **A connection by a name or address its certificate does not carry is now refused.**
@@ -33,6 +40,7 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 ### Not built or not verified
 - `rekey` (needs a registry of every sealed column first) and locked SMTP settings by environment.
 - Accounts: an ERP-lite sales invoice as a GST tax invoice, delivery challan fields, year-end closing, several original invoices per note; backup and restore of the Accounts tables is untested; an environment copy does not copy the books.
+- Seen in the click-through, not fixed: opening the trigger card in the flow designer right after it loads can close the panel; the kiosk header says "All time" for a moment before its first answer; in the read-only state the home page still shows "Start" and "Edit" buttons (the server refuses the changes); the new-flow gallery has no "When a form is submitted" starting point.
 - Nothing has run on a real phone, against Meta's real API, with a real mail provider or on a rented Linux server. No outside security review.
 
 ## [0.8.0] - 2026-11-21

@@ -5,7 +5,7 @@
  * say the figures are right in law. State codes and rates below are test data, as in the draft's examples.
  */
 import { describe, expect, it } from 'vitest'
-import { apportion, decimalText, divRound, exclusiveOf, lineGross, paise, parseDecimal, percentOf, roundToRupee, rupees, rupeesIN } from './money.ts'
+import { apportion, decimalText, divRound, exclusiveOf, groupIN, lineGross, paise, parseDecimal, percentOf, roundToRupee, rupees, rupeesIN } from './money.ts'
 import {
   StopError, compositionTax, computeDocument, consignmentValue, creditNoteDeadline, creditProblem, determineSupply, financialYearOf, findRate, gstinProblem,
   hsnDigitsRequired, hsnProblem, inEinvoiceClass, monthsOf, nearRateChange, outwardDocumentProblem, rateRowProblem, ratesOverlap, seriesNumber, seriesProblem,
@@ -422,5 +422,15 @@ describe('the small rules', () => {
     expect(outwardDocumentProblem('tax_invoice', 'sez_unit', ['taxable'], false)).toMatch(/no tax documents/)
     expect(outwardDocumentProblem('tax_invoice', 'unregistered', ['taxable'], false)).toMatch(/commercial invoice/)
     expect(outwardDocumentProblem('bill_of_supply', 'regular', ['exempt'], true)).toMatch(/tax invoice with the endorsement/)
+  })
+})
+
+describe('groupIN (unit prices on printed documents)', () => {
+  it('groups the integer part the Indian way and keeps the decimals as typed', () => {
+    expect(groupIN('1250.00')).toBe('1,250.00')
+    expect(groupIN('40')).toBe('40')
+    expect(groupIN('1234567.125')).toBe('12,34,567.125')
+    expect(groupIN('-100000')).toBe('-1,00,000')
+    expect(groupIN('n/a')).toBe('n/a')
   })
 })

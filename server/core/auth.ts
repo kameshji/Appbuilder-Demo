@@ -63,6 +63,16 @@ export const ROLE_VIEWER = 'role_viewer'
 export const hashToken = (token: string): string => createHash('sha256').update(token).digest('hex')
 
 /** UserRecord -> what may leave the server (no password hash) */
+/**
+ * Where the setup screen tells the person to read the setup code. A setup-code file without a console is a server
+ * installed as a service (its output goes to a log); with a console (started by hand) the code is printed in that window
+ * and also written to the file.
+ */
+export function setupCodeWhere(inFile: boolean, consoleIsTty: boolean): 'console' | 'file' | 'both' {
+  if (!inFile) return 'console'
+  return consoleIsTty ? 'both' : 'file'
+}
+
 export function toUserDef(u: UserRecord): UserDef {
   const { passwordHash, ...rest } = u
   return { ...rest, hasPassword: !!passwordHash }
@@ -393,9 +403,11 @@ export function authRoutes(router: ApiRouter, services: CoreServices): void {
     const setup: StatusResponse['setup'] = { needsDatabase, needsAdmin: needsAdmin && !incompatible && (services.ready() || !services.setupComplete()) }
     if (unavailable) setup.unavailable = true
     if (incompatible) setup.incompatible = true
-    // while setup is needed: where to read the setup code (only the fact that a code file is used, never its path)
+    // while setup is needed: where to read the setup code (only the fact that a code file is used, never its path). The
+    // file alone means a service: no console shows the printed code. Started by hand in a console with the variable set,
+    // the code is in the window AND in the file.
     if (setup.needsDatabase || setup.needsAdmin) {
-      setup.codeIn = services.setupCodeInFile ? 'file' : 'console'
+      setup.codeIn = setupCodeWhere(services.setupCodeInFile, process.stdout.isTTY === true)
       setup.platform = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'
     }
     const out: StatusResponse = {

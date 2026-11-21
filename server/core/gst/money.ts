@@ -70,6 +70,15 @@ export function rupeesIN(p: Paise | bigint): string {
   return `${BigInt(p) < 0n ? '-' : ''}${head}${int.slice(-3)}.${frac}`
 }
 
+/** a decimal written as text ("1250.00", "-12500.5") with the integer part grouped the Indian way ("1,250.00"); other text is returned as it is */
+export function groupIN(v: string): string {
+  const m = /^(-?)(\d+)(\.\d+)?$/.exec(v.trim())
+  if (!m) return v
+  const int = m[2]
+  const head = int.length > 3 ? int.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' : ''
+  return `${m[1]}${head}${int.slice(-3)}${m[3] ?? ''}`
+}
+
 /** scaled decimal -> text with `scale` decimals, trailing zeros trimmed to at least `min` */
 export function decimalText(n: bigint, scale: number, min = 0): string {
   const a = n < 0n ? -n : n

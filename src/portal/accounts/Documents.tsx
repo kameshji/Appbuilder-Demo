@@ -137,12 +137,12 @@ function Editor({ doc, parties, items, onSaved, onIssued, onDeleted }: { doc: Do
                 <Input className="h-8 text-right max-md:h-11" inputMode="decimal" placeholder="Qty" value={l.quantity} onChange={(e) => setLine(i, { quantity: e.target.value })} aria-label={`Quantity of line ${i + 1}`} data-testid={`doc-line-qty-${i}`} />
                 <Input className="h-8 text-right max-md:h-11" inputMode="decimal" placeholder={type === 'receipt_voucher' || type === 'refund_voucher' ? 'Amount' : 'Unit price'} value={l.unitPrice} onChange={(e) => setLine(i, { unitPrice: e.target.value })} aria-label={`Unit price of line ${i + 1}`} data-testid={`doc-line-price-${i}`} />
                 <Input className="h-8 text-right max-md:h-11" inputMode="decimal" placeholder="Disc. %" value={l.discountPercent ?? ''} onChange={(e) => setLine(i, { discountPercent: e.target.value || null })} aria-label={`Discount percent of line ${i + 1}`} />
-                <Button size="icon-sm" variant="ghost" aria-label={`Remove line ${i + 1}`} onClick={() => set({ lines: inp.lines.filter((_, k) => k !== i) })}><Trash2 /></Button>
+                <Button size="icon-sm" variant="ghost" className="max-md:size-11" aria-label={`Remove line ${i + 1}`} onClick={() => set({ lines: inp.lines.filter((_, k) => k !== i) })}><Trash2 /></Button>
                 {purchase && (
                   <div className="col-span-2 flex flex-wrap items-center gap-2 text-xs md:col-span-5">
                     <select className={sel} value={l.itc ?? ''} onChange={(e) => setLine(i, { itc: e.target.value || null })} aria-label={`ITC of line ${i + 1}`} data-testid={`doc-line-itc-${i}`}><option value="">ITC: the item's default</option><option value="eligible">ITC eligible</option><option value="ineligible">ITC ineligible</option></select>
                     <Input className="h-8 w-56 max-md:h-11" placeholder="Reason when ineligible" value={l.itcReason} onChange={(e) => setLine(i, { itcReason: e.target.value })} aria-label={`ITC reason of line ${i + 1}`} />
-                    <label className="flex items-center gap-1"><input type="checkbox" checked={l.reverseCharge} onChange={(e) => setLine(i, { reverseCharge: e.target.checked })} /> Reverse charge</label>
+                    <label className="flex items-center gap-1 max-md:min-h-11"><input type="checkbox" checked={l.reverseCharge} onChange={(e) => setLine(i, { reverseCharge: e.target.checked })} /> Reverse charge</label>
                   </div>
                 )}
               </div>
@@ -163,12 +163,12 @@ function Editor({ doc, parties, items, onSaved, onIssued, onDeleted }: { doc: Do
               <Field label="Installation site State code"><Input className="h-8 max-md:h-11" value={inp.supply.siteState} onChange={(e) => setSupply({ siteState: e.target.value, installedAtSite: !!e.target.value })} aria-label="Installation site State code" /></Field>
             </div>
             <div className="mt-3 grid gap-1.5">
-              <label className="flex items-center gap-2"><input type="checkbox" checked={inp.supply.billToShipTo} onChange={(e) => setSupply({ billToShipTo: e.target.checked })} /> Delivered to another person on the customer's direction (bill-to / ship-to)</label>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={inp.supply.exportConditionsConfirmed} onChange={(e) => setSupply({ exportConditionsConfirmed: e.target.checked })} /> I confirm the conditions of export of services are met</label>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={inp.supply.continuousSupply} onChange={(e) => setSupply({ continuousSupply: e.target.checked })} /> Continuous supply</label>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={inp.supply.saleOnApproval} onChange={(e) => setSupply({ saleOnApproval: e.target.checked })} /> Goods sent on approval</label>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={inp.supply.onBoardConveyance} onChange={(e) => setSupply({ onBoardConveyance: e.target.checked })} /> Supplied on board a conveyance</label>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={inp.supply.importOrBonded} onChange={(e) => setSupply({ importOrBonded: e.target.checked })} /> Imported goods or a bonded warehouse</label>
+              <label className="flex items-center gap-2 max-md:min-h-11"><input type="checkbox" checked={inp.supply.billToShipTo} onChange={(e) => setSupply({ billToShipTo: e.target.checked })} /> Delivered to another person on the customer's direction (bill-to / ship-to)</label>
+              <label className="flex items-center gap-2 max-md:min-h-11"><input type="checkbox" checked={inp.supply.exportConditionsConfirmed} onChange={(e) => setSupply({ exportConditionsConfirmed: e.target.checked })} /> I confirm the conditions of export of services are met</label>
+              <label className="flex items-center gap-2 max-md:min-h-11"><input type="checkbox" checked={inp.supply.continuousSupply} onChange={(e) => setSupply({ continuousSupply: e.target.checked })} /> Continuous supply</label>
+              <label className="flex items-center gap-2 max-md:min-h-11"><input type="checkbox" checked={inp.supply.saleOnApproval} onChange={(e) => setSupply({ saleOnApproval: e.target.checked })} /> Goods sent on approval</label>
+              <label className="flex items-center gap-2 max-md:min-h-11"><input type="checkbox" checked={inp.supply.onBoardConveyance} onChange={(e) => setSupply({ onBoardConveyance: e.target.checked })} /> Supplied on board a conveyance</label>
+              <label className="flex items-center gap-2 max-md:min-h-11"><input type="checkbox" checked={inp.supply.importOrBonded} onChange={(e) => setSupply({ importOrBonded: e.target.checked })} /> Imported goods or a bonded warehouse</label>
             </div>
             <div className="mt-3 grid gap-3 md:grid-cols-[10rem_1fr]">
               <Field label="Manual place of supply (State code)"><Input className="h-8 max-md:h-11" value={inp.supply.manualState} onChange={(e) => setSupply({ manualState: e.target.value })} aria-label="Manual place of supply" /></Field>
@@ -178,12 +178,12 @@ function Editor({ doc, parties, items, onSaved, onIssued, onDeleted }: { doc: Do
         )}
         {(type === 'tax_invoice' || type === 'bill_of_supply') && (
           <div className="flex flex-wrap items-center gap-4 text-sm">
-            <label className="flex items-center gap-2"><input type="checkbox" checked={inp.taxInclusive} onChange={(e) => set({ taxInclusive: e.target.checked })} data-testid="doc-inclusive" /> Prices include tax</label>
+            <label className="flex items-center gap-2 max-md:min-h-11"><input type="checkbox" checked={inp.taxInclusive} onChange={(e) => set({ taxInclusive: e.target.checked })} data-testid="doc-inclusive" /> Prices include tax</label>
             <label className="flex items-center gap-2">Document discount <Input className="h-8 w-28 text-right max-md:h-11" inputMode="decimal" value={inp.documentDiscount ?? ''} onChange={(e) => set({ documentDiscount: e.target.value || null })} aria-label="Document discount" /></label>
             <label className="flex items-center gap-2">Freight and other charges <Input className="h-8 w-28 text-right max-md:h-11" inputMode="decimal" value={inp.charges[0]?.amount ?? ''} onChange={(e) => set({ charges: e.target.value ? [{ description: 'Freight and other charges', amount: e.target.value, line: null }] : [] })} aria-label="Freight and other charges" /></label>
           </div>
         )}
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={inp.rateDateConfirmed} onChange={(e) => set({ rateDateConfirmed: e.target.checked })} /> I checked the rate date (asked only near a rate change)</label>
+        <label className="flex items-center gap-2 text-sm max-md:min-h-11"><input type="checkbox" checked={inp.rateDateConfirmed} onChange={(e) => set({ rateDateConfirmed: e.target.checked })} /> I checked the rate date (asked only near a rate change)</label>
         <Field label="Internal notes"><Input className="h-8 max-md:h-11" value={inp.notes} onChange={(e) => set({ notes: e.target.value })} aria-label="Internal notes" /></Field>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="outline" disabled={busy} onClick={() => void save().then((d) => { if (d) toast('Draft saved', 'success') })} data-testid="doc-save">Save draft</Button>

@@ -45,7 +45,8 @@ The installer already connected Appbuilder to its database. One step is left, an
 
    (or `Get-Content 'C:\ProgramData\Appbuilder\workspace\setup-code.txt'`). On Linux: `sudo appbuilder setup-code`.
    The setup screen says the same: for a server installed as a service the code is in its setup-code file, not in a
-   window.
+   window. A server you started by hand prints it in its window (and, if `APPBUILDER_SETUP_CODE_FILE` is set, also in
+   that file), and the screen says so.
 
    It shows something like `K7QD-M2XP`. The code changes every time Appbuilder starts; the file disappears once you have
    created the administrator.

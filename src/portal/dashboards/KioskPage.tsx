@@ -93,6 +93,8 @@ function KioskScreen({ token, cycle }: { token: string; cycle: KioskCycle | null
   const entriesRef = useRef<Record<string, Entry>>({})
   const wantKey = useRef(keyOf(cycle?.ranges[0] ?? null)) // the first step's range: the first request already asks for it
   const startAt = useRef(Date.now())
+  // the ranges of the cycle (fixed for this screen: another cycle in the address mounts a new one)
+  const cycleRanges = useRef(cycle?.ranges ?? [])
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const alive = useRef(true)
 
@@ -102,7 +104,10 @@ function KioskScreen({ token, cycle }: { token: string; cycle: KioskCycle | null
     if (running.current) return
     running.current = true
     if (timer.current) clearTimeout(timer.current)
-    const key = wantKey.current
+    // the range the screen shows now; while it has data, a range of the cycle never fetched yet is fetched first, so the
+    // first round of the cycle does not skip it (a range without data is skipped, never waited for)
+    const unfetched = cycleRanges.current.map((r) => keyOf(r)).filter((k) => !entriesRef.current[k])
+    const key = entriesRef.current[wantKey.current] && unfetched.length ? unfetched[0] : wantKey.current
     let next: number
     try {
       let cur = infoRef.current
@@ -122,7 +127,8 @@ function KioskScreen({ token, cycle }: { token: string; cycle: KioskCycle | null
       const refreshMs = kioskRefreshMs(cur.dashboard.def)
       // the cycle moved on to a range that was not fetched yet (or not lately) while this request was running: ask for it now
       const e = entriesRef.current[wantKey.current]
-      next = wantKey.current !== key && (!e || Date.now() - e.at > refreshMs) ? 0 : refreshMs
+      const stillUnfetched = cycleRanges.current.some((r) => !entriesRef.current[keyOf(r)])
+      next = (wantKey.current !== key && (!e || Date.now() - e.at > refreshMs)) || stillUnfetched ? 0 : refreshMs
     } catch (e) {
       if (!alive.current) { running.current = false; return }
       const err = e instanceof KioskError ? e : new KioskError(0, null)

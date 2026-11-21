@@ -100,10 +100,11 @@ export interface StatusResponse {
     needsDatabase: boolean; needsAdmin: boolean; unavailable?: boolean; incompatible?: boolean
     /**
      * while setup is needed: where the setup code is to be read. console: the window of the server (started by hand);
-     * file: the server runs as a service and writes it to its setup-code file (APPBUILDER_SETUP_CODE_FILE is set; the
-     * path is not sent). platform: so the screen can show the command for this operating system.
+     * file: the server runs as a service and writes it to its setup-code file (APPBUILDER_SETUP_CODE_FILE is set, no
+     * console; the path is not sent); both: started by hand in a console with APPBUILDER_SETUP_CODE_FILE set, so the code is
+     * in the window and in the file. platform: so the screen can show the command for this operating system.
      */
-    codeIn?: 'console' | 'file'
+    codeIn?: 'console' | 'file' | 'both'
     platform?: 'windows' | 'linux' | 'macos'
   }
   /** true when the workspace is usable (database reachable and compatible, administrator exists) */

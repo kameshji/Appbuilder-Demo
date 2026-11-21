@@ -526,7 +526,7 @@ export interface WorkspaceState {
     /** the database was upgraded by a newer Appbuilder; this server refuses to use it */
     incompatible?: boolean
     /** while setup is needed: where the setup code is (console window, or the setup-code file of a service) and the server's OS */
-    codeIn?: 'console' | 'file'
+    codeIn?: 'console' | 'file' | 'both'
     platform?: 'windows' | 'linux' | 'macos'
   }
   /** null when signed out (server mode). Demo mode: always the run-as user. */

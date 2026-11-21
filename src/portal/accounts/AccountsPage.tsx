@@ -59,7 +59,8 @@ export function AccountsPage() {
       {current === 'periods' && <Periods state={state} />}
       {current === 'chart' && <ChartAndSeries state={state} />}
       {current === 'reference' && <ReferenceData state={state} />}
-      {current === 'settings' && <Settings key={JSON.stringify(state.business ?? null)} state={state} reload={st.reload} />}
+      {/* a change saved in Settings keeps the page on Settings (the first registration must not jump to Documents) */}
+      {current === 'settings' && <Settings key={JSON.stringify(state.business ?? null)} state={state} reload={() => { setSection((s) => s ?? 'settings'); st.reload() }} />}
     </div>
   )
 }
