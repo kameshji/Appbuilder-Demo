@@ -10,9 +10,11 @@
  *    on-premises install's databases and mail relay are there. `APPBUILDER_OUTBOUND_PRIVATE=deny` refuses them too
  *    (installs that only talk to the internet).
  *
- * Names are resolved and every address is checked (a name that resolves to a forbidden address is refused). The
- * database drivers resolve the name again when they connect, so a DNS answer that changes in between (rebinding) is a
- * residual risk for database connections; the SMTP client connects to the address that was checked.
+ * Names are resolved and every address is checked (a name that resolves to a forbidden address is refused). Callers
+ * connect to an address that was checked, never to a second DNS answer: the SMTP client and the HTTP client of connectors
+ * connect to the address returned; the external database connectors (P3 review, P3-6: DNS rebinding) get a
+ * `guardedLookup` that hands the driver the address checked when the connection was taken from the manager and, for
+ * every later physical connection of the pool, resolves and checks again (see `pinnedSocket`).
  */
 import dns from 'node:dns'
 import net from 'node:net'
@@ -112,6 +114,61 @@ export function deniedByList(host: string, env: NodeJS.ProcessEnv = process.env)
   return false
 }
 
+/** one comparable form of an address: an IPv4 address (also inside IPv6) dotted, an IPv6 address as its 8 groups */
+function canonicalAddress(ipIn: string): string | null {
+  const ip = ipIn.trim().replace(/^\[|\]$/g, '').toLowerCase()
+  if (net.isIPv4(ip)) return ip
+  if (!net.isIPv6(ip)) return null
+  return embeddedV4(ip) ?? v6groups(ip)?.map((g) => g.toString(16)).join(':') ?? null
+}
+
+type Lookup = (h: string) => Promise<{ address: string }[]>
+const DENY_TTL_MS = 60_000
+let denyCache: { key: string; at: number; addrs: Set<string> } | null = null
+
+/**
+ * P3 security review (P3-4): the ADDRESSES of APPBUILDER_OUTBOUND_DENY. The list was compared with the name a maker
+ * typed only, so the install's own public address was reachable by its IP address or by any other name that resolves
+ * to it (the hairpin the list exists to refuse). IP entries are taken as written, host-name entries are resolved
+ * (cached a minute); wildcard entries cannot be resolved and stay name-only (docs/admin/security-model.md).
+ */
+export async function deniedAddresses(env: NodeJS.ProcessEnv = process.env, lookup?: Lookup): Promise<Set<string>> {
+  const list = (env.APPBUILDER_OUTBOUND_DENY ?? '').split(',').map((e) => e.trim().replace(/\.$/, '').toLowerCase().replace(/^\[|\]$/g, '')).filter(Boolean)
+  if (!list.length) return new Set()
+  const key = list.join(',')
+  if (!lookup && denyCache && denyCache.key === key && Date.now() - denyCache.at < DENY_TTL_MS) return denyCache.addrs
+  const addrs = new Set<string>()
+  for (const e of list) {
+    if (e.startsWith('*.')) continue
+    const literal = canonicalAddress(e)
+    if (literal) {
+      addrs.add(literal)
+      continue
+    }
+    try {
+      for (const a of await (lookup ?? ((h: string) => dns.promises.lookup(h, { all: true, verbatim: true })))(e)) {
+        const c = canonicalAddress(a.address)
+        if (c) addrs.add(c)
+      }
+    } catch {
+      /* a name that does not resolve has no address to refuse */
+    }
+  }
+  if (!lookup) denyCache = { key, at: Date.now(), addrs }
+  return addrs
+}
+
+/** null when none of these addresses is one of APPBUILDER_OUTBOUND_DENY's, else the reason */
+export async function deniedAddressProblem(host: string, addresses: string[], env: NodeJS.ProcessEnv = process.env, lookup?: Lookup): Promise<string | null> {
+  if (!env.APPBUILDER_OUTBOUND_DENY || !addresses.length) return null
+  const denied = await deniedAddresses(env, lookup)
+  for (const a of addresses) {
+    const c = canonicalAddress(a)
+    if (c && denied.has(c)) return `${host} ${canonicalAddress(host) ? 'is' : `resolves to`} an address on this server's list of refused addresses (APPBUILDER_OUTBOUND_DENY); Appbuilder does not connect to it.`
+  }
+  return null
+}
+
 /** a literal check without DNS (sync callers): null when allowed, else the reason */
 export function hostProblem(host: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const h = host.trim().replace(/\.$/, '').toLowerCase()
@@ -142,7 +199,11 @@ export async function assertOutboundHost(host: string, what: string, o: { env?: 
   const literal = hostProblem(host, env)
   if (literal) throw new HttpError(422, 'invalid', `${what}: ${literal}`, 'host')
   const bare = host.trim().replace(/^\[|\]$/g, '')
-  if (net.isIP(bare)) return [bare]
+  if (net.isIP(bare)) {
+    const listed = await deniedAddressProblem(host, [bare], env, o.lookup)
+    if (listed) throw new HttpError(422, 'invalid', `${what}: ${listed}`, 'host')
+    return [bare]
+  }
   let addrs: { address: string }[]
   try {
     addrs = await (o.lookup ?? ((h) => dns.promises.lookup(h, { all: true, verbatim: true })))(bare)
@@ -154,5 +215,63 @@ export async function assertOutboundHost(host: string, what: string, o: { env?: 
     const c = classifyAddress(a.address)
     if (deniedClasses(env).includes(c)) throw new HttpError(422, 'invalid', `${what}: ${host} resolves to a ${c} address (${a.address}); Appbuilder does not connect to it.`, 'host')
   }
+  const listed = await deniedAddressProblem(host, addrs.map((a) => a.address), env, o.lookup)
+  if (listed) throw new HttpError(422, 'invalid', `${what}: ${listed}`, 'host')
   return addrs.map((a) => a.address)
+}
+
+/** the callback form of dns.lookup (what net.Socket#connect accepts as `lookup`) */
+export type NodeLookup = (hostname: string, options: dns.LookupOptions | number | undefined, cb: (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void) => void
+
+/**
+ * P3 security review, P3-6 (DNS rebinding of database connection hosts): a `lookup` for the database drivers that never
+ * asks DNS behind the policy's back. The first physical connection uses `first` (the addresses the connection manager
+ * checked a moment ago for `host`); every later one (a pool opening another connection, a reconnect) resolves the name
+ * again and checks every address with `assertOutboundHost`, then connects to the checked address. A name that does not
+ * resolve (or is refused) fails the connection: the driver never falls back to its own lookup.
+ */
+export function guardedLookup(host: string, what: string, o: { first?: string[]; env?: NodeJS.ProcessEnv; lookup?: Lookup } = {}): NodeLookup {
+  const want = host.trim().replace(/^\[|\]$/g, '').toLowerCase()
+  let first = o.first?.length ? [...o.first] : null
+  return (hostname, options, cb) => {
+    const opts = typeof options === 'object' && options ? options : { family: typeof options === 'number' ? options : 0 }
+    const reply = (addrs: string[]) => {
+      const fam = opts.family === 4 || opts.family === 6 ? opts.family : 0
+      const list = addrs.filter((a) => net.isIP(a) && (!fam || net.isIP(a) === fam))
+      if (!list.length) {
+        const e = Object.assign(new Error(`getaddrinfo ENOTFOUND ${hostname}`), { code: 'ENOTFOUND', hostname }) as NodeJS.ErrnoException
+        cb(e, opts.all ? [] : '', 0)
+        return
+      }
+      if (opts.all) cb(null, list.map((a) => ({ address: a, family: net.isIP(a) })))
+      else cb(null, list[0]!, net.isIP(list[0]!))
+    }
+    const name = String(hostname).trim().replace(/^\[|\]$/g, '').toLowerCase()
+    if (first && name === want) {
+      const f = first
+      first = null
+      reply(f)
+      return
+    }
+    assertOutboundHost(String(hostname), what, { env: o.env, lookup: o.lookup }).then(reply, (e: unknown) => cb(e as NodeJS.ErrnoException, opts.all ? [] : '', 0))
+  }
+}
+
+/**
+ * A TCP socket for the database drivers (`pg` takes it as `stream`, `mysql2` as `stream` too) whose connect(port, host)
+ * resolves the host through `lookup` (guardedLookup) instead of the system resolver. The host NAME stays what the driver
+ * knows: TLS server-name verification and the drivers' error messages use it. A local socket path is left as it is.
+ */
+export function pinnedSocket(lookup: NodeLookup): net.Socket {
+  const s = new net.Socket()
+  const connect = s.connect.bind(s) as (...a: unknown[]) => net.Socket
+  ;(s as unknown as { connect: (...a: unknown[]) => net.Socket }).connect = (...args: unknown[]) => {
+    const cb = typeof args[args.length - 1] === 'function' ? [args[args.length - 1]] : []
+    if (typeof args[0] === 'number' || (typeof args[0] === 'string' && /^\d+$/.test(args[0]))) {
+      return connect({ port: Number(args[0]), host: typeof args[1] === 'string' ? args[1] : 'localhost', lookup }, ...cb)
+    }
+    if (args[0] && typeof args[0] === 'object' && !('path' in (args[0] as object))) return connect({ ...(args[0] as object), lookup }, ...cb)
+    return connect(...args)
+  }
+  return s
 }

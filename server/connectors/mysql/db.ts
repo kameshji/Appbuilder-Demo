@@ -2,9 +2,26 @@
 import mysql from 'mysql2/promise'
 import type { Pool, PoolConnection, PoolOptions } from 'mysql2/promise'
 import type { MySqlSettings, SqlDb, SqlResult } from '../../core/contracts.ts'
+import { pinnedSocket, type NodeLookup } from '../../core/net-policy.ts'
 
-export function poolOptions(s: MySqlSettings, password: string): PoolOptions {
+/** the socket mysql2 would open itself (Net.connect(port, host), no delay, keep-alive), resolved through `lookup` */
+function mysqlSocket(lookup: NodeLookup, host: string, port: number) {
+  const sock = pinnedSocket(lookup)
+  sock.connect(port, host)
+  sock.setNoDelay(true)
+  sock.once('connect', () => sock.setKeepAlive(true, 0))
+  return sock
+}
+
+/**
+ * `lookup` (P3-6): every physical connection resolves the host through it (the outbound policy's guardedLookup), not the
+ * system resolver; `host` stays the name for TLS and error messages. (TLS: mysql2 checks the certificate's chain; it
+ * checks that the certificate names the host only with `verifyIdentity`, not set here: P3-11, open.)
+ */
+export function poolOptions(s: MySqlSettings, password: string, o: { lookup?: NodeLookup } = {}): PoolOptions {
+  const lookup = o.lookup
   return {
+    ...(lookup ? { stream: () => mysqlSocket(lookup, s.host, s.port) } : {}),
     host: s.host,
     port: s.port,
     user: s.user,
@@ -74,7 +91,7 @@ function wrap(run: Runner, pool: Pool | null, conn: PoolConnection | null): SqlD
   return self
 }
 
-export function createSqlDb(settings: MySqlSettings, password: string): SqlDb {
-  const pool = mysql.createPool(poolOptions(settings, password))
+export function createSqlDb(settings: MySqlSettings, password: string, o: { lookup?: NodeLookup; connectTimeoutMs?: number } = {}): SqlDb {
+  const pool = mysql.createPool({ ...poolOptions(settings, password, { lookup: o.lookup }), ...(o.connectTimeoutMs ? { connectTimeout: o.connectTimeoutMs } : {}) })
   return wrap(pool, pool, null)
 }

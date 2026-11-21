@@ -114,6 +114,8 @@ async function newPage(ctx) {
   page.on('pageerror', (e) => errors.push(e.message))
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()) })
   page.on('dialog', (d) => d.accept())
+  // the error-boundary test hook is inert in a production build unless switched on (P3 security review, P3-5)
+  await page.evaluateOnNewDocument(() => { try { localStorage.setItem('ab:test-hooks', '1') } catch { /* no storage */ } })
   return page
 }
 async function signIn(page, who) {

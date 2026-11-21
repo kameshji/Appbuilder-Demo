@@ -126,3 +126,30 @@ screen uses. The server then boots with the database configured and the wizard a
 9. `uninstall.ps1` (keeps data and the PostgreSQL service; reinstall picks them up) and `-RemoveData`.
 10. A full offline install from a bundle made by `prepare-offline.mjs --os windows`; timing on a typical office PC (the
     target is well under an hour; the downloads are about 450 MB).
+
+## Releases on a fleet server (hosting phase, H-E and H-K)
+
+A fleet server keeps every release it runs side by side: `/opt/appbuilder/releases/<version>/` (root-owned,
+read-only), `/opt/appbuilder/current` (the release new installs start on), and per install `/srv/appbuilder/<id>/app`
+and `app.previous` (links). `abfleet update <zip>` verifies a package once with this updater's own functions
+(`preparePackage` and `packageProblems` of `server/core/update/apply.ts`, loaded from the **installed** current release,
+whose `release-keys.json` decides which signatures count), unpacks it next to the others and switches installs one by
+one (canary, then batches). The single-install updater (`appbuilder update`) is unchanged and is not used on a fleet
+server; the rule for schema-changing releases differs (the fleet restores the pre-update snapshot of a failed install,
+because it keeps the install read-only for the whole window): [Fleet operations](../admin/fleet-operations.md#an-update).
+
+- The first release of a fleet server is verified against its own `release-keys.json` (nothing is installed to trust
+  yet), after the fleet installer checked every file against `SHA256SUMS`: check the ZIP's published SHA-256 first, as
+  for a first single install.
+- A local test package (a folder with `fleet-local-code.txt`, used only by `scripts/exit-check/h-fleet.mjs`) is refused
+  on a server.
+- **Not yet in the release build:** `scripts/release/build.mjs` copies `scripts/install/**` but not `scripts/fleet/**`, so
+  a release ZIP does not carry `abfleet`; until one line is added there (copy `scripts/fleet/**` without `test/` and
+  `ci/`), the fleet installer is run from a checkout of the repository (`sudo sh scripts/fleet/install.sh --release
+  <unpacked release>`).
+
+| | How | Result |
+| --- | --- | --- |
+| Fleet tool, every command on the recording fake | `npx vitest run scripts/fleet` | passes |
+| Fleet in local test mode (three installs, update with a forced failure, backups, restore, access, rotation, delete) | `node scripts/exit-check/h-fleet.mjs` | passes on the Windows developer PC |
+| The fleet installer and the real units on Ubuntu with real release builds | CI job `fleet` (`scripts/fleet/ci/fleet-ci.sh`) | written; not yet run |

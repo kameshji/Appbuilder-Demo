@@ -1,6 +1,6 @@
 # Hosting phase: a managed fleet of installs, and licensing
 
-Status: **PROPOSED, for owner approval** (20 Nov 2026). Nothing in here is built. Inputs: [master-plan.md](master-plan.md)
+Status: **PARTLY BUILT** (version 0.8.0, 21 Nov 2026): see "Status at version 0.8.0" at the end; nothing has run on a real server. (Written 20 Nov 2026 as a proposal.) Inputs: [master-plan.md](master-plan.md)
 sections 12 to 14, [hosting-and-licensing.md](hosting-and-licensing.md), [../decisions.md](../decisions.md) (D14, D15, D20,
 D22, D24 to D26, D32, D38, D43, D45 to D47), the security reviews of Phases 0 to 2, and a measuring spike
 (`scripts/bench/mt-spike.mjs`; "Measurements" below). Order agreed by the owner: this specification, then this phase, then
@@ -512,3 +512,23 @@ workers, a tenant with 10,000 jobs ahead of 20 tenants with 10 each): FIFO made 
 claim (oldest head job per tenant per round, at most 2 running per tenant) 0.29 s, at 1.0 ms per claim; it must also be
 work-conserving (fill idle slots), which the prototype was not. With fan-out by NOTIFY and shared or invalidated state, a
 reverse proxy needs no stickiness for WebSockets.
+
+## Status at version 0.8.0 (21 Nov 2026)
+
+Built and tested as far as a Windows developer PC and GitHub's Linux runners allow: H-A, H-B, H-C, H-D, H-E, H-F, H-G, H-H, H-I (limits written, not tested under pressure), H-J (the secret key cannot be rotated: the server has no rekey command), H-K (installer syntax-checked only), H-L (harness and local runs). Not done: H-M (tester on-boarding and incident procedure) and H-N (phase close), which need the rented server.
+
+| Exit check | State |
+| --- | --- |
+| 1 Twenty installs created by the tool on HTTPS | Three created locally with no manual step (`h-fleet.mjs`); HTTPS by host name is the CI job `fleet`; twenty on a real server: not done |
+| 2 Cross-instance isolation | PASS locally (112 of 113; the socket check needs Linux) and in the CI job `isolation`; OS users and file permissions need the server |
+| 3 Fleet update with a canary and a forced failure | PASS locally |
+| 4 Per-organisation backup and restore | PASS locally |
+| 5 Suspend, resume, export, delete | PASS locally |
+| 6 Licence grace on a driven clock | PASS (`h-licence.mjs` 19 checks) |
+| 7 Load test at 20 x 50 | Reduced local run: latency, error and live-delivery limits met; the per-install event-loop limit failed in short phases; must be rerun on the server ([results](../internal/load-test-2026-11.md)) |
+| 8 One misbehaving install does not take the others down | Not done (needs systemd limits on the server) |
+| 9 On-premises path and Phase 0 to 2 checks unchanged | PASS (`p2.mjs` with P0 and P1) |
+| 10 Secret rotation | Database password and licence key: PASS locally; secret key: not possible yet |
+| 11 Docs and a security re-check | `docs/internal/security-review-p3.md`; runbook `docs/admin/fleet-operations.md` |
+
+Measured locally (not capacity figures): 165 to 260 MB per install under load, 140 database connections for 20 installs, the idle fleet about 5 % of one core. The estimate of 8 vCPU / 32 GB for 20 organisations is supported by the local run and must be confirmed on the server.

@@ -22,6 +22,7 @@ import type { Pool, PoolClient, PoolConfig } from 'pg'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { HttpError } from '../../core/contracts.ts'
 import type { DatabaseSettings, SqlDb, SqlResult } from '../../core/contracts.ts'
+import { pinnedSocket, type NodeLookup } from '../../core/net-policy.ts'
 
 /** startup options of every connection (see the header) */
 export const SESSION_OPTIONS = '-c search_path=pg_catalog,pg_temp -c TimeZone=UTC -c jit=off'
@@ -45,8 +46,14 @@ export const TYPE_PARSERS: NonNullable<PoolConfig['types']> = {
   }) as NonNullable<PoolConfig['types']>['getTypeParser'],
 }
 
-export function poolConfig(s: DatabaseSettings, password: string, o: { database?: string; max?: number; connectTimeoutMs?: number } = {}): PoolConfig {
+/**
+ * `lookup` (external connections, P3-6): every physical connection of the pool resolves the host through it (the
+ * outbound policy's guardedLookup) instead of the system resolver; `host` stays the name, so TLS verifies the name.
+ */
+export function poolConfig(s: DatabaseSettings, password: string, o: { database?: string; max?: number; connectTimeoutMs?: number; lookup?: NodeLookup } = {}): PoolConfig {
+  const lookup = o.lookup
   return {
+    ...(lookup ? { stream: () => pinnedSocket(lookup) } : {}),
     host: s.host,
     port: s.port,
     user: s.user,
@@ -246,8 +253,8 @@ export interface PgDb extends SqlDb {
   readonly pool: Pool
 }
 
-export function createPgDb(settings: DatabaseSettings, password: string, o: { max?: number; onError?: (e: Error) => void } = {}): PgDb {
-  const pool = new pg.Pool(poolConfig(settings, password, { max: o.max }))
+export function createPgDb(settings: DatabaseSettings, password: string, o: { max?: number; onError?: (e: Error) => void; lookup?: NodeLookup; connectTimeoutMs?: number } = {}): PgDb {
+  const pool = new pg.Pool(poolConfig(settings, password, { max: o.max, lookup: o.lookup, connectTimeoutMs: o.connectTimeoutMs }))
   // an idle client that loses its connection emits 'error' on the pool: without a listener the process would exit
   pool.on('error', (e) => o.onError?.(e))
   let version: string | null = null
@@ -324,8 +331,8 @@ export function createPgDb(settings: DatabaseSettings, password: string, o: { ma
 }
 
 /** one short-lived connection (setup checks, CREATE DATABASE): never pooled */
-export async function withClient<T>(settings: DatabaseSettings, password: string, database: string, fn: (c: pg.Client) => Promise<T>, connectTimeoutMs = 10000): Promise<T> {
-  const cfg = poolConfig(settings, password, { database, connectTimeoutMs })
+export async function withClient<T>(settings: DatabaseSettings, password: string, database: string, fn: (c: pg.Client) => Promise<T>, connectTimeoutMs = 10000, lookup?: NodeLookup): Promise<T> {
+  const cfg = poolConfig(settings, password, { database, connectTimeoutMs, lookup })
   const c = new pg.Client({ ...cfg })
   c.on('error', () => { /* reported by the failing query */ })
   await c.connect()

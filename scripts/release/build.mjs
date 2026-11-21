@@ -137,6 +137,13 @@ for (const f of listFiles(path.join(root, 'scripts', 'install'))) {
   if (/(^|\/)(tests?|__tests__)\//.test(f) || /\.tests?\.(ps1|sh)$/.test(f)) continue
   copy(`scripts/install/${f}`)
 }
+// the fleet tool (hosting many organisations on one server): everything but its tests and CI helpers
+if (fs.existsSync(path.join(root, 'scripts', 'fleet'))) {
+  for (const f of listFiles(path.join(root, 'scripts', 'fleet'))) {
+    if (/(^|\/)(tests?|testing|ci|__tests__)\//.test(f) || /\.test\.(ts|mjs)$/.test(f)) continue
+    copy(`scripts/fleet/${f}`)
+  }
+}
 copy('THIRD-PARTY-NOTICES.md')
 if (fs.existsSync(path.join(root, 'LICENSE'))) copy('LICENSE')
 copy('SECURITY.md')

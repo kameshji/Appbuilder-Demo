@@ -107,8 +107,22 @@ connections"). Until it is fixed, keep PostgreSQL's `pg_hba.conf` to password au
 The fleet's mail relay: hosted installs refuse loopback and private addresses, so a relay on the server itself
 (`127.0.0.1:25`) is refused too. Use a relay on a public address, or a later package adds a narrow exception for it.
 
+## The fleet tool
+
+`abfleet` (packages H-D to H-K) creates, updates, backs up, limits, suspends and deletes installs with exactly these
+settings and commands, plus the systemd template unit `appbuilder@<id>`, one OS user `ab-<id>` per install, the Caddy
+site per host name, and database roles prepared as the isolation suite requires. The operator's runbook (day one,
+every day, an update, a restore, an incident) is [Fleet operations](fleet-operations.md). It has not run on a rented
+server yet.
+
+What the fleet tool needs from an install and does not find as a server command, and does through its agent instead
+(`scripts/fleet/agent.ts`, the install's own modules run as the install's user): an install backup made from the
+command line (the archive engine), the fleet's mail relay saved before the first invitation, and the time-boxed
+operator access account with the announcement to the administrators. The secret key cannot be rotated: the server has
+no command that re-seals the stored secrets ([Fleet operations](fleet-operations.md#an-incident)).
+
 ## Not part of this yet
 
-The fleet tool (`abfleet`), the systemd template unit, the Caddy site template, per-install OS users, database roles with
-their REVOKEs and limits, later packages of the hosting phase. (The licence service exists: [Licensing](licensing.md).) Listening on a Unix socket, the socket's
-permissions and the clean stop are tested on Linux (continuous integration); on Windows only the TCP variant runs.
+Listening on a Unix socket, the socket's permissions and the clean stop are tested on Linux (continuous integration); on
+Windows only the TCP variant runs. The fleet's own Linux parts (template unit, OS users, Caddy) run in the CI job
+`fleet` only.

@@ -346,6 +346,35 @@ installs (every install here runs as the same OS user, so A's process could read
 limits, disk quotas, real TLS and Caddy's admin API and rate limits, the licence service, `abfleet` itself, an install
 restore of another install's archive through the CLI (H-F).
 
+## Fleet checks (hosting exit checks 1, 3, 4, 5, 10; packages H-D to H-K)
+
+Three levels, from cheapest to most real:
+
+1. **Unit tests on the recording fake** (`npx vitest run scripts/fleet`; `scripts/fleet/test/`): every command runs
+   through the real CLI entry against `FakeSystem`, an in-memory machine that records each call. They check the order
+   of effects (user, folders, database with its REVOKEs, key, env, seed-config with the password on standard input,
+   migrate, invitation, unit, site), that `org create` leaves NOTHING after a failure injected at each of its steps in
+   turn, `--dry-run` changes nothing, delete's scan, the update rule (canary, batches, a schema-changing failure
+   restored from its snapshot, a code-only rollback, a failed canary stopping the fleet), backups off the machine and
+   retention, restore of one install, operator access and its expiry, rotation (and its undo), limits, doctor. Under a
+   second; platform-neutral.
+2. **`node scripts/exit-check/h-fleet.mjs`** (local test mode, about 6 to 8 minutes on the development PC): the real
+   tool, real installs of this tree as child processes on TCP ports 5360-5397, the real licence service on 5399, a fake
+   SMTP relay on 5398 (the operator's summary), a private PostgreSQL cluster from `APPBUILDER_FLEET_PG_BIN` (default
+   `.sandbox/pg/pgsql/bin`) on 127.0.0.1:5350. Two signed local packages stand for two releases (checksums and
+   signature verified for real; both run this source tree). Prints a Markdown table (also `.sandbox/fleet/h-fleet.md`,
+   transcript `.sandbox/fleet/h-fleet-transcript.txt`); everything under `.sandbox/fleet/run-*`, databases and roles
+   `ab_fleet_*`, removed afterwards (`FLEET_KEEP=1` keeps the folder). Not shown: OS users and file permissions (one OS
+   user runs everything), the template unit and its limits, Caddy and TLS, reboot survival.
+3. **CI job `fleet`** (`scripts/fleet/ci/fleet-ci.sh` on `ubuntu-latest`, with sudo): two real release builds signed
+   with a throwaway key, the fleet installer, systemd units, one OS user per install, Unix sockets with group caddy,
+   Caddy's local CA and HTTPS by host name, OS-level isolation checks (folders, sockets, mount namespace, roles), update
+   with a canary and a forced failure, backups and restore, access expiry, rotation, delete with a scan. Skips (printed):
+   public DNS and real certificates, disk project quotas (the runner's file system has none), reboot survival,
+   resource limits under pressure, mail deliverability.
+
+The fleet folder is type-checked with `npx tsc -p scripts/fleet/tsconfig.json` (not yet part of `npm run typecheck`).
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push and pull request to `main`, on `ubuntu-latest` with Node 22.18 (the lowest version
@@ -366,6 +395,10 @@ allowed by `engines`, needed for native type stripping). Steps, in order:
 A second job, **isolation**, runs the cross-instance isolation suite (below) with its own `postgres:16` container and that
 container's superuser in `APPBUILDER_HB_ADMIN_DB` (the suite creates roles and revokes `CONNECT` on `postgres` and
 `template1` from `PUBLIC`, which the `test` job must not see). The `test` job skips the suite.
+
+A third job, **fleet**, runs the fleet checks above (unit tests, `h-fleet.mjs` with the runner's PostgreSQL binaries,
+then `scripts/fleet/ci/fleet-ci.sh` as the real thing on the runner: it installs packages and changes the runner's
+PostgreSQL, so it is a job of its own).
 
 The credentials in the workflow are for the disposable service container only; never put real credentials in it. The screenshot
 script is not run in CI, and `npm run lint` is not part of the workflow yet. Not covered: a matrix over `postgres:15` and

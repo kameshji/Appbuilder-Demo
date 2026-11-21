@@ -179,12 +179,13 @@ describe.skipIf(!PG_URL)(PG_URL ? 'synchronous balances (PostgreSQL)' : `synchro
     const mains = (await h.q<{ n: number }>(`SELECT count(*)::int AS n FROM env_default.t_stockbalances WHERE "Location" = $1`, [id['Main store']]))[0].n
     expect(res.rows).toHaveLength(mains)
     ok(await viewer.post('/query', planBody('StockBalances', { select: ['MinQty'] })), 403)
-    // a movement writer without read on the balance still gets the plain refusal (it names the available quantity)
+    // a movement writer without read on the balance gets a plain refusal WITHOUT the quantity (P3 security review, P3-1)
     const clerk = await member('user_bal_clerk', 'bal-clerk@example.com', [
       { table: T.mv, create: true, read: 'own', update: 'own', delete: 'none' }, { table: T.item, create: false, read: 'all', update: 'none', delete: 'none' }, { table: T.loc, create: false, read: 'all', update: 'none', delete: 'none' },
     ])
-    const r = ok(await move(clerk, 'Washer', 'Main store', -1), 422) as { error: { message: string } }
-    expect(r.error.message).toBe('Stock of Washer at Main store would go below zero: available 0, requested 1.')
+    const r = ok(await move(clerk, 'Washer', 'Main store', -1), 422) as { error: { message: string }; balance?: { available?: number } }
+    expect(r.error.message).toBe('Stock of Washer at Main store would go below its minimum: there is not enough for this change (you may not see the quantity available).')
+    expect(r.balance?.available).toBeUndefined()
   })
 
   it('after a randomised sequence of movements every balance equals the sum of its live movements and none is negative', async () => {

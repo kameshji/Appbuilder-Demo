@@ -65,6 +65,11 @@ export interface TaskDeps {
   env?: NodeJS.ProcessEnv
   /** the clock (tests inject one; jobs use the real time) */
   now?(): Date
+  /**
+   * P3 review, P3-13: may this person read this activity now (their own security context)? Reminders and the digest
+   * fall back to the OWNER of an unassigned task, who may have lost access to the record it is about. Absent: no check.
+   */
+  canRead?(table: TableDef, rowId: string, userId: string): Promise<boolean>
 }
 
 export type Tasks = ReturnType<typeof createTasks>
@@ -231,7 +236,7 @@ export function createTasks(deps: TaskDeps) {
     if (!svc || !def) return { sent: 0 }
     const now = o.now ?? clock()
     const rows = await db().query<RawRow>(
-      `SELECT "id", "Subject", "DueOn", "ReminderOn", "AssignedTo", "AssignedTeam", "owner", "createdBy" FROM ${S(SYS.activities)}
+      `SELECT "id", "Subject", "DueOn", "ReminderOn", "AssignedTo", "AssignedTeam", "owner", "createdBy", ${q(REGARDING.id)} AS "_re" FROM ${S(SYS.activities)}
         WHERE ${liveRowsSql(def)} AND "Type" <> 'Note' AND "Status" IN ('Open', 'In progress') AND "ReminderOn" IS NOT NULL
           AND "ReminderOn" <= $1 AND "ReminderOn" > $2 AND ("ReminderSentOn" IS NULL OR "ReminderSentOn" < "ReminderOn")
         ORDER BY "ReminderOn" LIMIT ${REMINDER_BATCH}`,
@@ -241,7 +246,9 @@ export function createTasks(deps: TaskDeps) {
     let failed = 0
     for (const r of rows) {
       const remindOn = asDate(r.ReminderOn)!
-      const person = str(r.AssignedTo) || (str(r.AssignedTeam) ? '' : str(r.owner) || str(r.createdBy))
+      let person = str(r.AssignedTo) || (str(r.AssignedTeam) ? '' : str(r.owner) || str(r.createdBy))
+      // P3-13: the owner of an unassigned task about a record is told only while they may still read the task
+      if (person && !str(r.AssignedTo) && !blank(r._re) && deps.canRead && !(await deps.canRead(def, str(r.id), person).catch(() => false))) person = ''
       const target = person ? { userIds: [person] } : str(r.AssignedTeam) ? { teamIds: [str(r.AssignedTeam)] } : null
       try {
         if (target) {
@@ -288,8 +295,8 @@ export function createTasks(deps: TaskDeps) {
     const envZone = (await settingValue('TimeZone')) || 'Asia/Kolkata'
     // everything due before the end of tomorrow UTC+14 covers "due today" in every zone
     const horizon = new Date(now.getTime() + 38 * 3600_000)
-    const rows = await db().query<{ uid: string; id: string; Subject: string; DueOn: Date; Priority: string | null }>(
-      `SELECT COALESCE("AssignedTo", "owner") AS uid, "id", "Subject", "DueOn", "Priority" FROM ${S(SYS.activities)}
+    const rows = await db().query<{ uid: string; id: string; Subject: string; DueOn: Date; Priority: string | null; _check: boolean }>(
+      `SELECT COALESCE("AssignedTo", "owner") AS uid, "id", "Subject", "DueOn", "Priority", ("AssignedTo" IS NULL AND ${q(REGARDING.id)} IS NOT NULL) AS "_check" FROM ${S(SYS.activities)}
         WHERE ${liveRowsSql(def)} AND "Type" = 'Task' AND "Status" IN ('Open', 'In progress') AND "DueOn" IS NOT NULL AND "DueOn" < $1
           AND "AssignedTeam" IS NULL AND COALESCE("AssignedTo", "owner") IS NOT NULL ORDER BY "DueOn" LIMIT 20000`,
       [horizon],
@@ -297,10 +304,13 @@ export function createTasks(deps: TaskDeps) {
     const by = new Map<string, typeof rows>()
     for (const r of rows) (by.get(r.uid) ?? by.set(r.uid, []).get(r.uid)!).push(r)
     let sent = 0
-    for (const [uid, list] of by) {
+    for (const [uid, all] of by) {
       const zone = (await zoneOf(svc, uid)) || envZone
       const today = civilIn(now, zone)
       if (today.hh < DIGEST_HOUR || today.hh >= DIGEST_LAST_HOUR) continue
+      // P3-13: an unassigned task about a record reaches its owner only while they may still read it
+      const list: typeof rows = []
+      for (const t of all) if (!t._check || !deps.canRead || (await deps.canRead(def, t.id, uid).catch(() => false))) list.push(t)
       const dayKey = `${today.y}-${String(today.m).padStart(2, '0')}-${String(today.d).padStart(2, '0')}`
       const todayN = today.y * 10000 + today.m * 100 + today.d
       const overdue: typeof rows = []

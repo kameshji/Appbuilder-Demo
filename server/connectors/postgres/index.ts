@@ -111,7 +111,8 @@ export const createPostgresConnector: ConnectorFactory = (conn: ConnectionRecord
       return d
     }
     if (!settings.valid) throw new HttpError(503, 'unavailable', 'The PostgreSQL connection is not configured (host, database and user are required; the schema must be a plain identifier)')
-    if (!own) own = createPgDb(settings, password, { onError: (e) => env.log('warn', `postgres pool: ${scrub(e.message, password)}`) })
+    // env.dbLookup (P3-6): the pool connects to addresses the outbound policy checked, never to a second DNS answer
+    if (!own) own = createPgDb(settings, password, { onError: (e) => env.log('warn', `postgres pool: ${scrub(e.message, password)}`), lookup: env.dbLookup })
     return own
   }
   async function dialect(d: SqlDb): Promise<Dialect> {
@@ -483,7 +484,7 @@ export const createPostgresConnector: ConnectorFactory = (conn: ConnectionRecord
           const has = await c.query('SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = $1', [schema])
           if (!has.rowCount) return { ok: false as const, message: `Connected to ${v}, but the schema "${schema}" does not exist in "${settings.database}".` }
           return { ok: true as const, message: `Connected to ${v} at ${settings.host}:${settings.port}/${settings.database} (schema ${schema})` }
-        }, 8000)
+        }, 8000, env.dbLookup)
       } catch (e) {
         return { ok: false as const, message: friendlyConnectionError(e, settings, password) }
       }

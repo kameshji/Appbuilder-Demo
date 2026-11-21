@@ -14,6 +14,7 @@ import { flushAllFiles } from '../connectors/files/index.ts'
 import { createSecretBox, loadSecretKey } from './secrets.ts'
 import { SCHEMA_VERSION, SchemaTooNewError, UnsuitableDatabaseError, createMetaStore } from './meta-store.ts'
 import { DEFAULT_ENVIRONMENT_ID, currentEnvironment, runInEnvironment } from './env-context.ts'
+import { orgContextFor } from '../../src/platform/orgsec.ts'
 import { createInstallStore } from './install-store.ts'
 import { createEnvironmentManager, maxEnvironments, moveLegacyWorkspace } from './environments.ts'
 import { createBackupService, type BackupServiceImpl } from './backup/service.ts'
@@ -254,6 +255,8 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
   const tasks = createTasks({
     db: () => state.db, meta: getMeta, data: () => data, notifications: () => services.notifications, env: procEnv,
     log: (level, msg) => log(level, msg),
+    // P3-13: reminders and the digest name only what the person may still read
+    canRead: async (table, rowId, userId) => (await collab.readersOf(table, rowId, [userId])).ok.length > 0,
   })
   // core data model (P0-N): system-table hooks, polymorphic cascade, number sequences, timeline and notification jobs
   const collab = createCollab({
@@ -265,6 +268,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
     enqueue: async (type, payload, o) => { await kernel.jobs.enqueue(type, payload, { priority: 1, ...(o?.delayMs ? { delayMs: o.delayMs } : {}) }) },
     tasks: () => tasks,
     log: (level, msg) => log(level, msg),
+    teamsOf: async (userId) => (security.directory ? orgContextFor(await security.directory(), userId, currentEnvironment().id).teams : []),
   })
   registerCollabJobs(kernel, collab)
   tasks.registerJobs(kernel)

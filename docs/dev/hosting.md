@@ -19,6 +19,44 @@ One process holds one install, so the settings come from `process.env`. Test sui
 process attach settings to an app: `configureHosting(app.services, hostingSettings({ ... }))`. `createApp({ env })` does
 not attach them by itself.
 
+## The fleet tool (H-D to H-K)
+
+`abfleet` lives in `scripts/fleet/` (not in `server/`, so it is not part of the install's code; the spec's
+`server/fleet/` is this folder). It never imports server code statically: it loads the update, backup and SMTP modules
+of the **installed release** at run time, and runs everything inside an install as that install's OS user.
+
+| File | What |
+| --- | --- |
+| `scripts/fleet/abfleet.ts` | the CLI: arguments, `--dry-run`, `--json`, the fleet lock, the operator audit line, the expiry sweep before every command; `runAbfleet(argv, { system, paths })` for tests and the exit check |
+| `scripts/fleet/agent.ts` | runs inside one install (its user, its `instance.env`, its release in `ABFLEET_APP`): `info`, `backup` (createArchive + verifyArchive), `mail-setup`, `access-open`, `access-close`, `db-reach` |
+| `scripts/fleet/lib/system.ts` | **the only place with system effects**: the `System` interface (files, users, units, PostgreSQL as superuser, programs, HTTP), `ServerSystem` (systemctl, useradd, chown, `runuser -u postgres psql`), `withDryRun` |
+| `scripts/fleet/lib/local.ts` | `LocalSystem`: local test mode (installs as child processes on TCP ports, recorded users, a throwaway cluster) |
+| `scripts/fleet/lib/fake.ts` | `FakeSystem`: the recording fake for unit tests, `realisticHandler` (answers of the CLI, agent and licence CLI) |
+| `scripts/fleet/lib/model.ts`, `core.ts`, `util.ts` | paths (server and local layout), registry, context, audit, the rollback stack `Undo`, ids, SCRAM verifiers, redaction |
+| `scripts/fleet/lib/templates.ts` | every file written on a server: template unit, limits drop-in, tmpfiles line, Caddyfile and sites, instance env, licence unit, timers |
+| `scripts/fleet/lib/db.ts` | roles and databases exactly as `scripts/fleet/testing/fleet.mjs` (the isolation suite) creates them; checks |
+| `scripts/fleet/lib/org.ts`, `init.ts`, `update.ts`, `backup.ts`, `limits.ts`, `access.ts`, `licence.ts`, `summary.ts`, `instance.ts` | the commands |
+| `scripts/fleet/install.sh` | the fleet installer (POSIX sh) |
+| `scripts/fleet/ci/fleet-ci.sh` | the real run on a Linux runner (CI job `fleet`) |
+| `scripts/fleet/test/` | unit tests on the fake |
+| `scripts/fleet/tsconfig.json` | type check of the folder: `npx tsc -p scripts/fleet/tsconfig.json` (not yet part of `npm run typecheck`) |
+
+Rules: a new system effect is a new `System` method (with its fake and dry-run behaviour), never a direct `fs` or
+`child_process` call in a command; every step of a command that creates something registers its undo **before** it
+runs; secrets go on standard input or into files, never into arguments, output or the registry.
+
+## What the server lacks for the fleet (proposed interfaces)
+
+| Needed | Today | Proposed |
+| --- | --- | --- |
+| Rotate the secret key | not possible | `appbuilder rekey --new-key-file <f>` (install stopped; re-seals every sealed value in one transaction; exit 0/1) |
+| An install backup from the command line | the agent calls `createArchive` itself (no row in `ab.backups`) | `appbuilder backup create --out <file> [--include-key] [--passphrase-file f] [--json]` (registered, verified, exit 0/1) |
+| The fleet's mail relay without the Admin console | the agent calls `mail.saveSettings` | `APPBUILDER_SMTP_HOST` / `_PORT` / `_USER` / `_PASSWORD_FILE` / `_FROM` (locked like the public URL) |
+| Time-boxed operator access | the agent creates the account, the invitation with the grant's lifetime, the audit entry and the notifications | `appbuilder admin operator-access open --reason r --until <iso> [--print-link]` and `close --user <id>` (exit 0/1; JSON with `--json`) |
+| Disable an account | the agent calls `users.update` + `signOutEverywhere` | `appbuilder admin disable <email>` |
+| Machine-readable status | the agent reads settings, users, seats, licence state | `appbuilder status --json` (schema, read-only, seats, licence last check, last backup) |
+| A shorter invitation | `admin invite` links are valid 7 days | `admin invite --ttl-hours <n>` |
+
 ## Rules for new code
 
 - **Links.** Never build an absolute address from the request (`Host`, `X-Forwarded-*`). Use

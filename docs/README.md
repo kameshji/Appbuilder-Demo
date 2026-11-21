@@ -6,15 +6,13 @@ filters and column security. ("Appbuilder" is a working name.)
 
 ## Status
 
-Version **0.7.0** (Phase 2, "Reach", is done: see [CHANGELOG](../CHANGELOG.md) and [the Phase 2 spec](plan/p2-spec.md) with its
-exit check results; Phase 1, "Automation", closed at 0.6.0: [the Phase 1 spec](plan/p1-spec.md); Phase 0, "Kernel", at 0.5.0:
-[the Phase 0 spec](plan/p0-spec.md)). Phase 2 added phone apps (installable, offline entry, barcode and QR scanning, signature
-pad), print templates and PDFs, dashboards (tile editor, TV screens, email snapshots, pinned tiles), auto apps, the templates
-catalogue and the WhatsApp connector. Nothing in Phase 2 has been run on a real phone, against Meta's real API or on a hosted
-server, and there has been no outside security review. The product serves ONE organisation per install; a multi-tenant cloud
-product is decided but not built ([plan](plan/hosting-and-licensing.md)). Every page below describes
-what exists in this version; each page says what is not supported yet. "Current" means the page was checked against the
-code for 0.7.0 where Phase 2 touched it, otherwise for 0.6.0.
+Version **0.8.0** (Phase 3, "Collaboration and templates", is built except ledgers and GST: see [CHANGELOG](../CHANGELOG.md) and
+[the Phase 3 spec](plan/p3-spec.md) with its exit check results; the hosting phase is partly built: [hosting spec](plan/hosting-spec.md);
+Phase 2 closed at 0.7.0, Phase 1 at 0.6.0, Phase 0 at 0.5.0). Phase 3 added chat, tasks and notes, solution templates with the
+Manufacturing, CRM and ERP-lite packs (no tax is computed anywhere), licensing with seat passes, the fleet tool for hosting several
+organisations on one server (one install each), an isolation suite and a load-test harness. Nothing has been run on a real phone,
+against Meta's real API, with a real mail provider or on a rented server, and there has been no outside security review.
+Every page below describes what exists in this version; each page says what is not supported yet.
 
 ## For customers
 
@@ -30,6 +28,7 @@ code for 0.7.0 where Phase 2 touched it, otherwise for 0.6.0.
 | [Chat](help/chat.md) for everyone; [chat for teams](guide/chat.md); [tasks](help/tasks.md) and [tasks for makers](guide/maker/tasks.md); the [Manufacturing pack](guide/maker/manufacturing-pack.md) (solution template) and [shop floor on your phone](help/shop-floor-phone.md) | Everyone, makers | current (Phase 3; phone parts checked in emulation only) |
 | Solution templates: the [CRM pack](guide/maker/crm-pack.md) (leads, opportunities, quotes without tax, pipeline dashboard, phone app) and the [ERP-lite pack](guide/maker/erp-lite-pack.md) (stock that never goes below zero, purchase and sales cycles, commercial invoices that are not tax invoices) | Makers, administrators | current (no tax is computed anywhere) |
 | [Licensing and seat passes](admin/licensing.md): online licence check, 3 days of grace, passes, the licence service command line | Operators, administrators | current (not used with a real customer yet) |
+| [Fleet operations](admin/fleet-operations.md): the fleet tool `abfleet` for hosting up to 20 organisations on one Linux server (not yet run on a rented server) | Operators | current |
 | [Hosting: many installs on one server](admin/hosting.md): socket listening, the locked public URL, closed setup, read-only installs | Operators | current (Linux-only parts run in CI, not on a server yet) |
 | [Chat for administrators](admin/chat.md): retention, moderation, export, what administrators can and cannot see | Administrators | current (Phase 3 package A, server only) |
 | [Templates](guide/maker/templates.md): the built-in catalogue of UI component, screen, app and data model templates (binding, plan, Copy and Linked, uninstall); dev: [templates](dev/templates.md) | Makers, developers | current (Phase 2) |
@@ -65,6 +64,7 @@ code for 0.7.0 where Phase 2 touched it, otherwise for 0.6.0.
 | [Tasks: reminders, digest, repeats, shares, shared schedule fields](dev/tasks.md) | current |
 | [Notes: the editor, the server sanitiser, sharing, record cards](dev/notes.md); for people: [Notes](help/notes.md), [notes for teams](guide/notes.md) | current |
 | [Balances kept in the same transaction](dev/balances.md) (stock that cannot go below zero); [licensing in the code](dev/licensing.md) | current |
+| [Load testing the hosted fleet](dev/load-testing.md) (`node scripts/bench/load/run.mjs`); results: [November 2026](internal/load-test-2026-11.md) | current (a developer PC, not a server) |
 | [Hosting support in the server](dev/hosting.md): rules for links, cookies, outbound connections, classifying routes and job types; `node scripts/exit-check/h-isolation.mjs` runs the cross-instance isolation suite (evidence for the release gate, not a security review) | current |
 | [Solution templates (authoring)](dev/solution-templates.md): writing a pack (format 2): tables, tokens, apps, flows, approvals, dashboards, print templates, roles, number sequences, reference and SAMPLE rows, dependencies, upgrades, the pack test | current |
 | [Templates catalogue](dev/templates.md): package format, slots and binding, integrity, plan and install paths, Linked upgrades, uninstall | current |
@@ -78,7 +78,7 @@ code for 0.7.0 where Phase 2 touched it, otherwise for 0.6.0.
 | [Changelog](../CHANGELOG.md) | current |
 | [Third-party notices](../THIRD-PARTY-NOTICES.md) | current (generated by `npm run notices`) |
 | Plans: [master plan](plan/master-plan.md), [Phase 0 spec](plan/p0-spec.md), [Phase 1 spec](plan/p1-spec.md), [Phase 2 spec](plan/p2-spec.md), [GST calculation specification (draft, awaiting the accountant's sign-off)](plan/gst-spec-draft.md), [Phase 3 spec (proposed defaults)](plan/p3-spec.md), [multi-tenant cloud, on-premises and licensing (outline)](plan/hosting-and-licensing.md), [hosting phase: a managed fleet of installs, and licensing (proposed)](plan/hosting-spec.md) | current |
-| Security reviews: [Phase 0](internal/security-review-p0.md), [Phase 1](internal/security-review-p1.md), [Phase 2](internal/security-review-p2.md) | current |
+| Security reviews: [Phase 0](internal/security-review-p0.md), [Phase 1](internal/security-review-p1.md), [Phase 2](internal/security-review-p2.md), [Phase 3 and hosting](internal/security-review-p3.md) | current |
 | Build specs used while developing earlier phases | [internal/specs](internal/specs) (historical, not maintained) |
 
 ## Documentation rules

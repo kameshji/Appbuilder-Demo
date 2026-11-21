@@ -139,7 +139,8 @@ export const createMySqlConnector: ConnectorFactory = (conn: ConnectionRecord, e
 
   const getDb = (): SqlDb => {
     if (!settings.valid) throw new HttpError(503, 'unavailable', 'The MySQL connection is not configured (host, database and user are required)')
-    if (!db) db = createSqlDb(settings, password)
+    // env.dbLookup (P3-6): the pool connects to addresses the outbound policy checked, never to a second DNS answer
+    if (!db) db = createSqlDb(settings, password, { lookup: env.dbLookup })
     return db
   }
   /** run a DB action, mapping driver errors (logged without SQL or secrets); `bound` = inside a transaction */
@@ -243,8 +244,9 @@ export const createMySqlConnector: ConnectorFactory = (conn: ConnectionRecord, e
       if (!settings.valid) return { ok: false, message: 'Host, database and user are required.' }
       let c: Awaited<ReturnType<typeof mysql.createConnection>> | null = null
       try {
-        const o = poolOptions(settings, password)
+        const o = poolOptions(settings, password, { lookup: env.dbLookup })
         c = await mysql.createConnection({
+          ...(o.stream ? { stream: o.stream } : {}),
           host: o.host, port: o.port, user: o.user, password: o.password, database: o.database, ssl: o.ssl, charset: o.charset,
           timezone: 'Z', connectTimeout: 8000,
         })

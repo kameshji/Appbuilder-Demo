@@ -986,6 +986,9 @@ export function createChatService(s: CoreServices, live: LiveHub | null, opts: C
       }
       const msg = await messageRow(tx, env, messageId, true)
       if (!o.asAdmin && (str(msg.createdBy) !== cx!.id || msg.Kind === 'system')) throw denied('You can only delete your own messages.')
+      // P3 review, P3-11: a system line (members changed, "An administrator exported this conversation") is the
+      // conversation's own record; moderation removes people's messages, never these (an export could not be hidden)
+      if (o.asAdmin && msg.Kind === 'system') throw invalid('This is a line Appbuilder wrote into the conversation (members, archive, export): it cannot be removed.')
       if (msg.DeletedOn) return
       const ids = parseJsonList(msg.Files).map(String)
       if (ids.length) files = (await s.meta.attachments.many(ids)).filter((a) => a.tableId === SYS.messages && a.rowId === str(msg.id))

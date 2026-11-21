@@ -9,7 +9,7 @@ import type { ConnectionManager, ConnectionRecord, Connector, ConnectorEnv, Conn
 import type { ConnectionRef, ConnectorKind } from '../../src/platform/contracts.ts'
 import { errText } from './util.ts'
 import { currentEnvironment } from './env-context.ts'
-import { assertOutboundHost } from './net-policy.ts'
+import { assertOutboundHost, guardedLookup, type NodeLookup } from './net-policy.ts'
 
 export const DEFAULT_CONNECTION_ID = 'conn_default'
 export const FILES_CONNECTION_ID = 'conn_files'
@@ -20,13 +20,15 @@ export function toConnectionRef(c: ConnectionRecord): ConnectionRef {
   return { ...rest, hasSecret: c.hasSecret ?? (secret !== undefined && secret !== '') }
 }
 
-function fingerprint(c: ConnectionRecord): string {
+/** `pinned`: the checked addresses of an external database host (P3-6: another answer means another, re-checked pool) */
+function fingerprint(c: ConnectionRecord, pinned: string[] | null): string {
   return createHash('sha256')
-    .update(JSON.stringify([c.connector, c.settings ?? {}, c.secret ?? null]))
+    .update(JSON.stringify([c.connector, c.settings ?? {}, c.secret ?? null, pinned ? [...pinned].sort() : null]))
     .digest('hex')
 }
 
-export function createConnectionManager(getMeta: () => MetaStore, env: ConnectorEnv): ConnectionManager & { closeAll(): Promise<void>; closeEnvironment(id: string): Promise<void> } {
+/** `o.lookup` / `o.env`: the resolver and policy settings of the outbound check (tests); the process's by default */
+export function createConnectionManager(getMeta: () => MetaStore, env: ConnectorEnv, o: { lookup?: (h: string) => Promise<{ address: string }[]>; policyEnv?: NodeJS.ProcessEnv } = {}): ConnectionManager & { closeAll(): Promise<void>; closeEnvironment(id: string): Promise<void> } {
   const factories = new Map<ConnectorKind, ConnectorFactory>()
   const cache = new Map<string, { fp: string; connector: Connector }>()
   const creating = new Map<string, Promise<Connector>>()
@@ -47,10 +49,17 @@ export function createConnectionManager(getMeta: () => MetaStore, env: Connector
     // Every use of an external database connection checks its host against the outbound policy again, cached or not:
     // a name can start resolving to a loopback or private address after it was saved (and a connection saved before
     // this check existed must not be usable). The default database is the install's own and is exempt.
+    // P3-6 (DNS rebinding): the connector then connects to the address checked here (and re-checks every later physical
+    // connection) instead of letting its driver ask DNS again; the addresses are part of the fingerprint, so a host that
+    // starts resolving elsewhere gets a new pool whose connections are checked.
+    let pinned: string[] | null = null
+    let dbLookup: NodeLookup | undefined
     if ((rec.connector === 'postgres' || rec.connector === 'mysql') && rec.id !== DEFAULT_CONNECTION_ID && rec.settings?.host) {
-      await assertOutboundHost(String(rec.settings.host), 'Connection')
+      const host = String(rec.settings.host)
+      pinned = await assertOutboundHost(host, 'Connection', { env: o.policyEnv, lookup: o.lookup })
+      dbLookup = guardedLookup(host, 'Connection', { first: pinned, env: o.policyEnv, lookup: o.lookup })
     }
-    const fp = fingerprint(rec)
+    const fp = fingerprint(rec, pinned)
     const hit = cache.get(key)
     if (hit && hit.fp === fp) return hit.connector
     const pending = creating.get(key + ':' + fp)
@@ -58,7 +67,7 @@ export function createConnectionManager(getMeta: () => MetaStore, env: Connector
     const factory = factories.get(rec.connector)
     if (!factory) throw new HttpError(503, 'unavailable', `The "${rec.connector}" connector is not available on this server.`)
     const p = (async () => {
-      const connector = factory(rec, { ...env, environment })
+      const connector = factory(rec, { ...env, environment, ...(dbLookup ? { dbLookup } : {}) })
       const old = cache.get(key)
       cache.set(key, { fp, connector })
       if (old && old.connector !== connector) await closeQuietly(old.connector)

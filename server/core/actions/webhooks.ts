@@ -260,7 +260,7 @@ export function webhookRoutes(router: ApiRouter, s: CoreServices, hooks: Webhook
   router.add('GET', '/flows/:flowId/webhooks', async (ctx) => {
     await canManage(ctx.user!, ctx.params.flowId)
     return { items: await hooks.list(ctx.params.flowId) }
-  }, { auth: 'user' })
+  }, { auth: 'user', pass: 'full' })
 
   router.add('POST', '/flows/:flowId/webhooks', async (ctx) => {
     await canManage(ctx.user!, ctx.params.flowId)
@@ -269,7 +269,7 @@ export function webhookRoutes(router: ApiRouter, s: CoreServices, hooks: Webhook
     const r = await hooks.create(ctx.params.flowId, isObj(ctx.body) ? ctx.body : {}, ctx.user!.user.id)
     await audit(ctx, 'webhook.create', { id: r.hook.id, flowId: r.hook.flowId, requireSignature: r.hook.requireSignature })
     return { ...r, note: 'Copy the address and the signing secret now: they are not shown again.' }
-  }, { auth: 'user' })
+  }, { auth: 'user', pass: 'full' })
 
   const hookFor = async (ctx: Ctx) => {
     const h = await hooks.get(ctx.params.id)
@@ -283,7 +283,7 @@ export function webhookRoutes(router: ApiRouter, s: CoreServices, hooks: Webhook
     const next = await hooks.update(h.id, isObj(ctx.body) ? ctx.body : {})
     await audit(ctx, 'webhook.update', { id: h.id, flowId: h.flowId, requireSignature: next.requireSignature, enabled: next.enabled })
     return next
-  }, { auth: 'user' })
+  }, { auth: 'user', pass: 'full' })
 
   router.add('POST', '/webhooks/:id/rotate', async (ctx) => {
     const h = await hookFor(ctx)
@@ -292,14 +292,14 @@ export function webhookRoutes(router: ApiRouter, s: CoreServices, hooks: Webhook
     if (!r.token && !r.secret) throw new HttpError(422, 'invalid', 'Say what to rotate: token, secret or both.')
     await audit(ctx, 'webhook.rotate', { id: h.id, flowId: h.flowId, token: !!r.token, secret: !!r.secret })
     return r
-  }, { auth: 'user' })
+  }, { auth: 'user', pass: 'full' })
 
   router.add('DELETE', '/webhooks/:id', async (ctx) => {
     const h = await hookFor(ctx)
     await hooks.remove(h.id)
     await audit(ctx, 'webhook.revoke', { id: h.id, flowId: h.flowId })
     return { ok: true }
-  }, { auth: 'user' })
+  }, { auth: 'user', pass: 'full' })
 
   /* ---------------------------------------------------------------- the inbound call */
 

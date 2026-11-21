@@ -808,3 +808,21 @@ table rebuilds its indexes (1,000,000 rows: 17 s); deleted rows take space until
 **Decision.** The form's identity travels in the row write body (so the offline outbox replays it unchanged); the server treats it as a claim and starts a flow only for a committed write by someone who may run the app, on that form's table, exactly once per idempotency key, acting on behalf of the submitter. Kiosk cycling uses only the existing range presets and client-side pages, so a token's reach does not widen. Error boundaries wrap pages, app tabs, the Studio, the chat dock, dashboard tiles and each UI component (about 6 microseconds each, measured by a render benchmark).
 
 **Consequences.** A crash between commit and the listener on a write without an idempotency key loses the trigger. Render errors go to the console only.
+
+## D63. Database drivers connect only to checked addresses (Phase 3 security re-check, Nov 2026)
+
+**Decision.** External PostgreSQL and MySQL connectors receive a socket that connects to an address the outbound policy checked; the first connection of a pool uses the address checked when the connection is taken, every later one is resolved and checked again, and the driver never resolves the name itself. The host name is kept for TLS and messages; the checked addresses are part of the pool's fingerprint. The default connection is exempt. This closes the DNS rebinding residual of the Phase 0 review and finding P3-6.
+
+**Consequences.** A database server reached through an allowed address can still forward the connection elsewhere. Details: `docs/internal/security-review-p3.md`.
+
+## D64. The fleet tool lives outside the server and restores data on a failed schema-changing update (hosting H-D to H-K, Nov 2026)
+
+**Decision.** `abfleet` lives in `scripts/fleet` so the install's code is unchanged; every system effect goes through one adapter with a recording fake and a local test mode. It loads the installed release's own updater, backup engine and mail client at run time. During an update an install is read-only from before its snapshot until it is healthy again, so on a failure with a schema change the snapshot is restored without losing a user's write (the single-install updater rolls back code only). Operator access is a time-boxed install administrator account, audited in the install and announced to its administrators.
+
+**Consequences.** Never run on a real server. Secret-key rotation waits for a server `rekey` command; disk quotas need XFS or ext4 project quotas. Details: `docs/admin/fleet-operations.md`.
+
+## D65. The load test runs real installs; sizing stays open until a run on the rented server (hosting H-L, Nov 2026)
+
+**Decision.** The harness starts installs as real processes with their own databases and generates load with the server's own dependencies; it measures event-loop delay from outside because the server exposes none. The first local pilot supports the estimate of 8 vCPU / 32 GB for 20 organisations with about twice the CPU needed at 100 requests a second.
+
+**Consequences.** Prints and imports on the request loop are the first product limit; the table list query is uncached. The numbers come from a shared developer PC and are not capacity figures. Details: `docs/internal/load-test-2026-11.md`.

@@ -27,6 +27,7 @@ import { resolveApiKey } from './identity/api-keys.ts'
 import { setCookie } from './identity/util.ts'
 import { DEFAULT_ENVIRONMENT_ID, runInEnvironment } from './env-context.ts'
 import { NoEnvironmentError } from './environments.ts'
+import { applyPass } from './licence/seats.ts'
 
 /** version of the running server (package.json next to server/); read once */
 let appVersion: string | null = null
@@ -293,7 +294,8 @@ export async function finishSignIn(
   let requested = ctx.requestedEnvironment ?? null
   if (requested && !(await services.environments.accessible(toUserDef(fresh))).some((e) => e.id === requested && e.state === 'ready')) requested = null
   const rec: UserRecord = o.restricted === 'mfa_enrol' ? { ...fresh, mfaEnrolmentRequired: true } : fresh
-  return sessionPayload(services, await userContextFor(services, rec, requested, expires, { allowNoEnvironment: true }))
+  // P3-2: the sign-in answer shows the seat pass as GET /auth/session does (an Operator sees no Dev mode from the start)
+  return sessionPayload(services, await applyPass(services, await userContextFor(services, rec, requested, expires, { allowNoEnvironment: true })))
 }
 
 /* ------------------------------------------------------------------ helpers */

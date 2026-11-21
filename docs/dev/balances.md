@@ -28,7 +28,7 @@ the writer's transaction instead.
 | `keys` | 1 to 4 pairs: the balance column `column` equals the movements column `from` (same type, same lookup table) |
 | `floor` | the lowest allowed balance; default 0; `null` = no floor (a synchronous sum that may go negative) |
 | `minColumn` | optional per-key minimum on the balance row (blank: the floor) |
-| `label`, `message` | the refusal's wording; default: `Stock of Hex bolt M10 at Main store would go below zero: available 3, requested 5.` (key values are shown by the display column of their lookup table) |
+| `label`, `message` | the refusal's wording; default: `Stock of Hex bolt M10 at Main store would go below zero: available 3, requested 5.` (key values are shown by the display column of their lookup table). To a person who may not read the balance column (or the minimum column) of every row of the balance table, the refusal says `Stock of Hex bolt M10 at Main store would go below its minimum: there is not enough for this change (you may not see the quantity available).` without the quantity and without `available` in the body; a key is shown by its lookup display name only to someone who may read that column of every row of the lookup table, else by its id (P3 security review, P3-1) |
 
 Both tables must be in the default database. A declaration that no longer fits (a column removed or retyped) refuses
 every write of the movements table with the reason, rather than letting the balance drift (`balanceProblem`).
@@ -82,5 +82,5 @@ row and column security apply.
 - **Deadlocks**: a unit of work that writes several movements of different keys in separate writes (a flow writing a
   transfer pair in one job) takes key locks in write order; PostgreSQL detects a cycle with another such unit and
   answers 409 "The database is busy, try again" to one of them.
-- A refused movement names the available quantity of that key even to a person who cannot read the balance table.
+- A refused movement names the available quantity only to a person who may read the balance column of every row (P3-1); someone who may record movements can still find the quantity by trying amounts (each accepted try is a real, audited movement). A custom `message` is not used for those who may not see the quantity.
 - An upgrade of a pack does not change the declaration of a table that exists (the table keeps its setting).

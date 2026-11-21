@@ -22,6 +22,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Checkbox } from '@/components/ui/checkbox'
 import { cn } from '@/lib/utils'
+import { sanitizeRichText } from '@/platform/system-tables'
 import { Empty, ErrorReference, PageHeader, Segmented, errMsg, fmtDate, fmtRelative, referenceFor, useToast } from '@/portal/kit'
 import { useCaps } from '@/portal/security'
 import { approvalsApi, type ApprovalView, type LinkInspect } from './api'
@@ -144,7 +145,7 @@ function Conversation({ requestId }: { requestId: string }) {
               <div className="text-[11px] text-muted-foreground">{i.byName ?? 'Someone'} · {fmtRelative(i.at)}</div>
               {i.kind === 'comment'
                 // comment bodies are sanitised rich text (server sanitizeRichText)
-                ? <div className="prose-sm break-words" dangerouslySetInnerHTML={{ __html: String(i.data.Body ?? '') }} />
+                ? <div className="prose-sm break-words" dangerouslySetInnerHTML={{ __html: sanitizeRichText(String(i.data.Body ?? '')) }} />
                 : <a className="inline-flex items-center gap-1 text-primary underline-offset-2 hover:underline" href={i.data.Attachment ? platform.attachments.url(String(i.data.Attachment)) : '#'} target="_blank" rel="noreferrer"><FileText className="size-3.5" />{String(i.data.FileName ?? 'file')}</a>}
             </li>
           ))}
@@ -209,7 +210,7 @@ function Detail({ id, onBack, onChanged }: { id: string; onBack(): void; onChang
         <Button variant="ghost" size="icon" aria-label="Refresh" onClick={load}><RefreshCw className="size-4" /></Button>
       </div>
 
-      {d.details && <div className="prose-sm rounded-lg border bg-muted/20 p-3 break-words" data-testid="approval-details" dangerouslySetInnerHTML={{ __html: d.details }} />}
+      {d.details && <div className="prose-sm rounded-lg border bg-muted/20 p-3 break-words" data-testid="approval-details" dangerouslySetInnerHTML={{ __html: sanitizeRichText(d.details) }} />}
       {fields.length > 0 && (
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 rounded-lg border p-3 text-sm" data-testid="approval-fields">
           {fields.map(([k, v]) => <div key={k} className="contents"><dt className="text-muted-foreground">{k}</dt><dd className="break-words">{fmtValue(v)}</dd></div>)}
@@ -349,7 +350,7 @@ function LinkConfirm({ token, onOpen }: { token: string; onOpen(id: string | nul
             <div className="text-base font-semibold break-words" data-testid="approval-link-title">{req?.title}</div>
             <div className="text-xs text-muted-foreground">{req?.requestedByName ? `From ${req.requestedByName}` : ''}{req?.dueOn ? ` · due ${fmtDate(req.dueOn)}` : ''}</div>
           </div>
-          {req?.details && <div className="prose-sm break-words text-sm" dangerouslySetInnerHTML={{ __html: req.details }} />}
+          {req?.details && <div className="prose-sm break-words text-sm" dangerouslySetInnerHTML={{ __html: sanitizeRichText(req.details) }} />}
           {req && Object.keys(req.fields).length > 0 && (
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">{Object.entries(req.fields).map(([k, v]) => <div key={k} className="contents"><dt className="text-muted-foreground">{k}</dt><dd>{fmtValue(v)}</dd></div>)}</dl>
           )}

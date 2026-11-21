@@ -21,7 +21,7 @@ import https from 'node:https'
 import dns from 'node:dns'
 import net from 'node:net'
 import zlib from 'node:zlib'
-import { classifyAddress, hostProblem, type AddressClass } from '../net-policy.ts'
+import { classifyAddress, deniedAddressProblem, hostProblem, type AddressClass } from '../net-policy.ts'
 import type { ActionErrorCode } from './contracts.ts'
 
 export type LookupFn = (host: string) => Promise<{ address: string; family?: number }[]>
@@ -129,8 +129,14 @@ export async function resolveAllowed(host: string, p: OutboundPolicy): Promise<{
       throw new OutboundError('blocked', why)
     }
   }
+  // P3-4: APPBUILDER_OUTBOUND_DENY by address too (the install's own public address by its IP or another name)
+  const listed = async (addresses: string[]) => {
+    const why = await deniedAddressProblem(host, addresses, p.env ?? process.env, p.lookup ?? testLookup ?? undefined)
+    if (why) throw new OutboundError('blocked', why)
+  }
   if (net.isIP(bare)) {
     check(bare)
+    await listed([bare])
     return { address: bare, family: net.isIP(bare) }
   }
   const now = Date.now()
@@ -144,6 +150,7 @@ export async function resolveAllowed(host: string, p: OutboundPolicy): Promise<{
   }
   if (!addrs.length) throw new OutboundError('network', `The host name ${host} could not be resolved.`, true)
   for (const a of addrs) check(a.address)
+  await listed(addrs.map((a) => a.address))
   const chosen = { address: addrs[0].address, family: addrs[0].family ?? net.isIP(addrs[0].address) }
   if (p.pins) {
     if (p.pins.size > 200) p.pins.clear()

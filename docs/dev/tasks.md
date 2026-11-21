@@ -36,7 +36,10 @@ the hook checks for a child (`RecurrenceParent = id`), and a UNIQUE partial inde
 ## Shares
 
 See [core-data-model.md](core-data-model.md). The screen's "Share with a person" writes `ActivityShares` through the data API; the
-server decides (only the owner). "Shared with me" lists activities that have a share row for me or my teams.
+server decides (only the owner). "Shared with me" lists activities that have a share row for me or my teams. An edit
+share changes content only: `AssignedTo` / `AssignedTeam` may be changed by the owner, the creator, the current assignee
+or a member of the assigned team (administrators too), else 403 (`collab.ts`, P3 review P3-12). Reminders and the digest
+skip an unassigned task about a record whose owner may no longer read it (`canRead`, P3-13).
 
 ## The shared schedule fields
 

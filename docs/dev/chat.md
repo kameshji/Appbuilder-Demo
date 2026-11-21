@@ -201,7 +201,7 @@ and "losing read access loses the discussion".
 | `POST /chat/admin/channels/:id/archive` | `{ archived }` | `chat.channel.archive` |
 | `DELETE /chat/admin/channels/:id/members/:userId` | | `chat.member.remove` |
 | `DELETE /chat/admin/channels/:id` | `{ confirm }` (the channel's name, or "delete" for direct and group) | deletes it with its messages and files; `chat.channel.delete` |
-| `POST /chat/admin/messages/:id/moderate` | `{ note? }` | removes the body and files; `chat.message.moderate` (channel and message id, never text) |
+| `POST /chat/admin/messages/:id/moderate` | `{ note? }` | removes the body and files; `chat.message.moderate` (channel and message id, never text). A system line (members, archive, export) answers 422: it cannot be removed (P3 review, P3-11) |
 | `GET /chat/admin/reports?state=open\|handled\|all` | | `{ items }` with the reported message's text |
 | `POST /chat/admin/reports/:id` | `{ action: 'delete' \| 'dismiss' }` | `chat.report.handle` |
 | `POST /chat/admin/channels/:id/export` | `{ reason }` (at least 10 characters; recent sign-in needed) | `{ id, url, expiresOn }`; a system message tells the members; `chat.export` (with the reason) |

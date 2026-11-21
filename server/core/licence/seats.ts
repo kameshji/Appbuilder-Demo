@@ -86,20 +86,29 @@ export const PASS_REQUIRED_MESSAGE = 'Your pass is Operator: building (Dev mode,
 export function withPasses<A extends unknown[]>(services: CoreServices, resolve: (...a: A) => Promise<UserContext | null>): (...a: A) => Promise<UserContext | null> {
   return async (...a: A) => {
     const u = await resolve(...a)
-    if (!u || u.user.kind === 'service') return u
-    const pass = await passOf(services, u.user.id)
-    u.pass = pass
-    if (pass !== 'full' && u.privileges.isMaker) {
-      u.privileges = { ...u.privileges, isMaker: false }
-      // the session the client reads (GET /auth/session) shows the same: Dev mode is hidden for an Operator
-      const session = u.session.bind(u)
-      u.session = () => {
-        const s = session()
-        return { ...s, privileges: { ...s.privileges, isMaker: false } }
-      }
-    }
-    return u
+    return u ? applyPass(services, u) : u
   }
+}
+
+/**
+ * The pass applied to one user context (the session resolver, and since the P3 security review (P3-2) also the live
+ * socket's contexts and the sign-in answer, which build their contexts without the router): isMaker false for a person
+ * without a Full user pass, the pass on ctx.pass. Idempotent.
+ */
+export async function applyPass(services: CoreServices, u: UserContext): Promise<UserContext> {
+  if (u.user.kind === 'service' || u.pass) return u
+  const pass = await passOf(services, u.user.id)
+  u.pass = pass
+  if (pass !== 'full' && u.privileges.isMaker) {
+    u.privileges = { ...u.privileges, isMaker: false }
+    // the session the client reads (GET /auth/session) shows the same: Dev mode is hidden for an Operator
+    const session = u.session.bind(u)
+    u.session = () => {
+      const s = session()
+      return { ...s, privileges: { ...s.privileges, isMaker: false } }
+    }
+  }
+  return u
 }
 
 /** router.ts: design routes and `pass: 'full'` routes need a Full user pass (also for administrators) */
@@ -153,6 +162,8 @@ export async function assignPasses(
   })
   const m = cacheOf(services)
   for (const id of toChange) m.delete(id)
+  // P3-2: the live socket keeps contexts for a while: drop them and re-check subscriptions (an Operator loses Studio presence now)
+  if (toChange.length) services.security.invalidate()
   return { changed: toChange, unchanged: ids.filter((id) => !toChange.includes(id)) }
 }
 

@@ -53,6 +53,8 @@ export interface CollabDeps {
   enqueue(type: string, payload: unknown, opts?: { delayMs?: number }): Promise<void>
   /** P3-T (tasks/service.ts): recurrence, note bodies, activity shares; optional (tests of collab alone leave it out) */
   tasks?(): Tasks | null
+  /** the teams a person belongs to in the current environment (P3-12: who may change an assignment); optional */
+  teamsOf?(userId: string): Promise<string[]>
   log(level: 'info' | 'warn' | 'error', msg: string): void
 }
 
@@ -194,6 +196,19 @@ export function createCollab(deps: CollabDeps) {
           break
         }
         case SYS.activities: {
+          // P3 review, P3-12: an edit share lets a person change a note or task, not pass it on. Assigning it to someone
+          // else gives that person read and write access, so only its owner, its creator or the person (or a member of
+          // the team) it is assigned to may change the assignment. Rows the writer cannot read are left to the 404.
+          if (op === 'update' && ctx && me && !ctx.privileges.isAdmin && old && (str(next.AssignedTo) !== str(old.AssignedTo) || str(next.AssignedTeam) !== str(old.AssignedTeam))) {
+            const team = str(old.AssignedTeam)
+            const mineBefore = str(old.AssignedTo) === me || (!!team && (await deps.teamsOf?.(me) ?? []).includes(team))
+            if (str(old.owner) !== me && str(old.createdBy) !== me && !mineBefore) {
+              const t = deps.data().internals.physical(def)
+              const pred = ctx.rowPredicate(t, 'read')
+              const readable = !('const' in pred && !pred.const) && !!(await deps.data().internals.findRow(t, str(old.id), 'const' in pred ? undefined : pred))
+              if (readable) throw new HttpError(403, 'denied', 'Only the owner, the person who created it or the person (or team) it is assigned to can assign it to someone else. You may change its content.')
+            }
+          }
           if (has('Description') && !blank(next.Description)) set.Description = sanitizeRichText(str(next.Description))
           if (op === 'create' && blank(next.Type)) set.Type = 'Task'
           if (op === 'create' && blank(next.Status)) set.Status = 'Open'

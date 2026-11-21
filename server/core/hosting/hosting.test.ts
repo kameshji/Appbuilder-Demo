@@ -206,7 +206,8 @@ describe('outbound policy of a hosted install: APPBUILDER_OUTBOUND_PRIVATE=deny 
     expect(deniedByList('other.apps.example.com', env)).toBe(true)
     expect(deniedByList('apps.example.com', env)).toBe(false)
     expect(hostProblem('b.apps.example.com', env)).toMatch(/APPBUILDER_OUTBOUND_DENY/)
-    const p: OutboundPolicy = { allowedHosts: ['*.example.com'], allowPrivate: false, maxRedirects: 0, maxResponseBytes: 1024, timeoutMs: 1000, verifyTls: true, env, lookup: async () => [{ address: '93.184.216.34', family: 4 }] }
+    // (the listed host has its own address: since the P3 review a host resolving to a listed host's address is refused too)
+    const p: OutboundPolicy = { allowedHosts: ['*.example.com'], allowPrivate: false, maxRedirects: 0, maxResponseBytes: 1024, timeoutMs: 1000, verifyTls: true, env, lookup: async (h) => [{ address: /apps\.example\.com$/i.test(h) ? '203.0.113.50' : '93.184.216.34', family: 4 }] }
     await expect(resolveAllowed('b.apps.example.com', p)).rejects.toMatchObject({ code: 'blocked' })
     await expect(resolveAllowed('www.example.com', p)).resolves.toMatchObject({ address: '93.184.216.34' })
   })
@@ -215,9 +216,9 @@ describe('outbound policy of a hosted install: APPBUILDER_OUTBOUND_PRIVATE=deny 
     // file -> why its connections are safe in a hosted install
     const KNOWN: Record<string, string> = {
       'server/main.ts': 'the system database pool and the stale-socket probe of its own socket',
-      'server/connectors/postgres/db.ts': 'driver pool: hosts are checked by hostProblem (connector validity) and assertOutboundHost (saving a connection)',
-      'server/connectors/postgres/index.ts': 'the same, per connection',
-      'server/connectors/mysql/db.ts': 'the same, per connection',
+      'server/connectors/postgres/db.ts': 'driver pool: hosts are checked by hostProblem (connector validity) and assertOutboundHost (saving, every use); external connections resolve through guardedLookup (P3-6: the checked address, re-checked per physical connection)',
+      'server/connectors/postgres/index.ts': 'the same, per connection (env.dbLookup)',
+      'server/connectors/mysql/db.ts': 'the same, per connection (env.dbLookup)',
       'server/connectors/gsheets/index.ts': 'fixed Google API hosts',
       'server/core/jobs.ts': 'the LISTEN connection to the system database',
       'server/core/services.ts': 'the system database',

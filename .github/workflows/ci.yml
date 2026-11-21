@@ -117,3 +117,35 @@ jobs:
           # throwaway superuser of the service container above; it only lives for this job
           APPBUILDER_HB_ADMIN_DB: postgres://postgres:ci-root-only-not-a-secret@127.0.0.1:5432/postgres
         run: npx vitest run server/core/hosting/isolation
+
+  # H-D to H-K: the fleet tool (scripts/fleet). Unit tests of every command's plan and rollback on the recording fake,
+  # the fleet exit check in local test mode (installs as processes on TCP ports, a throwaway PostgreSQL cluster made with
+  # the runner's PostgreSQL binaries), then the REAL thing on this Ubuntu runner: the fleet installer, systemd template
+  # units, one OS user per install, Unix sockets, Caddy with its local CA, update with a canary and a forced failure,
+  # backups off the machine, restore of one organisation, operator access, delete with a verified scan. It installs
+  # packages and changes the runner's PostgreSQL, so it has its own job. What a hosted runner cannot show is printed as
+  # SKIP by scripts/fleet/ci/fleet-ci.sh.
+  fleet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Fleet unit tests (recording fake) and the installers' manifest tests
+        run: npx vitest run scripts/fleet scripts/install
+
+      - name: Fleet exit check in local test mode (h-fleet.mjs)
+        run: |
+          APPBUILDER_FLEET_PG_BIN="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)" node scripts/exit-check/h-fleet.mjs
+
+      - name: The fleet on this runner (systemd, OS users, sockets, Caddy, HTTPS by host name)
+        run: sh scripts/fleet/ci/fleet-ci.sh

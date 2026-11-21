@@ -281,6 +281,12 @@ export interface ConnectorEnv {
   /** injectable for tests (gsheets) */
   fetch: typeof fetch
   log(level: 'info' | 'warn' | 'error', msg: string): void
+  /**
+   * P3-6: set by the ConnectionManager for an external PostgreSQL / MySQL connection: the drivers resolve the host
+   * through it (the address the manager checked, then a re-check for every new physical connection), never by
+   * themselves. Absent for the default connection (the install's own database) and outside the server.
+   */
+  dbLookup?: import('./net-policy.ts').NodeLookup
 }
 
 export type ConnectorFactory = (conn: ConnectionRecord, env: ConnectorEnv) => Connector

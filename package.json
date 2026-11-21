@@ -1,7 +1,7 @@
 {
   "name": "appbuilder-demo",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.8.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,7 @@
     "start": "node server/main.ts",
     "test": "vitest run",
     "docs:gen": "vitest run scripts/docs",
-    "typecheck": "tsc -b --noEmit && tsc -p tsconfig.server.json",
+    "typecheck": "tsc -b --noEmit && tsc -p tsconfig.server.json && tsc -p scripts/fleet/tsconfig.json",
     "typecheck:server": "tsc -p tsconfig.server.json",
     "release": "node scripts/release/build.mjs",
     "release:sign": "node scripts/release/sign.mjs",

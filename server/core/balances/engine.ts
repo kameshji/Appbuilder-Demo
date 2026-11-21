@@ -45,6 +45,16 @@ export interface BalanceDeps {
   db(): SqlDb | null
 }
 
+/**
+ * P3 security review (P3-1): what the person whose write moved a balance may read. A refusal names the available
+ * quantity only when they may read the balance column of every row of the balance table, and a key by its lookup's
+ * display name only when they may read that column of the lookup table (else the key's id). null: a write by the
+ * platform itself (flows as a service account are a person here), nothing is held back.
+ */
+export interface BalanceViewer {
+  canRead(t: TableDef, column: string): boolean
+}
+
 const colOf = (t: TableDef, name: string): ColumnDef | undefined => t.columns.find((c) => c.name === name) ?? t.columns.find((c) => lc(c.name) === lc(name))
 
 /**
@@ -206,7 +216,7 @@ export function createBalances(deps: BalanceDeps) {
   /** quantities are summed in fixed point (6 decimals) so that 0.1 + 0.2 - 0.3 is exactly 0 */
   const fx = (n: number) => Math.round(n * 1e6)
 
-  async function labelOf(b: TableDef, column: string, value: string): Promise<string> {
+  async function labelOf(b: TableDef, column: string, value: string, viewer: BalanceViewer | null): Promise<string> {
     const col = colOf(b, column)
     if (col?.type !== 'lookup' || !col.lookupTable) return value
     try {
@@ -214,6 +224,8 @@ export function createBalances(deps: BalanceDeps) {
       const target = tables.find((t) => lc(t.name) === lc(col.lookupTable!) || t.id === col.lookupTable)
       if (!target || !isDefault(target)) return value
       const pc = colOf(target, target.primaryColumn)?.name ?? 'id'
+      // P3-1: the display name is read here without row security: only for someone who may read that column of every row
+      if (viewer && !viewer.canRead(target, pc)) return value
       const r = await db().query<Row>(`SELECT ${quoteId(pc)} AS v FROM ${T(target)} WHERE "id" = $1`, [value])
       return r.length && !blank(r[0].v) ? String(r[0].v) : value
     } catch {
@@ -223,12 +235,18 @@ export function createBalances(deps: BalanceDeps) {
 
   const fmt = (n: number) => (Number.isInteger(n) ? String(n) : String(Math.round(n * 1e6) / 1e6))
 
-  async function refusal(l: Ledger, key: string[], available: number, requested: number, floor: number): Promise<HttpError> {
+  async function refusal(l: Ledger, key: string[], available: number, requested: number, floor: number, viewer: BalanceViewer | null): Promise<HttpError> {
     const labels: Record<string, string> = {}
-    for (const [i, k] of l.spec.keys.entries()) labels[k.column] = await labelOf(l.balance, k.column, key[i])
+    for (const [i, k] of l.spec.keys.entries()) labels[k.column] = await labelOf(l.balance, k.column, key[i], viewer)
     const keyText = l.spec.keys.map((k) => labels[k.column]).join(' at ')
     const label = l.spec.label || l.balance.displayName || l.balance.name
     const floorText = floor === 0 ? 'zero' : fmt(floor)
+    // P3-1: the quantity (and a minimum column, which with the floor gives it away) only to someone who may read them
+    const seesQuantity = !viewer || (viewer.canRead(l.balance, l.spec.column) && (!l.spec.minColumn || viewer.canRead(l.balance, l.spec.minColumn)))
+    if (!seesQuantity) {
+      const text = `${label} of ${keyText} would go below its minimum: there is not enough for this change (you may not see the quantity available).`
+      return new HttpError(422, 'invalid', text, l.spec.quantity, { balance: { table: l.balance.id, key: Object.fromEntries(l.spec.keys.map((k, i) => [k.column, key[i]])), requested } })
+    }
     const parts: Record<string, string> = { label, keys: keyText, floor: floorText, available: fmt(available), requested: fmt(requested), ...labels }
     const text = l.spec.message
       ? l.spec.message.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (all, k: string) => parts[k] ?? all)
@@ -242,7 +260,7 @@ export function createBalances(deps: BalanceDeps) {
    * pg_advisory_xact_lock(balance table, key) and the balance row's FOR UPDATE. A key whose balance goes down below its
    * floor (or its minimum column) refuses the change: the caller's unit of work rolls back, the balance included.
    */
-  async function apply(ledgers: Ledger[], before: RawRow[], after: RawRow[]): Promise<BalanceChange[]> {
+  async function apply(ledgers: Ledger[], before: RawRow[], after: RawRow[], viewer: BalanceViewer | null = null): Promise<BalanceChange[]> {
     const changes: BalanceChange[] = []
     for (const l of ledgers) {
       const deltas = new Map<string, { key: string[]; d: number }>()
@@ -269,7 +287,7 @@ export function createBalances(deps: BalanceDeps) {
         const next = old + d
         if (d < 0) {
           const min = found.length && l.spec.minColumn && !blank(found[0].__min) ? fx(num(found[0].__min)) : (l.floor === null ? null : fx(l.floor))
-          if (min !== null && next < min) throw await refusal(l, key, old / 1e6, -d / 1e6, min / 1e6)
+          if (min !== null && next < min) throw await refusal(l, key, old / 1e6, -d / 1e6, min / 1e6, viewer)
         }
         const value = next / 1e6
         const now = new Date()

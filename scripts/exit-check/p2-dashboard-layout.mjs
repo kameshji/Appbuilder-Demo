@@ -47,10 +47,14 @@ const measure = (page) => page.evaluate(() => {
   const grid = document.querySelector('[data-testid="dashboard-grid"]')
   const g = grid.getBoundingClientRect()
   const out = {}
-  for (const sec of grid.querySelectorAll(':scope > div > section[data-testid^="tile-"]')) {
+  // a tile's section sits inside its grid cell, possibly under the error boundary's display: contents wrapper
+  for (const sec of grid.querySelectorAll('section[data-testid^="tile-"]')) {
     const id = sec.getAttribute('data-testid').slice(5)
     const r = sec.getBoundingClientRect()
-    const st = sec.parentElement.style
+    let cell = sec.parentElement
+    while (cell && cell.parentElement !== grid) cell = cell.parentElement
+    if (!cell) continue
+    const st = cell.style
     const col = /(\d+) \/ span (\d+)/.exec(st.gridColumn), row = /(\d+) \/ span (\d+)/.exec(st.gridRow)
     out[id] = { l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height, x: col ? +col[1] - 1 : null, cw: col ? +col[2] : null, y: row ? +row[1] - 1 : null, ch: row ? +row[2] : null }
   }
@@ -262,7 +266,8 @@ try {
   const pname = await page.$eval('[data-testid="tile-editor-drill-name-0"]', (e) => e.value)
   ok(pname === 'Machine', `by default the first group column is passed as the parameter ${pname}`)
   const sum = await page.$eval('[data-testid="tile-editor-drill-summary"]', (e) => e.innerText)
-  ok(/Param\("Machine"\)/.test(sum) && /not possible/.test(sum), 'the editor explains Param and that opening a screen is not possible')
+  // since Phase 3 package D a screen can be chosen, so the summary no longer says it is not possible
+  ok(/Param\("Machine"\)/.test(sum), 'the editor explains how the app reads the value (Param)')
   await page.screenshot({ path: path.join(OUT, 'tile-editor-drill.png') })
   await clickDom(page, '[data-testid="tile-editor-apply"]')
   await page.waitForFunction(() => !document.querySelector('[data-testid="tile-editor"]'))

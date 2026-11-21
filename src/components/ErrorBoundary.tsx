@@ -10,11 +10,13 @@
  *    `logRenderError` below). Nothing is sent to a server: this install has no client-error endpoint.
  *  - Test hook: `window.__abForceCrash(scope)` makes the boundaries whose `scope` is exactly that string throw on their next
  *    render (through the real catch path); `window.__abForceCrash(scope, false)` clears it, and "Reload" clears it for that
- *    part. It only ever breaks the viewer's own page. The exit checks use it (scripts/exit-check/p3-misc.mjs).
+ *    part. It only ever breaks the viewer's own page. The exit checks use it (scripts/exit-check/p3-misc.mjs). In a production
+ *    build it is inert unless `ab:test-hooks` is "1" in localStorage (testHooksEnabled).
  */
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { TriangleAlert } from 'lucide-react'
 import { referenceOf } from '@/platform/errorMessages'
+import { testHooksEnabled } from './testHooks'
 
 const forced = new Set<string>()
 const listeners = new Set<() => void>()
@@ -23,6 +25,7 @@ declare global {
 }
 if (typeof window !== 'undefined') {
   window.__abForceCrash = (scope, on = true) => {
+    if (!testHooksEnabled()) return
     if (on) forced.add(scope)
     else forced.delete(scope)
     for (const l of [...listeners]) l()

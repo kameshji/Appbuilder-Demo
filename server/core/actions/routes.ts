@@ -116,14 +116,14 @@ export function actionRoutes(router: ApiRouter, s: CoreServices, svc: ActionsSer
     const saved = await svc.custom.put(rec.id, def, u.user.id)
     await audit(s, ctx, 'connection.action.save', { connection: rec.id, action: def.id, method: def.http.method, path: def.http.path })
     return saved.def
-  }, { auth: 'user' })
+  }, { auth: 'user', pass: 'full' })
 
   router.add('DELETE', '/connections/:id/custom-actions/:action', async (ctx) => {
     const rec = await needManage(ctx.user!, ctx.params.id)
     if (!(await svc.custom.remove(rec.id, ctx.params.action))) throw new HttpError(404, 'not-found', 'Action not found.')
     await audit(s, ctx, 'connection.action.delete', { connection: rec.id, action: ctx.params.action })
     return { ok: true }
-  }, { auth: 'user' })
+  }, { auth: 'user', pass: 'full' })
 
   router.add('POST', '/connections/:id/custom-actions/openapi', async (ctx) => {
     const u = ctx.user!
@@ -150,7 +150,7 @@ export function actionRoutes(router: ApiRouter, s: CoreServices, svc: ActionsSer
     for (const a of chosen) await svc.custom.put(rec.id, a, u.user.id)
     await audit(s, ctx, 'connection.action.import', { connection: rec.id, title: r.title, count: chosen.length, replace: b.replace === true })
     return { ...preview, applied: true, imported: chosen.length }
-  }, { auth: 'user', maxBodyMB: 3 })
+  }, { auth: 'user', pass: 'full', maxBodyMB: 3 })
 
   router.add('GET', '/connections/:id/access', async (ctx) => {
     await needManage(ctx.user!, ctx.params.id)

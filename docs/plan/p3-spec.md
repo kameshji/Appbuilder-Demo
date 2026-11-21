@@ -1,6 +1,6 @@
 # Phase 3 (Collaboration and templates) specification
 
-Status: **IN PROGRESS: proposed defaults** (written 20 Nov 2026 against version 0.7.0, schema version 13). Nothing in this
+Status: **BUILT except package L (ledgers and GST, blocked on the accountant's sign-off)**, version 0.8.0, 21 Nov 2026; exit check results and what is carried forward are at the end. (Written 20 Nov 2026 against version 0.7.0, schema version 13, as proposed defaults.) Nothing in this
 file is built yet. Every open question was answered with a recommended default (section 2), as master plan section 15
 asks: "default chosen, owner may change". Phase 2 closed at 0.7.0 ([p2-spec.md](p2-spec.md)).
 
@@ -773,3 +773,31 @@ menu text and docs to say "later", so no menu promises something absent):
 ## 11. Exit check results
 
 To be filled by package Z.
+
+## Exit check results (21 Nov 2026, version 0.8.0)
+
+`node scripts/exit-check/p3.mjs` on one developer PC (Windows 11, Node 26.4.0, sandbox PostgreSQL 16.11), 1,700 s. The table is that run; the one failing part (the dashboard layout check inside the Phase 2 regression) was a stale script, fixed and rerun afterwards (77 checks pass, twice).
+
+| # | Check | Result | Evidence |
+| --- | --- | --- | --- |
+| 1 to 8 | Chat: delivery, mentions, files, cards per reader, the leak suite, discussions, search, retention and moderation | PASS | `p3-chat.mjs` (API and browser parts, 76 checks at package E) |
+| 9 | Tasks and Notes | PASS | `p3-tasks.mjs` 24 checks; `p3-notes.mjs` 40 checks |
+| 10 | Manufacturing pack | PASS (phone parts emulated) | `p3-manufacturing.mjs` 42 checks |
+| 11 | CRM pack | PASS | `p3-crm.mjs` 39 checks |
+| 12 | ERP-lite pack; 20 parallel issues never below zero | PASS | `p3-erp.mjs` 22 checks |
+| 13 | Solution template rules | PASS | `p3-templates.mjs` 40 checks |
+| 14 | GST gate | PENDING | no accountant sign-off recorded in `gst-spec-draft.md`; package L (ledgers and GST) is not built |
+| 15 | Carried-forward items | PASS | `p3-misc.mjs` 24 checks; `p2-dashboard-screens.mjs` 58 checks |
+| 16 | Phase 0 to 2 regression, docs, security review | PASS after the script fix | `p2.mjs`: phone 124, PDF 18, dashboard on 1,000,000 rows, auto apps 52, templates 31, WhatsApp 15 (mock), P0 6 rows, P1 9 rows, docs 16; `docs/internal/security-review-p3.md`: 19 findings (10 fixed, 2 open, 7 accepted) |
+
+Full test suite at the close: 2,874 tests; two runs, the second clean; the first had one `afterAll` hook time out at 60 s in `events-alm.integration.test.ts` (closing the test server; the cause is not found; the same kind of timeout has appeared in other suites under load).
+
+## Carried forward
+
+- **Blocked on the owner's accountant:** package L (ledgers and GST). The CRM and ERP-lite packs compute no tax.
+- **Owner actions:** the real-device phone test script; a Meta account for WhatsApp; a real mail provider; the release signing key and the licence signing key; a lawyer's review of `docs/launch/tester-terms-draft.md`; an outside security review (the internal reviewer's three priorities are in `security-review-p3.md`); a decision on D12 (the PHP gateway no longer fits).
+- **Open security findings:** MySQL over SSL does not check that the certificate names the host; a pack upgrade does not say when a role's access widens.
+- **Known bugs:** uninstall with "delete tables" fails when a parent table has a rollup over its own child lines; a Form with `Item` drops values of columns not in `Fields`; an Activity's regarding record cannot change after creation; a test server's close occasionally hangs for a minute.
+- **Not built:** presence dots in chat; several photos per inspection; balances as a setting for makers (packs only); a top-bar banner for the licence grace warning; a client-error endpoint (render errors go to the console); Linked mode for UI component and screen templates (dropped); SMS; payments, Tally and ERPNext connectors (wait for a customer); summary tables and the pivot table (deferred by the owner).
+- **From the load test:** PDF generation and CSV imports run on the request loop; the table list query is not cached; the server does not report its event-loop delay.
+- **Not verified in a browser:** the Admin licence page and the Users pass column; the flow designer's form-submitted panel and the kiosk cycling fields in the Screens dialog; installing the ERP-lite pack by clicking.

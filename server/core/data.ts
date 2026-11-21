@@ -12,7 +12,7 @@ import type { Condition, Query, QueryValue } from '../../src/platform/http.ts'
 import { DEFAULT_ROW_CAP } from '../../src/platform/http.ts'
 import { and, applyQuery, conditionColumns, evaluateWithSemi } from './condition.ts'
 import { attachmentIds, cellOut, coerceIn, csvExportText, defaultIn, isBlank } from './values.ts'
-import { SYSTEM_COLUMN_NAMES } from './security.ts'
+import { SYSTEM_COLUMN_NAMES, hasAnyTableAccess } from './security.ts'
 import { errText, isUuid, rowUid } from './util.ts'
 import { DEFAULT_CONNECTION_ID } from './connections.ts'
 import type { FxRecord } from '../../src/contracts.ts'
@@ -34,7 +34,7 @@ import { childRelationships, MAX_CASCADE_DEPTH, selfCycleColumns } from './model
 import type { RowScope } from './contracts.ts'
 import { createRecycle, deleteSourceOf, newBatch } from './recycle.ts'
 import type { BatchCtx, BatchInfo, DeleteSource, Effect, RecycleStore, RestoreResult } from './recycle.ts'
-import type { Balances, Ledger } from './balances/engine.ts'
+import type { BalanceViewer, Balances, Ledger } from './balances/engine.ts'
 import { maintainedColumns } from './balances/engine.ts'
 
 type JsonRow = Record<string, QueryValue>
@@ -269,12 +269,28 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
   }
 
   /** applies the difference of the movement rows before / after a change to their balances (same unit of work) */
-  async function moveBalances(ledgers: Ledger[], before: RawRow[], after: RawRow[]): Promise<void> {
+  async function moveBalances(ctx: UserContext | null, ledgers: Ledger[], before: RawRow[], after: RawRow[]): Promise<void> {
     const b = deps.balances?.()
     if (!b || !ledgers.length || (!before.length && !after.length)) return
-    for (const c of await b.apply(ledgers, before, after)) {
+    for (const c of await b.apply(ledgers, before, after, balanceViewer(ctx))) {
       changed(null, c.table, c.op, [c.rowId], [c.column])
       await deps.hooks?.()?.outbox(null, c.table, { op: c.op, rowId: c.rowId, changed: [c.column], before: c.before, after: c.after })
+    }
+  }
+
+  /**
+   * P3-1: what the writer may read, for the wording of a refused movement: a column of EVERY row of a table (table access,
+   * a read rule that is not narrowed per row, the column not hidden). The refusal is computed without row security, so a
+   * per-row rule counts as "may not read".
+   */
+  function balanceViewer(ctx: UserContext | null): BalanceViewer | null {
+    if (!ctx) return null
+    return {
+      canRead: (t, column) => {
+        if (!hasAnyTableAccess(ctx, t)) return false
+        const p = ctx.rowPredicate(t, 'read') as { const?: boolean }
+        return p.const === true && ctx.columnAccess(t, column) !== 'none'
+      },
     }
   }
 
@@ -583,7 +599,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     const connector = await writableConnector(def)
     const raw = await buildRow(ctx, def, values, { ...opts, conn: connector })
     await connector.insert(def, [raw])
-    await moveBalances(await ledgersOf(def), [], [raw])
+    await moveBalances(ctx, await ledgersOf(def), [], [raw])
     await deps.system?.()?.afterWrite(ctx, def, 'create', raw, null)
     await markFileModified(def)
     await audit(ctx, 'row.insert', def, String(raw.id))
@@ -697,7 +713,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
       }
       throw (await readable()) ? new HttpError(403, 'denied', 'You are not allowed to change this row.') : new HttpError(404, 'not-found', 'Row not found.')
     }
-    if (ledgers.length) await moveBalances(ledgers, balBefore, await deps.balances!()!.read(def, ledgers, [id]))
+    if (ledgers.length) await moveBalances(ctx, ledgers, balBefore, await deps.balances!()!.read(def, ledgers, [id]))
     if (removed.length) {
       const recs = (await meta().attachments.many(removed)).filter((a) => a.tableId === def.id && a.rowId === id)
       await removeAttachments(recs)
@@ -877,7 +893,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     if (total === 0 && ids.length === 1) throw new HttpError(404, 'not-found', 'Row not found.')
     if (ledgers.length && total > 0) {
       const left = new Set((await deps.balances!()!.read(def, ledgers, targets)).map((r) => String(r.id)))
-      await moveBalances(ledgers, balBefore.filter((r) => !left.has(String(r.id))), [])
+      await moveBalances(ctx, ledgers, balBefore.filter((r) => !left.has(String(r.id))), [])
     }
     if (total > 0) {
       await markFileModified(def)
@@ -903,7 +919,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     if (mode !== 'append' && mode !== 'replace') throw new HttpError(422, 'invalid', "mode must be 'append' or 'replace'.", 'mode')
     if (ctx && !ctx.canCreate(def)) throw cannotCreate(def)
     refuseBalanceWrite(ctx, def)
-    const parsed = Papa.parse<Record<string, string>>(csv.replace(/^﻿/, ''), { header: true, skipEmptyLines: 'greedy' })
+    const parsed = Papa.parse<Record<string, string>>(csv.replace(/^ï»¿/, ''), { header: true, skipEmptyLines: 'greedy' })
     const headers = parsed.meta.fields ?? []
     // header -> column (by name, then display name; case-insensitive). Unknown, system, hidden, read-only columns are ignored.
     const mapping = new Map<string, ColumnDef>()
@@ -990,7 +1006,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     else await write(connector)
     if (ledgers.length) {
       const left = new Set(targets.length ? (await deps.balances!()!.read(def, ledgers, targets)).map((r) => String(r.id)) : [])
-      await moveBalances(ledgers, balBefore.filter((r) => !left.has(String(r.id))), rows)
+      await moveBalances(ctx, ledgers, balBefore.filter((r) => !left.has(String(r.id))), rows)
     }
     if (targets.length && bin) {
       const gone = bin.rootIds
@@ -1233,7 +1249,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
       // a restore brings movements of a balance back: their quantities count again (refused below the floor)
       if ((e.details as { action?: string } | undefined)?.action === 'restore' && e.rowIds.length) {
         const ledgers = await ledgersOf(physical(t))
-        if (ledgers.length) await moveBalances(ledgers, [], await deps.balances!()!.read(physical(t), ledgers, e.rowIds))
+        if (ledgers.length) await moveBalances(ctx, ledgers, [], await deps.balances!()!.read(physical(t), ledgers, e.rowIds))
       }
       await deps.hooks?.()?.outbox(ctx, t, e)
     },

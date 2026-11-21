@@ -47,6 +47,7 @@ import type { TableChange } from './changes.ts'
 import { onSessionEvent } from './session-events.ts'
 import { errText, log } from '../util.ts'
 import { CHAT_SYSTEM_TABLES } from '../chat/ddl.ts'
+import { applyPass } from '../licence/seats.ts'
 
 export interface LiveLimits {
   maxMessageBytes: number
@@ -286,7 +287,8 @@ export function createLiveHub(services: CoreServices, opts: LiveHubOptions = {})
         throw new HttpError(401, 'unauthenticated', 'Please sign in.')
       }
       if (rec.mustChangePassword) throw new HttpError(403, 'password_change_required', 'You must change your password before you can continue.')
-      return userContextFor(services, rec, env)
+      // P3-2: the seat pass as on HTTP (an Operator holds no maker rights on the socket either: no Studio presence)
+      return applyPass(services, await userContextFor(services, rec, env))
     })()
     c.ctx.set(env, { ctx: p, at: now })
     p.catch(() => {

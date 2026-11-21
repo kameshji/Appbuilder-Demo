@@ -4,9 +4,13 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 
 ## [Unreleased]
 
-Phase 3 (Collaboration and templates), in progress. Schema version 14. Specifications: docs/plan/p3-spec.md, docs/plan/hosting-spec.md.
+## [0.8.0] - 2026-11-21
+
+**Phase 3 "Collaboration and templates" is built except ledgers and GST, and the hosting phase is built as far as it can be without a Linux server** (docs/plan/p3-spec.md and docs/plan/hosting-spec.md, with the exit check results). Chat, Tasks, Notes, solution templates with the Manufacturing, CRM and ERP-lite packs, the licence service and seat passes, the fleet tool, an isolation suite and a load-test harness. Schema version 14. Ledgers and GST wait for a practising accountant to sign docs/plan/gst-spec-draft.md. Verified on one developer PC and in CI; nothing has run on a real phone, against Meta's real API, with a real mail provider or on a rented server, and there has been no outside security review (internal review: docs/internal/security-review-p3.md).
 
 ### Added
+- **Fleet tool** (`abfleet`, hosting up to 20 organisations on one Linux server): create, status, suspend / resume, export, delete with a verified scan, canary updates with per-install rollback, encrypted off-machine backups with restore and a monthly restore test, resource limits, time-boxed audited operator access announced to the organisation's administrators, secrets rotation, a daily summary; the fleet installer `scripts/fleet/install.sh` and a CI job. Not yet run on a real server; the secret key cannot be rotated yet.
+- **Load test harness** (`scripts/bench/load`): real installs with their own databases, the Manufacturing pack, months of history, phone writes, live connections, prints, flows and a heavy tenant; smoke, pilot and ramp profiles. First runs on a developer PC: the 20 organisations x 50 people target met the latency, error and live-delivery limits; the per-install event-loop limit failed in short phases (prints and imports run on the request loop).
 - **CRM pack** (built-in solution template): leads converted to account, contact and opportunity; opportunities and quotes with a discount approval; a printable quote; a pipeline dashboard; touchpoints logged as activities; a desktop and a phone app. Quotes carry no tax.
 - **ERP-lite pack** (built-in solution template): stock by item and location, purchase requests and orders with approvals, goods receipts, sales orders, deliveries, commercial invoices marked as not tax invoices, a stores phone app with scanning and offline entry. No tax is computed anywhere.
 - **Balances kept in the same transaction.** A table can keep the running sum of another table's rows and refuse a change that would take it below a floor (stock that cannot go below zero, also under simultaneous issues). Declared in packs for now.
@@ -35,6 +39,12 @@ Phase 3 (Collaboration and templates), in progress. Schema version 14. Specifica
 - **Breaking:** the Data API v1 read route `POST /api/v1/data/:table/query` is removed (404). Use `POST /api/v1/query` with a Query v2 plan. The row write routes are unchanged. The browser's small-table cache and offline answers use Query v2.
 
 ### Security
+- External PostgreSQL and MySQL connections connect only to addresses the outbound policy checked: the driver never asks DNS itself, and every later connection is resolved and checked again (closes DNS rebinding; this also closes the residual risk noted in the Phase 0 review).
+- A refused stock movement no longer shows the quantity, or item and location names, to people who may not read them.
+- Operator passes apply on the live connection and in the sign-in answer, a pass change takes effect on open sessions at once, and flow webhooks and connection custom actions need a Full user pass, also for administrators.
+- The hosted outbound deny list also refuses hosts that resolve to a listed host's address.
+- Chat moderation can no longer remove the lines Appbuilder writes into a conversation (an export announcement cannot be hidden); an edit share on a note or task no longer allows assigning it to someone else; task reminders and the overdue digest no longer name a task about a record its owner can no longer read; the approvals page sanitises stored comments again before showing them; the error-boundary test hook does nothing in production builds.
+- Internal review of everything added since 0.7.0: docs/internal/security-review-p3.md (19 findings: 10 fixed, 2 open, 7 accepted; two passes; internal only, no outside audit). Open: MySQL over SSL does not check that the certificate names the host; a pack upgrade does not say when a role's access widens.
 - **Self-approval through a flow.** An approval asked by a flow is now on behalf of the person whose change or button press started it: that person (and the flow's identity) is never asked, and the fallback is their manager. Before, the person who caused a request (for example an NCR raised from their own failed inspection) could approve it.
 - A database connection whose host name resolves to a loopback, private or otherwise refused address is no longer stored, and every use of an external database connection checks its host again (found by the isolation suite: it was refused on save and test but stayed usable through other routes).
 - The sign-in throttle keys on the client address behind the trusted proxy (it keyed on the proxy, so anyone could lock a known account out for everyone). Hosted installs refuse socket-path and localhost database and mail hosts, and backup or tools folders outside the install's own directory.
@@ -43,7 +53,7 @@ Phase 3 (Collaboration and templates), in progress. Schema version 14. Specifica
 ### Known gaps
 - Chat: no presence dots; WhatsApp for chat is untested. Notes: online only; printing uses the browser; record cards do not open the record.
 - Manufacturing pack: one photo per inspection; the daily OEE PDF still reads role assignments by formula and needs an Email connection.
-- Packs: CRM call logging from the phone needs a connection; ERP-lite has no sample stock and its install by clicking was not checked in a browser; balances are packs-only and a refusal states the available quantity; uninstall with delete can fail when a parent has a rollup over its own lines (the packs avoid rollups).
+- Packs: CRM call logging from the phone needs a connection; ERP-lite has no sample stock and its install by clicking was not checked in a browser; balances are packs-only; a refusal states the available quantity only to people who may read the balance table; uninstall with delete can fail when a parent has a rollup over its own lines (the packs avoid rollups).
 - Licensing: no top-bar banner for the grace warning (a notification and the Admin console show it); the Admin licence page and the Users pass column were not clicked through; not tamper-proof against whoever runs an on-premises server.
 - Render errors are logged to the browser console only (the server has no endpoint for them).
 - Hosting: Unix-socket behaviour, per-install OS users, file permissions between installs and resource limits are tested in CI or need a real Linux server; a mail relay on the same machine is refused by the hosted outbound policy. The fleet tool and the licence service are not built yet.

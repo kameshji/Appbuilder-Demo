@@ -25,7 +25,7 @@ Two-step verification (TOTP or email codes) exists. The product has had no outsi
 | --- | --- | --- |
 | Who is signed in | **Server** (session cookie, checked on every request) | `server/core/auth.ts`, `router.ts` |
 | Maker or Administrator needed for an action | **Server** (route level `auth: 'maker' / 'admin'`) | `server/core/router.ts` |
-| Seat pass: an Operator pass has no Dev mode (no maker routes, design routes or `pass: 'full'` routes, also for administrators) | **Server** (session resolver and router) | `server/core/licence/seats.ts`, `router.ts` |
+| Seat pass: an Operator pass has no Dev mode (no maker routes, design routes or `pass: 'full'` routes such as flow webhooks and connection custom actions, also for administrators; no Studio presence or lock on the live socket; a pass change re-checks live subscriptions at once) | **Server** (session resolver, router, live socket, sign-in answer) | `server/core/licence/seats.ts` (`applyPass`), `router.ts`, `live/hub.ts` |
 | Licence: read-only after 72 hours without a valid signed answer, or when the licence service reports unpaid / suspended | **Server** (the read-only gate) | `server/core/licence/client.ts`, `hosting/read-only.ts` |
 | Table privileges, row filters, own-row scope, column access | **Server**, in the data service and the SQL it builds | `server/core/security.ts`, `data.ts`, `attachments.ts` |
 | Which apps a person may open | **Server** (`GET /apps/:id`) | `server/routes/meta/apps.ts` |
@@ -391,19 +391,33 @@ Names are resolved and every address is checked; an IPv6 address that carries an
 notation such as `::ffff:a9fe:a9fe`, IPv4-compatible, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`) is judged as that IPv4
 address (since 0.6.0). Loopback and private networks are allowed (an on-premises database and
 mail relay live there); set `APPBUILDER_OUTBOUND_PRIVATE=deny` to refuse them too. The SMTP client connects to the
-address it checked; the database drivers resolve the name again when they connect, so a DNS answer that changes in
-between is not caught for database connections. Connection hosts can only be set by administrators.
+address it checked; so do the external database connections since the second pass of the Phase 3 review (P3-6, below).
+Connection hosts can only be set by administrators.
 `APPBUILDER_OUTBOUND_PRIVATE=deny` is honoured by every outbound path, also over an HTTP connection's own "allow private
 network addresses" switch and the heartbeat's "in this network" switch; `APPBUILDER_OUTBOUND_DENY` adds host names
-(`*.domain` allowed) nothing may connect to. A hosted install (`APPBUILDER_HOSTED=1`) always runs with `deny` and refuses
+(`*.domain` allowed) and IP addresses nothing may connect to; since the P3 review a host is also refused when it RESOLVES to
+an address of the list (IP entries, and the addresses the listed names resolve to, cached a minute), so the install's own
+public address cannot be reached by its IP address or another name; `*.domain` entries are matched by name only, and a
+listed name behind a shared address (a CDN) refuses every host on that address. A hosted install (`APPBUILDER_HOSTED=1`) always runs with `deny` and refuses
 its own public host name (tests: `server/core/hosting/hosting.test.ts`, which also lists every server file that opens a
 connection, so a new one fails until it is reviewed). With `deny`, a host that is a path (a Unix socket or named pipe, such
 as `/var/run/postgresql`) and `localhost` / `*.localhost` count as loopback and are refused before a driver sees them
-(since H-B). **Known gap (H-B, open):** a database connection whose host is a *name* that resolves to loopback or a private
-address is refused when it is saved or tested, but it is still stored, and listing its tables later connects to that
-address (the driver resolves the name itself; the isolation suite shows it). Until the database connectors check the
-resolved address before every connection, a hosted install's administrator can reach PostgreSQL's port on the server by
-such a name; the role and password of another install are still needed to sign in (see hosting).
+(since H-B). A database connection's host is checked again at every use of the connection (`server/core/connections.ts`), so a
+name that resolves to loopback or a private address is refused when the connection is listed or queried, not only when it
+is saved. **DNS rebinding (P3 review, P3-6, fixed in the second pass):** the PostgreSQL and MySQL drivers of an external
+connection no longer ask DNS themselves. They get a socket whose look-up is the outbound policy's (`guardedLookup` and
+`pinnedSocket` in `server/core/net-policy.ts`): the first connection of a pool goes to the address the connection
+manager has just checked, every later one (a pool opening another connection, a reconnect, "test connection") resolves
+the name again and checks every address before connecting, and a name that stops resolving fails instead of falling back
+to the system resolver. The host NAME is still what the driver knows, so PostgreSQL TLS verifies the certificate against
+the name, and error messages show it. The checked addresses are part of the connection cache's fingerprint: a host that
+starts resolving elsewhere gets a new pool. The install's own database (the default connection) is not checked (exempt);
+on-premises installs are unchanged (loopback and private addresses stay allowed unless `deny`). Tests:
+`server/core/security-p3.test.ts` and `security-p3.integration.test.ts` "FINDING P3-6" (a resolver that answers a public
+address first and 127.0.0.1 after; a canary listener on 127.0.0.1 receives no connection). What a check cannot see: a
+database server that is itself reachable through the allowed address and forwards elsewhere. **MySQL TLS (P3-15, open):**
+with SSL on, the MySQL connector verifies the certificate chain but not that the certificate names the host (mysql2's
+`verifyIdentity` is not set); PostgreSQL does both.
 
 **HTTP connections (P1)** are stricter, because flows and events call them with data from users: every request and every
 redirect must go to a host on the connection's allow-list (required; `*` refused), loopback and private addresses need
@@ -480,7 +494,11 @@ environment, an API key and an anonymous client).
   (chat mentions) follow the message for administrators too; chat files are not listed in Attachment links.
 - **What administrators see** (Admin console > Chat): names, kinds, members, counts and dates of every conversation; the
   text of a message a member reported to them; a conversation they export with a typed reason (audited `chat.export`, and
-  a system message tells its members). Every administrator action in chat is audited without message text.
+  a system message tells its members). Every administrator action in chat is audited without message text. Moderation
+  removes people's messages only: the lines Appbuilder writes into a conversation (members changed, archived, "An
+  administrator exported this conversation") cannot be removed, so an export cannot be hidden from the members (P3
+  review, P3-11). The export link works for the exporting administrator only, for an hour, and may be used more than
+  once in that hour (each download audited).
 - **Nobody writes the chat tables through the data API**, administrators included: only the chat service does, which
   checks membership, posting rules and mentions (a mention of someone who cannot read the conversation is refused).
 - **Live:** the topics `chat:<id>` and `chat:typing:<id>` are open only to readers, checked when subscribing and again at
@@ -490,6 +508,11 @@ environment, an API key and an anonymous client).
   columns are left out, a hidden row answers like a missing one). Notifications and emails never carry card values.
 - **Limits** (server): 4,000 characters, 10 files of 25 MB, 30 messages a minute per person, 1,000 members per channel,
   8 per group conversation, one typing event per person and conversation every 3 s.
+- **Notes and tasks** (Phase 3): a read share reads; an edit share changes the content but does not pass the note or
+  task on: only its owner, its creator or the person (or a member of the team) it is assigned to may change the
+  assignment (since the P3 review, P3-12: assigning gives the assignee access), and only the owner writes its shares.
+  Reminders and the overdue digest that fall back to the owner of an unassigned task about a record leave it out once
+  the owner may no longer read it (P3-13).
 - **Not protected:** install administrators can download backup archives, which contain the chat environment's chat;
   people with database access read everything. Whether monitoring or retention rules apply to the customer is for their
   lawyer.
@@ -626,8 +649,9 @@ beyond their role. Web pages the user visits are not trusted.
   "administrators only" less. The names of the people a row they can read is shared with, and of the people on its
   timeline, are always shown to readers of that row.
 - Formula columns and rollups show results computed over data the reader may not see (see Data access).
-- Outbound policy: database drivers resolve host names themselves (DNS rebinding between the check and the connection
-  is not caught for database connections).
+- Outbound policy: a database server reached through an allowed address can still forward the connection elsewhere (the
+  policy checks addresses, not what the far end does). MySQL connections over SSL do not check that the certificate names
+  the host (P3-15, open).
 - Rules can only use tables of the same connection; tables on data files and Google Sheets cannot use lookup or
   related-rows rules (such a role grants nothing).
 - No integrity check of the workspace folder (backups are verified, the live folder is not).
@@ -652,6 +676,19 @@ beyond their role. Web pages the user visits are not trusted.
   tables); use "delete for good" (administrators) when data must really be erased.
 - Loop protection stops chains of changes at 8 levels: two flows that write each other's tables still make up to 8 rows
   per row a person wrote.
+- Phase 3 and hosting (details in [the Phase 3 review](../internal/security-review-p3.md#residual-risks)): a person who may
+  record stock movements can find a quantity they may not read by trying amounts (each accepted try is a real movement);
+  a flow's approval `requester` formula taken from data a user edits lets that user choose whose manager is asked; a
+  formSubmitted flow starts once per save, so a person who may save the Form can start it as often as they save (the
+  flow's own runs-per-minute limit applies when set); a chat message may carry an approval card that someone else posted
+  (it resolves per reader and its buttons run the inbox's checks); `*.domain` entries of `APPBUILDER_OUTBOUND_DENY` are
+  matched by name only. Second pass: an administrator of the chat environment who exports a conversation may download it
+  again within the hour (each download audited; the members are told once); a person assigned a task can hand it to
+  anyone (the assignee gets access to it, also when they cannot read the record it is about: the core data model's rule);
+  a pack upgrade does not single out a role whose access the new version widens (it lists the role as changed; a role
+  changed here is kept by default) (P3-16, open); a chat or task notification created before access was lost stays in
+  the person's feed; an in-app link `#u-notes?new=1&table=..&row=..` creates an empty note about a record the person
+  can read when it is opened.
 
 ## Evidence
 
@@ -672,6 +709,7 @@ beyond their role. Web pages the user visits are not trusted.
 | Per-email login backoff | Test: `hardening.test.ts` |
 | Phase 1 re-check: IPv4 inside IPv6, address encodings, userinfo and IDN tricks, header injection, prototype pollution, regular expressions with nested repeats, the evaluation budget, OpenAPI bombs; child-flow privilege escalation, drafts, owners, run-as, resubmit, locked production for flows and approval policies, bulk answers, approver races, delegation to the requester, trigger storms and the environment run limit, notification HTML escaping, webhook enumeration, OAuth secrets never answered or audited | Tests: `security-p1.test.ts`, `security-p1.integration.test.ts`; review: `docs/internal/security-review-p1.md` |
 | Phase 2 re-check: body read after the sign-in check, offline store locked for another person and keyed cache names, live re-check retried, PNG and Word bombs, XMP metadata, file-token waits, manifest oracle, snapshot frequency, WhatsApp number forms, reserved Meta hosts, the opt-in source a flow may claim | Tests: `security-p2.test.ts`, `security-p2.integration.test.ts`, `src/phone/security-p2.test.ts` (each failed before its fix); review: `docs/internal/security-review-p2.md` |
+| Phase 3 and hosting re-check: balance refusals without quantities or names the writer may not read, the seat pass on the live socket, in the sign-in answer and on live sessions, every maker / design / Full-pass route refused to an Operator administrator, `APPBUILDER_OUTBOUND_DENY` by address, the error-boundary test hook inert in production; guards for the note and comment sanitisers and the removed Query v1 route | Tests: `security-p3.test.ts`, `security-p3.integration.test.ts`, `src/components/security-p3.test.ts` (each failed before its fix); review: `docs/internal/security-review-p3.md` |
 | Phase 0 re-check: environment selection, Query v2 plan and cursor tampering, hidden-column inference, collaboration spoofing, system-table writes, outbound hosts | Tests: `security-p0.integration.test.ts`, `security-p0.test.ts`; review: `docs/internal/security-review-p0.md` |
 | Schedule policy, log retention, directory visibility, export environment data | Test: `phase-close.integration.test.ts` |
 | Re-link refused (also through a second connection), linked tables never dropped, columns only unmapped | Tests: `routes/meta/connections.test.ts`, `routes/meta/hardening.test.ts`, `hardening.integration.test.ts` (PostgreSQL) |
