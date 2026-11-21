@@ -164,7 +164,9 @@ export async function fleetInit(ctx: Ctx, i: InitInput): Promise<InitResult> {
     await sys.unit('enable', 'appbuilder-licence')
     await sys.unit('restart', 'appbuilder-licence')
     c.enabled = true
-    if (c.url === `https://licence.${ctx.reg.config.domain}` && sys.kind === 'local') c.url = `http://${c.host}:${c.port}`
+    // with Caddy's local CA (--tls internal: tests and CI) the name has no DNS entry and Node does not trust the CA: the
+    // installs on this machine then reach the service on its loopback port
+    if (c.url === `https://licence.${ctx.reg.config.domain}` && (sys.kind === 'local' || ctx.reg.config.tls === 'internal')) c.url = `http://${c.host}:${c.port}`
     ctx.save()
     if (ensureFile(ctx, p.caddyfile, caddyBase(p, ctx.reg.config), { mode: 0o644, owner: 'root' }, changed)) await sys.unit('reload', 'caddy')
     let up = ctx.dry

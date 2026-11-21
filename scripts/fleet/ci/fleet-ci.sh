@@ -151,6 +151,10 @@ https beta POST "/data/$tidb/rows" '{"values":{"Title":"AFTER-BACKUP"}}' "" "$WO
 ok "backup restore beta" "ab backup restore beta >/dev/null"
 https beta POST /auth/login '{"email":"it@beta.example","password":"Fleet-ci-beta-pw1"}' "" "$WORK/beta.jar" >/dev/null
 ok "beta is back at its backup" "https beta POST /query '{\"plan\":{\"version\":2,\"table\":\"FleetMark\"}}' '' '$WORK/beta.jar' | grep -q MARK-beta && ! https beta POST /query '{\"plan\":{\"version\":2,\"table\":\"FleetMark\"}}' '' '$WORK/beta.jar' | grep -q AFTER-BACKUP"
+printf '  acme session answer: %s
+' "$(https acme GET /auth/session '' "$WORK/acme.jar" 2>&1 | cut -c1-300)"; printf '  acme cookie names: %s
+' "$(awk '!/^# /&&NF>=7{print $6}' "$WORK/acme.jar" | tr '
+' ' ')"
 ok "acme's administrator stayed signed in" "https acme GET /auth/session '' '$WORK/acme.jar' | grep -q '\"user\"'"
 ok "restore test into a scratch database" "ab backup restore-test acme >/dev/null"
 
