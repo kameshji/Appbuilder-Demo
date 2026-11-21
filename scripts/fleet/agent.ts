@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
  * The fleet agent: abfleet runs it INSIDE one install's context (as the install's OS user, with its instance.env, with
- * the code of the install's own release in ABFLEET_APP), for what the server has no command for yet. It only calls the
+ * the code of the install's own release in ABFLEET_APP), for what the server has no command for yet (mail-setup,
+ * db-reach) and, for releases older than the server commands `status --json`, `backup create` and `admin
+ * operator-access` (lib/core.ts installCommand picks), for info, backup and access-open / -close. It only calls the
  * product's own modules (backup engine, identity, notifications, licence seats); it never edits product tables by
  * hand. Its last stdout line is JSON ({ ok, ... }); secrets arrive on standard input, never as arguments.
  *

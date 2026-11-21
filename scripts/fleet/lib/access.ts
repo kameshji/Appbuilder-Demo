@@ -14,7 +14,7 @@
  * access visible, not impossible.
  */
 import path from 'node:path'
-import { agent, appCli, FleetError, unitOf, waitHealth, type Ctx } from './core.ts'
+import { appCli, FleetError, installCommand, unitOf, waitHealth, type Ctx } from './core.ts'
 import { roleVerifier, restoreVerifier, setRolePassword } from './db.ts'
 import { licenceKey } from './licence.ts'
 import { orgPaths, type Grant, type OrgRecord } from './model.ts'
@@ -41,10 +41,9 @@ export async function accessGrant(ctx: Ctx, org: OrgRecord, o: { reason: string;
   const email = accessAddress(ctx, id) ?? `operator+${id}@${org.host}.invalid`
   if (!accessAddress(ctx, id) && !o.printLink) throw new FleetError('No operator address is configured (abfleet init --access-email), so the one-time link cannot be emailed to you: add --print-link.', 2)
   const until = new Date(ctx.clock() + o.minutes * 60_000).toISOString()
-  const r = await agent<{ userId: string; link?: string; emailed: boolean; notified: number }>(ctx, org, [
-    'access-open', '--grant', id, '--email', email, '--name', `Operator access (${ctx.who})`, '--reason', reason, '--until', until, '--operator', ctx.who,
-    ...(o.printLink ? ['--print-link'] : []),
-  ])
+  const common = ['--grant', id, '--email', email, '--name', `Operator access (${ctx.who})`, '--reason', reason, '--until', until, '--operator', ctx.who, ...(o.printLink ? ['--print-link'] : [])]
+  const r = await installCommand<{ userId: string; link?: string; emailed: boolean; notified: number }>(ctx, org, 'operator-access',
+    ['admin', 'operator-access', 'open', ...common, '--json'], ['access-open', ...common])
   const grant: Grant = { id, org: org.id, reason, by: ctx.who, createdOn: new Date(ctx.clock()).toISOString(), until, userId: r.userId ?? 'dry-run', email, state: 'active' }
   ctx.reg.grants.push(grant)
   ctx.save()
@@ -54,7 +53,8 @@ export async function accessGrant(ctx: Ctx, org: OrgRecord, o: { reason: string;
 
 async function close(ctx: Ctx, g: Grant, why: 'expired' | 'revoked' | 'organisation deleted'): Promise<void> {
   const org = ctx.reg.orgs[g.org]
-  if (org) await agent(ctx, org, ['access-close', '--grant', g.id, '--user', g.userId, '--why', why, '--operator', ctx.who])
+  const common = ['--grant', g.id, '--user', g.userId, '--why', why, '--operator', ctx.who]
+  if (org) await installCommand(ctx, org, 'operator-access', ['admin', 'operator-access', 'close', ...common, '--json'], ['access-close', ...common])
   g.state = 'ended'
   g.endedOn = new Date(ctx.clock()).toISOString()
   g.endedBy = ctx.who
@@ -144,7 +144,7 @@ export async function secretsRotate(ctx: Ctx, org: OrgRecord, what: Rotatable): 
   if (!(await restart())) throw new FleetError(`${org.host}: the new licence key is in place but the install is not healthy after the restart.`)
   if (ctx.dry) return { host: org.host, what, ok: true, message: 'dry run' }
   for (let i = 0; i < 30; i++) {
-    const info = await agent<AgentInfo>(ctx, org, ['info'], { mutates: false }).catch(() => null)
+    const info = await installCommand<AgentInfo>(ctx, org, 'status', ['status', '--json'], ['info'], { mutates: false }).catch(() => null)
     const lc = info?.licence?.lastCheck
     if (lc && Date.parse(lc.at) >= startedAt - 5000) {
       if (lc.ok) return { host: org.host, what, ok: true, message: `new install key in ${path.basename(op.licenceKey)} (old key revoked by the licence service), restarted, licence check ok at ${lc.at}` }

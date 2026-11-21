@@ -165,6 +165,15 @@ version 13 refuses the schema (downgrade guard). Nothing else changes. `server/c
 drops the columns, sets the environment back to 13 and migrates it (`{ from: 13, to: 14 }`, every register row kept),
 and checks the step refuses a schema without them. (Version 14 is shared with P3 package A, chat: independent steps.)
 
+**14 to 15, ledgers and India GST** (P3 package L; independent environment step `upgradeEnvironmentTo15Ledger`,
+`server/core/ledger/ddl.ts`): `ab_led_settings`, `ab_led_accounts`, `ab_led_years`, `ab_led_periods`, `ab_led_journals`,
+`ab_led_lines`, `ab_gst_states`, `ab_gst_rates`, `ab_gst_thresholds`, `ab_gst_units`, `ab_gst_rcm`, `ab_gst_parties`,
+`ab_gst_items`, `ab_gst_series`, `ab_gst_series_counters`, `ab_gst_documents` and `ab_gst_document_lines` come from
+`environmentDdl`; the step checks they exist, so a server of version 14 refuses the schema (downgrade guard). Nothing
+existing changes. Money columns are `bigint` paise. Not copied with an environment, never in a solution. See
+[ledgers-gst.md](ledgers-gst.md). `server/core/ledger/ledger.integration.test.ts` sets the environment back to 14 and
+migrates it (`{ from: 14, to: 15 }`).
+
 ## Types and conventions
 
 | Kind of value | PostgreSQL type | Notes |

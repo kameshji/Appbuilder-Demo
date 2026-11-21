@@ -172,7 +172,11 @@ export function createCollab(deps: CollabDeps) {
         if (op === 'create') Object.assign(set, await checkRegarding(ctx, next, def.id !== SYS.activities && def.id !== SYS.documents && def.id !== SYS.channels && def.id !== SYS.messages && def.id !== SYS.flowRuns))
         else if (ctx && (changed?.has(REGARDING.id) || changed?.has(REGARDING.table))) {
           const same = str(next[REGARDING.id]).toLowerCase() === str(old?.[REGARDING.id]).toLowerCase() && str(next[REGARDING.table]) === str(old?.[REGARDING.table])
-          if (!same) throw invalid('The record a row is about cannot be changed; add a new one instead.', REGARDING.id)
+          if (!same && def.id !== SYS.activities) throw invalid('The record a row is about cannot be changed; add a new one instead.', REGARDING.id)
+          // a note or task may move to another record (or be unlinked), with the check of its creation: the writer must be
+          // able to read the new record. The table is found from the id unless a different table was given with it.
+          const newTable = str(next[REGARDING.table]) !== str(old?.[REGARDING.table])
+          if (!same) Object.assign(set, await checkRegarding(ctx, newTable ? next : { ...next, [REGARDING.table]: null }, false))
         }
       }
       switch (def.id) {
@@ -252,6 +256,12 @@ export function createCollab(deps: CollabDeps) {
 
     async afterWrite(ctx, def, op, row, old) {
       if (!def.system) return
+      if (def.id === SYS.activities && op === 'update' && old && (str(row[REGARDING.id]) !== str(old[REGARDING.id]) || str(row[REGARDING.table]) !== str(old[REGARDING.table]))) {
+        await deps.meta().audit({
+          userId: ctx?.user.id ?? null, action: 'activity.regarding', tableId: def.id, rowId: str(row.id),
+          details: { from: { table: str(old[REGARDING.table]) || null, id: str(old[REGARDING.id]) || null }, to: { table: str(row[REGARDING.table]) || null, id: str(row[REGARDING.id]) || null } },
+        })
+      }
       if (def.id === SYS.comments) {
         const now = mentionList(row.MentionIds)
         const before = op === 'update' ? new Set(mentionList(old?.MentionIds)) : new Set<string>()

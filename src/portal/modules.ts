@@ -7,7 +7,7 @@
  * Phases are the build phases of docs/plan/master-plan.md (section 5).
  */
 import {
-  Activity, Archive, AtSign, Bot, CalendarClock, CheckSquare, ClipboardCheck, FileText, Folder, Globe, LayoutDashboard, LayoutTemplate, Mail, MessagesSquare, Network,
+  Activity, Archive, AtSign, BookOpenCheck, Bot, CalendarClock, CheckSquare, ClipboardCheck, FileText, Folder, Globe, LayoutDashboard, LayoutTemplate, Mail, MessagesSquare, Network,
   Printer, ScrollText, ShieldHalf, StickyNote, Workflow, type LucideIcon,
 } from 'lucide-react'
 import type { Route } from '@/router'
@@ -81,6 +81,14 @@ export const MODULES: readonly ModuleEntry[] = [
     details: [
       'Tiles (KPIs, gauges, trends, bars, Pareto, tables) over server-side aggregates, one request per refresh, live when the data changes.',
       'Date ranges with the fiscal year, filters and cross-filtering; a manufacturing template with OEE.',
+    ],
+  },
+  {
+    key: 'accounts', label: 'Accounts', icon: BookOpenCheck, modes: ['dev', 'user'], status: 'live', route: { page: 'u', id: 'accounts' }, phase: 'P3',
+    tagline: 'Ledgers, GST documents and summaries for your accountant.',
+    details: [
+      'Chart of accounts, journals that always balance, period locks, trial balance, profit and loss and balance sheet.',
+      'Tax invoices, bills of supply, credit and debit notes, vouchers and purchases with GST computed from dated reference data you maintain; summaries as data and CSV. The calculation rules are a draft not yet reviewed by a practising accountant; nothing is filed for you.',
     ],
   },
   {

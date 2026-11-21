@@ -277,6 +277,32 @@ describe('backups', () => {
     expect(t.fake.calls.some((c) => /--passphrase-file pp-/.test(c))).toBe(true)
     expect([...t.fake.files.keys()].some((k) => /pp-[a-z2-7]{8}$/.test(k))).toBe(false)
   })
+
+  it('a release with the server commands gets them (status, backup create, operator-access); an older one the agent', async () => {
+    const t = testFleet({ target: true })
+    const rel = path.join(t.paths.releases, '0.8.0')
+    for (const f of ['server/core/hosting/status-cli.ts', 'server/core/backup/create-cli.ts', 'server/core/identity/operator-access-cli.ts']) t.fake.files.set(path.join(rel, ...f.split('/')), { text: '//', mode: 0o644 })
+    const a = await created(t, 'acme')
+    t.fake.calls = []
+    const ctx = t.ctx()
+    expect((await backupRun(ctx, [ctx.reg.orgs[a.id]], { globals: false })).ok).toEqual([a.host])
+    const bk = t.fake.calls.find((c) => c.includes('main.ts backup create'))!
+    expect(bk).toMatch(new RegExp(`^run\\[${a.osUser}\\] node main\\.ts backup create --out .+ --trigger manual .*--passphrase-stdin --include-key --json$`))
+    expect(t.fake.calls.some((c) => c.includes('agent.ts'))).toBe(false)
+    expect((await t.run(['org', 'status', 'acme', '--json'])).code).toBe(0)
+    expect(t.fake.calls.some((c) => c.includes('main.ts status --json'))).toBe(true)
+    expect((await t.run(['access', 'grant', 'acme', '--reason', 'Ticket 42: import fails', '--minutes', '30', '--print-link'])).code).toBe(0)
+    expect(t.fake.calls.some((c) => /main\.ts admin operator-access open --grant g\w+ .*--reason Ticket 42: import fails .*--print-link --json$/.test(c))).toBe(true)
+    expect((await t.run(['access', 'revoke', 'acme'])).code).toBe(0)
+    expect(t.fake.calls.some((c) => /main\.ts admin operator-access close --grant g\w+ --user user_op1 --why revoked/.test(c))).toBe(true)
+    expect(t.fake.calls.some((c) => c.includes('agent.ts'))).toBe(false)
+    // the same release without the backup command's module (an older release): the agent makes the backup
+    const ctx2 = t.ctx()
+    t.fake.files.delete(path.join(rel, 'server', 'core', 'backup', 'create-cli.ts'))
+    t.fake.calls = []
+    await backupRun(ctx2, [ctx2.reg.orgs[a.id]], { globals: false })
+    expect(t.fake.calls.some((c) => c.includes('agent.ts backup'))).toBe(true)
+  })
 })
 
 describe('operator access and secrets', () => {

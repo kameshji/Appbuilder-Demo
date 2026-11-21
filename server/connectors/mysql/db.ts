@@ -1,13 +1,18 @@
 /** SqlDb over a mysql2/promise pool (`?` placeholders). Used only by the MySQL connector (external databases). */
+import net from 'node:net'
 import mysql from 'mysql2/promise'
 import type { Pool, PoolConnection, PoolOptions } from 'mysql2/promise'
 import type { MySqlSettings, SqlDb, SqlResult } from '../../core/contracts.ts'
 import { pinnedSocket, type NodeLookup } from '../../core/net-policy.ts'
 
 /** the socket mysql2 would open itself (Net.connect(port, host), no delay, keep-alive), resolved through `lookup` */
-function mysqlSocket(lookup: NodeLookup, host: string, port: number) {
-  const sock = pinnedSocket(lookup)
+function mysqlSocket(lookup: NodeLookup | undefined, host: string, port: number) {
+  const sock = lookup ? pinnedSocket(lookup) : new net.Socket()
   sock.connect(port, host)
+  // TLS to an IP address: mysql2 gives TLS no server name, so Node checks the certificate against the socket's host,
+  // which net leaves unset for an address (and then checks "localhost"). Name the address, so it must be in the
+  // certificate (P3-15).
+  if (net.isIP(host)) (sock as unknown as { _host: string })._host = host
   sock.setNoDelay(true)
   sock.once('connect', () => sock.setKeepAlive(true, 0))
   return sock
@@ -15,19 +20,21 @@ function mysqlSocket(lookup: NodeLookup, host: string, port: number) {
 
 /**
  * `lookup` (P3-6): every physical connection resolves the host through it (the outbound policy's guardedLookup), not the
- * system resolver; `host` stays the name for TLS and error messages. (TLS: mysql2 checks the certificate's chain; it
- * checks that the certificate names the host only with `verifyIdentity`, not set here: P3-11, open.)
+ * system resolver; `host` stays the name for TLS and error messages. TLS (P3-15): with SSL on, mysql2 checks the
+ * certificate's chain (`rejectUnauthorized`) and that it names the host typed (`verifyIdentity`; an IP address must be
+ * in the certificate's IP addresses), as PostgreSQL connections do (docs/admin/connections.md).
  */
 export function poolOptions(s: MySqlSettings, password: string, o: { lookup?: NodeLookup } = {}): PoolOptions {
   const lookup = o.lookup
+  const tlsToAddress = !!s.ssl && net.isIP(s.host) !== 0
   return {
-    ...(lookup ? { stream: () => mysqlSocket(lookup, s.host, s.port) } : {}),
+    ...(lookup || tlsToAddress ? { stream: () => mysqlSocket(lookup, s.host, s.port) } : {}),
     host: s.host,
     port: s.port,
     user: s.user,
     password,
     database: s.database,
-    ssl: s.ssl ? { minVersion: 'TLSv1.2', rejectUnauthorized: true } : undefined,
+    ssl: s.ssl ? { minVersion: 'TLSv1.2', rejectUnauthorized: true, verifyIdentity: true } : undefined,
     charset: 'UTF8MB4_UNICODE_CI',
     dateStrings: false,
     timezone: 'Z',

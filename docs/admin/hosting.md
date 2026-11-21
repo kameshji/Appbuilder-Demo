@@ -115,14 +115,39 @@ site per host name, and database roles prepared as the isolation suite requires.
 every day, an update, a restore, an incident) is [Fleet operations](fleet-operations.md). It has not run on a rented
 server yet.
 
-What the fleet tool needs from an install and does not find as a server command, and does through its agent instead
-(`scripts/fleet/agent.ts`, the install's own modules run as the install's user): an install backup made from the
-command line (the archive engine), the fleet's mail relay saved before the first invitation, and the time-boxed
-operator access account with the announcement to the administrators. The secret key cannot be rotated: the server has
-no command that re-seals the stored secrets ([Fleet operations](fleet-operations.md#an-incident)).
+## Server commands for operators
+
+Run as the install's OS user with its environment (`APPBUILDER_ENV_FILE`, or the installers' service environment), with
+the server running or stopped. The fleet tool uses them when the install's release has them, and its agent
+(`scripts/fleet/agent.ts`) for older releases.
+
+| Command | What | Exit |
+| --- | --- | --- |
+| `appbuilder status [--json]` | schema version, users (active / total), seat passes, read-only state and where it comes from, licence (configured, last check), database size, the newest good install backup, the release version. Reads the database only; changes nothing. `--json`: one JSON document `{ ok, ... }` | 0; 2 no login or database unreachable; 64 usage |
+| `appbuilder backup create --out <file> [--include-key] [--passphrase-file <f> \| --passphrase-stdin] [--trigger manual\|pre-upgrade] [--note <t>] [--json]` | one install archive made by the product's backup engine and verified (checksums of every member, rows counted again); encrypted with the passphrase (at least 10 characters; `--include-key` only with one); audited as `install.cli_backup`. An existing file is never overwritten; a failed backup leaves no file | 0; 1 failed; 2 no login; 64 usage |
+| `appbuilder admin operator-access open --grant <id> --email <e> --reason <r> --until <iso> [--name n] [--operator who] [--print-link] [--json]` | an install administrator without a password and a one-time invitation that expires at `--until` (at most 4 hours away); audit `install.operator_access`; every other install administrator is told at once (in-app, and email when the install has a relay). The link is printed only with `--print-link` | 0; 1 refused; 2 database; 64 usage |
+| `appbuilder admin operator-access close --user <id> [--grant g] [--why w] [--operator who] [--json]` | that account disabled, signed out everywhere, its open tokens revoked; audit `install.operator_access_end`; the administrators are told. An unknown account is not an error (it is audited) | 0; 2; 64 |
+
+`backup create` does **not** add the archive to the install's own backup list (Admin console > Backups): that list
+belongs to the install's folder and retention, and registering it would mean starting the server's services in a
+second process, which marks the server's own running backups as interrupted. `admin operator-access` and the older
+`migrate` and `admin invite` do start those services (without the job worker); run them when no install backup is
+running (the install's own schedule is 02:00 by default; the fleet's nightly run is 02:30).
+
+Not built yet, and why:
+
+- **Rotating the secret key (`rekey`).** Values sealed with the key live in at least a dozen places owned by different
+  modules (server.json, saved connection passwords in every environment, the mail password and OAuth refresh token,
+  queued mail, remembered devices, two-step verification secrets, webhook secrets, the backup passphrase, the health
+  alert address, ...). A re-seal that misses one destroys that value for good, and nothing in the code lists them. It
+  needs, first, one registry of sealed columns that every module adds to and a test that fails when a new `encrypt(`
+  call is not in it; then `rekey` re-seals every entry in one transaction with the install stopped. Until then
+  `abfleet secrets rotate --what secret-key` refuses ([Fleet operations](fleet-operations.md#an-incident)).
+- **The fleet's mail relay as locked environment settings (`APPBUILDER_SMTP_*`).** It changes how the mail module reads
+  its settings and how the Admin console shows them as locked; the fleet keeps saving the relay through its agent.
 
 ## Not part of this yet
 
 Listening on a Unix socket, the socket's permissions and the clean stop are tested on Linux (continuous integration); on
 Windows only the TCP variant runs. The fleet's own Linux parts (template unit, OS users, Caddy) run in the CI job
-`fleet` only.
+`fleet` only, which has not passed yet.

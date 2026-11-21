@@ -177,3 +177,56 @@ week (photos dominate: about 0.75 GB per 5,000 uploads).
 | Connections | 220 at worst, pool 6 chosen | 140 (20 x 7), constant |
 | Idle fleet | about 6 % of one core for 20 | 4.8 % for 20 |
 | Disk | 400 GB | 0.85 GB of databases for 20 x 90 days of history; photos grow about 0.75 GB per 5,000 |
+
+## After fixes (21 November 2026)
+
+Fixed in code: prints in worker threads (`server/core/print/pool.ts`, `pdf-worker.ts`), CSV imports in slices
+(`server/core/data.ts` `importCsv`, `parseCsvYielding`), the table list cached per environment
+(`server/core/table-cache.ts`), the event-loop delay in `GET /api/v1/admin/health` (`server/core/diagnostics/event-loop.ts`),
+recorded by the harness. Switches for A/B runs and for operators: `APPBUILDER_PRINT_WORKERS=0`,
+`APPBUILDER_TABLE_CACHE=off`, `APPBUILDER_IMPORT_YIELD=off` (old behaviour), harness `--install-env`.
+
+**Measured** with the smoke profile and `--heavy-import 2000`, same tree, same day, back to back. The PC was shared with
+other agents running tests (machine CPU 62-65 % mean, p95 82-87 %): differences of tens of ms are noise; only the large
+ones below are worth reading.
+
+| Figure (smoke, 3 installs) | old behaviour (`--install-env` switches off) | fixes on |
+| --- | ---: | ---: |
+| `SELECT ... FROM ab_tables ORDER BY lower(name)`: calls / total ms | 7,628 / 7,439 | 130 / 128 (run 2; below the top statements in run 3) |
+| table cache, heavy install: hits / misses / read inside a writing transaction | - | 7,726 / 49 / 245 |
+| server event-loop delay, max over the run, worst install (own measure) | 366 ms | 90 ms |
+| server event-loop delay p99 over the run, per install | 9-11 ms | 10-13 ms (Windows timer floor ~5 ms; unchanged: the p99 is not where prints showed) |
+| steady phase p99, all requests | 456 ms | 96 ms |
+| print / generate p95 (8-9 prints, small sample) | 622 ms | 678 ms (a print takes as long; it no longer stalls the others) |
+| merged PDF of 30 records (bulk job) | 2.1 s | 2.1 s |
+| bulk import of 2,000 rows | 60.1 s | 51.9 s (noise; the per-row work is unchanged) |
+| outside probe p99, heavy install during the import | 2 ms | 4 ms |
+
+What the numbers say:
+
+- **Table list:** the largest database consumer is gone (98 % fewer full reads of `ab_tables`; the rest are reads
+  inside transactions that changed the registry, and refills after a change).
+- **Prints:** the loop stall a print caused (the 240-370 ms maxima) is gone; the remaining maxima (85-90 ms) are other
+  work on a busy shared PC. A cold worker costs ~250 ms once, so one worker per install stays warm (about 30 MB of
+  memory); the heavy install's RSS max was 317-375 MB with workers against 255 MB without.
+- **Imports:** in this profile the import did **not** block the loop before the fix either (probe p99 2 ms): every row
+  awaits database round trips. The slices matter for files with many rows and cheap rows (`csv-import.integration.test.ts`:
+  8,000 rows of a plain table, loop max 44-117 ms without slices, 21-42 ms with). **The import is still about 26 ms a row**
+  in the Manufacturing pack: the cost is the pack's before-event rules and per-row checks (kernel / rules, not this change).
+
+Verified by running: unit and integration tests (`server/core/print/**`, `server/core/diagnostics/**`,
+`table-cache.integration.test.ts` with mutation checks, `csv-import.integration.test.ts`, environments, ALM, backup,
+core data model, template packs, fixes), the smoke runs above, the release import closure and a worker started from a
+copied release layout. Not run: the pilot and ramp profiles, Linux.
+
+Still open from this file, and why:
+
+- Approval answers hanging at 400 req/s: not reproduced; needs the ramp on a server and the owner of `approvals/service.ts`.
+- Live table ticks lag when the outbox falls behind; number-sequence row lock: design of the job worker / sequences, not
+  part of these fixes.
+- Import throughput (~26-33 ms a row): the per-row rule and check cost in the kernel; slicing keeps the loop free but does
+  not make it faster.
+- Manufacturing dashboard tiles the Quality role cannot read: pack content in `server/core/templates/**` (owned elsewhere).
+- `report.run` / OEE email without SMTP: needs the fleet mail relay.
+- `scripts/fleet/testing/fleet.mjs` waiting on `pg_ctl` pipes on Windows: `scripts/fleet/**` owned elsewhere (the fix is
+  the harness's `stdio: 'ignore'`).

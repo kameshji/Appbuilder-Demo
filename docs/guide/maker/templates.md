@@ -111,7 +111,11 @@ A solution template installs a whole working set at once. Only an **administrato
 reference row you changed since the template delivered it, a choice: **Keep my changes** (the default) or **Replace with
 the new version**. Whatever you choose, your data rows are never changed, new columns are added, and a column or table
 the new version no longer has is kept (listed as "no longer used"). A number sequence keeps its next number. A flow
-that was on stays on.
+that was on stays on. When the new version gives one of the template's roles **more access** (a table it could not
+use, a wider row scope such as all rows instead of its own, creating or deleting rows, a row rule removed, a hidden
+column shown, the maker flag, another app), the plan lists that role and each change in an amber box, and the upgrade
+runs only after you tick **I accept the wider access** (the server refuses it otherwise; the audit log records the
+roles). To avoid it, change the role here first: a role you changed is kept by the upgrade.
 
 **Uninstall** of a solution template also removes its approval policies, dashboards and print templates, and its number
 sequences that were never used. A template another installed template needs (the common business model while the

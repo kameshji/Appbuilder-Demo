@@ -826,3 +826,16 @@ table rebuilds its indexes (1,000,000 rows: 17 s); deleted rows take space until
 **Decision.** The harness starts installs as real processes with their own databases and generates load with the server's own dependencies; it measures event-loop delay from outside because the server exposes none. The first local pilot supports the estimate of 8 vCPU / 32 GB for 20 organisations with about twice the CPU needed at 100 requests a second.
 
 **Consequences.** Prints and imports on the request loop are the first product limit; the table list query is uncached. The numbers come from a shared developer PC and are not capacity figures. Details: `docs/internal/load-test-2026-11.md`.
+
+## D66. Accounts (ledgers and India GST) is built on the unsigned draft (owner, 21 Nov 2026)
+
+**Decision.** The owner told us to build package L on `docs/plan/gst-spec-draft.md` before the accountant's sign-off, as a working prototype, and to apply corrections when they arrive. Rates, States and thresholds are dated data shipped empty; the rules live in `server/core/gst/money.ts`, `engine.ts` and `postings.ts`; every default chosen for a "to be confirmed" item is listed in `docs/dev/ledgers-gst.md`.
+
+**Consequences.** The product makes no compliance claim; Settings, Reference data and the docs say the rules are a draft not reviewed by a practising accountant. Accounts access is a level per role stored in the module's settings (the role model has no custom permissions). Journal balance and immutability are enforced in the service transaction plus CHECK and unique constraints, not triggers. Accounts keeps its own dated States table, separate from the core reference data.
+
+## D67. Prints run in worker threads; the table list is cached per environment (load test follow-up, Nov 2026)
+
+**Decision.** PDF work moves to a bounded pool of `node:worker_threads` (no new dependency, one warm worker per install); CSV imports yield to the event loop in slices inside the same transaction; the table list is cached per store and environment schema, cleared on every definition write, with a 60 s expiry as a backstop for writes from another process.
+
+**Consequences.** Each has an off switch by environment variable. Permissions are applied after the cache. `rekey` is not built: sealed values are spread over many modules with no list, so it first needs a registry of sealed columns with a test that fails on an unlisted `encrypt(` call.
+

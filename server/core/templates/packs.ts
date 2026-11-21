@@ -350,3 +350,57 @@ export async function unlinkComponents(s: Services, solutionId: string): Promise
   const d = sqlDb(s)
   for (const t of ['ab_flows', 'ab_approval_policies', 'ab_print_templates']) await d.exec(`UPDATE ${T(t)} SET solution_id = NULL WHERE solution_id = $1`, [solutionId])
 }
+
+/* ------------------------------------------------------------------ upgrades: widened role access (P3-16) */
+
+const SCOPE_RANK: Record<string, number> = { none: 0, own: 1, team: 2, manager: 2, department: 2, managerTree: 3, departmentTree: 3, all: 4 }
+const COLUMN_RANK: Record<string, number> = { none: 0, read: 1, update: 2 }
+const SCOPE_WORD: Record<string, string> = { none: 'no rows', own: 'their own rows', team: "their team's rows", manager: "their reports' rows", managerTree: 'the rows of everyone under them', department: "their department's rows", departmentTree: 'the rows of their department and its sub-departments', all: 'all rows' }
+
+/** a scope that reaches rows the old one did not (org scopes that are not nested count as wider) */
+function widerScope(before: string, after: string): boolean {
+  if (before === after || after === 'none' || before === 'all') return false
+  if (after === 'own') return before === 'none' // `own` is inside every scope but none
+  if ((before === 'managerTree' && after === 'manager') || (before === 'departmentTree' && after === 'department')) return false
+  return (SCOPE_RANK[after] ?? 4) >= (SCOPE_RANK[before] ?? 0)
+}
+
+/**
+ * What an upgrade adds to a role's access, in words (empty: nothing grows): a table it gets access to, a wider row scope
+ * (read, update, delete, share), creating rows, a row rule removed or changed, a column hidden or read-only before and
+ * visible or writable after, the maker flag, every app. `tableName` names a table id for the messages.
+ */
+export function roleWidening(before: { isMaker?: boolean; apps?: string[] | 'all'; privileges: TablePrivilege[] }, after: { isMaker?: boolean; apps?: string[] | 'all'; privileges: TablePrivilege[] }, tableName: (id: string) => string, appName: (id: string) => string = (id) => id): string[] {
+  const out: string[] = []
+  if (!before.isMaker && after.isMaker) out.push('becomes a maker role (may create and change apps, tables and connections)')
+  if (after.apps === 'all' && before.apps !== 'all') out.push('may run every app')
+  else if (Array.isArray(after.apps) && Array.isArray(before.apps)) for (const a of after.apps) if (!before.apps.includes(a)) out.push(`may run the app ${appName(a)}`)
+  const none: Omit<TablePrivilege, 'table'> = { create: false, read: 'none', update: 'none', delete: 'none' }
+  for (const p of after.privileges) {
+    const o = before.privileges.find((x) => x.table === p.table) ?? { table: p.table, ...none }
+    const t = tableName(p.table)
+    const had = o.create || o.read !== 'none' || o.update !== 'none' || o.delete !== 'none'
+    const has = p.create || p.read !== 'none' || p.update !== 'none' || p.delete !== 'none'
+    if (!had && has) {
+      out.push(`gets access to ${t} (read ${SCOPE_WORD[p.read] ?? p.read}${p.create ? ', create' : ''}${p.update !== 'none' ? `, update ${SCOPE_WORD[p.update] ?? p.update}` : ''}${p.delete !== 'none' ? `, delete ${SCOPE_WORD[p.delete] ?? p.delete}` : ''})`)
+      continue
+    }
+    if (!o.create && p.create) out.push(`may create rows in ${t}`)
+    for (const k of ['read', 'update', 'delete', 'share'] as const) {
+      const b = o[k] ?? 'none'
+      const a = p[k] ?? 'none'
+      if (widerScope(b, a)) out.push(`${k === 'share' ? 'may share' : `${k}s`} ${SCOPE_WORD[a] ?? a} of ${t} (was ${SCOPE_WORD[b] ?? b})`)
+    }
+    const rb = o.rowFilter?.length ? canonicalJson(o.rowFilter) : ''
+    const ra = p.rowFilter?.length ? canonicalJson(p.rowFilter) : ''
+    if (rb && !ra) out.push(`${t}: its row rule is removed (every row its scope reaches)`)
+    else if (rb && ra !== rb) out.push(`${t}: its row rule changes (it may reach more rows)`)
+    const cols = new Set([...Object.keys(o.columns ?? {}), ...Object.keys(p.columns ?? {})])
+    for (const c of [...cols].sort()) {
+      const b = o.columns?.[c] ?? 'update'
+      const a = p.columns?.[c] ?? 'update'
+      if ((COLUMN_RANK[a] ?? 2) > (COLUMN_RANK[b] ?? 2)) out.push(`${t}.${c}: ${b === 'none' ? 'hidden' : 'read-only'} before, ${a === 'update' ? 'editable' : 'visible'} after`)
+    }
+  }
+  return out
+}

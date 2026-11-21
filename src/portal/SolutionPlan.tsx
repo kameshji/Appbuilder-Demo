@@ -220,6 +220,36 @@ export function BackupRefusal({ message, busy, onProceed, label = 'Upgrade witho
 
 export const isBackupRefusal = (e: unknown): boolean => (e as { field?: string } | null)?.field === 'backup'
 
+/**
+ * P3-16: a template upgrade that gives pack roles more access lists every such role with what grows; the administrator
+ * must tick it before the upgrade runs (the server refuses the upgrade without `acceptWidening` too).
+ */
+export function useWideningConsent(widens: { role: string; name: string; changes: string[] }[] | undefined, token: string | undefined): { ok: boolean; accepted: boolean; box: React.ReactNode } {
+  const [ack, setAck] = useState(false)
+  useEffect(() => { setAck(false) }, [token])
+  const list = widens ?? []
+  if (!list.length) return { ok: true, accepted: false, box: null }
+  const box = (
+    <div className="grid gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-2.5 text-sm" data-testid="plan-widens">
+      <span className="flex items-center gap-1.5 font-semibold text-amber-800 dark:text-amber-200"><TriangleAlert className="size-4" /> The upgrade gives {list.length === 1 ? 'this role' : 'these roles'} more access</span>
+      {list.map((w) => (
+        <div key={w.role} className="grid gap-0.5" data-testid={`plan-widens-${w.role}`}>
+          <span className="font-medium">{w.name}</span>
+          <ul className="ml-4 list-disc text-xs text-muted-foreground">
+            {w.changes.map((c) => <li key={c}>{c}</li>)}
+          </ul>
+        </div>
+      ))}
+      <p className="text-xs text-muted-foreground">Everyone who holds {list.length === 1 ? 'it' : 'them'} gets this access. To avoid it, cancel and change the role here first: a role changed here is kept by the upgrade.</p>
+      <label className="flex items-center gap-2">
+        <Checkbox checked={ack} onCheckedChange={(v) => setAck(v === true)} data-testid="plan-widens-ack" />
+        I accept the wider access (recorded in the audit log).
+      </label>
+    </div>
+  )
+  return { ok: ack, accepted: ack, box }
+}
+
 /** what the admin must tick before confirming a plan that loses data */
 export function useConfirmable(plan: SolutionPlan | null): { ok: boolean; box: React.ReactNode } {
   const [ack, setAck] = useState(false)

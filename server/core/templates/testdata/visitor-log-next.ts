@@ -30,6 +30,20 @@ export function visitorLog(): TemplatePackage {
   return raw
 }
 
+/**
+ * 2.0.0 that WIDENS the Visit host role (upgrade-widening.integration.test.ts, P3-16): it reads every visit (was its own),
+ * may delete its own visitors (was none) and sees the visitors' phone numbers (hidden before). Reception is unchanged.
+ */
+export function visitorLogWider(): TemplatePackage {
+  const p = clone(visitorLog())
+  p.version = '2.0.0'
+  const host = p.payload.roles!.find((r) => r.key === 'Host')! as unknown as { tables: Record<string, Record<string, unknown>> }
+  host.tables.Visits.read = 'all'
+  host.tables.Visitors.delete = 'own'
+  delete host.tables.Visitors.columns
+  return p
+}
+
 export function visitorLogNext(version: '2.0.0' | '2.1.0'): TemplatePackage {
   const p = clone(visitorLog())
   p.version = '2.0.0'

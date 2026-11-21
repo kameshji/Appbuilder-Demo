@@ -55,7 +55,7 @@ import { applyPrintTemplates } from '../print/alm.ts'
 import { applyDashboards } from '../dashboards/alm.ts'
 import { catalogue, findTemplate, type CatalogueEntry } from './catalogue.ts'
 import {
-  bindPack, currentParts, currentRowHash, grantMapped, hid, loadRows, packDocParts, packIds, partHashes, removeRows, roleHash, unlinkComponents,
+  bindPack, currentParts, currentRowHash, grantMapped, hid, loadRows, packDocParts, packIds, partHashes, removeRows, roleHash, roleWidening, unlinkComponents,
   type KeepParts, type LinkedIds, type PackPlan, type RefRecord,
 } from './packs.ts'
 import { listSequences, sequenceTable } from './sequences.ts'
@@ -1212,6 +1212,28 @@ async function upgradeContext(s: Services, ctx: Ctx, id: string, choices: Record
   const base = { ...pc, created: [...created, ...gone], resolution, ...(pc.app ? { app: { def: { ...pc.app.def, name: appName }, name: appName } } : {}) }
   const goneIds: LinkedIds = { ...pids, tables: { ...pids.tables, ...Object.fromEntries(gone.map((g) => [g.slot, g.draftId])) } }
   const doc = linkedDocument(base, goneIds, keep)
+  // P3-16: every pack role that takes the new version's privileges and so gains access (the administrator ticks it)
+  const widens: NonNullable<UpgradePlan['widens']> = []
+  if (pack) {
+    const docRoles = (doc.roles ?? []) as { id: string; isMaker?: boolean; apps: string[] | 'all'; privileges: TablePrivilege[] }[]
+    const allTables = await s.meta.tables.list()
+    const tableName = (tid: string) => allTables.find((t) => t.id === tid)?.displayName ?? created.find((c) => pids.tables[c.slot] === tid)?.def.displayName ?? tid
+    const appName = (aid: string) => pc.pack?.apps.find((a) => a.id === aid)?.name ?? aid
+    for (const r of pc.roles) {
+      const rid = pids.roles[r.key]
+      if (!rid || keptLocal.has(`role:${rid}`)) continue
+      const cur = await s.meta.roles.get(rid)
+      const next = docRoles.find((x) => x.id === rid)
+      if (!cur || !next) continue
+      // tables of yours the pack maps get the role's privileges too (grantMapped)
+      const mapped = Object.entries(r.privileges).flatMap(([slot, p]) => {
+        const m = resolution.resolved.find((x) => x.slot.id === slot)
+        return m?.mode === 'map' && m.tableId ? [{ table: m.tableId, ...p }] : []
+      })
+      const changes = roleWidening(cur as RoleDef & { isMaker?: boolean }, { isMaker: next.isMaker, apps: next.apps, privileges: [...next.privileges, ...mapped] }, tableName, appName)
+      if (changes.length) widens.push({ role: rid, name: cur.name, changes })
+    }
+  }
   const solPkg = readSolutionPkg(toYaml(doc), s)!
   const res = await planSolution(s, user, solPkg, { expectTables: [] })
   const problems = [...res.plan.problems, ...(pack ? pc.response.plan.problems.filter((p) => !/already exists here|already installed here as Linked/.test(p)) : [])]
@@ -1226,20 +1248,24 @@ async function upgradeContext(s: Services, ctx: Ctx, id: string, choices: Record
     const upd = refPlan.filter((r) => r.action === 'update').length
     if (adds || upd) items.push({ kind: 'table', id: '', name: 'Reference rows', change: 'changed', note: [adds ? `${adds} new` : '', upd ? `${upd} updated (unchanged here since delivered)` : ''].filter(Boolean).join(', ') })
   }
-  const token = createHash('sha256').update(canonicalJson({ t: res.plan.token, ref: refPlan.map((r) => [r.key, r.action]), keep: [...keptLocal].sort() })).digest('hex').slice(0, 32)
-  const plan: SolutionPlan = { ...res.plan, items, token, solution: { ...res.plan.solution, displayName: `${newer.pkg.name} (template, linked)`, version: newer.pkg.version, fromVersion: row.template_version }, problems: [...new Set(problems)], warnings: [...new Set([...res.plan.warnings, ...noLonger])] }
-  return { row, pc, newer, solPkg, res, keptLocal, refPlan, up: { plan, from: row.template_version, to: newer.pkg.version, localChanges, ...(noLonger.length ? { noLongerUsed: noLonger } : {}) } }
+  const token = createHash('sha256').update(canonicalJson({ t: res.plan.token, ref: refPlan.map((r) => [r.key, r.action]), keep: [...keptLocal].sort(), widens })).digest('hex').slice(0, 32)
+  const widenWarnings = widens.map((w) => `The upgrade gives the role ${w.name} more access: ${w.changes.join('; ')}.`)
+  const plan: SolutionPlan = { ...res.plan, items, token, solution: { ...res.plan.solution, displayName: `${newer.pkg.name} (template, linked)`, version: newer.pkg.version, fromVersion: row.template_version }, problems: [...new Set(problems)], warnings: [...new Set([...widenWarnings, ...res.plan.warnings, ...noLonger])] }
+  return { row, pc, newer, solPkg, res, keptLocal, refPlan, up: { plan, from: row.template_version, to: newer.pkg.version, localChanges, ...(noLonger.length ? { noLongerUsed: noLonger } : {}), ...(widens.length ? { widens } : {}) } }
 }
 
 export async function planUpgrade(s: Services, ctx: Ctx, id: string, choices: Record<string, 'keep' | 'replace'>): Promise<UpgradePlan> {
   return (await upgradeContext(s, ctx, id, choices)).up
 }
 
-export async function upgradeTemplate(s: Services, ctx: Ctx, id: string, b: { confirm?: unknown; choices?: Record<string, 'keep' | 'replace'>; proceedWithoutBackup?: boolean }): Promise<UpgradePlan> {
+export async function upgradeTemplate(s: Services, ctx: Ctx, id: string, b: { confirm?: unknown; choices?: Record<string, 'keep' | 'replace'>; proceedWithoutBackup?: boolean; acceptWidening?: boolean }): Promise<UpgradePlan> {
   const user = me(ctx)
   const uc = await upgradeContext(s, ctx, id, b.choices ?? {})
   if (uc.up.plan.problems.length) throw invalid(`The template cannot be upgraded: ${uc.up.plan.problems[0]}`, undefined, { plan: uc.up })
   if (b.confirm !== uc.up.plan.token) throw new HttpError(409, 'conflict', 'Something changed since the plan was made. Review it again.', undefined, { plan: uc.up })
+  // P3-16: wider role access is never given without the administrator's explicit tick (the plan lists each role)
+  const widens = uc.up.widens ?? []
+  if (widens.length && b.acceptWidening !== true) throw invalid(`The upgrade gives ${widens.map((w) => w.name).join(', ')} more access. Tick "I accept the wider access" to go ahead, or keep your version of ${widens.length === 1 ? 'that role' : 'those roles'}.`, 'acceptWidening', { plan: uc.up })
   await s.transaction(async () => {
     await applySolution(inUnit(s, { keepBackup: true }), ctx, uc.solPkg, uc.res, 'database', { proceedWithoutBackup: b.proceedWithoutBackup === true })
     const ids = uc.pc.ids ?? uc.row.details!.ids!
@@ -1315,7 +1341,7 @@ export async function upgradeTemplate(s: Services, ctx: Ctx, id: string, b: { co
     for (const d of created.printTemplates ?? []) names[`printTemplate:${d.id}`] = d.name
     await db(s).exec(`UPDATE ${T()} SET template_version = $2, digest = $3, delivered = $4::jsonb, created = $5::jsonb, reference_rows = $6::jsonb, details = coalesce(details, '{}'::jsonb) || $7::jsonb, modified_on = now() WHERE id = $1`,
       [id, uc.newer.pkg.version, uc.newer.digest, JSON.stringify(delivered), JSON.stringify(created), JSON.stringify(referenceRows), JSON.stringify({ ids, ...(uc.pc.pack ? { names } : {}) })])
-    await audit(s, ctx, 'template.upgrade', { install: id, template: uc.row.template_id, from: uc.up.from, to: uc.up.to, localChanges: uc.up.localChanges, by: user.user.id, ...(uc.refPlan.length ? { referenceRows: uc.refPlan.map((r) => [r.key, r.action]) } : {}) })
+    await audit(s, ctx, 'template.upgrade', { install: id, template: uc.row.template_id, from: uc.up.from, to: uc.up.to, localChanges: uc.up.localChanges, by: user.user.id, ...(widens.length ? { widenedRoles: widens } : {}), ...(uc.refPlan.length ? { referenceRows: uc.refPlan.map((r) => [r.key, r.action]) } : {}) })
   })
   s.security.invalidate()
   return uc.up

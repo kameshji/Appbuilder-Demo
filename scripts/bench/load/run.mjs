@@ -12,6 +12,7 @@
  *   phases N times on the same fleet) --parallel N (installs provisioned at once) --fsync off --pg-port 5400-5409
  *   --base-port 5410-5499 --ramp 50,100,200 --ramp-step-s N --keep (leave the fleet folder and logs) --crm (also the CRM pack)
  *   --server-ram-gb N (the server the memory share is computed for; default 32, DC-12) --out <file.md>
+ *   --install-env K=V,K2=V2 (APPBUILDER_* variables for every install, for before/after runs)
  *
  * What it starts: a PRIVATE PostgreSQL cluster (.sandbox/pg binaries, data under .sandbox/load/run-*, port 5401 by
  * default), N installs of this tree as processes (ports 5411+), and nothing else. Everything is stopped and removed at
@@ -56,6 +57,9 @@ if (opt('steady-s') && cfg.phases.find((p) => p.name === 'steady')?.background) 
 if (cfg.basePort < 5410 || cfg.basePort + cfg.orgs - 1 > 5499) { console.error('installs must fit in ports 5410-5499'); process.exit(2) }
 if (cfg.pgPort < 5400 || cfg.pgPort > 5409) { console.error('the private cluster port must be 5400-5409'); process.exit(2) }
 const KEEP = flag('keep')
+// extra environment of every install (A/B runs: --install-env APPBUILDER_PRINT_WORKERS=0,APPBUILDER_TABLE_CACHE=off)
+const installEnv = Object.fromEntries((opt('install-env') ?? '').split(',').filter(Boolean).map((kv) => { const k = kv.indexOf('='); return [kv.slice(0, k), kv.slice(k + 1)] }))
+if (Object.keys(installEnv).some((k) => !/^APPBUILDER_[A-Z0-9_]+$/.test(k))) { console.error('--install-env takes APPBUILDER_* names only'); process.exit(2) }
 
 const base = path.join(root, '.sandbox', 'load')
 const reportsDir = path.join(base, 'reports')
@@ -254,7 +258,7 @@ try {
 
   log(`provisioning ${cfg.orgs} installs, ${cfg.parallel} at a time`)
   const tp = performance.now()
-  const installs = await pool(Array.from({ length: cfg.orgs }, (_, i) => i), cfg.parallel, (i) => createInstall({ cluster: state.cluster, runDir, basePort: cfg.basePort, heapMB: cfg.heapMB }, i, log).then((inst) => { state.installs.push(inst); return inst }))
+  const installs = await pool(Array.from({ length: cfg.orgs }, (_, i) => i), cfg.parallel, (i) => createInstall({ cluster: state.cluster, runDir, basePort: cfg.basePort, heapMB: cfg.heapMB, extraEnv: installEnv }, i, log).then((inst) => { state.installs.push(inst); return inst }))
   state.installs = installs
   for (const i of installs) ctx.agents.set(i.key, agentFor({ maxSockets: 48 }))
   const provisionS = (performance.now() - tp) / 1000
@@ -297,7 +301,7 @@ try {
       for (const org of state.orgs) {
         const r = await org.admin.req('GET', '/admin/health', { record: false, timeout: 30_000 })
         const h = r.json()
-        if (h) health.push({ t: Date.now(), org: org.inst.key, sockets: h.live?.connections, users: h.live?.users, rss: h.process?.rssBytes, jobs: h.jobs, phase: rec.phase })
+        if (h) health.push({ t: Date.now(), org: org.inst.key, sockets: h.live?.connections, users: h.live?.users, rss: h.process?.rssBytes, jobs: h.jobs, phase: rec.phase, loop: h.process?.eventLoop ?? null, printWorkers: h.process?.printWorkers ?? null, tableCache: h.process?.tableCache ?? null })
       }
       for (let k = 0; k < cfg.healthMs / 500 && !healthStop; k++) await sleep(500)
     }
@@ -507,11 +511,32 @@ try {
     const shared = secs.filter((x) => near(x) >= 3).length
     observations.push(`Event-loop probe spikes over 50 ms: ${secs.length} seconds with one; in ${shared} of them 3 or more installs spiked within the same 3 seconds (a machine-wide stall: CPU or disk of the shared PC), in ${secs.length - shared} only one or two (an install's own work).`)
   }
+  // the servers' own event-loop delay (GET /admin/health, process.eventLoop: the last minute at each 30 s sample, and
+  // since start at the last sample), next to the outside probe
+  const serverLoop = state.orgs.map((o) => {
+    const l = health.filter((x) => x.org === o.inst.key && x.loop)
+    const lastS = l.at(-1)
+    return {
+      key: o.inst.key, samples: l.length,
+      minuteP99Max: l.length ? Math.max(...l.map((x) => x.loop.lastMinute.p99Ms)) : null,
+      minuteMax: l.length ? Math.max(...l.map((x) => x.loop.lastMinute.maxMs)) : null,
+      sinceStart: lastS?.loop.sinceStart ?? null,
+      printWorkers: lastS?.printWorkers ?? null, tableCache: lastS?.tableCache ?? null,
+    }
+  })
+  if (serverLoop.some((x) => x.samples)) {
+    const w = [...serverLoop].sort((a, b) => (b.minuteP99Max ?? 0) - (a.minuteP99Max ?? 0))[0]
+    observations.push(`Server event-loop delay (each install's own measure, GET /admin/health every ${cfg.healthMs / 1000} s, last minute): worst install ${w.key} p99 ${r1(w.minuteP99Max)} ms, max ${r1(w.minuteMax)} ms; per install p99 / max over the run (since start): ${serverLoop.map((x) => `${x.key} ${x.sinceStart ? `${r1(x.sinceStart.p99Ms)} / ${r1(x.sinceStart.maxMs)}` : '-'}`).join(', ')} ms.`)
+    const tc = serverLoop.filter((x) => x.tableCache)
+    if (tc.length) observations.push(`Table registry cache (per install at the last sample): ${tc.map((x) => `${x.key} ${x.tableCache.hits} hits / ${x.tableCache.misses} misses / ${x.tableCache.bypassed} in transactions`).join('; ')}.`)
+    const pw = serverLoop.filter((x) => x.printWorkers)
+    if (pw.length) observations.push(`Print workers (per install): ${pw.map((x) => `${x.key} ${x.printWorkers.size} workers, ${x.printWorkers.done} jobs, ${x.printWorkers.failed} failed, ${x.printWorkers.timedOut} timed out, ${x.printWorkers.refused} refused`).join('; ')}.`)
+  }
   if (machineBusy > 70) observations.push(`The machine was busy (${r1(machineBusy)} % mean): latencies here include waiting for CPU behind other work and are NOT capacity figures.`)
   const caveats = [
     `Developer PC shared with other heavy work (two other agents were running); ${cfg.fsync ? 'the private PostgreSQL cluster ran with fsync ON (unlike the shared sandbox, which runs fsync off)' : 'the private PostgreSQL cluster ran with fsync OFF'}; Windows, not the Linux target; no Caddy (the harness sends the proxy headers itself), no TLS, no systemd limits. These are comparisons, NOT capacity figures for a server.`,
     'All installs, PostgreSQL and the load generator share one machine: the generator\'s own CPU and event-loop delay are reported; client-side delay inflates every latency equally.',
-    'Event-loop lag is not exposed by the server; the probe (an unknown /api/v1 route answered without the database, every second) is an upper bound of the loop delay at 1 s resolution.',
+    'Event-loop lag: the probe (an unknown /api/v1 route answered without the database, every second) is an upper bound of the loop delay at 1 s resolution; each install also reports its own (GET /admin/health, process.eventLoop: a 10 ms timer, 10 s windows; on Windows the timer granularity of about 15.6 ms adds a floor of ~5 ms to the p50).',
     'Email is not exercised: hosted installs refuse loopback SMTP (APPBUILDER_OUTBOUND_PRIVATE=deny) and the fleet relay does not exist yet; notification emails and the daily OEE email step fail or are skipped, their PDF generation runs.',
     `PostgreSQL CPU is a lower bound on Windows (per-process times of the postmaster's children, sampled every ${cfg.sampleMs / 1000} s).`,
     'People are simulated by an open arrival process (Poisson) at the target request rate over a fixed set of concurrent people, one action at a time each; real people are burstier (shift starts, breaks), modelled only by the shift-change phase.',
@@ -531,7 +556,7 @@ try {
       { what: 'PostgreSQL data folder (incl. WAL)', start: `${MB(disk0.data)} MB`, end: `${MB(disk1.data)} MB` },
       { what: 'install folders (workspace, attachments, logs)', start: `${MB(disk0.installs)} MB`, end: `${MB(disk1.installs)} MB` },
     ],
-    ramp, observations, caveats, probeSeries: probes.data, health: health.slice(-cfg.orgs * 2), runSeconds: (tEnd - tRun) / 1000,
+    ramp, observations, caveats, probeSeries: probes.data, health: health.slice(-cfg.orgs * 2), serverLoop, runSeconds: (tEnd - tRun) / 1000,
   }
   R.thresholdsPass = verdicts.filter((v) => !/heavy tenant|shift change/.test(v.label)).every((v) => v.pass) && accounted.table.lost === 0 && accounted.chat.lost === 0 && accounted.chat.duplicates === 0 && accounted.table.duplicates === 0 && !dupRows
   exitCode = R.thresholdsPass || ramp ? 0 : 1

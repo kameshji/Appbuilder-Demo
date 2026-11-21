@@ -79,6 +79,8 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+# a call outside the filter fails with EPERM (Node.js / libuv fall back) instead of killing the install with SIGSYS
+SystemCallErrorNumber=EPERM
 # V8 compiles JavaScript to machine code at run time: MemoryDenyWriteExecute would stop Node.js
 MemoryDenyWriteExecute=no
 
@@ -255,6 +257,7 @@ InaccessiblePaths=-${p.instances} -${p.state} -${p.auditDir}
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 MemoryDenyWriteExecute=no
 MemoryMax=512M
 

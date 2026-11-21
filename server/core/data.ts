@@ -155,6 +155,50 @@ const isConstTrue = (c: Condition | undefined): boolean => !c || ('const' in c &
 /** unique-check key (text compares case-insensitively, like the connectors) */
 const uniqueKey = (v: Cell): string => (v instanceof Date ? `d:${v.getTime()}` : typeof v === 'string' ? `s:${v.trim().toLowerCase()}` : `v:${String(v)}`)
 const ID_CHUNK = 500
+/** CSV import: rows per insert call inside the import's transaction; event-loop slice; size above which parsing yields */
+const IMPORT_INSERT_SLICE = 500
+const IMPORT_SLICE_MS = 10
+const IMPORT_PARSE_CHUNK = 256 * 1024
+
+/** a function to await in a long loop: gives the event loop a turn (setImmediate) after every IMPORT_SLICE_MS of work */
+function yielder(): () => Promise<void> {
+  if ((process.env.APPBUILDER_IMPORT_YIELD ?? '').toLowerCase() === 'off') return async () => {}
+  let since = performance.now()
+  return async () => {
+    if (performance.now() - since < IMPORT_SLICE_MS) return
+    await new Promise<void>((r) => setImmediate(r))
+    since = performance.now()
+  }
+}
+
+/**
+ * Papa.parse with a header row and greedy empty-line skipping, as before; a large text is parsed in chunks with a turn
+ * of the event loop between them (the same rows and fields: data.test.ts compares).
+ */
+export async function parseCsvYielding(text: string): Promise<{ fields: string[]; data: Record<string, string>[] }> {
+  const opts = { header: true, skipEmptyLines: 'greedy' } as const
+  if (text.length <= IMPORT_PARSE_CHUNK || (process.env.APPBUILDER_IMPORT_YIELD ?? '').toLowerCase() === 'off') {
+    const p = Papa.parse<Record<string, string>>(text, opts)
+    return { fields: p.meta.fields ?? [], data: p.data }
+  }
+  const data: Record<string, string>[] = []
+  let fields: string[] | undefined
+  await new Promise<void>((resolve, reject) => {
+    Papa.parse<Record<string, string>>(text, {
+      ...opts,
+      chunkSize: IMPORT_PARSE_CHUNK,
+      chunk(r: Papa.ParseResult<Record<string, string>>, parser: Papa.Parser) {
+        fields ??= r.meta.fields
+        for (const d of r.data) data.push(d)
+        parser.pause()
+        setImmediate(() => parser.resume())
+      },
+      complete: () => resolve(),
+      error: (e: Error) => reject(e),
+    } as Papa.ParseConfig<Record<string, string>>)
+  })
+  return { fields: fields ?? [], data }
+}
 
 /** the recycle bin's part of the DataService (server-side callers: routes, formula host, jobs) */
 export interface RecycleApi {
@@ -919,8 +963,8 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
     if (mode !== 'append' && mode !== 'replace') throw new HttpError(422, 'invalid', "mode must be 'append' or 'replace'.", 'mode')
     if (ctx && !ctx.canCreate(def)) throw cannotCreate(def)
     refuseBalanceWrite(ctx, def)
-    const parsed = Papa.parse<Record<string, string>>(csv.replace(/^ï»¿/, ''), { header: true, skipEmptyLines: 'greedy' })
-    const headers = parsed.meta.fields ?? []
+    const parsed = await parseCsvYielding(csv.replace(/^ï»¿/, ''))
+    const headers = parsed.fields
     // header -> column (by name, then display name; case-insensitive). Unknown, system, hidden, read-only columns are ignored.
     const mapping = new Map<string, ColumnDef>()
     for (const h of headers) {
@@ -936,20 +980,25 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
       if (ctx && ctx.columnAccess(def, col.name) !== 'update') continue
       mapping.set(h, col)
     }
-    const records = parsed.data.map((rec) => {
+    // large imports give other requests their turn on the event loop (every IMPORT_SLICE_MS of work)
+    const breathe = yielder()
+    const records: Record<string, unknown>[] = []
+    for (const rec of parsed.data) {
       const values: Record<string, unknown> = {}
       for (const [h, col] of mapping) values[col.name] = rec[h] ?? null
-      return values
-    })
+      records.push(values)
+      await breathe()
+    }
     // validation pass before anything is changed
-    records.forEach((values, i) => {
+    for (let i = 0; i < records.length; i++) {
       try {
-        prepareInsert(ctx, def, values, { preserve: true })
+        prepareInsert(ctx, def, records[i], { preserve: true })
       } catch (e) {
         if (e instanceof HttpError) throw new HttpError(e.status, e.code, `Row ${i + 1}: ${e.message}`, e.field)
         throw e
       }
-    })
+      await breathe()
+    }
     // every row is built and checked before anything is written (nothing changes when one row is refused)
     const connector = await writableConnector(def)
     let targets: string[] = []
@@ -985,6 +1034,7 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
         if (e instanceof HttpError) throw new HttpError(e.status, e.code, `Row ${i + 1}: ${e.message} (nothing was imported)`, e.field)
         throw e
       }
+      await breathe()
     }
     // SQL connectors: delete + inserts in one transaction. Connectors without transactions (files, Google Sheets): the delete
     // and the insert are separate writes (see docs/dev/connectors.md).
@@ -997,7 +1047,14 @@ export function createDataService(deps: DataDeps): DataService & RecycleApi & { 
         bin.rootIds.push(...gone)
         for (const id of gone) bin.effects.push({ kind: 'row', tableId: def.id, rowId: id })
       } else if (targets.length) await c.delete(def, targets, guard)
-      if (rows.length) await c.insert(def, rows)
+      if (!rows.length) return
+      // inside the one transaction: in slices, so building the statements does not hold the event loop; connectors
+      // without transactions keep the single insert (one write of the file or sheet)
+      if (!connector.capabilities.transactions || !connector.transaction || rows.length <= IMPORT_INSERT_SLICE) { await c.insert(def, rows); return }
+      for (let i = 0; i < rows.length; i += IMPORT_INSERT_SLICE) {
+        await c.insert(def, rows.slice(i, i + IMPORT_INSERT_SLICE))
+        await breathe()
+      }
     }
     // movements of a balance: the replaced rows are locked first; one balance step for the whole import
     const ledgers = await ledgersOf(def)

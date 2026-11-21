@@ -387,6 +387,11 @@ export interface UpgradePlan {
   localChanges: { key: string; kind: LocalChangeKind; name: string; choice: 'keep' | 'replace' }[]
   /** format 2: what the new version no longer has, kept here (tables, columns, number sequences; data is never removed by an upgrade) */
   noLongerUsed?: string[]
+  /**
+   * P3-16: the pack roles whose access grows with the new version (a new table, a wider scope, creating rows, a row rule
+   * removed, a hidden column shown, the maker flag, apps), in words. The upgrade runs only with `acceptWidening: true`.
+   */
+  widens?: { role: string; name: string; changes: string[] }[]
 }
 
 /** what an upgrade compares by hash, per component (UpgradePlan.localChanges keys are `<kind>:<id>`) */

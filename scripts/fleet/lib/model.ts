@@ -237,7 +237,8 @@ export function defaultConfig(mode: Mode, domain: string): FleetConfig {
     acmeEmail: null,
     operatorEmail: null,
     accessEmail: null,
-    pgBin: mode === 'server' ? '/usr/lib/postgresql/17/bin' : '',
+    // recorded by abfleet init (lib/pg.ts: --pg-bin from the installer, else detected); '' = not known yet
+    pgBin: '',
     pg: { host: '127.0.0.1', port: 5432 },
     outboundDenyExtra: [],
     licence: { enabled: false, url: `https://licence.${domain}`, host: '127.0.0.1', port: 7090, publicKeyFile: null, db: mode === 'server' ? 'ab_licence' : 'ab_fleet_licence' },

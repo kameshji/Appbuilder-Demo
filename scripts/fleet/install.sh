@@ -162,6 +162,11 @@ if [ "$DRY" = 0 ]; then
   i=0; until psql_su -c 'SELECT 1' >/dev/null 2>&1; do i=$((i + 1)); [ "$i" -lt 30 ] || fail "PostgreSQL does not answer on port 5432"; sleep 1; done
   ver=$(psql_su -c 'SHOW server_version_num' | cut -c1-2)
   [ "$ver" -ge 15 ] || fail "PostgreSQL $ver: 15 or newer is needed"
+  # the client tools of the RUNNING server's major version (pg_dump must not be older than the server); this folder is
+  # passed to abfleet init (--pg-bin), recorded in /etc/appbuilder/fleet.json and used by every fleet command after
+  if [ -x "/usr/lib/postgresql/$ver/bin/psql" ] && [ "$PG_BIN" != "/usr/lib/postgresql/$ver/bin" ]; then
+    say "  using the client tools of the running PostgreSQL $ver (not $PG_BIN)"; PG_BIN=/usr/lib/postgresql/$ver/bin
+  fi
   # 20 installs x 12 connections, the licence service and the tools (spec "Connections for 20 installs")
   sb=$(( MEM_MB / 8 )); [ "$sb" -le 4096 ] || sb=4096
   changed=0

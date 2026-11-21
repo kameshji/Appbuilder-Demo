@@ -47,7 +47,26 @@ closed, then the process exits. The services start at boot (Windows: delayed aut
   sign-in codes and schedules need correct clocks), environments, disk space of the workspace, backup and log folders
   (warning below 10 % free, error below 1 GB), backups (age of the last good install backup), the job queue (queued,
   running, dead; a warning when a due job waited more than 10 minutes), email (an SMTP relay set up), live connections,
-  memory, versions (Appbuilder, commit, Node.js, PostgreSQL, schema of the database and of the server).
+  memory, versions (Appbuilder, commit, Node.js, PostgreSQL, schema of the database and of the server), and the
+  **event loop**: how long requests waited behind other work of this server process, as p50 / p99 / max over the last
+  minute (a warning above 100 ms p99) and since start (`process.eventLoop`, measured like
+  `perf_hooks.monitorEventLoopDelay` with a 10 ms timer; on Windows the timer's 15.6 ms granularity adds about 5 ms to
+  every figure). `process.printWorkers` and `process.tableCache` show the print worker pool and the table list cache.
+
+### Server work off the request loop
+
+- **Prints** (PDF layout and writing) run in a small pool of worker threads, so a print no longer delays the other
+  requests of the install. `APPBUILDER_PRINT_WORKERS` (default 2 on a machine with 3 or more CPUs, at most 8; `0` runs
+  prints on the request loop as before), `APPBUILDER_PRINT_QUEUE` (prints that may wait, default 32; one more is
+  answered 503 "busy, try again in a minute"). The print time limit of Print settings stops the worker that runs past
+  it. Bulk prints wait for room instead of failing. The PDF bytes are the same as before for the same input.
+- **CSV imports** parse, check and insert in slices that give other requests their turn (every 10 ms of work). Still
+  all or nothing, with the same limits and the same error messages. `APPBUILDER_IMPORT_YIELD=off` turns the slicing off.
+- **The table list** (every table definition of an environment, read by most requests) is kept in memory per
+  environment and read again after every change of the data model (tables, columns, solutions, templates, deploys,
+  environment copies, restores) and at least every 60 s (`APPBUILDER_TABLE_CACHE_TTL_MS`), so a change made by another
+  process (a command-line tool on a running server) shows within a minute. Permissions are still applied per request.
+  `APPBUILDER_TABLE_CACHE=off` turns it off.
 
 ![Admin console, Server logs](../images/admin-logs.png)
 

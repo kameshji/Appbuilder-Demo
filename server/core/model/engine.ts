@@ -18,6 +18,7 @@ import type { DateDimDef, Model, ModelApplyResult, ModelOp, ModelPlan, ModelPlan
 import { isNewId, isSystemTable } from '../../../src/model/types.ts'
 import { applyOps, checkOps, describeOp, isSystemColumn, withImplicitRelationships } from '../../../src/model/ops.ts'
 import { dateDimRows } from '../../../src/model/datedim.ts'
+import { formulaInputs } from '../../../src/fx/rowrules.ts'
 import { DEFAULT_CONNECTION_ID } from '../connections.ts'
 import { NO_BACKUP_MESSAGE } from '../backup.ts'
 import { registerTableRoutes } from '../../routes/meta/tables.ts'
@@ -376,8 +377,11 @@ async function execute(s: Services, ctx: Ctx, opsIn: ModelOp[]): Promise<Record<
     return c?.computed ? 0 : c?.type === 'lookup' ? 1 : 2
   }
   for (const o of [...drops].sort((a, b) => rank(a) - rank(b))) await call('DELETE /tables/:id/columns/:name', { id: o.table, name: o.name })
-  // 3. tables that go: views first, then tables nothing else still points at
+  // 3. tables that go: first the columns by which they point at each other (a parent's rollup over its own lines, the
+  // lines' lookup of the parent, the formulas and rollups that read those), each after whatever reads it; then views,
+  // then tables nothing else still points at
   let pending = ops.filter((o): o is Extract<ModelOp, { op: 'dropTable' }> => o.op === 'dropTable')
+  for (const c of unlinkOrder(await s.meta.tables.list(), new Set(pending.map((o) => o.id)))) await call('DELETE /tables/:id/columns/:name', { id: c.table, name: c.name })
   for (let guard = 0; pending.length && guard < 500; guard++) {
     const current = await s.meta.tables.list()
     const next = pending.find((o) => {
@@ -500,6 +504,63 @@ async function execute(s: Services, ctx: Ctx, opsIn: ModelOp[]): Promise<Record<
   }
   s.security.invalidate()
   return ids
+}
+
+type ColRef = { table: string; name: string }
+const sameTable = (ref: string, t: TableDef) => ref === t.id || ref.toLowerCase() === t.name.toLowerCase()
+
+/** the calculated columns that read a column (formula columns of its table, rollups of any table): as the column route checks */
+function readersOf(tables: TableDef[], def: TableDef, col: ColumnDef): ColRef[] {
+  const out: ColRef[] = []
+  const names = ['id', ...def.columns.map((c) => c.name)]
+  for (const c of def.columns) {
+    if (c.name === col.name || c.computed?.kind !== 'formula') continue
+    const f = c.computed.formula.startsWith('=') ? c.computed.formula : `=${c.computed.formula}`
+    if (formulaInputs(f, names).has(col.name)) out.push({ table: def.id, name: c.name })
+  }
+  for (const t of tables) for (const c of t.columns) {
+    if (c.computed?.kind === 'rollup' && sameTable(c.computed.table, def) && (c.computed.via === col.name || c.computed.column === col.name)) out.push({ table: t.id, name: c.name })
+  }
+  return out
+}
+
+/**
+ * Columns to remove before a set of tables is dropped, in a safe order: every lookup and rollup by which a table of the set
+ * points at another table of the set, plus (recursively) the calculated columns of the set that read those. Each column
+ * comes after every column that reads it; a reader outside the set is left for the table route to refuse in words.
+ */
+export function unlinkOrder(tables: TableDef[], dropping: Set<string>): ColRef[] {
+  const going = tables.filter((t) => dropping.has(t.id) && t.reporting?.kind !== 'view')
+  const key = (r: ColRef) => `${r.table}\u0000${r.name}`
+  const picked = new Map<string, ColRef>()
+  const queue: ColRef[] = []
+  for (const t of going) for (const c of t.columns) {
+    const viaLookup = c.type === 'lookup' && !c.computed && going.some((o) => o.id !== t.id && sameTable(c.lookupTable ?? '', o))
+    const viaRollup = c.computed?.kind === 'rollup' && going.some((o) => o.id !== t.id && sameTable((c.computed as { table: string }).table, o))
+    if (viaLookup || viaRollup) queue.push({ table: t.id, name: c.name })
+  }
+  const defOf = (id: string) => going.find((t) => t.id === id)
+  while (queue.length) {
+    const r = queue.shift()!
+    if (picked.has(key(r))) continue
+    picked.set(key(r), r)
+    const def = defOf(r.table)
+    const col = def?.columns.find((c) => c.name === r.name)
+    if (!def || !col) continue
+    for (const u of readersOf(tables, def, col)) if (dropping.has(u.table) && !picked.has(key(u))) queue.push(u)
+  }
+  // readers first: a column is removed once nothing left in the list reads it
+  const left = [...picked.values()]
+  const out: ColRef[] = []
+  while (left.length) {
+    const i = left.findIndex((r) => {
+      const def = defOf(r.table)!
+      const col = def.columns.find((c) => c.name === r.name)!
+      return !readersOf(tables, def, col).some((u) => left.some((x) => x !== r && key(x) === key(u)))
+    })
+    out.push(...left.splice(i < 0 ? 0 : i, 1)) // a cycle cannot be built (formulas refuse one); first wins if it were
+  }
+  return out
 }
 
 async function dropTable(s: Services, call: <T>(key: string, params: Record<string, string>, body?: unknown, query?: Record<string, string>) => Promise<T>, id: string): Promise<void> {

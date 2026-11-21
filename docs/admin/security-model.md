@@ -415,9 +415,9 @@ starts resolving elsewhere gets a new pool. The install's own database (the defa
 on-premises installs are unchanged (loopback and private addresses stay allowed unless `deny`). Tests:
 `server/core/security-p3.test.ts` and `security-p3.integration.test.ts` "FINDING P3-6" (a resolver that answers a public
 address first and 127.0.0.1 after; a canary listener on 127.0.0.1 receives no connection). What a check cannot see: a
-database server that is itself reachable through the allowed address and forwards elsewhere. **MySQL TLS (P3-15, open):**
-with SSL on, the MySQL connector verifies the certificate chain but not that the certificate names the host (mysql2's
-`verifyIdentity` is not set); PostgreSQL does both.
+database server that is itself reachable through the allowed address and forwards elsewhere. **TLS (P3-15, fixed):**
+with SSL on, both connectors verify the certificate chain and that the certificate names the host typed (an IP address
+must be in its IP addresses; [Connections](connections.md#add-a-postgresql-or-mysql-connection)).
 
 **HTTP connections (P1)** are stricter, because flows and events call them with data from users: every request and every
 redirect must go to a host on the connection's allow-list (required; `*` refused), loopback and private addresses need
@@ -650,8 +650,7 @@ beyond their role. Web pages the user visits are not trusted.
   timeline, are always shown to readers of that row.
 - Formula columns and rollups show results computed over data the reader may not see (see Data access).
 - Outbound policy: a database server reached through an allowed address can still forward the connection elsewhere (the
-  policy checks addresses, not what the far end does). MySQL connections over SSL do not check that the certificate names
-  the host (P3-15, open).
+  policy checks addresses, not what the far end does).
 - Rules can only use tables of the same connection; tables on data files and Google Sheets cannot use lookup or
   related-rows rules (such a role grants nothing).
 - No integrity check of the workspace folder (backups are verified, the live folder is not).
@@ -685,8 +684,7 @@ beyond their role. Web pages the user visits are not trusted.
   matched by name only. Second pass: an administrator of the chat environment who exports a conversation may download it
   again within the hour (each download audited; the members are told once); a person assigned a task can hand it to
   anyone (the assignee gets access to it, also when they cannot read the record it is about: the core data model's rule);
-  a pack upgrade does not single out a role whose access the new version widens (it lists the role as changed; a role
-  changed here is kept by default) (P3-16, open); a chat or task notification created before access was lost stays in
+  a chat or task notification created before access was lost stays in
   the person's feed; an in-app link `#u-notes?new=1&table=..&row=..` creates an empty note about a record the person
   can read when it is opened.
 

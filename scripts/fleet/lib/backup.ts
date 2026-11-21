@@ -17,7 +17,7 @@
  * one install's latest off-machine copy into a scratch database and folder and removes them again.
  */
 import path from 'node:path'
-import { agent, appCli, FleetError, unitOf, waitHealth, type Ctx } from './core.ts'
+import { appCli, FleetError, installCommand, unitOf, waitHealth, type Ctx } from './core.ts'
 import { createInstallDatabase, dropInstallDatabase } from './db.ts'
 import { orgPaths, sortedOrgs, type BackupEntry, type OrgRecord } from './model.ts'
 import { b32, newPassword, orgPassphrase, scrub, sealBlob } from './util.ts'
@@ -48,7 +48,13 @@ export async function fleetBackup(ctx: Ctx, org: OrgRecord, kind: BackupEntry['k
   if (pass) ctx.secrets.push(pass)
   const includeKey = kind === 'export' ? !!o.includeKey && !!pass : true
   ctx.out.say(`  ${org.host}: ${kind} backup with the install's own engine${pass ? ', encrypted' : ''}${includeKey ? ', with its key' : ''} ...`)
-  const r = await agent<AgentBackup>(ctx, org, ['backup', '--out', file, '--trigger', kind === 'pre-update' ? 'pre-upgrade' : 'manual', '--note', `abfleet ${kind}`, ...(includeKey ? ['--include-key'] : [])], { input: `${pass ?? ''}\n`, release: o.release })
+  const trigger = kind === 'pre-update' ? 'pre-upgrade' : 'manual'
+  const keyFlag = includeKey ? ['--include-key'] : []
+  // the release's `appbuilder backup create` (passphrase on standard input), or the agent for an older release
+  const r = await installCommand<AgentBackup>(ctx, org, 'backup-create',
+    ['backup', 'create', '--out', file, '--trigger', trigger, '--note', `abfleet ${kind}`, '--passphrase-stdin', ...keyFlag, '--json'],
+    ['backup', '--out', file, '--trigger', trigger, '--note', `abfleet ${kind}`, ...keyFlag],
+    { input: `${pass ?? ''}\n`, release: o.release })
   const entry: BackupEntry = { org: org.id, host: org.host, at: new Date(ctx.clock()).toISOString(), file: ctx.dry ? file : r.file, bytes: r.bytes ?? 0, sha256: r.sha256 ?? '', kind, offsite: null, verified: !ctx.dry }
   if (o.offsite !== false && ctx.reg.config.backup.target) entry.offsite = await copyOffsite(ctx, org, entry.file, entry.sha256)
   ctx.reg.backups.push(entry)

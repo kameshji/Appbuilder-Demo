@@ -12,7 +12,7 @@
  *   POST /templates/installed/:iid/uninstall/plan     { deleteTables? }
  *   POST /templates/installed/:iid/uninstall          { confirm, deleteTables?, confirmText?, proceedWithoutBackup? }
  *   POST /templates/installed/:iid/upgrade/plan       Linked: { choices?: { 'app:<id>' | 'table:<id>': 'keep' | 'replace' } }
- *   POST /templates/installed/:iid/upgrade            { confirm, choices?, proceedWithoutBackup? }
+ *   POST /templates/installed/:iid/upgrade            { confirm, choices?, proceedWithoutBackup?, acceptWidening? (required when the plan lists `widens`) }
  *   POST /templates/installed/:iid/flows              format 2: { enable: [flow ids] } "Switch on these flows" (administrators)
  *   POST /templates/installed/:iid/sample/remove      format 2: "Remove sample data" (exactly the SAMPLE rows this install added)
  */
@@ -83,7 +83,7 @@ export function templateRoutes(router: Router, s: Services): void {
   router.add('POST', '/api/v1/templates/installed/:iid/upgrade/plan', async (ctx) => planUpgrade(s, ctx, ctx.params.iid, choicesOf(body(ctx).choices)), { auth: 'maker' })
   router.add('POST', '/api/v1/templates/installed/:iid/upgrade', async (ctx) => {
     const b = body(ctx)
-    return upgradeTemplate(s, ctx, ctx.params.iid, { confirm: b.confirm, choices: choicesOf(b.choices), proceedWithoutBackup: b.proceedWithoutBackup === true })
+    return upgradeTemplate(s, ctx, ctx.params.iid, { confirm: b.confirm, choices: choicesOf(b.choices), proceedWithoutBackup: b.proceedWithoutBackup === true, acceptWidening: b.acceptWidening === true })
   }, { auth: 'maker', design: true })
   router.add('POST', '/api/v1/templates/installed/:iid/flows', async (ctx) => ({ install: await enableInstallFlows(s, ctx, ctx.params.iid, body(ctx)) }), { auth: 'maker' })
   router.add('POST', '/api/v1/templates/installed/:iid/sample/remove', async (ctx) => removeSampleData(s, ctx, ctx.params.iid), { auth: 'maker', design: true })

@@ -17,6 +17,7 @@ import { actor, appendAudit, blankRegistry, FleetError, loadRegistry, saveRegist
 import { defaultConfig, findOrg, localPaths, serverPaths, sortedOrgs, type BackupTarget, type FleetConfig, type FleetPaths, type Limits, type MailRelay, type OrgRecord, type Registry } from './lib/model.ts'
 import { ServerSystem, withDryRun, type System } from './lib/system.ts'
 import { LocalSystem, type LocalPg } from './lib/local.ts'
+import { detectPgBin, resolvePgBin } from './lib/pg.ts'
 import { parseArgs, redactArgv, scrub, str, table, formatBytes } from './lib/util.ts'
 
 export const TOOL_DIR = path.dirname(fileURLToPath(import.meta.url))
@@ -77,7 +78,10 @@ function makeSystem(p: FleetPaths, holder: { reg: Registry | null }, o: Record<s
     if (!pg) throw new FleetError('Local test mode needs the throwaway PostgreSQL: abfleet --local --root <folder> init --pg-url postgres://<superuser>:<pw>@127.0.0.1:<port>/postgres', 64)
     return new LocalSystem({ paths: p, pg, pgBin: () => holder.reg?.config.pgBin || str(o['pg-bin']) || '' })
   }
-  return new ServerSystem({ psql: () => path.join(holder.reg?.config.pgBin || str(o['pg-bin']) || '/usr/lib/postgresql/17/bin', 'psql'), pgPort: () => holder.reg?.config.pg.port ?? (Number(o['pg-port']) || 5432) })
+  // one source of truth for the PostgreSQL tools: lib/pg.ts (--pg-bin, then the registry, then detection)
+  let detected: string | null = null
+  const pgBin = () => resolvePgBin(str(o['pg-bin']), holder.reg?.config.pgBin, () => (detected ??= detectPgBin()))
+  return new ServerSystem({ psql: () => path.join(pgBin() || '/usr/bin', 'psql'), pgPort: () => holder.reg?.config.pg.port ?? (Number(o['pg-port']) || 5432) })
 }
 
 const READ_ONLY = new Set(['doctor', 'org list', 'org show', 'org status', 'status', 'update status', 'backup status', 'limits show', 'access list', 'summary', 'help'])
@@ -301,21 +305,36 @@ function human(key: string, r: unknown): string {
 
 /* ------------------------------------------------------------------ the run */
 
-function lock(p: FleetPaths): () => void {
+/**
+ * One changing abfleet command at a time. A held lock is waited for (default 120 s, ABFLEET_LOCK_WAIT_S): the timers
+ * (the access sweep every 5 minutes, the nightly backup) take it too, and an operator's command must not fail because
+ * a sweep happened to run at that second. A lock whose process is gone is taken over.
+ */
+function lock(p: FleetPaths, env: NodeJS.ProcessEnv, say: (l: string) => void): () => void {
   fs.mkdirSync(path.dirname(p.lock), { recursive: true })
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const waitMs = Math.max(0, Number(env.ABFLEET_LOCK_WAIT_S ?? 120) || 0) * 1000
+  const until = Date.now() + waitMs
+  let told = false
+  for (;;) {
     try {
       fs.writeFileSync(p.lock, String(process.pid), { flag: 'wx', mode: 0o600 })
       return () => fs.rmSync(p.lock, { force: true })
     } catch {
-      const pid = Number(fs.readFileSync(p.lock, 'utf8'))
+      let pid = 0
+      try { pid = Number(fs.readFileSync(p.lock, 'utf8')) } catch (e) {
+        // removed in between: try again (an unreadable lock folder is an error, not a wait)
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT' && Date.now() < until) continue
+        throw new FleetError(`Could not take the fleet lock ${p.lock}: ${(e as Error).message}`, 75)
+      }
       let alive = false
       try { process.kill(pid, 0); alive = true } catch { /* stale */ }
-      if (alive && pid !== process.pid) throw new FleetError(`Another abfleet command is running (process ${pid}); try again when it is done.`, 75)
-      fs.rmSync(p.lock, { force: true })
+      // an empty file: another command is writing its pid right now (wait); a dead process's lock: take it over
+      if (pid && (!alive || pid === process.pid)) { fs.rmSync(p.lock, { force: true }); continue }
+      if (Date.now() >= until) throw new FleetError(`Another abfleet command is running (process ${pid}); try again when it is done.`, 75)
+      if (!told) { say(`waiting for another abfleet command (process ${pid}) to finish ...`); told = true }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250)
     }
   }
-  throw new FleetError('Could not take the fleet lock.', 75)
 }
 
 export async function runAbfleet(argv: string[], e: Env = {}): Promise<{ code: number; result: unknown; error?: string }> {
@@ -360,7 +379,7 @@ export async function runAbfleet(argv: string[], e: Env = {}): Promise<{ code: n
       clock: () => sys.now(),
     }
     if (key === 'init' && !dry && !base.exists(paths.registry)) { base.mkdir(paths.etc, { mode: 0o755, owner: 'root' }); ctx.save() }
-    if (!READ_ONLY.has(key) && !dry && base.kind !== 'fake') release = lock(paths)
+    if (!READ_ONLY.has(key) && !dry && base.kind !== 'fake') release = lock(paths, env, out.warn)
     // expired operator access ends before anything else (the timer does it every 5 minutes too)
     if (key !== 'init' && key !== 'access sweep' && !dry && ctx.reg.grants.some((g) => g.state === 'active' && Date.parse(g.until) <= ctx.clock())) {
       const { accessSweep } = await import('./lib/access.ts')

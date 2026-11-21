@@ -65,6 +65,13 @@ Two variables, both URLs of **sandbox** servers with throw-away accounts; never 
   integration suite except the MySQL connector's). The database named in the URL must exist; the suites use it as the maintenance
   database.
 - `APPBUILDER_TEST_MYSQL=mysql://user:password@host:port/appbuilder_test`: only `server/connectors/mysql/mysql.integration.test.ts`.
+- `APPBUILDER_TEST_MYSQL_TLS=mysql://user:password@localhost:port/db` with `APPBUILDER_TEST_MYSQL_TLS_CA=<ca.pem>`: only
+  `server/connectors/mysql/tls.integration.test.ts`, against a MySQL/MariaDB that requires TLS with a certificate from that
+  CA naming only `localhost` (host name checks, P3-15).
+- `APPBUILDER_TEST_DROP_WAIT_MS` (default 15000): how long a suite's close waits for its test database to be dropped; a
+  slower `DROP DATABASE` (it forces a checkpoint) finishes on the server in the background, so afterAll does not hang.
+  `APPBUILDER_TEST_CLOSE_TRACE=<file>` writes the time of each close step of `kernel-testkit.ts` (and what is still open
+  when one takes over 15 s) to that file.
 
 ```bash
 export APPBUILDER_TEST_DB='postgres://abdev:abdev-sandbox-only@127.0.0.1:5433/appbuilder_test'

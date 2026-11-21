@@ -106,6 +106,12 @@ describe.skipIf(!PG_URL)(PG_URL ? 'operations endpoints (PostgreSQL)' : `operati
     expect(keys).toEqual(expect.arrayContaining(['database', 'clock', 'environments', 'backups', 'jobs', 'mail', 'disk:workspace']))
     expect(d.data.checks.find((c: { key: string }) => c.key === 'mail').status).toBe('warn')
     expect(d.data.logs.dir).toBe(path.join(tmp, 'logs'))
+    // load test, November 2026: the event-loop delay (last minute, since start), print workers, table registry cache
+    expect(keys).toContain('eventLoop')
+    expect(d.data.process.eventLoop.lastMinute).toMatchObject({ p50Ms: expect.any(Number), p99Ms: expect.any(Number), maxMs: expect.any(Number) })
+    expect(d.data.process.eventLoop.sinceStart.samples).toBeGreaterThan(0)
+    expect(d.data.process.printWorkers).toMatchObject({ size: expect.any(Number), queued: 0 })
+    expect(d.data.process.tableCache).toMatchObject({ hits: expect.any(Number), misses: expect.any(Number) })
   })
 
   it('health alerts (P1-E): settings, immediate alerts once per condition, daily summary, heartbeat through the outbound policy', async () => {

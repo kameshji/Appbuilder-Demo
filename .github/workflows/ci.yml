@@ -128,8 +128,10 @@ jobs:
   fleet:
     # the fleet installer supports Ubuntu 24.04 and 22.04 (the hosting target); ubuntu-latest moved to 26.04
     runs-on: ubuntu-24.04
-    # NOT PASSING YET (21 Nov 2026): its first real runs stop at "abfleet init" (the runner has PostgreSQL 16; init
-    # looks for /usr/lib/postgresql/17/bin). Kept visible but non-blocking until fixed: docs/plan/HANDOVER.md.
+    # NOT PASSING YET (21 Nov 2026): its first real runs stopped at "abfleet init" (the runner has PostgreSQL 16; init
+    # looked for /usr/lib/postgresql/17/bin). Fixed: the installer records the folder of the RUNNING server's tools and
+    # every fleet command reads it (scripts/fleet/lib/pg.ts); nothing after init has run on Linux yet. Non-blocking
+    # until it is green: docs/plan/HANDOVER.md. On a failure fleet-ci.sh prints DIAGNOSTICS (units, journals, registry).
     continue-on-error: true
     timeout-minutes: 45
     steps:
@@ -151,5 +153,14 @@ jobs:
         run: |
           APPBUILDER_FLEET_PG_BIN="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)" node scripts/exit-check/h-fleet.mjs
 
+      - name: What the runner has (PostgreSQL, Caddy, systemd) before the fleet installer
+        run: |
+          ls -d /usr/lib/postgresql/*/bin || true
+          pg_config --bindir || true
+          systemctl --version | head -n 1
+          command -v caddy || echo 'no caddy (the installer adds it)'
+          df -hT / | tail -n 1
+
       - name: The fleet on this runner (systemd, OS users, sockets, Caddy, HTTPS by host name)
+        timeout-minutes: 35
         run: sh scripts/fleet/ci/fleet-ci.sh

@@ -27,6 +27,21 @@ export function erpLite(): TemplatePackage {
   return raw
 }
 
+/**
+ * ERP-lite under another id with a rollup on a parent over its own child lines (Sales orders get Total quantity, the sum
+ * of their lines' Quantity, and Line count): the shape that made uninstall with "Delete tables" fail
+ * (uninstall-order.integration.test.ts).
+ */
+export function erpLiteWithRollup(): TemplatePackage {
+  const p = clone(erpLite())
+  p.id = 'test.erp-lite-rollup'
+  p.name = `${p.name} (rollup test)`
+  const orders = p.slots.find((s) => s.id === 'SalesOrders')!
+  orders.columns.push({ id: 'TotalQty', label: 'Total quantity', types: ['decimal', 'number'], required: false, create: { type: 'decimal', computed: { kind: 'rollup', table: 'Slot_SalesOrderLines', via: 'Slot_SalesOrderLines_Order', fn: 'sum', column: 'Slot_SalesOrderLines_Quantity' } } })
+  orders.columns.push({ id: 'LineCount', label: 'Line count', types: ['number'], required: false, create: { type: 'number', computed: { kind: 'rollup', table: 'Slot_SalesOrderLines', via: 'Slot_SalesOrderLines_Order', fn: 'count' } } })
+  return p
+}
+
 export function erpLiteNext(): TemplatePackage {
   const p = clone(erpLite())
   p.version = '1.1.0'

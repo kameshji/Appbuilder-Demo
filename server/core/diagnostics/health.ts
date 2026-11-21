@@ -19,6 +19,9 @@ import { activeFileLog, effectiveLevel } from './logger.ts'
 import { readReleaseInfo } from '../update/release.ts'
 import { installRoot } from '../update/layout.ts'
 import { identity } from '../identity/index.ts'
+import { eventLoopStats, LOOP_P99_WARN_MS } from './event-loop.ts'
+import { printPool } from '../print/pool.ts'
+import { tableCacheStats } from '../table-cache.ts'
 
 /** how long after start a database that is not reachable yet counts as "starting" rather than "degraded" */
 export const STARTING_GRACE_SECONDS = 120
@@ -207,6 +210,15 @@ export async function detailedHealth(services: CoreServices, live: LiveStatsSour
     logBytes = fileLog ? fileLog.files().reduce((s, f) => s + f.bytes, 0) : 0
   } catch { /* ignore */ }
   if (!fileLog) add('logs', 'Log file', 'warn', 'File logging is off; the server log is only on the console.')
+  // load test, November 2026: the event-loop delay, the print workers and the table registry cache
+  const eventLoop = eventLoopStats()
+  const lm = eventLoop.lastMinute
+  add('eventLoop', 'Event loop', lm.p99Ms > LOOP_P99_WARN_MS ? 'warn' : 'ok',
+    `Delay over the last minute: p50 ${lm.p50Ms} ms, p99 ${lm.p99Ms} ms, max ${lm.maxMs} ms${lm.p99Ms > LOOP_P99_WARN_MS ? ` (above ${LOOP_P99_WARN_MS} ms: requests wait for other work of this server)` : ''}.`)
+  const proc = {
+    pid: process.pid, uptimeSeconds: Math.round(process.uptime()), rssBytes: mem.rss, heapUsedBytes: mem.heapUsed,
+    eventLoop, printWorkers: printPool().stats(), tableCache: tableCacheStats(),
+  }
 
   return {
     status,
@@ -221,7 +233,7 @@ export async function detailedHealth(services: CoreServices, live: LiveStatsSour
     live: { connections: liveStats.connections, users: liveStats.users },
     mail: { configured: mailConfigured },
     clock,
-    process: { pid: process.pid, uptimeSeconds: Math.round(process.uptime()), rssBytes: mem.rss, heapUsedBytes: mem.heapUsed },
+    process: proc,
     logs: { dir: fileLog?.dir ?? null, level: fileLog?.level() ?? lvl.level, levelFromEnv: lvl.fromEnv, bytes: logBytes },
   }
 }

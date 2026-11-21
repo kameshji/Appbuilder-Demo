@@ -25,8 +25,9 @@ both passes.
 ## Summary
 
 **Second pass.** P3-6 is fixed (both database connectors connect to the checked address and re-check every later
-connection). New: four fixed (three Low, one informational), two open (Low: MySQL TLS does not check the host name,
-P3-15; a pack upgrade does not single out a role whose access widens, P3-16), three accepted. Held up against what was
+connection). New: four fixed (three Low, one informational), two open at the time (Low: MySQL TLS did not check the
+host name, P3-15; a pack upgrade did not single out a role whose access widens, P3-16), both fixed since (21 Nov 2026,
+see their sections), three accepted. Held up against what was
 tried: chat's member, file, search, export-token and retention rules, read and team shares, the balance invariant over
 every write path tried, the lookup-sort tie rule, the licence service's limits and uniform refusals, the kiosk and start
 address parsing. The weak spots were again old rules meeting a new feature: moderation could remove the export
@@ -101,8 +102,8 @@ would most want an outside reviewer to look at first:
 | P3-12 | Notes and tasks sharing (B2) | An edit share allowed changing `AssignedTo` / `AssignedTeam`: assigning a note or task gives the assignee read and write access, so an editor could pass someone else's note on to anyone (the share rules say only the owner shares) | Low (confidentiality; the owner had chosen to trust the editor with the content) | Fixed |
 | P3-13 | Reminders and digest (B2) | Reminders and the overdue digest fall back to the OWNER of an unassigned task; for a task about a record, the owner may have lost read access (role removed), yet the reminder title and the digest lines still named it ("Reminder: <subject>") | Low (a subject line the person could read before) | Fixed |
 | P3-14 | Client rendering (B1, B2) | The approvals page put stored comment bodies and request details into `dangerouslySetInnerHTML` without sanitising them again (the server sanitises on write; a row written another way, such as a crafted backup restored by an administrator, would run) | Info (defence in depth) | Fixed |
-| P3-15 | Database connections, TLS (A) | With SSL on, the MySQL connector checks the certificate chain but not that the certificate names the host (mysql2 checks the name only with `verifyIdentity`, which is not set); PostgreSQL checks both | Low (needs a man in the middle with a certificate from a CA the server trusts) | **Open** (turning it on changes on-premises behaviour for certificates that do not name the host typed; no TLS MariaDB in the sandbox to test it) |
-| P3-16 | Pack upgrades (B3) | The upgrade plan lists a pack role whose privileges the new version changes as "changed", without saying that its access WIDENS (a looser row rule, a column no longer hidden); a role the customer changed here is kept by default (good), an untouched one takes the new rule | Low (built-in packs only, upgrades by administrators who read the plan) | **Open** (found by reading; no newer pack version exists to test against) |
+| P3-15 | Database connections, TLS (A) | With SSL on, the MySQL connector checks the certificate chain but not that the certificate names the host (mysql2 checks the name only with `verifyIdentity`, which is not set); PostgreSQL checks both | Low (needs a man in the middle with a certificate from a CA the server trusts) | Fixed (21 Nov 2026: `verifyIdentity` on, IP addresses checked too; tested against a TLS MariaDB) |
+| P3-16 | Pack upgrades (B3) | The upgrade plan lists a pack role whose privileges the new version changes as "changed", without saying that its access WIDENS (a looser row rule, a column no longer hidden); a role the customer changed here is kept by default (good), an untouched one takes the new rule | Low (built-in packs only, upgrades by administrators who read the plan) | Fixed (21 Nov 2026: the plan lists each widened role, the server refuses the upgrade without `acceptWidening`) |
 | P3-17 | Chat export (B1) | The export link works more than once within its hour for the exporting administrator | Info | Accepted (each download audited; the members are told once at creation) |
 | P3-18 | Licence service (B6) | Whoever holds a licence's install key can check in with invented install ids; after 7 days of alternating, the older (legitimate) install is answered `duplicate` and becomes read-only | Low | Accepted (the key is a secret in the instance's environment; the operator sees both installs and releases one: `licence-service install release`) |
 | P3-19 | Deep links (B7) | Opening `#u-notes?new=1&table=..&row=..` creates an empty note about that record at once (a link someone sends makes a note in the reader's name) | Info | Accepted (only about a record the reader may read, else 422; the exit check and the timeline use the link; no content is written) |
@@ -277,22 +278,44 @@ place (chat, the record timeline) sanitises again in the browser. *Fix*: `saniti
 S-U "guard (P3-14)" lists every `dangerouslySetInnerHTML` in `src/**/*.tsx` and fails for one fed by anything but a
 sanitiser call or a value checked by reading (`html` in the timeline, the server-generated QR code SVG).
 
-### P3-15 MySQL TLS without a host name check (Low, open)
+### P3-15 MySQL TLS without a host name check (Low, fixed 21 Nov 2026)
 
 mysql2 3.24.6 verifies the server certificate against `servername` only when `ssl.verifyIdentity` is true;
-`poolOptions` sets `rejectUnauthorized: true` without it, so any certificate from a trusted CA is accepted for any host.
-Not changed: a customer connecting by a name their certificate does not carry (or by IP address, where mysql2 sets no
-server name) would be refused after an upgrade, and there is no TLS MariaDB in the sandbox to prove the change. Proposed:
-`verifyIdentity: true` when the host is a name, with a release note.
+`poolOptions` set `rejectUnauthorized: true` without it, so any certificate from a trusted CA was accepted for any host.
+A second gap showed up when it was tested: for an IP address mysql2 gives TLS no server name, and Node then checks the
+certificate against the socket's host, which `net` leaves unset for an address, so it checked **"localhost"**: a
+certificate for `localhost` was accepted for `127.0.0.1` even with `verifyIdentity`. (PostgreSQL is not affected:
+node-postgres passes `host` to `tls.connect`.) *Fix* (`server/connectors/mysql/db.ts`): with SSL on, `verifyIdentity:
+true` for names and addresses; for an address the connector opens the socket itself and names the address on it, so the
+certificate must list that IP address. A certificate naming another host is explained in words ("The server's SSL
+certificate does not name ..."). Behaviour change for on-premises installs, written in `docs/admin/connections.md`.
+*Evidence*: `server/connectors/mysql/tls.test.ts` (the options passed to the driver; the message; 5 tests) and
+`tls.integration.test.ts` against a MariaDB 10.11 started for the test in `.sandbox/B2` with TLS required and a
+certificate from a test CA naming only `localhost` (`APPBUILDER_TEST_MYSQL_TLS`, `APPBUILDER_TEST_MYSQL_TLS_CA`; each try
+a child process with `NODE_EXTRA_CA_CERTS`): `localhost` connects; another name resolved to the same server is refused
+(ERR_TLS_CERT_ALTNAME_INVALID); `127.0.0.1` is refused (it connected before the socket fix); without the test CA the
+chain is refused. By hand: with a certificate that also lists `IP:127.0.0.1`, `127.0.0.1` connects. Before the fix the
+first unit test failed (no `verifyIdentity`).
 
-### P3-16 Pack upgrades and widened role access (Low, open)
+### P3-16 Pack upgrades and widened role access (Low, fixed 21 Nov 2026)
 
 `upgradeContext` (`server/core/templates/service.ts`) compares each pack role with the hash of what was delivered: a role
-changed here is listed and kept by default (read, and covered by the packs suite), an untouched role takes the new
-version's privileges. The plan item says "changed", not that the change widens access (a row rule removed or loosened, a
-column no longer hidden, a scope from own to all). Not attacked by test: no built-in pack has a newer version whose role
-widens access, and the catalogue accepts only shipped, digest-checked packages. Proposed: compare old and new privileges
-per pack table and add a plan warning "gives <role> more access: ..." that the administrator must confirm.
+changed here is listed and kept by default, an untouched role takes the new version's privileges. The plan item said
+"changed", not that the change widens access. *Fix*: for every pack role that takes the new version (not kept local),
+`roleWidening` (`server/core/templates/packs.ts`) compares its privileges here with what the upgrade writes (the
+solution document's role plus the grants on mapped tables) and lists in words what grows: access to a table it had none
+on, a wider read / update / delete / share scope (organisation scopes that are not nested count as wider), creating
+rows, a row rule removed or changed, a column hidden or read-only before and visible or editable after, the maker flag,
+another app or every app. The plan carries `widens: [{ role, name, changes }]` and a warning per role; the plan token
+covers it; `POST /templates/installed/:id/upgrade` refuses with 422 (`acceptWidening`) unless the body has
+`acceptWidening: true`, and the audit entry `template.upgrade` records `widenedRoles`. The upgrade dialog shows an amber
+box per role with a tick, "I accept the wider access" (`useWideningConsent` in `src/portal/SolutionPlan.tsx`), and the
+Upgrade button stays off until it is ticked. *Evidence*: `server/core/templates/upgrade-widening.integration.test.ts`:
+the pure comparison (every kind listed; narrower or equal lists nothing) and, against PostgreSQL, the built-in Visitor
+log upgraded to a test 2.0.0 whose Visit host role reads every visit (was its own), deletes its own visitors (was none)
+and sees the phone numbers (hidden): the plan lists Visit host with the three changes and not Reception; the upgrade
+without the tick is refused and nothing changes (the role still reads its own visits, the install is still 1.0.0); with
+the tick it runs, the role reads all visits, and the audit entry names the role.
 
 ### Accepted
 
@@ -336,7 +359,6 @@ Carried into the [security model](../admin/security-model.md#explicit-limitation
 - `requester` formulas over user-edited fields (P3-7); formSubmitted starts per save (P3-8); cards posted by others (P3-9).
 - `*.domain` deny entries by name only; a database server reached through an allowed address can forward elsewhere
   (P3-6 is fixed for what the policy can see).
-- MySQL TLS does not check the host name (P3-15, open); pack upgrades do not single out widened role access (P3-16, open).
 - The export link works more than once within its hour (P3-17); the duplicate-install rule in the hands of a key holder
   (P3-18); `#u-notes?new=1` makes an empty note (P3-19).
 - An assignee can hand a task to anyone, who then reads it even without access to its record (the core data model's

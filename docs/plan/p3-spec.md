@@ -1,6 +1,6 @@
 # Phase 3 (Collaboration and templates) specification
 
-Status: **BUILT except package L (ledgers and GST, blocked on the accountant's sign-off)**, version 0.8.0, 21 Nov 2026; exit check results and what is carried forward are at the end. (Written 20 Nov 2026 against version 0.7.0, schema version 13, as proposed defaults.) Nothing in this
+Status: **BUILT; package L (ledgers and GST) is a prototype on the unsigned draft by the owner's decision of 21 Nov 2026 (version 0.9.0, `ledgers-gst-spec.md`)**, version 0.9.0, 21 Nov 2026; exit check results and what is carried forward are at the end. (Written 20 Nov 2026 against version 0.7.0, schema version 13, as proposed defaults.) Nothing in this
 file is built yet. Every open question was answered with a recommended default (section 2), as master plan section 15
 asks: "default chosen, owner may change". Phase 2 closed at 0.7.0 ([p2-spec.md](p2-spec.md)).
 
@@ -786,7 +786,7 @@ To be filled by package Z.
 | 11 | CRM pack | PASS | `p3-crm.mjs` 39 checks |
 | 12 | ERP-lite pack; 20 parallel issues never below zero | PASS | `p3-erp.mjs` 22 checks |
 | 13 | Solution template rules | PASS | `p3-templates.mjs` 40 checks |
-| 14 | GST gate | PENDING | no accountant sign-off recorded in `gst-spec-draft.md`; package L (ledgers and GST) is not built |
+| 14 | GST gate | PENDING (built anyway) | no accountant sign-off recorded in `gst-spec-draft.md`; package L was built on the draft in 0.9.0 by the owner's decision; `p3-ledgers.mjs` 26 of 26 |
 | 15 | Carried-forward items | PASS | `p3-misc.mjs` 24 checks; `p2-dashboard-screens.mjs` 58 checks |
 | 16 | Phase 0 to 2 regression, docs, security review | PASS after the script fix | `p2.mjs`: phone 124, PDF 18, dashboard on 1,000,000 rows, auto apps 52, templates 31, WhatsApp 15 (mock), P0 6 rows, P1 9 rows, docs 16; `docs/internal/security-review-p3.md`: 19 findings (10 fixed, 2 open, 7 accepted) |
 
@@ -794,7 +794,7 @@ Full test suite at the close: 2,874 tests; two runs, the second clean; the first
 
 ## Carried forward
 
-- **Blocked on the owner's accountant:** package L (ledgers and GST). The CRM and ERP-lite packs compute no tax.
+- **Waiting for the accountant's corrections:** Accounts (package L) is built on the unsigned draft (0.9.0). The CRM and ERP-lite packs still compute no tax.
 - **Owner actions:** the real-device phone test script; a Meta account for WhatsApp; a real mail provider; the release signing key and the licence signing key; a lawyer's review of `docs/launch/tester-terms-draft.md`; an outside security review (the internal reviewer's three priorities are in `security-review-p3.md`); a decision on D12 (the PHP gateway no longer fits).
 - **Open security findings:** MySQL over SSL does not check that the certificate names the host; a pack upgrade does not say when a role's access widens.
 - **Known bugs:** uninstall with "delete tables" fails when a parent table has a rollup over its own child lines; a Form with `Item` drops values of columns not in `Fields`; an Activity's regarding record cannot change after creation; a test server's close occasionally hangs for a minute.

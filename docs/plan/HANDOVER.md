@@ -1,10 +1,10 @@
-# Handover (state at version 0.8.0, 21 Nov 2026)
+# Handover (state at version 0.9.0, 21 Nov 2026)
 
-Read first: `docs/plan/master-plan.md` (sections 9 to 16 are the owner's decisions), `docs/plan/p3-spec.md` and `docs/plan/hosting-spec.md` (each ends with its results and what is carried forward), `docs/decisions.md` (D1 to D65), `CHANGELOG.md`, `docs/dev/testing.md`, `docs/internal/security-review-p3.md`.
+Read first: `docs/plan/master-plan.md` (sections 9 to 16 are the owner's decisions), `docs/plan/p3-spec.md` and `docs/plan/hosting-spec.md` (each ends with its results and what is carried forward), `docs/decisions.md` (D1 to D67), `CHANGELOG.md`, `docs/dev/testing.md`, `docs/internal/security-review-p3.md`.
 
 ## Where it stands
 
-- `main` is at version 0.8.0. Phases 0, 1 and 2 are closed. Phase 3 is built except package L (ledgers and GST), which waits for a practising accountant to sign `docs/plan/gst-spec-draft.md`.
+- `main` is at version 0.9.0 (schema 15). Phases 0, 1 and 2 are closed. Phase 3 is built. Accounts (ledgers and India GST, package L) is a prototype built on the unsigned `docs/plan/gst-spec-draft.md` by the owner's decision; the owner sends the accountant's corrections later (`docs/plan/ledgers-gst-spec.md`, `docs/dev/ledgers-gst.md`). The owner's goal now: a complete working prototype to show clients and investors, tested on a local server.
 - Hosting is one install per organisation on one Linux server (owner's goal: a paid pilot of at most 20 organisations of 20 to 50 people). Built: server options, the read-only gate, the isolation suite, the licence service and seat passes, the fleet tool `abfleet`, a load-test harness. Not done: anything that needs a rented server (H-M, H-N, exit checks 1, 7 and 8 for real).
 - Nothing has run on a real phone, against Meta's real API, with a real mail provider or on a rented server. No outside security review.
 
@@ -15,11 +15,11 @@ Read first: `docs/plan/master-plan.md` (sections 9 to 16 are the owner's decisio
 ## What remains, in order
 
 1. Owner: rent the Linux server when ready; then run the fleet installer, `abfleet init`, the isolation suite, the pilot load profile and exit checks 1, 7 and 8 there; write H-M (tester on-boarding, incident procedure) and close the hosting phase.
-2. From the load test: move PDF generation and CSV imports off the request loop; cache the table list query; report event-loop delay in the health endpoint.
-3. Server commands the fleet tool wants: `rekey`, `backup create`, locked SMTP settings, `admin operator-access`, `status --json`.
-4. Open security findings: MySQL over SSL host verification; pack upgrades that widen a role's access must say so.
+2. Still open from the load test: import speed (about 26 ms a row, per-row rules in the kernel); a Manufacturing dashboard tile the Quality role cannot read. Done in 0.9.0: print workers, sliced imports, table list cache, event-loop delay.
+3. Server commands still missing: `rekey` (needs a registry of sealed columns first) and locked SMTP settings by environment.
+4. Accounts, not built: ERP-lite sales invoice as a GST tax invoice, delivery challan fields, year-end closing, several originals per note; backup/restore of the Accounts tables untested; environment copy does not copy the books.
 5. Known bugs and unbuilt items: the "Carried forward" list at the end of `docs/plan/p3-spec.md`.
-6. Package L after the accountant's sign-off. Then the master plan's later phases (single sign-on and passkeys, AI agents, documents, sites).
+6. The accountant's corrections to Accounts when the owner sends them. Then the master plan's later phases (single sign-on and passkeys, AI agents, documents, sites).
 
 ## Needs the owner
 

@@ -81,6 +81,28 @@ export function initialValues(cols: ColumnDef[], mode: FormModeName, item: FxRec
   return out
 }
 
+/**
+ * New mode with a starting Item (a record without an id, such as {Order: Gallery1.Selected.id, Qty: 1}): its values for
+ * columns the form does not show (not in Fields) are saved too, as the maker set them. Only columns a person could write
+ * here: not system, calculated, auto-number or file columns, and not those the signed-in user may not update.
+ */
+export function startingExtras(table: TableDef, shown: ColumnDef[], mode: FormModeName, item: FxRecord | null, access: (c: ColumnDef) => string): FxRecord {
+  const out: FxRecord = {}
+  if (mode !== 'New' || !item || item.__id != null || item.id != null) return out
+  const names = new Set(shown.map((c) => c.name))
+  for (const c of table.columns) {
+    if (names.has(c.name) || c.system || c.computed || c.type === 'autonumber' || isFileType(c.type) || access(c) !== 'update') continue
+    const key = c.name in item ? c.name : Object.keys(item).find((k) => k.toLowerCase() === c.name.toLowerCase())
+    if (key === undefined) continue
+    let v = item[key]
+    // a lookup may be given the record itself (Gallery1.Selected): its id is saved
+    if (c.type === 'lookup' && isRecord(v)) v = v.__id ?? v.id ?? null
+    if (v == null || v === '') continue
+    out[c.name] = toFxValue(c, fromRowValue(c, v))
+  }
+  return out
+}
+
 /** Typed value the platform expects for this column; null = blank. */
 export function toFxValue(col: ColumnDef, v: FieldVal | undefined): FxValue {
   if (col.type === 'boolean') return v === true

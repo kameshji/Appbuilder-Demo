@@ -12,6 +12,7 @@ import { dashboardsEnvironmentDdl, upgradeEnvironmentTo11Dashboards, upgradeEnvi
 import { templatesEnvironmentDdl, upgradeEnvironmentTo13Templates, upgradeEnvironmentTo14Templates } from './templates/ddl.ts'
 import { chatEnvironmentDdl, upgradeEnvironmentTo14Chat } from './chat/ddl.ts'
 import { whatsappEnvironmentDdl, upgradeEnvironmentTo13Whatsapp } from './whatsapp/ddl.ts'
+import { ledgerEnvironmentDdl, upgradeEnvironmentTo15Ledger } from './ledger/ddl.ts'
 import type {
   AttachmentRecord, ConnectionRecord, EnvironmentRecord, EnvironmentRef, MetaStore, MigrationSummary, SecretBox, SqlDb, UserRecord,
 } from './contracts.ts'
@@ -68,8 +69,9 @@ import { RECYCLE_TABLES, recycleEnvironmentDdl, upgradeEnvironmentTo10Recycle } 
  *    connector (whatsapp/ddl.ts).
  * 14: P3 package A (independent step): chat (chat/ddl.ts). P3 package M1 (independent step): solution templates
  *    (templates/ddl.ts).
+ * 15: P3 package L (independent step): ledgers and India GST (ledger/ddl.ts: ab_led_*, ab_gst_*).
  */
-export const SCHEMA_VERSION = 14
+export const SCHEMA_VERSION = 15
 
 /** the database was upgraded by a newer server: this one must not touch it (downgrade guard) */
 export class SchemaTooNewError extends Error {
@@ -320,6 +322,8 @@ export function environmentDdl(schema: string): string[] {
     ...templatesEnvironmentDdl(schema),
     ...whatsappEnvironmentDdl(schema),
     ...chatEnvironmentDdl(schema),
+    // P3-L ledgers and India GST (version 15, independent step)
+    ...ledgerEnvironmentDdl(schema),
   ]
 }
 
@@ -453,6 +457,12 @@ export const ENVIRONMENT_STEPS: { to: number; describe: string; run(db: SqlDb, s
     to: 14,
     describe: 'solution templates (catalogue kind, sample rows, dependencies)',
     run: upgradeEnvironmentTo14Templates,
+  },
+  {
+    // P3-L (independent step): ledgers and India GST; the tables come from environmentDdl
+    to: 15,
+    describe: 'ledgers and India GST (chart of accounts, journals, GST reference data and documents)',
+    run: upgradeEnvironmentTo15Ledger,
   },
 ]
 

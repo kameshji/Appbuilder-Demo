@@ -32,8 +32,8 @@ describe('module registry', () => {
     }
   })
   it('lists the planned Dev and User mode modules', () => {
-    expect(modulesFor('dev').map((m) => m.key)).toEqual(['datamodel', 'flows', 'approvals', 'dashboards', 'printtemplates', 'reports', 'agents', 'sites', 'admin', 'templates'])
-    expect(modulesFor('user').map((m) => m.key)).toEqual(['approvals', 'dashboards', 'tasks', 'mentions', 'myreports', 'notes', 'chat', 'files', 'documents', 'mail'])
+    expect(modulesFor('dev').map((m) => m.key)).toEqual(['datamodel', 'flows', 'approvals', 'dashboards', 'accounts', 'printtemplates', 'reports', 'agents', 'sites', 'admin', 'templates'])
+    expect(modulesFor('user').map((m) => m.key)).toEqual(['approvals', 'dashboards', 'accounts', 'tasks', 'mentions', 'myreports', 'notes', 'chat', 'files', 'documents', 'mail'])
   })
   it('Tasks and Mentions are live built-in User mode pages (core data model)', () => {
     expect(moduleRoute(moduleByKey('tasks')!)).toEqual({ page: 'u', id: 'tasks' })

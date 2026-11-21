@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { dropDatabase, pgQuery, pgServer, testDatabaseName } from './testdb.ts'
+import { dropDatabase, pgQuery, pgServer, testDatabaseName, withPg } from './testdb.ts'
 import { createApp } from './app.ts'
 import type { AppServer } from './app.ts'
 
@@ -67,9 +67,28 @@ export async function startHarness(suite: string, o: { jobs?: boolean; env?: Nod
     app, admin, dbName, tmp, base,
     q: (sql, params = []) => pgQuery(dbName, sql, params),
     async close() {
-      await new Promise<void>((r) => server.close(() => r()))
+      const trace = process.env.APPBUILDER_TEST_CLOSE_TRACE
+      let t0 = Date.now()
+      let pending = 'server.close'
+      const step = (name: string) => {
+        if (trace) fs.appendFileSync(trace, `${suite} ${name} ${Date.now() - t0}ms\n`)
+        t0 = Date.now()
+        pending = name === 'server.close' ? 'app.close' : 'dropDatabase'
+      }
+      const watch = trace ? setTimeout(() => {
+        server.getConnections((_e, n) => fs.appendFileSync(trace, `${suite} STUCK in ${pending} after 15s; open http connections ${n}; ${JSON.stringify(process.getActiveResourcesInfo())}\n`))
+        void withPg((c) => c.query(`SELECT pid, backend_type, application_name, state, wait_event_type, wait_event, left(query, 120) AS query FROM pg_stat_activity WHERE datname = $1 OR query ILIKE '%DROP DATABASE%' OR query ILIKE '%CREATE DATABASE%'`, [dbName]))
+          .then((r) => fs.appendFileSync(trace, `${suite} pg_stat_activity: ${JSON.stringify(r.rows)}\n`), (e) => fs.appendFileSync(trace, `${suite} pg_stat_activity failed: ${String(e)}\n`))
+      }, 15_000) : null
+      watch?.unref()
+      // keep-alive sockets of the test clients (and a request a test left running) must not hold the close
+      await new Promise<void>((r) => { server.close(() => r()); server.closeAllConnections() })
+      step('server.close')
       await app.close()
+      step('app.close')
       await dropDatabase(dbName)
+      step('dropDatabase')
+      if (watch) clearTimeout(watch)
       fs.rmSync(tmp, { recursive: true, force: true })
     },
   }

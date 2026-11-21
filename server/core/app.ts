@@ -42,8 +42,10 @@ import { pwaRoutes } from './pwa.ts'
 import { offlineRoutes } from './offline.ts'
 import { chatRoutes } from './chat/routes.ts'
 import { notesRoutes } from './notes/routes.ts'
+import { ledgerRoutes } from './ledger/routes.ts'
 import { licenceRoutes, startLicence, stopLicence } from './licence/index.ts'
 import { withPasses } from './licence/seats.ts'
+import { closePrintPool } from './print/pool.ts'
 
 export interface AppServer {
   services: CoreServices
@@ -147,6 +149,8 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
   chatRoutes(router, services, live, { env })
   // P3-N: notes (the NOTE_TAGS sanitiser, mentions in notes, the Notes page's routes)
   notesRoutes(router, services)
+  // P3-L: ledgers and India GST (Accounts: chart, journals, GST documents, return summaries as data)
+  ledgerRoutes(router, services)
   // H-G / H-H: the licence state, "check now" and seat passes (Admin console > Licences)
   licenceRoutes(router, services)
   if (opts.boot !== false) {
@@ -188,6 +192,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<AppServer>
       offOutbox()
       stopLicence(services)
       await live.close().catch(() => {})
+      await closePrintPool().catch(() => {})
       await services.close()
     },
   }

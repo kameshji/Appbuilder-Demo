@@ -4,6 +4,37 @@ All notable changes to Appbuilder are recorded here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-21
+
+**Accounts (ledgers and India GST) is built as a prototype on a draft specification that no practising accountant has reviewed; the product makes no compliance claim.** Also: the load-test findings, the open security findings and the known bugs carried forward from 0.8.0.
+
+### Added
+- **Accounts** (ledgers and India GST), by the owner's decision of 21 Nov 2026 to build on `docs/plan/gst-spec-draft.md` before the accountant's sign-off: chart of accounts, journals, period locks, trial balance, profit and loss, balance sheet; tax invoice, bill of supply, credit and debit notes, vouchers and purchase invoices with GST computed from dated reference data the administrator maintains (shipped empty); PDFs; 13 return summaries as data and CSV. No filing, no IRN or e-way bill generation. Schema version 15. Spec and what is not built: `docs/plan/ledgers-gst-spec.md`; draft defaults chosen: `docs/dev/ledgers-gst.md`.
+- Server commands `appbuilder status --json`, `appbuilder backup create`, `appbuilder admin operator-access open|close`; the fleet tool uses them when the release has them.
+- `GET /api/v1/admin/health` shows the event-loop delay (p50, p99, max for the last minute and since start) with a warning check above 100 ms, plus print-pool and table-cache counters; the load harness records them.
+- Administrators see a strip under the top bar during the licence grace period (time left, what to do) and the steps out of a licence read-only state.
+
+### Changed
+- Prints (PDF layout and writing) run in a small pool of worker threads (`APPBUILDER_PRINT_WORKERS`, `APPBUILDER_PRINT_QUEUE`) and no longer hold up other requests; a full queue answers 503; the PDF bytes are unchanged.
+- CSV imports parse, check and insert in slices that let other requests run; still all or nothing (`APPBUILDER_IMPORT_YIELD=off` restores the old path).
+- The table list is cached per environment and refreshed after every data-model change or after 60 s; permissions are still applied per request (`APPBUILDER_TABLE_CACHE`, `APPBUILDER_TABLE_CACHE_TTL_MS`).
+- An Activity can be moved to another record (or unlinked) after creation; the writer must be able to read the new record; audited as `activity.regarding`.
+- Fleet: one source of truth for the PostgreSQL tools folder (recorded by `abfleet init`, detected when unset); commands wait up to 120 s for the lock; diagnostics on CI failure. The Linux CI job `fleet` is still marked non-blocking until it has passed.
+
+### Fixed
+- Uninstalling a solution with "Delete tables" failed when a table rolled up its own child lines.
+- A Form in New mode with a starting `Item` dropped that record's values for columns not in `Fields`.
+- Tests: test-database drops no longer hold a suite's shutdown for more than 15 s.
+
+### Security
+- (P3-15) MySQL / MariaDB connections over SSL check that the certificate names the host typed, IP addresses included. **A connection by a name or address its certificate does not carry is now refused.**
+- (P3-16) A pack upgrade that widens a role's access lists each role and change and runs only after the administrator ticks "I accept the wider access" (enforced by the server).
+
+### Not built or not verified
+- `rekey` (needs a registry of every sealed column first) and locked SMTP settings by environment.
+- Accounts: an ERP-lite sales invoice as a GST tax invoice, delivery challan fields, year-end closing, several original invoices per note; backup and restore of the Accounts tables is untested; an environment copy does not copy the books.
+- Nothing has run on a real phone, against Meta's real API, with a real mail provider or on a rented Linux server. No outside security review.
+
 ## [0.8.0] - 2026-11-21
 
 **Phase 3 "Collaboration and templates" is built except ledgers and GST, and the hosting phase is built as far as it can be without a Linux server** (docs/plan/p3-spec.md and docs/plan/hosting-spec.md, with the exit check results). Chat, Tasks, Notes, solution templates with the Manufacturing, CRM and ERP-lite packs, the licence service and seat passes, the fleet tool, an isolation suite and a load-test harness. Schema version 14. Ledgers and GST wait for a practising accountant to sign docs/plan/gst-spec-draft.md. Verified on one developer PC and in CI; nothing has run on a real phone, against Meta's real API, with a real mail provider or on a rented server, and there has been no outside security review (internal review: docs/internal/security-review-p3.md).

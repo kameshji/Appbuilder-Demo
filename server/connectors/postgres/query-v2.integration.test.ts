@@ -442,7 +442,7 @@ suite(PG_URL ? 'query v2 on PostgreSQL (integration)' : `query v2 on PostgreSQL 
                date '2020-01-01' + (g % 2000), 'note ' || g
         FROM generate_series(1, 30000) g`)
       await raw.exec(`ANALYZE "${schema}"."idx"`)
-    })
+    }, 30_000)
 
     /** `noSeq`: the table is small (30,000 rows), so prove the index CAN serve the query by ruling out the scan */
     async function explain(plan: QueryPlan, noSeq = false): Promise<string> {

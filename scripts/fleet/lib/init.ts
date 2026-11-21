@@ -11,6 +11,8 @@ import { alertUnit, caddyBase, caddyNotice, caddySite, LICENCE_USER, licenceEnv,
 import { stageRelease } from './update.ts'
 import { MASTER_KEY } from './backup.ts'
 import { newPassword, newSecretKey, ORG_ID } from './util.ts'
+import { resolvePgBin } from './pg.ts'
+import { CADDY_VALIDATE_ENV } from './instance.ts'
 
 /** writes a file only when its content differs; returns whether it changed */
 export function ensureFile(ctx: Ctx, p: string, text: string, o: { mode: number; owner?: string; group?: string }, changed: string[]): boolean {
@@ -44,7 +46,14 @@ export async function fleetInit(ctx: Ctx, i: InitInput): Promise<InitResult> {
     if (!f.systemd) throw new FleetError('systemd is required (the installs run as systemd units).', 2)
     if (typeof process.getuid === 'function' && process.getuid() !== 0 && !ctx.dry) throw new FleetError('Run abfleet as root (sudo abfleet ...).', 77)
     if (!['ubuntu:22.04', 'ubuntu:24.04'].includes(f.distro)) notes.push(`untested distribution ${f.distro} (tested: Ubuntu 22.04 / 24.04)`)
-    for (const [tool, where] of [['psql', path.join(ctx.reg.config.pgBin, 'psql')], ['caddy', sys.which('caddy')]] as const) if (!where || !sys.exists(where)) throw new FleetError(`${tool} is not installed (${where ?? 'not on the PATH'}): run the fleet installer (scripts/fleet/install.sh).`, 2)
+    // the PostgreSQL tools: what the installer passed (--pg-bin), else the registry's, else detected (lib/pg.ts);
+    // recorded in the registry now so every later command (and each install's APPBUILDER_PG_BIN) uses the same folder
+    const pgBin = resolvePgBin(i.config.pgBin, ctx.reg.config.pgBin)
+    if (!pgBin) throw new FleetError('No PostgreSQL client tools found (pg_config --bindir, /usr/lib/postgresql/<major>/bin): run the fleet installer (scripts/fleet/install.sh) or pass --pg-bin <dir>.', 2)
+    i.config.pgBin = pgBin
+    ctx.reg.config.pgBin = pgBin
+    say(`  PostgreSQL client tools: ${pgBin}`)
+    for (const [tool, where] of [['psql', path.join(pgBin, 'psql')],['caddy', sys.which('caddy')]] as const) if (!where || !sys.exists(where)) throw new FleetError(`${tool} is not installed (${where ?? 'not on the PATH'}): run the fleet installer (scripts/fleet/install.sh).`, 2)
   }
   const [maj, min] = process.versions.node.split('.').map(Number)
   if (maj < 22 || (maj === 22 && min < 18)) throw new FleetError(`Node.js ${process.version}: 22.18 or newer is needed.`, 2)
@@ -108,7 +117,7 @@ export async function fleetInit(ctx: Ctx, i: InitInput): Promise<InitResult> {
   // ---------------------------------------------------------------- 7. Caddy
   if (ensureFile(ctx, p.caddyfile, caddyBase(p, ctx.reg.config), { mode: 0o644, owner: 'root' }, changed) && sys.kind === 'server') {
     await sys.run('systemctl', ['enable', 'caddy'])
-    const v = await sys.run('caddy', ['validate', '--config', p.caddyfile, '--adapter', 'caddyfile'], { mutates: false })
+    const v = await sys.run('caddy', ['validate', '--config', p.caddyfile, '--adapter', 'caddyfile'], { mutates: false, timeoutMs: 60_000, env: CADDY_VALIDATE_ENV })
     if (v.code !== 0 && !ctx.dry) throw new FleetError(`caddy validate: ${v.stderr.trim().split('\n').slice(-3).join(' ')}`)
     await sys.unit('reload', 'caddy').catch(async () => sys.unit('restart', 'caddy'))
   }
@@ -195,6 +204,8 @@ export async function fleetDoctor(ctx: Ctx): Promise<DoctorResult> {
   const t = ctx.reg.config.backup.target
   check('off-machine backup target', !!t && (t.kind === 'rclone' ? !!sys.which('rclone') : sys.exists(t.path)), t ? (t.kind === 'path' ? t.path : `rclone ${t.remote}${sys.which('rclone') ? '' : ' (rclone NOT installed)'}`) : 'none configured')
   if (sys.kind === 'server') {
+    const pgBin = ctx.reg.config.pgBin
+    check('PostgreSQL client tools (registry)', !!pgBin && sys.exists(path.join(pgBin, 'psql')) && sys.exists(path.join(pgBin, 'pg_dump')), pgBin || 'not recorded: re-run abfleet init')
     for (const tm of TIMERS) check(`timer ${tm.name}`, await sys.unit('is-enabled', `${tm.name}.timer`), '')
     check('caddy', await sys.unit('is-active', 'caddy'), '')
   }

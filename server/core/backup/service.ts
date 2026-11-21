@@ -40,6 +40,7 @@ import { copyColumns, parseCopyLine, preDataSql, qi, readCopyLines, copyInto } f
 import { findPgTools, toolProblem } from './pgtools.ts'
 import { DEFAULT_RETENTION, decideRetention, type RetentionPolicy } from './retention.ts'
 import { hostingFor, isInside } from '../hosting/settings.ts'
+import { invalidateTableList } from '../table-cache.ts'
 
 export const BACKUP_JOB = 'backup.run'
 export const RESTORE_TEST_JOB = 'backup.restore-test'
@@ -1007,6 +1008,8 @@ export function createBackupService(deps: BackupServiceDeps) {
       await setOp(opId, { state: 'failed', finished_on: new Date(), error: (committed ? why : `${why} Nothing was changed: the environment keeps its data.`).slice(0, 2000), progress: null })
       await audit(actor.user.id, 'backup.restore_failed', target.id, { op: opId, backup: a.manifest.id, mode: 'in-place', error: why, changed: committed })
     } finally {
+      // the table definitions were written with SQL (table-cache.ts)
+      invalidateTableList()
       await a.close()
     }
   }
@@ -1084,6 +1087,7 @@ export function createBackupService(deps: BackupServiceDeps) {
       await setOp(opId, { state: 'failed', finished_on: new Date(), error: why.slice(0, 2000), progress: null })
       await audit(actor.user.id, 'backup.restore_failed', newId, { op: opId, backup: a.manifest.id, mode: 'new', error: why })
     } finally {
+      invalidateTableList()
       await a.close()
     }
   }
@@ -1292,6 +1296,7 @@ export function createBackupService(deps: BackupServiceDeps) {
     }
     await c.end().catch(() => {})
     await a.close()
+    invalidateTableList()
     sv.security.invalidate({ environment: envId })
     sv.kernel.invalidate()
     for (const t of changedTables) emitTableChange(envId, t, { op: 'import', rowIds: [], changedColumns: null, actor: { id: actor.user.id, name: actor.user.name } } as unknown as Parameters<typeof emitTableChange>[2])

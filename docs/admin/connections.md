@@ -45,7 +45,13 @@ tables, and tables created there are not part of Appbuilder's all-or-nothing cha
 
 **Connections > New connection > PostgreSQL** (or **MySQL / MariaDB**). Enter a name, host, port (5432 or 3306), database, user
 and password, and for PostgreSQL the **schema** whose tables you want (default `public`). *Use SSL* encrypts the connection
-(TLS 1.2 or newer; the server certificate **must be valid**; a self-signed certificate is refused).
+(TLS 1.2 or newer; the server certificate **must be valid**; a self-signed certificate is refused). For both PostgreSQL
+and MySQL / MariaDB the certificate is checked twice: its chain must lead to a certificate authority the server trusts,
+and it must **name the host you typed** (a host name in its DNS names, an IP address in its IP addresses). Connect by a
+name the certificate carries; a connection by IP address works only when the certificate lists that address. (Until
+version 0.8.0 a MySQL / MariaDB connection checked only the chain: after the upgrade, a MySQL connection by a name or
+address its certificate does not carry is refused with "The server's SSL certificate does not name ...". Fix it by
+typing the name the certificate carries.)
 
 - A PostgreSQL connection may not name the schemas `ab` or `env_...` (Appbuilder's own) or PostgreSQL's catalogs
   (`pg_...`, `information_schema`).

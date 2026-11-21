@@ -17,7 +17,7 @@ with its own process, PostgreSQL database and role, OS user, folder, secret key 
 | Path | What |
 | --- | --- |
 | `/opt/appbuilder/releases/<version>/` | one verified release per version, root-owned, read-only; `/opt/appbuilder/current` is the one new installs start on |
-| `/opt/appbuilder/fleet/` | `abfleet.ts`, `agent.ts`, `lib/` (the tool); `/usr/local/sbin/abfleet` runs it |
+| `/opt/appbuilder/fleet/` | `abfleet.ts`, `agent.ts`, `lib/` (the tool); `/usr/local/sbin/abfleet` runs it. Inside an install it runs the release's own server commands (`appbuilder status --json`, `backup create`, `admin operator-access`: [Hosting](hosting.md#server-commands-for-operators)); `agent.ts` only for releases without them and for saving the mail relay |
 | `/srv/appbuilder/<id>/` | one install (root:ab-<id> 0750): `app` and `app.previous` (links to releases), `instance.env`, `workspace/` (0700), `backups/` (its own Admin console backups), `fleet-backups/`, `licence.key` |
 | `/run/appbuilder/<id>/http.sock` | its socket (ab-<id>:caddy 0660; the folder is made at boot by `/etc/tmpfiles.d/appbuilder-<id>.conf`) |
 | `/etc/appbuilder/fleet.json` | the registry and configuration (root 0600; no secrets in it) |
@@ -46,8 +46,13 @@ host names.
 
    (Until the release build ships `scripts/fleet`, run it from a checkout of this repository: `sudo sh
    scripts/fleet/install.sh --release <unpacked release> ...`.) It installs Node.js, PostgreSQL 17 (from
-   apt.postgresql.org, its key checked by fingerprint) with `max_connections 300`, Caddy, the tool, and runs
-   `abfleet init`. `--dry-run` prints every step first.
+   apt.postgresql.org, its key checked by fingerprint; `--postgres existing` uses a PostgreSQL 15 or newer already on
+   port 5432) with `max_connections 300`, Caddy, the tool, and runs `abfleet init`. `--dry-run` prints every step first.
+   The installer passes the client tools folder of the **running** server (`/usr/lib/postgresql/<major>/bin`) to
+   `abfleet init`, which records it in `fleet.json` (`config.pgBin`); every later command, and each install's
+   `APPBUILDER_PG_BIN` (pg_dump for backups), uses that folder. Without it abfleet takes `pg_config --bindir`, else the
+   highest `/usr/lib/postgresql/*/bin` with `psql`. After a PostgreSQL major upgrade: `sudo abfleet init --pg-bin
+   /usr/lib/postgresql/<new>/bin`, then `sudo abfleet limits apply --all --restart` rewrites each install's environment.
 3. **Copy `/etc/appbuilder/secrets/backup-master.key` off the server now** (a password manager and an encrypted USB key).
    Without it no fleet backup can be opened after losing the server. Keep the licence signing key
    (`/etc/appbuilder/licence/keys/`) the same way.
@@ -126,7 +131,8 @@ Going back later: `sudo abfleet update rollback <org>`; if the newer release had
    why>"` (it goes to the operator audit).
 5. Secrets: `sudo abfleet secrets rotate <org> --what db` (a new database password, sealed again, restart, checked) and
    `--what licence-key` (the old key is revoked at once). **The secret key cannot be rotated** with this release: the
-   server has no command that re-seals every stored secret; abfleet refuses and changes nothing.
+   server has no command that re-seals every stored secret (why: [Hosting](hosting.md#server-commands-for-operators));
+   abfleet refuses and changes nothing.
 6. Tell the organisation; keep the evidence (the operator audit, the install's audit, logs). Legal timelines: ask a
    lawyer.
 
@@ -150,7 +156,9 @@ database has no size limit in PostgreSQL at all.
 ## Exit codes and flags
 
 Every command: `--dry-run` (what would change; nothing changes), `--json`, an audit line. Exit 0 done, 1 failed, 2
-refused (nothing changed), 64 usage, 69 not supported, 75 another abfleet command is running.
+refused (nothing changed), 64 usage, 69 not supported, 75 another abfleet command is running. A command that changes
+something waits up to 120 seconds for another one (a timer's sweep or backup) to finish before it gives up with 75
+(`ABFLEET_LOCK_WAIT_S` sets the wait).
 
 ## What has been proven, and what not
 
@@ -158,5 +166,5 @@ refused (nothing changed), 64 usage, 69 not supported, 75 another abfleet comman
 | --- | --- | --- |
 | Every command's plan, order and rollback (create rolled back after a failure at every step), delete's scan, the update rule, backups, access, rotation, limits, dry runs | `npx vitest run scripts/fleet` (recording fake) | run on the developer PC |
 | Three organisations created without a manual step, status, suspend / resume, stop / start, export, update with a canary and one forced failure (code-only and snapshot rollback), backups off the machine, restore of one organisation with the others' checksums and sessions unchanged, restore test, operator access and expiry, database password and licence key rotation, limits in PostgreSQL, doctor, the summary email, delete with a scan | `node scripts/exit-check/h-fleet.mjs` (local test mode) | run on the developer PC |
-| systemd template unit and limits, one OS user per install, folder and socket permissions, Caddy with HTTPS by host name, the fleet installer, update with real release builds | `.github/workflows/ci.yml` job `fleet` (`scripts/fleet/ci/fleet-ci.sh`) | written, **not yet run** (it runs on the next push) |
+| systemd template unit and limits, one OS user per install, folder and socket permissions, Caddy with HTTPS by host name, the fleet installer, update with real release builds | `.github/workflows/ci.yml` job `fleet` (`scripts/fleet/ci/fleet-ci.sh`) | **not passed yet**: the first runs stopped at `abfleet init` (PostgreSQL version disagreement, fixed); nothing after it has run on Linux. On a failure the job prints units, journals, the registry and doctor |
 | Public DNS and real certificates, disk project quotas, reboot survival, limits under real pressure (exit check 8), the load test (exit check 7), mail deliverability, a full server rebuild from backups | a rented server | not done |

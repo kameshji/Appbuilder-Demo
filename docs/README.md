@@ -6,7 +6,7 @@ filters and column security. ("Appbuilder" is a working name.)
 
 ## Status
 
-Version **0.8.0** (Phase 3, "Collaboration and templates", is built except ledgers and GST: see [CHANGELOG](../CHANGELOG.md) and
+Version **0.9.0** (Phase 3, "Collaboration and templates", is built; Accounts (ledgers and India GST) is a prototype on a draft no accountant has reviewed: see [CHANGELOG](../CHANGELOG.md) and
 [the Phase 3 spec](plan/p3-spec.md) with its exit check results; the hosting phase is partly built: [hosting spec](plan/hosting-spec.md);
 Phase 2 closed at 0.7.0, Phase 1 at 0.6.0, Phase 0 at 0.5.0). Phase 3 added chat, tasks and notes, solution templates with the
 Manufacturing, CRM and ERP-lite packs (no tax is computed anywhere), licensing with seat passes, the fleet tool for hosting several
@@ -63,6 +63,7 @@ Every page below describes what exists in this version; each page says what is n
 | [Chat: server, HTTP and live API](dev/chat.md) | current (Phase 3 packages A and B) |
 | [Tasks: reminders, digest, repeats, shares, shared schedule fields](dev/tasks.md) | current |
 | [Notes: the editor, the server sanitiser, sharing, record cards](dev/notes.md); for people: [Notes](help/notes.md), [notes for teams](guide/notes.md) | current |
+| [Ledgers and India GST (Accounts)](dev/ledgers-gst.md); for people: [Accounts](guide/accounts.md); administrators: [setup and period locks](admin/accounts.md). A prototype on a draft specification not yet reviewed by a practising accountant | prototype |
 | [Balances kept in the same transaction](dev/balances.md) (stock that cannot go below zero); [licensing in the code](dev/licensing.md) | current |
 | [Load testing the hosted fleet](dev/load-testing.md) (`node scripts/bench/load/run.mjs`); results: [November 2026](internal/load-test-2026-11.md) | current (a developer PC, not a server) |
 | [Hosting support in the server](dev/hosting.md): rules for links, cookies, outbound connections, classifying routes and job types; `node scripts/exit-check/h-isolation.mjs` runs the cross-instance isolation suite (evidence for the release gate, not a security review) | current |

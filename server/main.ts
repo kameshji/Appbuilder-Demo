@@ -8,7 +8,8 @@
  * `node server/main.ts admin list|reset-password|reset-mfa|make-install-admin <email>`: recovery of administrator access
  * on the server machine (identity/admin-cli.ts).
  * Hosting (docs/admin/hosting.md; hosting/cli.ts): `migrate`, `admin invite --email <e> --name <n>`,
- * `read-only on|off|status`, `hosting-check`.
+ * `read-only on|off|status`, `hosting-check`; for operators and the fleet tool: `status [--json]`,
+ * `backup create --out <file>`, `admin operator-access open|close`.
  *   PORT (5174)   APPBUILDER_HOST (127.0.0.1)   APPBUILDER_WORKSPACE (./workspace)   APPBUILDER_SECRET_KEY
  *   APPBUILDER_DB_HOST / _PORT (5432) / _NAME / _USER / _PASSWORD / _SSL  (optional PostgreSQL bootstrap, skips the setup screen)
  *   APPBUILDER_ALLOWED_HOSTS (extra Host names)  APPBUILDER_SECURE_COOKIE=1  APPBUILDER_TRUST_PROXY=1
@@ -44,6 +45,26 @@ if (cmd === 'migrate' || cmd === 'read-only' || cmd === 'hosting-check' || (cmd 
   ;(await import('./core/update/cli.ts')).loadInstallEnv()
   const { runHostingCli } = await import('./core/hosting/cli.ts')
   process.exit(await runHostingCli(cmd === 'admin' ? process.argv.slice(3) : process.argv.slice(2)))
+}
+
+// commands the fleet tool and operators script against (docs/admin/hosting.md "Server commands for operators"):
+// status [--json] (hosting/status-cli.ts), backup create (backup/create-cli.ts), admin operator-access open|close
+// (identity/operator-access-cli.ts). Each reads the install's environment like the commands above.
+if (cmd === 'status') {
+  ;(await import('./core/update/cli.ts')).loadInstallEnv()
+  process.exit(await (await import('./core/hosting/status-cli.ts')).runStatusCli(process.argv.slice(3)))
+}
+if (cmd === 'backup') {
+  if (process.argv[3] !== 'create') {
+    process.stderr.write('Usage: appbuilder backup create --out <file> [options] (appbuilder backup create --help)\n')
+    process.exit(64)
+  }
+  ;(await import('./core/update/cli.ts')).loadInstallEnv()
+  process.exit(await (await import('./core/backup/create-cli.ts')).runBackupCreateCli(process.argv.slice(4)))
+}
+if (cmd === 'admin' && process.argv[3] === 'operator-access') {
+  ;(await import('./core/update/cli.ts')).loadInstallEnv()
+  process.exit(await (await import('./core/identity/operator-access-cli.ts')).runOperatorAccessCli(process.argv.slice(4)))
 }
 
 // offline recovery of administrator access (identity/admin-cli.ts): appbuilder admin list | reset-password | reset-mfa |

@@ -30,6 +30,7 @@ import { errText, log, nowIso, uid } from './util.ts'
 import { createKernel } from './kernel.ts'
 import type { Kernel } from './kernel.ts'
 import { watchSessions } from './live/session-events.ts'
+import { invalidateTableList, withTableCache } from './table-cache.ts'
 import { createCollab, registerCollabJobs } from './collab.ts'
 import { createTasks } from './tasks/service.ts'
 import { setNextNumberProvider } from './event-fx.ts'
@@ -343,7 +344,7 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
       await db.close().catch(() => {})
       throw new HttpError(422, 'invalid', friendlyConnectionError(e, settings, password))
     }
-    const meta = watchSessions(createMetaStore(db, secrets))
+    const meta = withTableCache(watchSessions(createMetaStore(db, secrets)), db)
     const install = createInstallStore(db)
     let migration: MigrationSummary | undefined
     // a server upgrade: an install backup of the database as it is, before the first migration step (package J)
@@ -380,6 +381,8 @@ export function createServices(config: ServerConfig, opts: { env?: NodeJS.Proces
       throw migrationProblem(e, settings)
     }
     delete state.incompatible
+    // the migration writes table definitions with SQL: no list read before it is kept
+    invalidateTableList()
     if (migration) {
       state.migration = migration
       if (migration.from !== migration.to) {

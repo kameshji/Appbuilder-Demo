@@ -140,6 +140,44 @@ export async function agent<T>(ctx: Ctx, org: OrgRecord, args: string[], o: { re
   return parsed as T
 }
 
+/**
+ * Server commands a release may have (docs/admin/hosting.md "Server commands for operators"). A release that has the
+ * command's module gets the server command; an older one the fleet agent (agent.ts), which does the same through the
+ * product's modules. Never guess by running: an unknown command would START a server.
+ */
+export type ServerCommand = 'status' | 'backup-create' | 'operator-access'
+const SERVER_COMMAND_FILES: Record<ServerCommand, string> = {
+  status: 'server/core/hosting/status-cli.ts',
+  'backup-create': 'server/core/backup/create-cli.ts',
+  'operator-access': 'server/core/identity/operator-access-cli.ts',
+}
+
+export function hasServerCommand(ctx: Ctx, org: OrgRecord, which: ServerCommand, release?: string): boolean {
+  const app = release ? releaseDir(ctx, release) : orgPaths(ctx.paths, org.id).app
+  const dir = ctx.sys.readLink(app) ?? app
+  return ctx.sys.exists(path.join(codeRoot(ctx, dir), ...SERVER_COMMAND_FILES[which].split('/')))
+}
+
+/**
+ * One install command whose last stdout line is JSON ({ ok, ... }): the server command when the release has it
+ * (`serverArgs`, e.g. ['status', '--json']), else the fleet agent (`agentArgs`).
+ */
+export async function installCommand<T>(ctx: Ctx, org: OrgRecord, which: ServerCommand, serverArgs: string[], agentArgs: string[], o: { release?: string; input?: string; mutates?: boolean; timeoutMs?: number } = {}): Promise<T> {
+  if (!hasServerCommand(ctx, org, which, o.release)) return agent<T>(ctx, org, agentArgs, o)
+  const r = await appCli(ctx, org, serverArgs, { ...o, timeoutMs: o.timeoutMs ?? 900_000 })
+  if (ctx.dry && o.mutates !== false) return {} as T
+  const what = `appbuilder ${serverArgs.filter((a) => !a.startsWith('--')).slice(0, 2).join(' ')} (${org.host})`
+  const last = r.stdout.trim().split('\n').pop() ?? ''
+  let parsed: { ok?: boolean; error?: string } & Record<string, unknown>
+  try {
+    parsed = JSON.parse(last) as typeof parsed
+  } catch {
+    throw new FleetError(`${what} failed: ${scrub((r.stderr || r.stdout).trim().slice(-800), ctx.secrets) || `exit ${r.code}`}`)
+  }
+  if (r.code !== 0 || parsed.ok === false) throw new FleetError(`${what}: ${scrub(String(parsed.error ?? `exit ${r.code}`), ctx.secrets)}`)
+  return parsed as T
+}
+
 export async function waitHealth(ctx: Ctx, org: OrgRecord, timeoutMs: number): Promise<Health> {
   if (ctx.dry) return 'ok'
   const until = ctx.sys.now() + timeoutMs

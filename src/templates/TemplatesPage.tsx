@@ -16,7 +16,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { BackupRefusal, PlanView, isBackupRefusal, useConfirmable } from '@/portal/SolutionPlan'
+import { BackupRefusal, PlanView, isBackupRefusal, useConfirmable, useWideningConsent } from '@/portal/SolutionPlan'
 import { Empty, PageHeader, errMsg, fmtDate, useToast } from '@/portal/kit'
 import { KIND_LABEL, LOCAL_CHANGE_LABEL, TEMPLATE_KINDS, type TemplateDetail, type TemplateInstallRecord, type TemplateKind, type TemplateSummary, type UninstallItem, type UninstallPlan, type UpgradePlan } from './format'
 import { enableFlows, fetchCatalogue, fetchInstalled, fetchTemplate, planUninstall, planUpgrade, removeSample, uninstall, upgrade } from './api'
@@ -217,7 +217,9 @@ function UpgradeDialog({ rec, onClose, onDone }: { rec: TemplateInstallRecord | 
   const [up, setUp] = useState<UpgradePlan | null>(null)
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState('')
-  const { ok, box } = useConfirmable(up?.plan ?? null)
+  const { ok: confirmed, box } = useConfirmable(up?.plan ?? null)
+  const widening = useWideningConsent(up?.widens, up?.plan.token)
+  const ok = confirmed && widening.ok
   useEffect(() => {
     if (!rec) return
     setUp(null)
@@ -229,7 +231,7 @@ function UpgradeDialog({ rec, onClose, onDone }: { rec: TemplateInstallRecord | 
     if (!rec || !up) return
     setBusy(true)
     try {
-      await upgrade(rec.id, { confirm: up.plan.token, choices, ...(proceedWithoutBackup ? { proceedWithoutBackup: true } : {}) })
+      await upgrade(rec.id, { confirm: up.plan.token, choices, ...(proceedWithoutBackup ? { proceedWithoutBackup: true } : {}), ...(widening.accepted ? { acceptWidening: true } : {}) })
       await platform.init().catch(() => undefined)
       toast(`Upgraded "${rec.name}" to v${up.to}`, 'success')
       onDone()
@@ -269,6 +271,7 @@ function UpgradeDialog({ rec, onClose, onDone }: { rec: TemplateInstallRecord | 
                 {up.noLongerUsed.map((n) => <span key={n}>{n}</span>)}
               </div>
             )}
+            {widening.box}
             <PlanView plan={up.plan} />
             {box}
             {refused && <BackupRefusal message={refused} busy={busy} onProceed={() => void run(true)} />}

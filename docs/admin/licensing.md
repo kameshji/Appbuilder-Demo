@@ -23,7 +23,10 @@ updates are included), the status, until when the last answer is valid, the last
 passes in use against the licensed seats. Install administrators have **Check now** (it also works while read-only: it
 is the retry). When a check fails, a yellow panel says **"Becomes read-only at <date and time>"** (your time and UTC);
 install administrators also get an in-app notification with the same time once, another one when the install becomes
-read-only and one when it is writable again.
+read-only and one when it is writable again. Every administrator also sees a yellow strip under the top bar on every
+page during the grace period: **"Licence grace period: read-only in <time left> (<date and time>)"**, why (the service
+not reached, unpaid, suspended) and what to do; while the install is read-only for a licence reason, the strip under the
+read-only notice says how it ends. Environment administrators are told to ask an install administrator.
 
 | You see | Meaning | What to do |
 | --- | --- | --- |

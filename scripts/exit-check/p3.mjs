@@ -37,6 +37,7 @@ const PARTS = [
   ['manufacturing', 'P3 10', 'Manufacturing pack: install, offline phone entry, NCR and maintenance flows, OEE reference, PDFs, roles, deploy, upgrade, uninstall', 'scripts/exit-check/p3-manufacturing.mjs', []],
   ['crm', 'P3 11', 'CRM pack: own and team rows, lead conversion, quote approval and PDF, pipeline reference', 'scripts/exit-check/p3-crm.mjs', []],
   ['erp', 'P3 12', 'ERP-lite pack: purchase to stock, delivery, invoice without tax, 20 parallel issues never below zero', 'scripts/exit-check/p3-erp.mjs', []],
+  ['ledgers', 'P3 14', 'Accounts: ledgers and India GST on the unsigned draft (invoices, credit note, trial balance, PDFs, period lock)', 'scripts/exit-check/p3-ledgers.mjs', []],
   ['templates', 'P3 13', 'Solution template rules: nothing overwritten, plan screen, one transaction, upgrade keeping local changes', 'scripts/exit-check/p3-templates.mjs', []],
   ['misc', 'P3 15', 'Carried-forward items: drill-through to a screen, kiosk cycling, form-submitted trigger, error boundaries', 'scripts/exit-check/p3-misc.mjs', []],
   ['isolation', 'H 2', 'Hosting: cross-instance isolation suite (three installs)', 'scripts/exit-check/h-isolation.mjs', []],
@@ -76,7 +77,7 @@ const gst = (() => {
   if (!fs.existsSync(f)) return { state: 'PENDING', note: 'docs/plan/gst-spec-draft.md is missing' }
   const text = fs.readFileSync(f, 'utf8')
   const signed = /Signed off by:\s*\S+/i.test(text) && /Membership (number|no\.?):\s*\d+/i.test(text)
-  return signed ? { state: 'SIGNED', note: 'a sign-off block with a name and a membership number is present (its content is not judged here)' } : { state: 'PENDING', note: 'no accountant sign-off recorded; ledgers and GST (package L) are not built' }
+  return signed ? { state: 'SIGNED', note: 'a sign-off block with a name and a membership number is present (its content is not judged here)' } : { state: 'PENDING', note: 'no accountant sign-off recorded; ledgers and GST (package L) are built on the unsigned draft by decision of the owner on 21 Nov 2026 and make no compliance claim' }
 })()
 
 const t0 = Date.now()
@@ -92,7 +93,7 @@ for (const [key, check, what, script, args] of PARTS) {
   if (r.code !== 0) failed = true
   rows.push([check, what, r.code === 0 ? 'PASS' : 'FAIL', evidence(r.tail), String(secs)])
 }
-rows.push(['P3 14', 'GST gate: ledgers and GST wait for the accountant\'s sign-off', gst.state, gst.note, ''])
+rows.push(['P3 14', 'GST sign-off: the review by an accountant of the draft the Accounts area is built on', gst.state, gst.note, ''])
 
 console.log('| Check | What | Result | Evidence (last line of the script) | Seconds |')
 console.log('| --- | --- | --- | --- | ---: |')

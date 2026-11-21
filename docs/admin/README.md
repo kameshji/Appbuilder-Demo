@@ -17,6 +17,7 @@ The browser-only demo mode has no server, no real security and is not covered (s
 | [Sign-in and identity](sign-in-and-identity.md) | You set up email, two-step verification, password and session rules, invitations, reset codes, service accounts and API keys |
 | [Organisation](organisation.md) | You set up departments, managers and teams, import people from a CSV file, or look at the org chart |
 | [Reference data, number sequences and the financial year](reference-data.md) | You maintain currencies, Indian states and GST codes, units, holidays and settings, set up invoice numbering, or change the financial year |
+| [Accounts](accounts.md) | You set up ledgers and GST documents: the business registration, GST reference data (rates, States, thresholds), who may use Accounts, period locks |
 | [Environments](environments.md) | You want a sandbox next to production, move solutions between them, lock production, or give people access to an environment |
 | [Connections](connections.md) | You change the database, link existing PostgreSQL or MySQL tables, use data files or Google Sheets, add HTTP and Email connections for flows, decide who may use them, set email limits and the suppression list |
 | [Approvals](approvals.md) | Who sees approval requests, email answer links, delegation for others, escalation, audit and retention |

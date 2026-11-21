@@ -23,8 +23,9 @@ import {
 } from '../../../src/platform/print.ts'
 import type { FormatOptions } from '../../../src/platform/print-format.ts'
 import { BindError, bindTemplate, type BindData, type Bound } from './bind.ts'
-import { layoutDocument, PageLimitError, type Page } from './layout.ts'
-import { pdfBuffer } from './pdf.ts'
+import { PageLimitError, type LayoutInput, type Page } from './layout.ts'
+import { toWireLayout, type PrintJob, type PrintJobResult } from './pdf-worker.ts'
+import { printPool, PrintBusyError, PrintTimeoutError } from './pool.ts'
 import { DOCX_MIME, docxTags, fillDocx } from './docx.ts'
 
 export const PRINT_BULK_JOB = 'print.bulk'
@@ -437,22 +438,48 @@ export function createPrintService(services: CoreServices) {
     return { who: sa, label: `service account ${sa.user.name} for ${caller.user.name}` }
   }
 
-  async function renderPdf(doc: PrintTemplateDoc, bound: Bound, st: PrintSettings, author: string, createdOn: Date): Promise<{ bytes: Buffer; pages: Page[] }> {
+  function layoutInput(doc: PrintTemplateDoc, bound: Bound, maxPages: number): LayoutInput {
     const [w, h] = pageSizeMm(doc.page)
     const m = doc.page.margins
-    const pages = layoutDocument({
+    return {
       pageW: w * MM, pageH: h * MM, margins: { top: m.top * MM, right: m.right * MM, bottom: m.bottom * MM, left: m.left * MM },
       style: { fontSize: doc.styles.fontSize, color: doc.styles.color, accent: doc.styles.accent, headingColor: doc.styles.headingColor, tableStyle: doc.styles.tableStyle, lineHeight: doc.styles.lineHeight ?? 1.3 },
       body: bound.body, header: bound.header, footer: bound.footer,
-      images: new Map([...bound.images].map(([k, v]) => [k, { width: v.width, height: v.height }])), maxPages: st.limits?.maxPages ?? PRINT_LIMITS.maxPages,
-    })
-    const bytes = await pdfBuffer({ pageW: w * MM, pageH: h * MM, pages, images: new Map([...bound.images].map(([k, v]) => [k, v.bytes])), meta: { title: bound.title, author, subject: bound.subject, keywords: bound.keywords, createdOn } })
-    return { bytes, pages }
+      images: new Map([...bound.images].map(([k, v]) => [k, { width: v.width, height: v.height }])), maxPages,
+    }
+  }
+
+  const timeoutError = (seconds: number) => new HttpError(422, 'invalid', `Generating the document took longer than ${seconds} s (the limit of this server); print fewer rows.`)
+
+  /** layout and PDF writing run in the print worker pool (pool.ts), off the request's event loop */
+  async function runJob(job: PrintJob, timeoutMs: number, seconds: number, waitWhenBusy = false): Promise<PrintJobResult> {
+    try {
+      // a background job (bulk) waits for room in the queue instead of failing
+      for (let i = 0; waitWhenBusy && i < 600; i++) {
+        try { return await printPool().run(job, timeoutMs) } catch (e) { if (!(e instanceof PrintBusyError)) throw e }
+        await new Promise((r) => setTimeout(r, 500))
+      }
+      return await printPool().run(job, timeoutMs)
+    } catch (e) {
+      if (e instanceof PrintTimeoutError) throw timeoutError(seconds)
+      if (e instanceof PrintBusyError) throw new HttpError(503, 'unavailable', 'The server is busy generating other documents; try again in a minute.')
+      throw e
+    }
+  }
+
+  async function renderPdf(doc: PrintTemplateDoc, bound: Bound, st: PrintSettings, author: string, createdOn: Date, timeoutMs: number, seconds: number): Promise<{ bytes: Buffer; pageCount: number }> {
+    const [w, h] = pageSizeMm(doc.page)
+    const r = await runJob({
+      kind: 'render', layout: toWireLayout(layoutInput(doc, bound, st.limits?.maxPages ?? PRINT_LIMITS.maxPages)),
+      pdf: { pageW: w * MM, pageH: h * MM, meta: { title: bound.title, author, subject: bound.subject, keywords: bound.keywords, createdOn } },
+      images: [...bound.images].map(([k, v]) => [k, v.bytes]),
+    }, timeoutMs, seconds)
+    return { bytes: r.bytes as Buffer, pageCount: r.pageCount }
   }
 
   function withTimeout<X>(p: Promise<X>, seconds: number): Promise<X> {
     let t: NodeJS.Timeout | undefined
-    return Promise.race([p, new Promise<X>((_, rej) => { t = setTimeout(() => rej(new HttpError(422, 'invalid', `Generating the document took longer than ${seconds} s (the limit of this server); print fewer rows.`)), seconds * 1000) })]).finally(() => clearTimeout(t))
+    return Promise.race([p, new Promise<X>((_, rej) => { t = setTimeout(() => rej(timeoutError(seconds)), seconds * 1000) })]).finally(() => clearTimeout(t))
   }
 
   async function startRun(o: { r: Row | null; name: string; version: number; kind: string; userId: string | null; runAs: string; recordIds: string[]; source: string }): Promise<string> {
@@ -484,6 +511,7 @@ export function createPrintService(services: CoreServices) {
     const runId = await startRun({ r, name, version, kind: o.kind ?? (o.draft ? 'preview' : 'single'), userId: caller.user.id, runAs: label, recordIds: recordId ? [recordId] : [], source: o.source })
     const token = o.token ?? newToken()
     if (o.token) await pendingFile(o.token, caller.user.id, name)
+    const seconds = st.limits?.timeoutSeconds ?? PRINT_LIMITS.timeoutSeconds
     try {
       const out = await withTimeout((async () => {
         const tables = await services.meta.tables.list()
@@ -501,9 +529,9 @@ export function createPrintService(services: CoreServices) {
           const bytes = fillDocx(Buffer.from(tpl), bound.scope, bound.engine, bound.fmt, (m) => warnings.push(m))
           return { bytes, pages: 0, warnings, fileName: `${bound.fileName}.docx`, mime: DOCX_MIME }
         }
-        const pdf = await renderPdf(doc, bound, st, who.user.name, createdOn)
-        return { bytes: pdf.bytes, pages: pdf.pages.length, warnings: bound.warnings, fileName: `${bound.fileName}.pdf`, mime: PDF_MIME }
-      })(), st.limits?.timeoutSeconds ?? PRINT_LIMITS.timeoutSeconds)
+        const pdf = await renderPdf(doc, bound, st, who.user.name, createdOn, Math.max(1, started + seconds * 1000 - Date.now()), seconds)
+        return { bytes: pdf.bytes, pages: pdf.pageCount, warnings: bound.warnings, fileName: `${bound.fileName}.pdf`, mime: PDF_MIME }
+      })(), seconds)
       const file = await putFile(token, { bytes: out.bytes, fileName: out.fileName, mime: out.mime, pages: out.pages, runId, createdBy: caller.user.id })
       await endRun(runId, { status: 'succeeded', pages: out.pages, bytes: out.bytes.length, ms: Date.now() - started, warnings: out.warnings, token })
       return { ...file, bytes: out.bytes, runId, pages: out.pages, warnings: out.warnings }
@@ -585,13 +613,8 @@ export function createPrintService(services: CoreServices) {
         for (const [i, id] of p.recordIds.entries()) {
           try {
             const bound = await bindTemplate({ doc, recordId: id, fmt, letterhead: st.letterhead, now: now(), templateName: String(r.name), maxRows: st.limits?.maxRows ?? PRINT_LIMITS.maxRows, maxImageBytes: PRINT_LIMITS.maxImageMB * 1048576 }, bindData(who, tables, st))
-            const [w, h] = pageSizeMm(doc.page)
-            const m = doc.page.margins
-            const pages = layoutDocument({
-              pageW: w * MM, pageH: h * MM, margins: { top: m.top * MM, right: m.right * MM, bottom: m.bottom * MM, left: m.left * MM },
-              style: { fontSize: doc.styles.fontSize, color: doc.styles.color, accent: doc.styles.accent, headingColor: doc.styles.headingColor, tableStyle: doc.styles.tableStyle, lineHeight: doc.styles.lineHeight ?? 1.3 },
-              body: bound.body, header: bound.header, footer: bound.footer, images: new Map([...bound.images].map(([k, v]) => [k, { width: v.width, height: v.height }])), maxPages: PRINT_LIMITS.maxPages,
-            })
+            const laid = await runJob({ kind: 'layout', layout: toWireLayout(layoutInput(doc, bound, PRINT_LIMITS.maxPages)) }, PRINT_LIMITS.timeoutSeconds * 1000, PRINT_LIMITS.timeoutSeconds, true)
+            const pages = laid.pages as Page[]
             allPages.push(...pages)
             for (const [k, v] of bound.images) imgs.set(k, v.bytes)
             warnings.push(...bound.warnings.map((x) => `${id}: ${x}`))
@@ -604,7 +627,7 @@ export function createPrintService(services: CoreServices) {
         }
         if (!allPages.length) throw new Error('No record could be printed.')
         const [w, h] = pageSizeMm(doc.page)
-        bytes = await pdfBuffer({ pageW: w * MM, pageH: h * MM, pages: allPages, images: imgs, meta: { title: String(r.name), author: caller.user.name, createdOn: now() } })
+        bytes = (await runJob({ kind: 'pdf', pdf: { pageW: w * MM, pageH: h * MM, meta: { title: String(r.name), author: caller.user.name, createdOn: now() } }, pages: allPages, images: [...imgs] }, 20 * 60_000, 20 * 60, true)).bytes as Buffer
         pageCount = allPages.length
         fileName = `${String(r.name)} (${p.recordIds.length}).pdf`
       } else {

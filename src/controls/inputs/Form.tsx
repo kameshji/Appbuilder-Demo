@@ -33,6 +33,7 @@ import {
   itemKey,
   parseFormMode,
   serializeValues,
+  startingExtras,
   toFxValue,
   validateField,
   visibleColumns,
@@ -507,7 +508,8 @@ function FormRender({ node, props, mode, outputs, setOutput, fire, focusToken }:
   }
 
   const updates = useMemo(() => {
-    const rec: FxRecord = {}
+    // New mode with a starting Item: its values for columns not in Fields are saved as well (the shown fields win)
+    const rec: FxRecord = table ? startingExtras(table, cols, formMode, item, accessOf) : {}
     for (const c of cols) {
       if (c.type === 'autonumber' || accessOf(c) !== 'update') continue
       if (isFileType(c.type)) {
@@ -523,7 +525,7 @@ function FormRender({ node, props, mode, outputs, setOutput, fire, focusToken }:
     }
     return rec
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cols, values, pSig, fileBase, formMode, colAccess])
+  }, [cols, values, pSig, fileBase, formMode, colAccess, table, iKey])
 
   /* hidden __files output: { column: token } of the File objects to upload after save */
   const tokens = useRef<Record<string, string>>({})
@@ -549,7 +551,7 @@ function FormRender({ node, props, mode, outputs, setOutput, fire, focusToken }:
   const lastOut = useRef('')
   useEffect(() => {
     if (design) return
-    const sig = serializeValues(values) + '|' + valid + '|' + unsaved + '|' + colsKey + '|' + pSig + '|' + serializeValues(fileBase as FormValues) + '|' + String(base instanceof Date ? base.getTime() : base) + followsId
+    const sig = serializeValues(values) + '|' + valid + '|' + unsaved + '|' + colsKey + '|' + pSig + '|' + serializeValues(fileBase as FormValues) + '|' + String(base instanceof Date ? base.getTime() : base) + followsId + '|' + iKey
     if (sig === lastOut.current) return
     lastOut.current = sig
     setOutput('Updates', updates)

@@ -9,6 +9,7 @@ import type { LogPage, PublicHealth } from '../../../src/platform/ops.ts'
 import { log } from '../util.ts'
 import { activeFileLog, effectiveLevel, isLogLevel, readOpsSettings, writeOpsSettings } from './logger.ts'
 import { detailedHealth, publicHealth } from './health.ts'
+import { startLoopMonitor } from './event-loop.ts'
 import { usageReport } from './usage.ts'
 import { buildDiagnosticsBundle } from './bundle.ts'
 import { redactText } from './redact.ts'
@@ -26,6 +27,8 @@ function installAdmin(ctx: Ctx, what: string): UserContext {
 }
 
 export function diagnosticsRoutes(router: Router, services: CoreServices, live: LiveSource | null): void {
+  // the event-loop delay is measured from start (GET /admin/health shows the last minute)
+  startLoopMonitor()
   const opts = { auth: 'user' as const, noEnvironment: true }
 
   router.add('GET', '/api/v1/health', async (): Promise<RawResponse> => {

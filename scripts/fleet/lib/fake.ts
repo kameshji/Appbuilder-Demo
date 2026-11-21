@@ -158,6 +158,17 @@ export function realisticHandler(state: { schema: number; failMigrate?: Set<stri
     }
     if (script === 'main.ts' && path.basename(path.dirname(args[0])) === 'server') {
       const c = sub[0]
+      // the server commands of releases that have them (core.ts installCommand): the same answers as the agent's
+      if (c === 'status') return { code: 0, stdout: JSON.stringify({ ok: true, version: '0.8.0', schemaVersion: schemaOf.get(user) ?? state.schema, users: { active: 1, total: 1 }, seats: { full: 1, operator: 0, external: 0 }, readOnly: null, licence: { configured: false, lastCheck: null }, lastInstallBackup: null, dbBytes: 15_000_000 }), stderr: '' }
+      if (c === 'backup' && sub[1] === 'create') {
+        const out = sub[sub.indexOf('--out') + 1]
+        fake.files.set(out, { text: `archive of ${user} at ${fake.clock}`, mode: 0o600, owner: user })
+        return { code: 0, stdout: JSON.stringify({ ok: true, file: out, bytes: 100, sha256: fake.sha256(out), manifestSha256: 'm', rows: 10, schemaVersion: state.schema, environments: 1, encrypted: true, includesKey: sub.includes('--include-key') }), stderr: '' }
+      }
+      if (c === 'admin' && sub[1] === 'operator-access') {
+        if (sub[2] === 'open') return { code: 0, stdout: JSON.stringify({ ok: true, userId: 'user_op1', emailed: false, notified: 1, ...(sub.includes('--print-link') ? { link: 'https://x/#invite=tok' } : {}) }), stderr: '' }
+        return { code: 0, stdout: JSON.stringify({ ok: true, disabled: true, notified: 1 }), stderr: '' }
+      }
       if (c === 'admin' && sub[1] === 'invite') return { code: 0, stdout: `First install administrator x created.\n${sub.includes('--print-link') ? 'Invitation link (one-time, a secret): https://acme.example.test/#invite=SECRETTOKEN\n' : ''}`, stderr: '' }
       if (c === 'seed-config') { fake.files.set(path.join(sub[sub.indexOf('--workspace') + 1], 'server.json'), { text: `{"defaultConnection":{"passwordSealed":"v1:${fake.clock}"}}`, mode: 0o600, owner: user }); return { code: 0, stdout: 'Wrote server.json', stderr: '' } }
       if (c === 'read-only' && sub[1] === 'status') return { code: 0, stdout: 'writable', stderr: '' }

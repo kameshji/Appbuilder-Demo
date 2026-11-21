@@ -13,6 +13,7 @@ import { ProfileAvatar, SettingsEntry } from './Profile'
 import { EnvironmentPicker, EnvironmentStripe } from './EnvironmentPicker'
 import { RestoreNotice } from './RestoreNotice'
 import { ReadOnlyBanner } from './ReadOnlyBanner'
+import { LicenceBanner } from './LicenceBanner'
 import { useCaps } from './security'
 import { useTheme } from './theme'
 import { modulesFor, moduleRoute, type ModuleEntry, type ShellMode } from './modules'
@@ -61,7 +62,7 @@ function activeNav(route: PortalRoute): string {
   if (route.page === 'printtemplate') return 'printtemplates'
   if (route.page === 'soon') return `soon-${route.id}`
   // built-in User mode pages light up their menu entry (#u-approvals -> Approvals); app tabs keep "My apps"
-  if (route.page === 'u') return 'id' in route ? ({ approvals: 'approvals', tasks: 'tasks', mentions: 'mentions', reports: 'myreports', dashboards: 'dashboards', notes: 'notes' } as Record<string, string>)[route.id] ?? 'u' : 'u'
+  if (route.page === 'u') return 'id' in route ? ({ approvals: 'approvals', tasks: 'tasks', mentions: 'mentions', reports: 'myreports', dashboards: 'dashboards', notes: 'notes', accounts: 'accounts' } as Record<string, string>)[route.id] ?? 'u' : 'u'
   if (route.page === 'admin') return 'admin'
   return route.page
 }
@@ -239,6 +240,7 @@ export function Shell({ route, mode, canSwitch, onModeChange, activeTab, hidden,
       <EnvironmentStripe />
       <RestoreNotice />
       <ReadOnlyBanner />
+      <LicenceBanner />
       {user && <TabStrip activeId={activeTab} />}
       <div className="flex min-h-0 flex-1">
         {!appTab && (

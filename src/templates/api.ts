@@ -35,7 +35,7 @@ export const installTemplate = (id: string, req: TemplateUseRequest): Promise<Te
 export const planUninstall = (installId: string, deleteTables: boolean): Promise<UninstallPlan> => send(`/templates/installed/${enc(installId)}/uninstall/plan`, { deleteTables })
 export const uninstall = (installId: string, b: { confirm: string; deleteTables: boolean; confirmText?: string; proceedWithoutBackup?: boolean }): Promise<UninstallPlan> => send(`/templates/installed/${enc(installId)}/uninstall`, b)
 export const planUpgrade = (installId: string, choices: Record<string, 'keep' | 'replace'>): Promise<UpgradePlan> => send(`/templates/installed/${enc(installId)}/upgrade/plan`, { choices })
-export const upgrade = (installId: string, b: { confirm: string; choices: Record<string, 'keep' | 'replace'>; proceedWithoutBackup?: boolean }): Promise<UpgradePlan> => send(`/templates/installed/${enc(installId)}/upgrade`, b)
+export const upgrade = (installId: string, b: { confirm: string; choices: Record<string, 'keep' | 'replace'>; proceedWithoutBackup?: boolean; acceptWidening?: boolean }): Promise<UpgradePlan> => send(`/templates/installed/${enc(installId)}/upgrade`, b)
 /** format 2: "Switch on these flows" (administrators) */
 export const enableFlows = async (installId: string, enable: string[]): Promise<TemplateInstallRecord> => (await send<{ install: TemplateInstallRecord }>(`/templates/installed/${enc(installId)}/flows`, { enable })).install
 /** format 2: "Remove sample data" */

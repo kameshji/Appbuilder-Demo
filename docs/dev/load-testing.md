@@ -13,6 +13,10 @@ node scripts/bench/load/run.mjs --profile ramp       steps of load until a servi
 
 No new dependencies: Node's `http`, `pg` and `ws` (both already dependencies of the server). Nothing to install.
 
+Before / after runs on the same tree: `--install-env APPBUILDER_PRINT_WORKERS=0,APPBUILDER_TABLE_CACHE=off,APPBUILDER_IMPORT_YIELD=off`
+gives every install the old behaviour (prints on the request loop, no table list cache, imports without slices);
+`--heavy-import 2000` makes the heavy tenant's import large enough to see.
+
 ## What it starts, and what it never touches
 
 | Part | Where | Notes |
@@ -113,7 +117,7 @@ as the heavy work. `peak`: twice the rate. `idle`: no users and the sockets clos
 | Error rate | 5xx, network errors, and any status a scenario does not expect (409 is expected where two people race for one NCR or approval; 429 for a chat sender over 30 a minute) |
 | Live push latency | phone write sent -> the row id on every subscriber socket that gets row ids (`table:` topic); chat send -> every member's socket (`chat:` topic); lost = an expected push that never came (and no "table changed" tick covered it), duplicates = the same seq twice on one socket |
 | Task reminders | reminders due during the run stamped `ReminderSentOn`, and task notifications pushed to open sockets |
-| Event-loop lag per install | **the server does not expose it** (no `monitorEventLoopDelay` anywhere in `server/**`). The harness probes an unknown `/api/v1` route (answered 404 without the database) every second: an upper bound of the loop delay at 1 s resolution |
+| Event-loop lag per install | from outside: the harness probes an unknown `/api/v1` route (answered 404 without the database) every second, an upper bound of the loop delay at 1 s resolution. From inside: every install's own measure in `GET /admin/health` (`process.eventLoop`, p50 / p99 / max over the last minute and since start, `server/core/diagnostics/event-loop.ts`), sampled every 30 s and reported per install ("Server event-loop delay") with the print pool and table cache counters |
 | CPU and memory per install, PostgreSQL, the harness, the machine | every 5 s: Windows `Win32_Process` (one long-lived PowerShell loop), Linux `/proc`; PostgreSQL = the postmaster and its children (a lower bound: a backend that ends between samples loses its last interval) |
 | PostgreSQL | connections by database and state, backends waiting on locks, ungranted locks (5 s); per install the job queue (due, running, dead, age of the oldest due job) and the outbox backlog (15 s); slow statements, lock waits over 1 s, deadlocks, temporary files and checkpoints from the log; the top statements from `pg_stat_statements`; commits, rollbacks and the cache hit ratio from `pg_stat_database` |
 | Sockets the server counts, RSS it reports | `GET /admin/health` of every install every 30 s |

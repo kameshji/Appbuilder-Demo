@@ -22,6 +22,7 @@ import { errText, log } from './util.ts'
 import { SUMMARY_JOB } from './model/summary.ts'
 import { fillDateDimension } from './model/engine.ts'
 import { liveRowsSql } from '../connectors/postgres/sql.ts'
+import { invalidateTableList } from './table-cache.ts'
 
 const q = (id: string): string => `"${id.replace(/"/g, '""')}"`
 const TYPES: EnvironmentType[] = ['production', 'sandbox', 'developer']
@@ -132,6 +133,8 @@ export async function createEnvironment(s: CoreServices, actor: UserContext, b: 
     await installAudit(s, actor.user.id, 'environment.create_failed', id, { id, name, error: why })
     throw e instanceof HttpError ? e : new HttpError(500, 'storage', `The environment could not be created: ${why}`)
   } finally {
+    // the new schema's table definitions were written with SQL (copy, system tables): table-cache.ts
+    invalidateTableList(schema)
     s.security.invalidate({ environment: id })
     s.environments.invalidate()
   }
@@ -333,6 +336,7 @@ export async function deleteEnvironment(s: CoreServices, actor: UserContext, id:
     await installAudit(s, actor.user.id, 'environment.delete_failed', id, { id, name: e.name, error: why })
     throw new HttpError(500, 'storage', `The environment could not be deleted: ${why}`)
   }
+  invalidateTableList(e.schema)
   s.security.invalidate({ environment: id })
   s.environments.invalidate()
   let folder = 'removed'

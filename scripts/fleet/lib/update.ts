@@ -30,7 +30,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { agent, appCli, codeRoot, FleetError, readOnlyState, releaseDir, target, unitOf, waitHealth, type Ctx } from './core.ts'
+import { appCli, codeRoot, FleetError, installCommand, readOnlyState, releaseDir, target, unitOf, waitHealth, type Ctx } from './core.ts'
 import { alert, fleetBackup, restoreOrg } from './backup.ts'
 import { orgPaths, sortedOrgs, type OrgRecord, type UpdateRun, type UpdateStep } from './model.ts'
 import type { AgentInfo } from './org.ts'
@@ -142,7 +142,7 @@ async function smoke(ctx: Ctx, org: OrgRecord, script?: string): Promise<string 
 
 async function schemaOf(ctx: Ctx, org: OrgRecord, release?: string): Promise<number | null> {
   try {
-    return (await agent<AgentInfo>(ctx, org, ['info'], { release, mutates: false, timeoutMs: 120_000 })).schemaVersion
+    return (await installCommand<AgentInfo>(ctx, org, 'status', ['status', '--json'], ['info'], { release, mutates: false, timeoutMs: 120_000 })).schemaVersion
   } catch {
     return null
   }

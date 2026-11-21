@@ -53,6 +53,8 @@ export function friendlyConnectionError(e: unknown, s: { host: string; port: num
     case 'ER_NOT_SUPPORTED_AUTH_MODE': case 'AUTH_SWITCH_PLUGIN_ERROR': case 'ER_PLUGIN_IS_NOT_LOADED':
       return `The server uses an authentication method this connector cannot use over an insecure connection. Turn SSL on, or switch the user to mysql_native_password.`
     case 'HANDSHAKE_SSL_ERROR': case 'HANDSHAKE_NO_SSL_SUPPORT':
+      // P3-15: the certificate is valid but names another host (mysql2 reports it as a handshake error)
+      if (/altnames|does not match certificate/i.test(err.message ?? '')) return `The server's SSL certificate does not name "${s.host}". Connect by a host name (or IP address) the certificate carries, or ask for a certificate that names this one.`
       return `The SSL handshake with ${at} failed. Check that the server supports SSL, or turn SSL off.`
     case 'DEPTH_ZERO_SELF_SIGNED_CERT': case 'SELF_SIGNED_CERT_IN_CHAIN': case 'UNABLE_TO_VERIFY_LEAF_SIGNATURE':
     case 'CERT_HAS_EXPIRED': case 'ERR_TLS_CERT_ALTNAME_INVALID': case 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY':

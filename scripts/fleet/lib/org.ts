@@ -4,7 +4,7 @@
  * delete (typed confirmation, export first, verified removal and a report of what was removed).
  */
 import path from 'node:path'
-import { agent, appCli, FleetError, target, Undo, unitOf, waitHealth, type Ctx } from './core.ts'
+import { agent, appCli, FleetError, installCommand, target, Undo, unitOf, waitHealth, type Ctx } from './core.ts'
 import { createInstallDatabase, databaseExists, dropInstallDatabase, roleExists } from './db.ts'
 import { licenceKey, licenceOrgCreate, licenceRetire } from './licence.ts'
 import { applyQuota, applyUnitLimits, removeQuota } from './limits.ts'
@@ -193,7 +193,7 @@ export async function orgStatus(ctx: Ctx, org: OrgRecord, o: { deep?: boolean } 
   let info: AgentInfo | null = null
   if (o.deep !== false) {
     try {
-      info = await agent<AgentInfo>(ctx, org, ['info'], { mutates: false, timeoutMs: 60_000 })
+      info = await installCommand<AgentInfo>(ctx, org, 'status', ['status', '--json'], ['info'], { mutates: false, timeoutMs: 60_000 })
     } catch (e) {
       problems.push(`details unavailable: ${e instanceof Error ? e.message : String(e)}`)
     }
